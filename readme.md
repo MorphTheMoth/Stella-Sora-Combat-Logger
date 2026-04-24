@@ -8,14 +8,20 @@ Currently WIP, I plan to add more things, mainly an easier way to read through t
 
 ## Installation
 
-- download `winhttp.dll` from the releases tab
-- put `winhttp.dll` in the game folder
-- go to %localappdata%
+- Download the latest version of `stellaCombatLogger.dll` from the releases tab https://github.com/MorphTheMoth/Stella-Sora-Combat-Logger/releases
+- Go to %localappdata%
 - `git clone https://github.com/AutumnVN/StellaSoraData/`, or download it as a .zip, and place it there
+- Download the latest version of `stellaDllInjector.exe` https://github.com/MorphTheMoth/StellaSora-Injector/releases
+- Put the 2 in the same folder, open a command prompt and navigate to that folder
+- Run `stellaDllInjector.exe stellaCombatLogger.dll` before you open the game
+- Open the game
+
 
 ## Usage
 
-once the program runs, it will create a folder in `/AppData/Local/Stella Sora Combat Logger`, the log file is created there, and there's also a config file to select which logs you want.
+Once the program runs, it will create a folder in `/AppData/Local/Stella Sora Combat Logger`.
+The log file is created there, there's also a config file to select which logs you want.
+
 
 ## Build from source
 
@@ -23,7 +29,7 @@ I left the minhook libraries prebuilt already, to rebuild them follow the instru
 
 ```bash
 x86_64-w64-mingw32-g++ -shared \
-    -o winhttp.dll \
+    -o stellaCombatLogger.dll \
     proxy.cpp tables.cpp \
     -I "./minhook/include" \
     -L "./minhook" \
