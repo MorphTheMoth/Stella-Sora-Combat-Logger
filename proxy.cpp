@@ -314,6 +314,11 @@ static void logAdventureActorSpecialAttrs(void* actor) {
 
 // logs
 static char* adventureActorLog(void* actor) {
+    if (!actor) {                          // ← ADD THIS
+        char* s = new char[8];
+        strcpy(s, "null");
+        return s;
+    }
     uintptr_t base = reinterpret_cast<uintptr_t>(actor);
     static constexpr uintptr_t ACTOR_FIELDS = 0x18;
 
@@ -464,7 +469,7 @@ void static LogActorBuffCom(void* fromActor){
             tokenIndex, reduceCountA, reduceTimeCount);
         Log("[calcN] buffCom: firstIdBuffs=%p  immunityIds=%p  immunityGroupIds=%p  immunityTags=%p  buffTags=%p",
             firstIdBuffs, immunityIds, immunityGroupIds, immunityTags, buffTags);
-        Log("[calcN] buffCom: owner=%p", adventureActorLog(owner));
+        Log("[calcN] buffCom: owner=%s", adventureActorLog(owner));
         
         if (buffList) {
             uintptr_t bl = reinterpret_cast<uintptr_t>(buffList);
