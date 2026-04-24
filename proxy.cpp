@@ -32,6 +32,8 @@ static constexpr uintptr_t RVA_BUFF_ENTITY_INIT     = 0x16C9500; // BuffEntity$$
 static constexpr uintptr_t RVA_BUFF_ENTITY_EXCUTE   = 0x16C81C0; // BuffEntity$$BuffExcute
 static constexpr uintptr_t RVA_CALC_NORMAL_DAMAGE   = 0x110C100; // CommonHelper$$CalculateNormalDamage
 
+
+#ifdef WINHTTP_PROXY
 // =============================================================================
 //  WINHTTP FORWARDING
 // =============================================================================
@@ -54,6 +56,7 @@ __attribute__((constructor)) void init_forwards() {
     real_WinHttpGetIEProxyConfigForCurrentUser = (void*)GetProcAddress(real_winhttp, "WinHttpGetIEProxyConfigForCurrentUser");
     real_WinHttpCloseHandle                    = (void*)GetProcAddress(real_winhttp, "WinHttpCloseHandle");
 }
+#endif
 
 // =============================================================================
 //  GAME TIME

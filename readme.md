@@ -16,6 +16,7 @@ Currently WIP, I plan to add more things, mainly an easier way to read through t
 - Run `stellaDllInjector.exe stellaCombatLogger.dll` before you open the game
 - Open the game
 
+For linux I had issues with normally injecting a dll, but you can download the stellaCombatLogger-Linux.dll, rename it to `winhttp.dll`, put `WINEDLLOVERRIDES="winhttp=n,b" %command%` in the steam launch options, move the `winhttp.dll` in the game folder inside the wine prefix `/pfx/drive_c/YostarGames/StellaSora_EN/` and wine will inject the dll for you.
 
 ## Usage
 
@@ -36,4 +37,16 @@ x86_64-w64-mingw32-g++ -shared \
     -lMinHook -m64 -O2 -std=c++17 \
     -static-libgcc -static-libstdc++ \
     -lole32 -luuid
+```
+
+```bash
+x86_64-w64-mingw32-g++ -shared \
+    -o stellaCombatLogger-Linux.dll \
+    proxy.cpp tables.cpp \
+    -I "./minhook/include" \
+    -L "./minhook" \
+    -lMinHook -m64 -O2 -std=c++17 \
+    -static-libgcc -static-libstdc++ \
+    -lole32 -luuid \
+    -DWINHTTP_PROXY
 ```
