@@ -890,7 +890,7 @@ static int64_t __fastcall Hook_CalcNormalDamage(
             Log("-- toActor --");
             Log("--  --");
         }
-        if (g_Cfg.on_hit_buff_list)      LogActorBuffCom(fromActor);
+        if (g_Cfg.on_hit_buff_list)      LogActorBuffCom(toActor);
         if (g_Cfg.on_hit_defender_stats) logAdventureActorAttrs(toActor);
         Log("--end of calcN--");
     }
