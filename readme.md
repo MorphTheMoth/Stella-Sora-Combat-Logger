@@ -12,7 +12,7 @@ Currently WIP, I plan to add more things, mainly an easier way to read through t
 - Go to %localappdata%
 - `git clone https://github.com/AutumnVN/StellaSoraData/`, or download it as a .zip, and place it there
 - Download the latest version of `stellaDllInjector.exe` https://github.com/MorphTheMoth/StellaSora-Injector/releases
-- Put the 2 in the same folder, open a command prompt and navigate to that folder
+- Put the 2 in the same folder, open a command prompt as administrator and navigate to that folder
 - Run `stellaDllInjector.exe stellaCombatLogger.dll` before you open the game
 - Open the game
 
