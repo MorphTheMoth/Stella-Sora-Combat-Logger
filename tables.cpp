@@ -42,7 +42,7 @@ static const std::string kHitDamagePrefix = "HitDamage,DamageNum,";
 //  Low-level helpers
 // =============================================================================
 
-// Read an entire file into a string. Returns false if the file can't be opened.
+// Read an entire file into a string.
 static bool ReadFile(const std::string& path, std::string& out) {
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) return false;
@@ -126,21 +126,18 @@ static void ForEachParam(const json& jObj, Visitor&& visitor) {
 
 // For each ParamN in jObj, check whether it matches any of kBuffPrefixes and
 // extract the embedded ID. Calls onMatch(prefix, effId) for the first matching
-// prefix found in each param. All params are always visited; onMatch's return
-// value only stops checking further prefixes for that one param (mirroring the
-// original inner-loop break).
+// prefix found in each param.
 template<typename OnMatch>
 static void ForEachBuffParam(const json& jObj, OnMatch&& onMatch) {
     ForEachParam(jObj, [&](const std::string& param) -> bool {
         for (const std::string& prefix : kBuffPrefixes) {
             int32_t id = ExtractPrefixedId(param, prefix);
-            if (id) { onMatch(prefix, id); break; } // break prefix loop, not param loop
+            if (id) { onMatch(prefix, id); break; }
         }
-        return false; // always continue to next param
+        return false;
     });
 }
-// Insert an effect into g_EffectTable only if it isn't already there (or is
-// unresolved — label == "?").
+
 static void InsertEffect(int32_t id, const std::string& charName,
                          const std::string& label, int ldt,
                          bool overwriteUnresolved = false) {

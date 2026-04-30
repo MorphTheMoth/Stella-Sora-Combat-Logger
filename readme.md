@@ -1,7 +1,7 @@
 
 # Stella Sora Combat Logger
 
-Injects a dll into the game that logs a lot of information about the combat, using it on the live servers is risky, i suggest using the nebula private server https://github.com/Melledy/Nebula.
+Injects a dll into the game that logs a informations about the combat, using it on the live servers is risky, i suggest using the nebula private server https://github.com/Melledy/Nebula.
 
 Currently WIP, I plan to add more things, mainly an easier way to read through the logs.
 
@@ -31,7 +31,7 @@ I left the minhook libraries prebuilt already, to rebuild them follow the instru
 ```bash
 x86_64-w64-mingw32-g++ -shared \
     -o stellaCombatLogger.dll \
-    proxy.cpp tables.cpp \
+    proxy.cpp tables.cpp logging.cpp \
     -I "./minhook/include" \
     -L "./minhook" \
     -lMinHook -m64 -O2 -std=c++17 \
@@ -42,7 +42,7 @@ x86_64-w64-mingw32-g++ -shared \
 ```bash
 x86_64-w64-mingw32-g++ -shared \
     -o stellaCombatLogger-Linux.dll \
-    proxy.cpp tables.cpp \
+    proxy.cpp tables.cpp logging.cpp \
     -I "./minhook/include" \
     -L "./minhook" \
     -lMinHook -m64 -O2 -std=c++17 \
