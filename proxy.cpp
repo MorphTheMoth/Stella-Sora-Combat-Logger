@@ -2,13 +2,10 @@
 #include <windows.h>
 #include <cstdint>
 #include <cstdio>
-#include <shlobj.h>
-#include <knownfolders.h>
-#include <combaseapi.h>
 #include "MinHook.h"
-#include "json.hpp"
 #include "tables.h"
 #include "logging.h"
+#include "game_structs.h"
 
 #ifdef WINHTTP_PROXY
 // =============================================================================
@@ -36,7 +33,7 @@ __attribute__((constructor)) void init_forwards() {
 #endif
 
 // =============================================================================
-//  RVAs
+//  RVAs (unchanged – these are relative to GameAssembly base)
 // =============================================================================
 static constexpr uintptr_t RVA_DAMAGE               = 0x121D860;
 static constexpr uintptr_t RVA_EFFECT_ON_INIT       = 0x11281A0;
@@ -50,7 +47,7 @@ static constexpr uintptr_t RVA_BUFF_ENTITY_EXCUTE   = 0x16C81C0;
 static constexpr uintptr_t RVA_CALC_NORMAL_DAMAGE   = 0x110C100;
 
 // =============================================================================
-//  Damage hook
+//  Damage hook (kept as void* because DamageTuple is a custom struct)
 // =============================================================================
 struct DamageTuple {
     bool    Item1;
@@ -61,282 +58,187 @@ struct DamageTuple {
 static_assert(offsetof(DamageTuple, Item2) == 8,  "Item2 offset wrong");
 static_assert(offsetof(DamageTuple, Item3) == 16, "Item3 offset wrong");
 
-using FnDamage = DamageTuple*(__fastcall*)(
-    DamageTuple*, void*, void*,
-    int32_t, int32_t, int32_t,
-    void*, void*, bool, bool, bool, void*);
+using FnDamage = DamageTuple*(__fastcall*)( DamageTuple*, AdventureActor_o*, LogicEntity_o*, int32_t, int32_t, int32_t, void*, HitBox_o*, bool, bool, bool, void*);
 static FnDamage             g_OrigDamage = nullptr;
 static std::atomic<int64_t> g_HitDamage{0};
 
-static DamageTuple* __fastcall Hook_Damage(
-    DamageTuple* sret,
-    void* self, void* from,
-    int32_t uniqueAttackId, int32_t onceAttackTargetCount, int32_t hitDamageId,
-    void* hurtEffect, void* hitbox,
-    bool isHittedEffectScale, bool showHud, bool effectIgnoreTimeScale,
-    void* method)
+static DamageTuple* __fastcall Hook_Damage( DamageTuple* sret, AdventureActor_o* self, LogicEntity_o* from, int32_t uniqueAttackId, int32_t onceAttackTargetCount, int32_t hitDamageId,
+    void* hurtEffectPrefab, HitBox_o* hitbox, bool isHittedEffectScale, bool showHud, bool effectIgnoreTimeScale, void* method)
 {
-    DamageTuple* result = g_OrigDamage(sret, self, from,
-                                       uniqueAttackId, onceAttackTargetCount, hitDamageId,
-                                       hurtEffect, hitbox,
-                                       isHittedEffectScale, showHud, effectIgnoreTimeScale,
-                                       method);
+    DamageTuple* result = g_OrigDamage(sret, self, from, uniqueAttackId, onceAttackTargetCount, hitDamageId,
+                                       hurtEffectPrefab, hitbox, isHittedEffectScale, showHud, effectIgnoreTimeScale, method);
     ++g_HitDamage;
-
-    if (g_Cfg.damage) {
-        auto it = g_HitTable.find(hitDamageId);
-        if (it != g_HitTable.end()) {
-            const HitInfo& h = it->second;
-            Log("[dmg hook] dmg=%-8lld  %s / %s [hit %d], id=%d",
-                (long long)sret->Item2, h.charName.c_str(), h.skillTitle.c_str(), h.hitNum, hitDamageId);
-        } else {
-            Log("[dmg hook] dmg=%-8lld  hitId=%d (unknown)", (long long)sret->Item2, hitDamageId);
-        }
-    }
     return result;
 }
 
 // =============================================================================
 //  CalculateNormalDamage hook
 // =============================================================================
-using FnCalcNormalDamage = int64_t(__fastcall*)(
-    void*,    void*,    void*,
-    int32_t,  bool,     bool,
-    int32_t*, double*,  double*,
-    double*,  double*,  double*,
-    double*,  double*,  double*,
-    double*,  double*,  double*,
-    double*,  double*,  double*,
-    double*,  void*);
+using FnCalcNormalDamage = int64_t(__fastcall*)( AdventureActor_o*, AdventureActor_o*, Nova_Client_HitDamage_o*,
+    int32_t, bool, bool, int32_t*, double*, double*, double*, double*, double*, double*, double*, double*, double*, double*, double*, double*, double*, double*, double*, void*);
 static FnCalcNormalDamage g_OrigCalcNormalDamage = nullptr;
 
-static int64_t __fastcall Hook_CalcNormalDamage(
-    void*    fromActor,
-    void*    toActor,
-    void*    hitDamageConfig,
-    int32_t  skillLevel,
-    bool     isCrit,
-    bool     isDot,
-    int32_t* hudColorIndex,
-    double*  skillPercentAmend,
-    double*  talentGroupPercentAmend,
-    double*  skillAbsAmend,
-    double*  talentGroupAbsAmend,
-    double*  perkIntensityRatio,
-    double*  slotDmgRatio,
-    double*  fromEE,
-    double*  erAmend,
-    double*  defAmend,
-    double*  rcdSlotDmgRatio,
-    double*  toEERCD,
-    double*  skillIntensityRatio,
-    double*  toughnessBrokenDmgRatio,
-    double*  critRatio,
-    double*  envAmendRatio,
-    void*    method)
+static int64_t __fastcall Hook_CalcNormalDamage( AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_Client_HitDamage_o* hitDamageConfig,
+    int32_t skillLevel, bool isCrit, bool isDot, int32_t* hudColorIndex, double* skillPercentAmend, 
+    double* talentGroupPercentAmend, double* skillAbsAmend, double* talentGroupAbsAmend, double* perkIntensityRatio, double* slotDmgRatio,
+    double* fromEE, double* erAmend, double* defAmend, double* rcdSlotDmgRatio, double* toEERCD, double* skillIntensityRatio,
+    double* toughnessBrokenDmgRatio, double* critRatio, double* envAmendRatio, void* method)
 {
-    Log("[calcN] -- skillLevel=%d  isCrit=%d  isDot=%d", skillLevel+1, (int)isCrit, (int)isDot);
-
     int64_t dmg = g_OrigCalcNormalDamage(
-        fromActor, toActor, hitDamageConfig,
-        skillLevel, isCrit, isDot,
-        hudColorIndex, skillPercentAmend, talentGroupPercentAmend,
-        skillAbsAmend, talentGroupAbsAmend, perkIntensityRatio,
-        slotDmgRatio, fromEE, erAmend,
-        defAmend, rcdSlotDmgRatio, toEERCD,
-        skillIntensityRatio, toughnessBrokenDmgRatio, critRatio,
-        envAmendRatio, method);
+        fromActor, toActor, hitDamageConfig, skillLevel, isCrit, isDot, hudColorIndex, skillPercentAmend, talentGroupPercentAmend,
+        skillAbsAmend, talentGroupAbsAmend, perkIntensityRatio, slotDmgRatio, fromEE, erAmend, defAmend, rcdSlotDmgRatio, toEERCD,
+        skillIntensityRatio, toughnessBrokenDmgRatio, critRatio, envAmendRatio, method);
 
-    if (g_Cfg.damage) {
-        LogHitDamageConfig(hitDamageConfig);
-        Log("[calcN] Hit Mv = %.4f", skillPercentAmend ? *skillPercentAmend : 0.0);
-    }
-
-    if (g_Cfg.on_hit_attacker_stats) {
-        Log("[calcN] hudColor=%d  skillPct=%.4f  talentGrpPct=%.4f  skillAbs=%.4f  talentGrpAbs=%.4f",
-            hudColorIndex          ? *hudColorIndex          : -1,
-            skillPercentAmend      ? *skillPercentAmend      : 0.0,
-            talentGroupPercentAmend? *talentGroupPercentAmend: 0.0,
-            skillAbsAmend          ? *skillAbsAmend          : 0.0,
-            talentGroupAbsAmend    ? *talentGroupAbsAmend    : 0.0);
-        Log("[calcN] perkIntensity=%.4f  slotDmg=%.4f  fromEE=%.4f  erAmend=%.4f  defAmend=%.4f",
-            perkIntensityRatio     ? *perkIntensityRatio     : 0.0,
-            slotDmgRatio           ? *slotDmgRatio           : 0.0,
-            fromEE                 ? *fromEE                 : 0.0,
-            erAmend                ? *erAmend                : 0.0,
-            defAmend               ? *defAmend               : 0.0);
-        Log("[calcN] rcdSlotDmg=%.4f  toEERCD=%.4f  skillIntensity=%.4f  toughBrokenDmg=%.4f  crit=%.4f  envAmend=%.4f",
-            rcdSlotDmgRatio        ? *rcdSlotDmgRatio        : 0.0,
-            toEERCD                ? *toEERCD                : 0.0,
-            skillIntensityRatio    ? *skillIntensityRatio    : 0.0,
-            toughnessBrokenDmgRatio? *toughnessBrokenDmgRatio: 0.0,
-            critRatio              ? *critRatio              : 0.0,
-            envAmendRatio          ? *envAmendRatio          : 0.0);
-    }
-
-    if (fromActor) {
-        // Effect manage (from attacker)
-        uintptr_t actorBase = reinterpret_cast<uintptr_t>(fromActor);
-        static constexpr uintptr_t ACTOR_FIELDS = 0x18;
-        void* effectManage = *reinterpret_cast<void**>(actorBase + ACTOR_FIELDS + 0xD8);
-        LogEffectManage(effectManage, g_Cfg.on_hit_effect_list, g_Cfg.on_hit_effect_list_information);
-
-        // Buffs on attacker
-        if (g_Cfg.on_hit_buff_list) LogActorBuffCom(fromActor);
-    }
-
-    if (g_Cfg.damage) {
-        auto it = g_HitTable.find(0/*hitDamageId from inside LogHitDamageConfig - we already logged it*/);
-        // We'll just log the final damage and actor info
-        int32_t hitDamageId = 0;
-        if (hitDamageConfig)
-            hitDamageId = *reinterpret_cast<int32_t*>(reinterpret_cast<uintptr_t>(hitDamageConfig) + 0x18);
-        if (it != g_HitTable.end()) {
-            const HitInfo& h = it->second;
-            Log("[calcN] dmg=%-8lld  %s / %s [hit %d], id=%d",
-                (long long)dmg, h.charName.c_str(), h.skillTitle.c_str(), h.hitNum, hitDamageId);
-        } else {
-            Log("[calcN] dmg=%-8lld  hitId=%d (unknown)", (long long)dmg, hitDamageId);
-        }
-        Log("[calcN] {from->to : %s  ->  %s}", adventureActorLog(fromActor), adventureActorLog(toActor));
-    }
-
-    // Attacker/defender stats when requested
-    if (fromActor && g_Cfg.on_hit_attacker_stats) {
-        logAdventureActorAttrs(fromActor);
-        Log("---");
-        logAdventureActorSpecialAttrs(fromActor);
-        Log("--  --");
-    }
-    if (toActor) {
-        if (g_Cfg.on_hit_buff_list)      LogActorBuffCom(toActor);
-        if (g_Cfg.on_hit_defender_stats) logAdventureActorAttrs(toActor);
-    }
-    Log("--end of calcN--");
+    json hitJson = BuildHitJson(
+        fromActor, toActor, hitDamageConfig, skillLevel, isCrit, isDot, hudColorIndex, skillPercentAmend, talentGroupPercentAmend, 
+        skillAbsAmend, talentGroupAbsAmend, perkIntensityRatio, slotDmgRatio, fromEE, erAmend, defAmend, rcdSlotDmgRatio, toEERCD,
+        skillIntensityRatio, toughnessBrokenDmgRatio, critRatio, envAmendRatio, dmg);
+    
+    LogJson(hitJson);
     return dmg;
 }
 
 // =============================================================================
-//  Effect / Buff hooks (simplified)
+//  Effect / Buff hooks
 // =============================================================================
-using FnEffectOnInit = void(__fastcall*)(void*, int32_t, int32_t, int32_t, void*, void*, void*, void*, bool, int32_t, bool, int64_t, void*, void*);
+using FnEffectOnInit = void(__fastcall*)( void*, int32_t, int32_t, int32_t,
+    Nova_Client_Effect_o*, Nova_Client_EffectValue_o*, AdventureActor_o*, AdventureActor_o*,
+    bool, int32_t, bool, TrueSync_FP_o, BuffEntity_o*, void*);
 static FnEffectOnInit g_OrigEffectOnInit = nullptr;
 
-static void __fastcall Hook_EffectOnInit(void* self, int32_t effType, int32_t sourceType, int32_t id,
-                                         void* effectConfig, void* effectValueConfig, void* owner, void* fromActor,
+static void __fastcall Hook_EffectOnInit(void* self, int32_t effType, int32_t sourceType, int32_t id, Nova_Client_Effect_o* effectConfig,
+                                         Nova_Client_EffectValue_o* effectValueConfig, AdventureActor_o* owner, AdventureActor_o* fromActor,
                                          bool shareCD, int32_t takeEffectLimit, bool shareTakeEffectLimit,
-                                         int64_t initCD, void* fromBuff, void* method)
+                                         TrueSync_FP_o initCD, BuffEntity_o* fromBuff, void* method)
 {
     g_OrigEffectOnInit(self, effType, sourceType, id, effectConfig, effectValueConfig,
                        owner, fromActor, shareCD, takeEffectLimit, shareTakeEffectLimit,
                        initCD, fromBuff, method);
+    
     int32_t configId = 0;
     if (effectConfig)
-        configId = *reinterpret_cast<int32_t*>(reinterpret_cast<uintptr_t>(effectConfig) + 0x18);
-    if (g_Cfg.effects)
-        logBuff("Effect", configId, owner, +1);
+        configId = effectConfig->fields.id_;
+    
+    if (g_Cfg.effects) {
+        json j = BuildBuffJson("Effect", configId, owner, fromActor, 1);
+        LogJson(j);
+    }
 }
 
-using FnBuffEffectOnInit = void(__fastcall*)(void*, void*, void*, void*, void*, int32_t, void*);
+using FnBuffEffectOnInit = void(__fastcall*)( void*, AdventureActor_o*, AdventureActor_o*, BuffEntity_o*, Nova_Client_BuffEffect_o*, int32_t, void*);
 static FnBuffEffectOnInit g_OrigBuffEffectOnInit = nullptr;
 
-static void __fastcall Hook_BuffEffectOnInit(void* self, void* owner, void* fromActor, void* buffEntity,
-                                             void* buffEffectConfig, int32_t buffUid, void* method)
+static void __fastcall Hook_BuffEffectOnInit(void* self, AdventureActor_o* owner, AdventureActor_o* fromActor, BuffEntity_o* buffEntity,
+                                             Nova_Client_BuffEffect_o* buffEffectConfig, int32_t buffUid, void* method)
 {
     g_OrigBuffEffectOnInit(self, owner, fromActor, buffEntity, buffEffectConfig, buffUid, method);
+    
     int32_t configId = 0;
     if (buffEffectConfig)
-        configId = *reinterpret_cast<int32_t*>(reinterpret_cast<uintptr_t>(buffEffectConfig) + 0x18);
+        configId = buffEffectConfig->fields.id_;
+    
     if (g_Cfg.buffs) {
-        Log("[debug] BuffEffectOnInit called");
-        logBuff("Buff", configId, owner, +1);
+        json j = BuildBuffJson("Buff", configId, owner, fromActor, 1);
+        LogJson(j);
     }
 }
 
-using FnBuffEntityInit = void(__fastcall*)(void*, void*, void*, void*, void*, void*);
+using FnBuffEntityInit = void(__fastcall*)( BuffEntity_o*, Nova_Client_Buff_o*, Nova_Client_BuffValue_o*, BuffCom_o*, AdventureActor_o*, void*);
 static FnBuffEntityInit g_OrigBuffEntityInit = nullptr;
 
-static void __fastcall Hook_BuffEntityInit(void* self, void* buffConfig, void* buffValueConfig,
-                                           void* bfC, void* fromActor, void* method)
+static void __fastcall Hook_BuffEntityInit(BuffEntity_o* self, Nova_Client_Buff_o* buffConfig, Nova_Client_BuffValue_o* buffValueConfig,
+                                           BuffCom_o* bfC, AdventureActor_o* fromActor, void* method)
 {
     g_OrigBuffEntityInit(self, buffConfig, buffValueConfig, bfC, fromActor, method);
-    int32_t configId = 0;
-    if (buffConfig)
-        configId = *reinterpret_cast<int32_t*>(reinterpret_cast<uintptr_t>(buffConfig) + 0x18);
-    // simplified: we don't log buff init because it's redundant with BuffExcute and BuffEffectOnInit
 }
 
-using FnBuffEntityExcute = void(__fastcall*)(void*, int32_t, void*, void*);
+using FnBuffEntityExcute = void(__fastcall*)( BuffEntity_o*, int32_t, AdventureActor_o*, void*);
 static FnBuffEntityExcute g_OrigBuffEntityExcute = nullptr;
 
-static void __fastcall Hook_BuffEntityExcute(void* self, int32_t addType, void* fromActor, void* method)
+static void __fastcall Hook_BuffEntityExcute(BuffEntity_o* self, int32_t addType,
+                                             AdventureActor_o* fromActor, void* method)
 {
     g_OrigBuffEntityExcute(self, addType, fromActor, method);
+    
     int32_t configId = 0;
-    void* buffConfig = *reinterpret_cast<void**>(reinterpret_cast<uintptr_t>(self) + 0x38);
-    int32_t buffNum = *reinterpret_cast<int32_t*>(reinterpret_cast<uintptr_t>(self) + 0x50);
-    if (buffConfig)
-        configId = *reinterpret_cast<int32_t*>(reinterpret_cast<uintptr_t>(buffConfig) + 0x18);
-    if (g_Cfg.buffs)
-        logBuff(("Buff Execute " + std::to_string(buffNum)).c_str(), configId, fromActor, +1);
+    if (self->fields.buffConfig)
+        configId = self->fields.buffConfig->fields.id_;
+    int32_t buffNum = self->fields.buffNum;
+    
+    // Owner is the actor who owns the BuffCom that contains this BuffEntity
+    AdventureActor_o* owner = nullptr;
+    BuffCom_o* bc = self->fields._buffCom;
+    if (bc)
+        owner = bc->fields._owner;
+    if (!owner)
+        owner = fromActor;
+    
+    if (g_Cfg.buffs) {
+        json j = BuildBuffJson("Buff", configId, owner, fromActor, addType==3 ? -1 : 1, buffNum);
+        LogJson(j);
+    }
 }
 
-using FnEffectOnClear = void(__fastcall*)(void*, void*);
+using FnEffectOnClear = void(__fastcall*)(AdventureEffectBase_o*, void*);
 static FnEffectOnClear g_OrigEffectOnClear = nullptr;
 
-static void __fastcall Hook_EffectOnClear(void* self, void* method)
+static void __fastcall Hook_EffectOnClear(AdventureEffectBase_o* effectBase, MethodInfo* method)
 {
-    int32_t configId = 0;
-    void* effect = *reinterpret_cast<void**>(reinterpret_cast<uintptr_t>(self) + 0x10);
-    if (effect) {
-        void* owner = *reinterpret_cast<void**>(reinterpret_cast<uintptr_t>(effect) + 0x88);
-        void* effectConfig = *reinterpret_cast<void**>(reinterpret_cast<uintptr_t>(effect) + 0x20);
-        if (effectConfig)
-            configId = *reinterpret_cast<int32_t*>(reinterpret_cast<uintptr_t>(effectConfig) + 0x18);
-        if (g_Cfg.effects)
-            logBuff("Effect", configId, owner, -1);
+    if (g_Cfg.effects)
+    {
+        if (effectBase && effectBase)
+        {
+            AdventureEffect_o* effect = effectBase->fields._effect;
+            if (effect && effect)
+            {
+                Nova_Client_Effect_o* cfgCandidate = effect->fields._effectConfig_k__BackingField;
+                AdventureActor_o* owner = effect->fields._owner;
+                AdventureActor_o* fromActor = effect->fields._fromActor;
+
+                int32_t configId = 0;
+                if (cfgCandidate && cfgCandidate)
+                    configId = cfgCandidate->fields.id_;
+
+                json j = BuildBuffJson("Effect", configId, owner, fromActor, -1);
+                LogJson(j);
+            }
+        }
     }
-    g_OrigEffectOnClear(self, method);
+    g_OrigEffectOnClear(effectBase, method);
 }
 
 // =============================================================================
 //  Battle finish / timer / spawn
 // =============================================================================
-using FnUpdateLogic = void(__fastcall*)(void*, int64_t, void*);
+using FnUpdateLogic = void(__fastcall*)( void*, TrueSync_FP_o, void*);
 static FnUpdateLogic g_OrigUpdateLogic = nullptr;
 
-static void __fastcall Hook_UpdateLogic(void* self, int64_t logicDeltaTime, void* method) {
+static void __fastcall Hook_UpdateLogic(void* self, TrueSync_FP_o logicDeltaTime, void* method) {
     g_OrigUpdateLogic(self, logicDeltaTime, method);
-    g_BattleTimeFP.fetch_add(logicDeltaTime, std::memory_order_relaxed);
+    g_BattleTimeFP.fetch_add(logicDeltaTime.fields._serializedValue, std::memory_order_relaxed);
 }
 
-using FnBattleFinish = void(__fastcall*)(void*, void*, void*);
+using FnBattleFinish = void(__fastcall*)( ActorEffectManage_o*, void*, void*);
 static FnBattleFinish g_OrigBattleFinish = nullptr;
 
-static void __fastcall Hook_BattleFinish(void* self, void* evt, void* method) {
+static void __fastcall Hook_BattleFinish(ActorEffectManage_o* self, void* evt, void* method) {
     g_OrigBattleFinish(self, evt, method);
     g_BattleTimeFP.store(0, std::memory_order_relaxed);
-    Log("[timer] Battle started — timer reset");
+    //Log("[timer] Battle started — timer reset");
 }
 
-using FnSpawnSkill = void*(__fastcall*)(void*, int32_t, void*);
+using FnSpawnSkill = void*(__fastcall*)( void*, int32_t, void*);
 static FnSpawnSkill g_OrigSpawnSkill = nullptr;
 
 static void* __fastcall Hook_SpawnSkill(void* self, int32_t skillId, void* method) {
     void* result = g_OrigSpawnSkill(self, skillId, method);
+    
     if (skillId < 10000000) return result;
     if (!g_Cfg.skill_casts) return result;
-    Log("---");
-    auto it = g_SkillTable.find(skillId);
-    if (it != g_SkillTable.end()) {
-        const SkillInfo& s = it->second;
-        if (!s.ownerName.empty())
-            Log("[skill cast] %s / %s (%s)  skillId=%d", s.ownerName.c_str(), s.skillName.c_str(), s.skillType.c_str(), skillId);
-        else
-            Log("[skill cast] skillId=%d  %s  fcPath=%s", skillId, s.skillName.c_str(), s.fcPath.c_str());
-    } else {
-        Log("[skill cast] skillId=%d (unknown)", skillId);
-    }
+    
+    json j = BuildSkillCastJson(skillId);
+    LogJson(j);
+    
     return result;
 }
 
@@ -352,28 +254,11 @@ static bool InstallHook(uintptr_t target, void* hook, void** original, const cha
     return true;
 }
 
-std::string GetLocalAppDataPath() {
-    PWSTR path_tmp;
-    HRESULT hr = SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, NULL, &path_tmp);
-    if (FAILED(hr)) return "";
-    char ch[MAX_PATH];
-    WideCharToMultiByte(CP_UTF8, 0, path_tmp, -1, ch, MAX_PATH, NULL, NULL);
-    CoTaskMemFree(path_tmp);
-    return std::string(ch);
-}
-
 static DWORD WINAPI InitThread(LPVOID) {
-    std::string logDir = GetLocalAppDataPath() + "\\Stella Sora Combat Logger";
-    std::string logPath = logDir + "\\ss_dpslog.txt";
-    CreateDirectoryA(logDir.c_str(), nullptr);
-    g_Log = fopen(logPath.c_str(), "a");
+    InitializeLogger();
     if (!g_Log) return 1;
 
-    SYSTEMTIME t{};
-    GetLocalTime(&t);
-    fprintf(g_Log, "\n=== SS DPS Logger started %02d:%02d:%02d ===\n", t.wHour, t.wMinute, t.wSecond);
-    fflush(g_Log);
-
+    std::string logDir = GetLocalAppDataPath() + "\\Stella Sora Combat Logger";
     LoadConfig(logDir);
     BuildHitTable((GetLocalAppDataPath() + "\\StellaSoraData").c_str());
 
@@ -413,7 +298,8 @@ BOOL APIENTRY DllMain(HMODULE hInst, DWORD reason, LPVOID reserved) {
     else if (reason == DLL_PROCESS_DETACH) {
         MH_DisableHook(MH_ALL_HOOKS);
         MH_Uninitialize();
-        if (g_Log) { Log("[uninit] DLL detached."); fclose(g_Log); g_Log = nullptr; }
+        if (g_Log)     { Log("[uninit] DLL detached."); fclose(g_Log); g_Log = nullptr; }
+        if (g_JsonLog) { fclose(g_JsonLog); g_JsonLog = nullptr; }
     }
     return TRUE;
 }

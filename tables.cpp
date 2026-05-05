@@ -42,7 +42,6 @@ static const std::string kHitDamagePrefix = "HitDamage,DamageNum,";
 //  Low-level helpers
 // =============================================================================
 
-// Read an entire file into a string.
 static bool ReadFile(const std::string& path, std::string& out) {
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) return false;
@@ -55,7 +54,6 @@ static bool ReadFile(const std::string& path, std::string& out) {
     return true;
 }
 
-// Read and parse a JSON file. Returns a discarded json on any failure and logs the error.
 static json LoadJson(const std::string& path, const char* tag) {
     std::string raw;
     if (!ReadFile(path, raw)) {
@@ -101,7 +99,6 @@ static std::string ResolveLocKey(const json& jObj, const std::string& field,
 }
 
 // Extract the ID token from a prefixed param string like "Buff,LevelUp,<id>[,...]".
-// Returns 0 on failure.
 static int32_t ExtractPrefixedId(const std::string& param, const std::string& prefix) {
     if (param.rfind(prefix, 0) != 0) return 0;
     size_t start = prefix.size();
@@ -174,8 +171,7 @@ static void BuildEffectTable(const std::string& dataRoot,
 
 // Pre-build a set of effect IDs found in an array field of every entry in jSource,
 // and also add them to g_SuppressedEffects.
-static void CollectAndSuppressEffectIds(const json& jSource, const std::string& arrayField,
-                                        std::unordered_set<int32_t>& out) {
+static void CollectAndSuppressEffectIds(const json& jSource, const std::string& arrayField, std::unordered_set<int32_t>& out) {
     for (auto& [key, val] : jSource.items()) {
         if (!val.contains(arrayField)) continue;
         for (auto& idVal : val[arrayField]) {
@@ -238,6 +234,10 @@ static int SourcePass(const json& jSource, const std::string& labelPrefix,
 //  BuildEffectTable
 // =============================================================================
 
+static bool IsSuppressed(int32_t id) {
+    return g_SuppressedEffects.count(id) > 0;
+}
+
 static void BuildEffectTable(const std::string& dataRoot,
                               const json& jSkill, const json& jSkillLang,
                               const json& jChar,  const json& jPotential)
@@ -260,17 +260,14 @@ static void BuildEffectTable(const std::string& dataRoot,
         jFloorBuff.is_discarded() || jSubNote.is_discarded()  || jAffinityLevel.is_discarded())
         return;
 
-    // --- Pre-build suppression sets -----------------------------------------
     std::unordered_set<int32_t> subNoteEffectIds;
-    CollectAndSuppressEffectIds(jSubNote,       "EffectId", subNoteEffectIds);
+    CollectAndSuppressEffectIds(jSubNote, "EffectId", subNoteEffectIds);
 
     std::unordered_set<int32_t> affinityEffectIds;
-    CollectAndSuppressEffectIds(jAffinityLevel, "Effect",   affinityEffectIds);
+    CollectAndSuppressEffectIds(jAffinityLevel, "Effect", affinityEffectIds);
 
-    // --- Pre-build buff-id -> skill title map --------------------------------
     auto buffIdToSkillTitle = BuildBuffIdToSkillTitle(jSkill, jSkillLang);
 
-    // --- Direct pass: effect IDs referenced in Skill.json with no levelTypeData
     for (auto& [skey, sval] : jSkill.items()) {
         std::string skillTitle = ResolveLocKey(sval, "Title", jSkillLang);
 
@@ -521,10 +518,6 @@ static void BuildEffectTable(const std::string& dataRoot,
     }
 
     // --- BuffValue.json pass (via Potential kBuffPrefixes) ------------------
-    // BuffValue entries (e.g. 11051011) whose Effects[] IDs appear in Potential
-    // ParamN via kBuffPrefixes. The BuffValue configId itself is what gets logged,
-    // and the label comes from item.json keyed by the Potential entry that
-    // references the child effect ID.
     {
         json jBuffValue = LoadJson(binPath + "BuffValue.json", "[effect]");
         if (!jBuffValue.is_discarded() && !jPotential.is_discarded()) {
@@ -549,7 +542,6 @@ static void BuildEffectTable(const std::string& dataRoot,
                 if (!bvId || g_EffectTable.count(bvId)) continue;
                 if (!bvVal.contains("Effects")) continue;
 
-                // Check if any child effect ID is referenced by a Potential entry
                 for (auto& effIdVal : bvVal["Effects"]) {
                     int32_t effId = effIdVal.get<int32_t>();
                     auto pit = effectIdToPotRef.find(effId);
@@ -569,7 +561,7 @@ static void BuildEffectTable(const std::string& dataRoot,
 
                     g_EffectTable[bvId] = { charName, label, -1 };
                     ++bvBuilt;
-                    break; // first matched child effect is enough
+                    break;
                 }
             }
             Log("[effect] Built BuffValue-via-Potential entries: %d", bvBuilt);
@@ -636,8 +628,6 @@ static void BuildEffectTable(const std::string& dataRoot,
     }
 
     // --- SecondarySkill.json pass (Disc-Harmony effects) --------------------
-    // Each SecondarySkill entry has a GroupId that maps to a secondarySkillN
-    // inside disc.json. Label format: "Disc-Harmony: <discName> - <skillName>"
     {
         json jSecSkill = LoadJson(binPath + "SecondarySkill.json", "[effect]");
         json jDisc     = LoadJson(dataRoot + "/disc.json",          "[effect]");
@@ -664,6 +654,10 @@ static void BuildEffectTable(const std::string& dataRoot,
                 }
             }
 
+            // Also pre-build: EffectValue ID -> (discName, skillName)
+            json jEffectValue = LoadJson(binPath + "EffectValue.json", "[effect]");
+            std::unordered_map<int32_t, DiscSkillInfo> evIdToInfo;
+
             int harmonyBuilt = 0;
             for (auto& [ssKey, ssVal] : jSecSkill.items()) {
                 int32_t configId = 0;
@@ -678,14 +672,88 @@ static void BuildEffectTable(const std::string& dataRoot,
                 std::string label = "Disc-Harmony: " + git->second.discName
                                     + " - " + git->second.skillName;
                 g_EffectTable[configId] = { "?", label, 0 };
+                evIdToInfo[configId] = git->second;
                 ++harmonyBuilt;
             }
             Log("[effect] Built harmony (SecondarySkill) entries: %d", harmonyBuilt);
+
+            // ─── Pass: EffectValue.json → referenced IDs via EffectTypeParam ───
+            if (!jEffectValue.is_discarded()) {
+                int evReferencedBuilt = 0;
+                for (auto& [evKey, evVal] : jEffectValue.items()) {
+                    int32_t evId = 0;
+                    try { evId = std::stoi(evKey); } catch (...) { continue; }
+
+                    auto parentIt = evIdToInfo.find(evId);
+                    if (parentIt == evIdToInfo.end()) continue;
+
+                    std::string label = "Disc-Harmony: " + parentIt->second.discName
+                                        + " - " + parentIt->second.skillName;
+
+                    for (int n = 1; n <= 7; ++n) {
+                        std::string paramKey = "EffectTypeParam" + std::to_string(n);
+                        if (!evVal.contains(paramKey)) break;
+                        std::string paramVal = evVal[paramKey].get<std::string>();
+                        if (paramVal.empty()) continue;
+                        int32_t referencedId = 0;
+                        try { referencedId = std::stoi(paramVal); }
+                        catch (...) { continue; }
+                        if (!referencedId || g_EffectTable.count(referencedId)) continue;
+
+                        g_EffectTable[referencedId] = { "?", label, 0 };
+                        ++evReferencedBuilt;
+                    }
+                }
+                Log("[effect] Built EffectValue-referenced harmony entries: %d", evReferencedBuilt);
+            }
+        }
+    }
+
+    // --- ScoreBossAbility.json pass -----------------------------------------
+    {
+        json jScoreBoss, jScoreBossLang;
+        if (LoadJsonPair(binPath + "ScoreBossAbility.json",
+                         langPath + "ScoreBossAbility.json",
+                         "[effect]", jScoreBoss, jScoreBossLang)) {
+            int bossBuilt = 0;
+            // Prefixes that indicate an embedded buff ID
+            static const std::array<std::string, 2> kSbaPrefixes = {
+                "EffectValue,NoLevel,",
+                "BuffValue,NoLevel,"
+            };
+
+            for (auto& [key, ability] : jScoreBoss.items()) {
+                //Log("boss ability key=%s name=%s", key.c_str(), ability.value("Name", "MISSING").c_str());
+                std::string abilityName = ResolveLocKey(ability, "Name", jScoreBossLang);
+                std::string label = "Boss / " + abilityName;
+
+                if (abilityName == "?") continue;
+
+                for (int p = 1; p <= 10; ++p) {
+                    std::string paramKey = "Param" + std::to_string(p);
+                    if (!ability.contains(paramKey)) continue;
+                    std::string paramVal = ability[paramKey].get<std::string>();
+                    if (paramVal.empty()) continue;
+
+                    for (const std::string& prefix : kSbaPrefixes) {
+                        int32_t buffId = ExtractPrefixedId(paramVal, prefix);
+                        if (buffId && !g_EffectTable.count(buffId)) {
+                            //Log("boss buffId - %s", label.c_str());
+                            g_EffectTable[buffId] = { "?", label, 0 };
+                            ++bossBuilt;
+                        }
+                    }
+                }
+            }
+            Log("[effect] Built ScoreBossAbility entries: %d", bossBuilt);
         }
     }
 
     // --- Hardcoded effects --------------------------------------------------
+    g_EffectTable[5011] = { "Enemy", "Defense Broken", -1 };
     g_EffectTable[990050012] = { "Enemy", "Defense Broken", -1 };
+    g_EffectTable[631014002] = { "Enemy", "Forbidden Beauty / Meticulously Crafted", -1 };
+    g_EffectTable[631014022] = { "Enemy", "Forbidden Beauty / Meticulously Crafted", -1 };
 
     Log("[effect] Built effect table: %d entries (%d disc, %d suppressed)",
         built + discBuilt, discBuilt, (int)g_SuppressedEffects.size());
@@ -803,7 +871,6 @@ void BuildHitTable(const std::string& dataRoot) {
         std::string skillTitle = "?";
         int         hitNum     = 0;
 
-        // Resolve the skill that references this hitId via its ParamN fields.
         auto ResolveSkill = [&](json::const_iterator sit) {
             skillTitle = ResolveLocKey(*sit, "Title", jLang);
             int idx = 0;
@@ -817,7 +884,6 @@ void BuildHitTable(const std::string& dataRoot) {
             });
         };
 
-        // Search all skills for a param that equals "HitDamage,DamageNum,<hitId>".
         std::string needle = kHitDamagePrefix + std::to_string(hitId);
         for (auto sit = jSkill.begin(); sit != jSkill.end(); ++sit) {
             bool found = false;
@@ -856,7 +922,6 @@ void BuildHitTable(const std::string& dataRoot) {
                     if (existing != g_HitTable.end() && existing->second.skillTitle != "?")
                         return false;
 
-                    // Count which hit index this is within this potential entry
                     int hitNum = 0, hitIdx = 0;
                     ForEachParam(potVal, [&](const std::string& mv) -> bool {
                         int32_t mvId = ExtractPrefixedId(mv, kHitDamagePrefix);

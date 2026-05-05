@@ -1,0 +1,637 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stella Sora Logs</title>
+    <link rel="icon" type="image/png" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAAACXBIWXMAAC4jAAAuIwF4pT92AAAFG0lEQVRoBe1Yv6ucVRDNvrxUWhgttbBImiAIEq0FUwtCtIyVRvEfSCo7EVsL7ewEIX+CppZEwdbEkCK1PxAbjXnrObMzs3Pnzr27axbMk1zYd2fmnDkz9353v/d9e+LE4/E/3oHlcvkxPjYWx26p6Hxh3WN+/zgu4GpYwPLYLEB3/mJsXu29H6PDfe4KG4fe0UST2HQRXKjmHywWC7OHkgdD5F8AWnCqqYvcRv21bUjTYlmAxWcNKCZXAIvhTt/IGvCPTAPzF/h8hY+PwD8f7Ic3UeGCV1kdlU7U8A7QAHC7K9lsKdV8a6Szcxzq16oKg9jwjIMfG38n+Z3czo1uSkCFd7sqfaBcAGjWfHOsEL/VS6wim/rZGYfsuVGxGM/CwKz5axmjD/xmzDe74uZYuVuZZD6FzS5muyHEL7HQkMY6R/rFLlJlEcJJ4MZbqRXlLhxqoaSxcieYNMZbqH5kU8DnsA3iol4vhTVoubpI76vKCbprWMqtLqUVXYOwFM/TiGtHplpMo1s5bFALdfqIv0Csy9METj92IAKIn8fnExIwOuGYQ1xYy+VVxtWe5gzymxzovKpa5QLis8vPUdDsYbIRdAbPFiCF4MtjdaQhdin60Qb2Hj5Nk3A/YEzH7ch321Cd/3JADcNzvPKV+7th8PNumhzn34zHGf4V82FzM77EJ45Gy7h2qSMx78JpBWsBVQLHrsBJF09GU0SdRBEX0PXMrXhGtsJNTkxQ4GKMZRsc6nzNOWP0EY/HFa6Pho/oPUfWRlO7SVDxZtdDA6dwi/s7+EMTtajL43ManweByCtyP/jZ9Ps+NP4A+EQm6G3Ww9X7AM/jU85YGyzcLXgNd9aTiMya7RIswM02e9Nc/cN4epQE3bibHY2FOfhPCeCdjrBFgPkTWtdvF9DirqGX7DsNdHz2y6IclkQbeWfM33bOtZHX1Cvw+kig/vdIfomFdQE0u8E+EZRnnw5EcRbkKLAyVNWK+RV+AMKvkaTK/jYE7O2qGuKz5pnCN68LmJtdrLRGMeQ/H7BGB5g8hvOW5kcAto1nzOAcRNyM+Ab7JpPA+XMDj3Bzk4B/I+RUfXKDRHz6xiWk8AeiLwfhbU02UDWR830RGch+aEkWkXH3GyIcB3Y35IuNtNlC4mPEsELuSfwRO5IHxeXhapRfxOVqmC5w+R4q7wHmz4kVeRbyq2QaPhsDM4vILxEOrkTfChwzD41jgcksxYHbVbhC2/LjrBqCB72S63kg2nPKTx4MBvDq/dVFgVtjoaabn5nUiGd4nMG1X7nlhhCx0vZyxc4Amy6AguB8GDTcjMUQLBcaOarlvIwN/SieScDskdobg3G94EWctl8lcuHzHbwbE50m33hlUAsQK39JYFUTsDn+lwQsuYbp7E+a9CsNhBtO4HVxYhzNf7dVaPWXjwGwns2FtLlIFZs8jI8UiI8Xd2MMHPlxrBMoAhRE+E3tpWCkEBMwTuHDcze8OkwjcTDuI858eXJV+6zOz2Eeje4LCqK/0cGWnjS57k1JyvGpeQOyNTtaGy+mRfLFZrbo7kgqP/6gbJWa5psjpJfqGyaHcQaZTZJiTW7g0/yB1ULsl+QHSMxOS2uezcStjhOS38iJI5+NPcwY6eY4arySY3vzIf5tWEQ8qyHcnGGJ762BfQihIzbOUR03KUFMGBPOrr10Z29XAePHs4kmT2qjcfrUuI/sHLtV247T5YQNr9J/ujg0KQ2PmtiEj/Iexx/lHfgHSeXGJcFC2O4AAAAASUVORK5CYII=">
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: sans-serif; background: #1a1a1a; color: #ddd; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+        h1 { color: #aaa; margin-bottom: 15px; flex-shrink: 0; }
+        .filters { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; flex-shrink: 0; }
+        .filters button, .filters select {
+            padding: 6px 14px; border: 1px solid #555; border-radius: 4px; background: #2a2a2a; color: #ccc;
+            cursor: pointer; font-weight: normal; transition: background 0.15s; font-size: 14px;
+            user-select: none;
+        }
+        .filters button.active { background: #5a5a5a; color: #fff; }
+        .filters button:hover, .filters select:hover { background: #444; }
+        .filters select { width: 160px; }
+        .stats { font-size: 11px; color: #888; margin-bottom: 10px; flex-shrink: 0; }
+
+        .scroll-container {
+            flex: 1;
+            overflow-y: auto;
+            position: relative;
+            border-top: 1px solid #333;
+            background: #1a1a1a;
+            width: 100%;
+        }
+        .scroll-spacer { width: 100%; }
+        .scroll-content { position: absolute; top: 0; left: 0; right: 0; }
+
+        .event {
+            background: #222;
+            position: absolute;
+            left: 0; right: 0;
+            overflow: hidden;
+            border-bottom: 1px solid #333;
+        }
+        .event-header {
+            padding: 5px 12px; cursor: pointer;
+            display: flex; justify-content: space-between; align-items: center;
+            background: #282828; transition: background 0.1s;
+        }
+        .event-header:hover { background: #333; }
+        .event-header h3 { font-size: 12px; font-weight: bold; color: #ccc; display: flex; gap: 10px; align-items: baseline; margin: 0; }
+        .event-header h3 .time { color: #999; font-size: 12px; min-width: 70px; }
+        .event-header h3 .type { color: #ccc; }
+        .event-header h3 .desc { color: #aaa; font-weight: normal; }
+        .event-header .arrow { color: #777; transition: transform 0.15s; }
+        .event.open .event-header { background: #303030; }
+        .event.open .event-header .arrow { transform: rotate(90deg); }
+        .event-body { display: none; padding: 10px 15px; background: #1e1e1e; }
+        .event.open .event-body { display: block; }
+        .section { margin-bottom: 14px; }
+        .section h4 { font-size: 13px; color: #aaa; margin-bottom: 4px; border-bottom: 1px solid #333; padding-bottom: 3px; }
+        table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 4px; }
+        th, td { padding: 3px 8px; text-align: left; border-bottom: 1px solid #2a2a2a; }
+        th { color: #999; font-weight: normal; }
+        td { color: #ccc; }
+        .collapsible-toggle {
+            cursor: pointer; color: #aaa; font-size: 13px; display: block;
+            user-select: none; margin-bottom: 4px;
+        }
+        .collapsible-toggle::before { content: '[+] '; }
+        .collapsible-toggle.open::before { content: '[-] '; }
+        .collapsible-content { display: none; margin-left: 10px; }
+        .collapsible.open + .collapsible-content { display: block; }
+        .no-data { color: #666; font-style: italic; }
+        .gap { margin-top: 12px; }
+    </style>
+</head>
+<body>
+    <h1>SS Combat Log Viewer</h1>
+    <div class="filters">
+        <button class="active" onclick="filter('all')">All</button>
+        <button onclick="filter('Hit')">Hits</button>
+        <button onclick="filter('Buff')">Buffs</button>
+        <button onclick="filter('Effect')">Effects</button>
+        <button onclick="filter('Skill Cast')">Skill Casts</button>
+        <select id="charFilter" onchange="onCharFilterChange()">
+            <option value="">All Characters</option>
+        </select>
+        <select id="skillFilter" onchange="onSkillFilterChange()">
+            <option value="">All Skills</option>
+        </select>
+    </div>
+    <div class="stats" id="stats"></div>
+
+    <div class="scroll-container" id="scrollContainer">
+        <div class="scroll-spacer" id="scrollSpacer"></div>
+        <div class="scroll-content" id="scrollContent"></div>
+    </div>
+
+    <script>
+        // ─── Enum maps (unchanged) ────────────────────
+        const damageSourceNames = { 1:'Player',2:'Monster',3:'Trap',4:'Perk',5:'Fatecard' };
+        const damageTypeNames = { 0:'None',1:'Auto Attack',2:'Skill',3:'Ultimate',4:'Other',5:'Mark',6:'Projectile',7:'Minion' };
+        const damageEffectNames = { 1:'Physics',2:'Magic',4:'Real',5:'No Damage',6:'No Damage Apply Feather No Ani',7:'No Damage Apply Feather',8:'None' };
+        const elementTypeNames = { 1:'Aqua',2:'Ignis',3:'Terra',4:'Ventus',5:'Lux',6:'Umbra' };
+        function dsName(v){ return v!=null ? (damageSourceNames[v]||v+' (?)') : ''; }
+        function dtName(v){ return v!=null ? (damageTypeNames[v]||v+' (?)') : ''; }
+        function deName(v){ return v!=null ? (damageEffectNames[v]||v+' (?)') : ''; }
+        function elName(v){ return v!=null ? (elementTypeNames[v]||v+' (?)') : ''; }
+        function cleanOwner(s){ return s ? s.replace(/^\[|\]$/g,'') : '?'; }
+
+        // ─── State ────────────────────────
+        let allEvents = [];
+        let filtered = [];
+        let typeFilter = 'all', charFilter = '', skillFilter = '';
+
+        const EST = 40;           // estimated height of a collapsed event
+        const BUFFER = 20;         // extra rendered events above/below viewport
+        const POLL_MS = 2000;
+
+        let openStates = {};           // origIndex -> bool
+        let measuredHeights = {};      // origIndex -> px (actual open height)
+        let subOpenStates = {};        // `${origIndex}_${targetId}` -> bool
+        let heights = [];              // raw heights array for filtered indices
+        let fenwick = null;
+        let totalHeightCached = 0;
+        let lastFetchCount = 0;
+
+        const container = document.getElementById('scrollContainer');
+        const spacer = document.getElementById('scrollSpacer');
+        const content = document.getElementById('scrollContent');
+
+        // ─── Fenwick tree (unchanged) ────────────────
+        class Fenwick {
+            constructor(size) {
+                this.size = size;
+                this.tree = new Array(size + 1).fill(0);
+            }
+            add(idx, delta) {
+                if (idx < 0 || idx >= this.size) return;
+                for (let i = idx + 1; i <= this.size; i += i & -i) {
+                    this.tree[i] += delta;
+                }
+            }
+            prefixSum(idx) {
+                if (idx < 0) return 0;
+                if (idx >= this.size) idx = this.size - 1;
+                let sum = 0;
+                for (let i = idx + 1; i > 0; i -= i & -i) {
+                    sum += this.tree[i];
+                }
+                return sum;
+            }
+        }
+
+        function buildFenwick() {
+            fenwick = new Fenwick(filtered.length);
+            heights = new Array(filtered.length);
+            let sum = 0;
+            for (let i = 0; i < filtered.length; i++) {
+                const orig = filtered[i]._origIndex;
+                const h = (openStates[orig] && measuredHeights[orig]) ? measuredHeights[orig] : EST;
+                heights[i] = h;
+                fenwick.add(i, h);
+                sum += h;
+            }
+            totalHeightCached = sum;
+            spacer.style.height = totalHeightCached + 'px';
+        }
+
+        function updateHeightAtIndex(idx, newHeight) {
+            const old = heights[idx];
+            if (Math.abs(old - newHeight) < 0.5) return 0;
+            heights[idx] = newHeight;
+            const delta = newHeight - old;
+            fenwick.add(idx, delta);
+            totalHeightCached += delta;
+            spacer.style.height = totalHeightCached + 'px';
+            return delta;
+        }
+
+        function findIndexForOffset(target) {
+            if (filtered.length === 0) return 0;
+            // Clamp target to [0, totalHeightCached]
+            const clamped = Math.max(0, Math.min(target, totalHeightCached));
+            if (clamped <= 0) return 0;
+            if (clamped >= totalHeightCached) return filtered.length - 1;
+
+            let lo = 0, hi = filtered.length - 1, ans = 0;
+            while (lo <= hi) {
+                const mid = (lo + hi) >> 1;
+                if (fenwick.prefixSum(mid) >= clamped) {
+                    ans = mid;
+                    hi = mid - 1;
+                } else {
+                    lo = mid + 1;
+                }
+            }
+            return ans;
+        }
+
+        // ─── Helpers ──────────────────────
+        function esc(s) {
+            const m = { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;' };
+            return String(s).replace(/[&<>"']/g, c => m[c]);
+        }
+
+        function getChars(ev) {
+            const s = new Set();
+            if (ev.Type==='Hit') { const h=ev.HitConfig||{}; if(h.charName) s.add(h.charName); }
+            else if (ev.Type==='Buff') {
+                if(ev.OwnerDisplay||ev.Owner) s.add(cleanOwner(ev.OwnerDisplay||ev.Owner));
+                if(ev.SourceDisplay||ev.Source) s.add(cleanOwner(ev.SourceDisplay||ev.Source));
+            } else if (ev.Type==='Skill Cast') { if(ev.Owner) s.add(ev.Owner); }
+            return s;
+        }
+        function getSkillName(ev) {
+            if (ev.Type==='Hit') return (ev.HitConfig||{}).skillTitle||null;
+            if (ev.Type==='Buff') return ev.Name||null;
+            if (ev.Type==='Skill Cast') return ev.Name||null;
+            return null;
+        }
+
+        function buildCharFilter() {
+            const all = new Set(); allEvents.forEach(e => getChars(e).forEach(c => all.add(c)));
+            const sel = document.getElementById('charFilter');
+            const cur = sel.value;
+            sel.innerHTML = '<option value="">All Characters</option>';
+            [...all].sort().forEach(c => { const o=document.createElement('option'); o.value=c; o.textContent=c; sel.appendChild(o); });
+            sel.value = [...sel.options].some(o=>o.value===cur) ? cur : '';
+            charFilter = sel.value;
+        }
+        function buildSkillFilter(evs) {
+            const all = new Set(); evs.forEach(e => { const n=getSkillName(e); if(n) all.add(n); });
+            const sel = document.getElementById('skillFilter');
+            const cur = sel.value;
+            sel.innerHTML = '<option value="">All Skills</option>';
+            [...all].sort().forEach(s => { const o=document.createElement('option'); o.value=s; o.textContent=s; sel.appendChild(o); });
+            sel.value = [...sel.options].some(o=>o.value===cur) ? cur : '';
+            skillFilter = sel.value;
+        }
+
+        function applyFilters() {
+            let evs = allEvents.slice();
+            if (typeFilter!=='all') {
+                if (typeFilter==='Buff'||typeFilter==='Effect')
+                    evs = evs.filter(e=>e.Type==='Buff' && e.SubType===typeFilter);
+                else evs = evs.filter(e=>e.Type===typeFilter);
+            }
+            if (charFilter) evs = evs.filter(e=>getChars(e).has(charFilter));
+            buildSkillFilter(evs);
+            if (skillFilter) evs = evs.filter(e=>getSkillName(e)===skillFilter);
+            return evs;
+        }
+
+        function refilterAndRender(resetScroll = false, resetOpen = true) {
+            if (resetOpen) {
+                openStates = {};
+                measuredHeights = {};
+                subOpenStates = {};
+                content.innerHTML = '';        // full DOM rebuild needed after state reset
+            }
+            filtered = applyFilters();
+            buildFenwick();
+            document.getElementById('stats').textContent = `Showing ${filtered.length} of ${allEvents.length} events`;
+            if (resetScroll || resetOpen) {
+                container.scrollTop = 0;
+            }
+            render();
+        }
+
+        // ─── Body builders (now aware of subOpenStates) ──
+        function buildEventBody(ev) {
+            const oi = ev._origIndex;
+            if (ev.Type === 'Hit') return hitBody(ev, oi);
+            if (ev.Type === 'Buff') return buffBody(ev);
+            if (ev.Type === 'Skill Cast') return skillBody(ev);
+            return `<pre>${esc(JSON.stringify(ev,null,2))}</pre>`;
+        }
+
+        function hitBody(ev, oi) {
+            const hc=ev.HitConfig||{}, dp=ev.DamageParams||{};
+            let h=`<div class="section"><h4>Hit Information</h4><table>
+                <tr><th>Character</th><td>${esc(hc.charName||'?')}</td></tr>
+                <tr><th>Skill</th><td>${esc(hc.skillTitle||'?')} (ID: ${esc(hc.skillId||'')})</td></tr>
+                <tr><th>Hit</th><td>#${esc(hc.hitNum||'')} (ID: ${esc(hc.hitDamageId||'')})</td></tr>
+                <tr><th>Skill Level</th><td>${esc(dp.skillLevel||'')}</td></tr>
+                <tr><th>Critical</th><td>${dp.isCrit?'Yes':'No'}</td></tr>
+                <tr><th>Source Type</th><td>${dsName(hc.sourceType)}</td></tr>
+                <tr><th>Damage Type</th><td>${dtName(hc.damageType)}</td></tr>
+                <tr><th>Element Type</th><td>${elName(hc.elementType)}</td></tr>
+            </table></div>`;
+
+            h+=`<div class="collapsible-toggle${subOpenStates[`${oi}_dmg-${oi}`] ? ' open' : ''}" data-target="dmg-${oi}">Damage Calculation</div>
+            <div class="collapsible-content" id="dmg-${oi}" style="${subOpenStates[`${oi}_dmg-${oi}`] ? 'display:block' : ''}"><table>
+                <tr><th>Final Damage</th><td><strong>${Number(dp.finalDamage).toLocaleString()}</strong></td></tr>
+                <tr><th>Crit Ratio</th><td>${dp.critRatio!=null?dp.critRatio.toFixed(4):''}</td></tr>
+                <tr><th>DEF Amend</th><td>${dp.defAmend!=null?dp.defAmend.toFixed(4):''}</td></tr>
+                <tr><th>ER Amend</th><td>${dp.erAmend!=null?dp.erAmend.toFixed(4):''}</td></tr>
+                <tr><th>Skill % Amend</th><td>${dp.skillPercentAmend!=null?(dp.skillPercentAmend/10000).toFixed(2)+'%':''}</td></tr>
+                <tr><th>Slot DMG Ratio</th><td>${dp.slotDmgRatio!=null?dp.slotDmgRatio.toFixed(4):''}</td></tr>
+                <tr><th>From EE</th><td>${dp.fromEE!=null?dp.fromEE.toFixed(4):''}</td></tr>
+                <tr><th>Perk Intensity</th><td>${dp.perkIntensityRatio!=null?dp.perkIntensityRatio.toFixed(4):''}</td></tr>
+                <tr><th>Skill Intensity</th><td>${dp.skillIntensityRatio!=null?dp.skillIntensityRatio.toFixed(4):''}</td></tr>
+                <tr><th>Toughness Broken</th><td>${dp.toughnessBrokenDmgRatio!=null?dp.toughnessBrokenDmgRatio.toFixed(4):''}</td></tr>
+                <tr><th>Env Amend</th><td>${dp.envAmendRatio!=null?dp.envAmendRatio.toFixed(4):''}</td></tr>
+            </table></div><div class="gap"></div>`;
+
+            h+=`<div class="section"><h4>Attacker: ${esc(ev.AttackerDisplay||ev.Attacker||'?')}</h4>`;
+            if(ev.AttackerBuffs?.buffs?.length) {
+                h+=`<div class="collapsible-toggle${subOpenStates[`${oi}_abuffs-${oi}`] ? ' open' : ''}" data-target="abuffs-${oi}">Attacker Buffs (${ev.AttackerBuffs.buffs.length})</div>
+                <div class="collapsible-content" id="abuffs-${oi}" style="${subOpenStates[`${oi}_abuffs-${oi}`] ? 'display:block' : ''}"><table><tr><th>Name</th><th>Stacks</th><th>Left</th><th>Total</th><th>ID</th></tr>`;
+                ev.AttackerBuffs.buffs.forEach(b=>{ h+=`<tr><td>${esc(b.name)}</td><td>${b.stacks||'1'}</td><td>${b.leftTime!=null?b.leftTime.toFixed(1)+'s':'inf'}</td><td>${b.totalTime!=null?b.totalTime.toFixed(1)+'s':'-'}</td><td>${b.configId}</td></tr>`; });
+                h+=`</table></div>`;
+            }
+            if(ev.AttackerEffects?.effects?.length) {
+                h+=`<div class="collapsible-toggle${subOpenStates[`${oi}_aeffects-${oi}`] ? ' open' : ''}" data-target="aeffects-${oi}">Attacker Effects (${ev.AttackerEffects.effects.length})</div>
+                <div class="collapsible-content" id="aeffects-${oi}" style="${subOpenStates[`${oi}_aeffects-${oi}`] ? 'display:block' : ''}"><table><tr><th>Name</th><th>Count</th><th>ID</th></tr>`;
+                const m=new Map(); ev.AttackerEffects.effects.forEach(e=>{ const id=e.configId; if(!m.has(id)) m.set(id,{name:e.name,count:0}); m.get(id).count++; });
+                m.forEach((v,id)=>{ h+=`<tr><td>${esc(v.name)}</td><td>${v.count}</td><td>${id}</td></tr>`; });
+                h+=`</table></div>`;
+            }
+            if(ev.AttackerStats?.attrs?.length) {
+                h+=`<div class="collapsible-toggle${subOpenStates[`${oi}_astats-${oi}`] ? ' open' : ''}" data-target="astats-${oi}">Attacker Stats</div>
+                <div class="collapsible-content" id="astats-${oi}" style="${subOpenStates[`${oi}_astats-${oi}`] ? 'display:block' : ''}"><table><tr><th>Name</th><th>Origin</th><th>Base</th><th>Pct</th><th>Abs</th><th>LimPct</th></tr>`;
+                ev.AttackerStats.attrs.forEach(a=>{ h+=`<tr><td>${esc(a.name||a.id)}</td><td>${a.origin!=null?a.origin:''}</td><td>${a.base!=null?a.base:''}</td><td>${a.pct!=null?a.pct:''}</td><td>${a.abs!=null?a.abs:''}</td><td>${a.limPct!=null?a.limPct:''}</td></tr>`; });
+                h+=`</table></div>`;
+            }
+            h+=`</div>`;
+
+            h+=`<div class="section"><h4>Defender: ${esc(ev.DefenderDisplay||ev.Defender||'?')}</h4>`;
+            if(ev.DefenderBuffs?.buffs?.length) {
+                h+=`<div class="collapsible-toggle${subOpenStates[`${oi}_dbuffs-${oi}`] ? ' open' : ''}" data-target="dbuffs-${oi}">Defender Buffs (${ev.DefenderBuffs.buffs.length})</div>
+                <div class="collapsible-content" id="dbuffs-${oi}" style="${subOpenStates[`${oi}_dbuffs-${oi}`] ? 'display:block' : ''}"><table><tr><th>Name</th><th>Stacks</th><th>Left</th><th>Total</th><th>ID</th></tr>`;
+                ev.DefenderBuffs.buffs.forEach(b=>{ h+=`<tr><td>${esc(b.name)}</td><td>${b.stacks||'1'}</td><td>${b.leftTime!=null?b.leftTime.toFixed(1)+'s':'inf'}</td><td>${b.totalTime!=null?b.totalTime.toFixed(1)+'s':'-'}</td><td>${b.configId}</td></tr>`; });
+                h+=`</table></div>`;
+            }
+            if(ev.DefenderStats?.attrs?.length) {
+                h+=`<div class="collapsible-toggle${subOpenStates[`${oi}_dstats-${oi}`] ? ' open' : ''}" data-target="dstats-${oi}">Defender Stats</div>
+                <div class="collapsible-content" id="dstats-${oi}" style="${subOpenStates[`${oi}_dstats-${oi}`] ? 'display:block' : ''}"><table><tr><th>Name</th><th>Origin</th><th>Base</th><th>Pct</th><th>Abs</th><th>LimPct</th></tr>`;
+                ev.DefenderStats.attrs.forEach(a=>{ h+=`<tr><td>${esc(a.name||a.id)}</td><td>${a.origin!=null?a.origin:''}</td><td>${a.base!=null?a.base:''}</td><td>${a.pct!=null?a.pct:''}</td><td>${a.abs!=null?a.abs:''}</td><td>${a.limPct!=null?a.limPct:''}</td></tr>`; });
+                h+=`</table></div>`;
+            }
+            h+=`</div>`;
+            return h;
+        }
+
+        function buffBody(ev) {
+            return `<div class="section"><h4>Buff / Effect Details</h4><table>
+                <tr><th>Name</th><td>${esc(ev.Name||ev.ConfigId)}</td></tr>
+                <tr><th>Action</th><td>${esc(ev.Action)}</td></tr>
+                <tr><th>Owner</th><td>${esc(cleanOwner(ev.OwnerDisplay||ev.Owner||'?'))}</td></tr>
+                ${(ev.SourceDisplay||ev.Source)?`<tr><th>Source</th><td>${esc(cleanOwner(ev.SourceDisplay||ev.Source))}</td></tr>`:''}
+                ${ev.Stacks!=null?`<tr><th>Stacks</th><td>${ev.Stacks}</td></tr>`:''}
+                ${ev.SubType?`<tr><th>Type</th><td>${esc(ev.SubType)}</td></tr>`:''}
+                <tr><th>Config ID</th><td>${ev.ConfigId}</td></tr>
+            </table></div>`;
+        }
+
+        function skillBody(ev) {
+            return `<div class="section"><h4>Skill Cast Details</h4><table>
+                <tr><th>Skill Name</th><td>${esc(ev.Name||ev.SkillId)}</td></tr>
+                <tr><th>Owner</th><td>${esc(ev.Owner||'?')}</td></tr>
+                ${ev.SkillType?`<tr><th>Type</th><td>${esc(ev.SkillType)}</td></tr>`:''}
+                <tr><th>Skill ID</th><td>${ev.SkillId}</td></tr>
+                ${ev.FCPath?`<tr><th>FC Path</th><td>${esc(ev.FCPath)}</td></tr>`:''}
+                <tr><th>Time</th><td>${esc(ev.Time)}</td></tr>
+            </table></div>`;
+        }
+
+        // ─── Create DOM element for an event ─────────
+        function createEventDiv(ev, filteredIdx) {
+            const oi = ev._origIndex;
+            const isOpen = openStates[oi] || false;
+            const div = document.createElement('div');
+            div.className = 'event' + (isOpen ? ' open' : '');
+            div.style.top = fenwick.prefixSum(filteredIdx - 1) + 'px';
+            div.dataset.origIndex = oi;
+            div.dataset.filteredIndex = filteredIdx;
+
+            const header = document.createElement('div');
+            header.className = 'event-header';
+            const h3 = document.createElement('h3');
+
+            let typeText = ev.Type;
+            if (ev.Type === 'Buff') typeText = ev.SubType === 'Effect' ? 'Effect' : (ev.Action === 'Add' ? 'Buff Add' : 'Buff Remove');
+            h3.innerHTML = `<span class="time">${esc(ev.Time||'--:--')}</span> <span class="type">${esc(typeText)}</span>`;
+
+            let desc = '';
+            if (ev.Type === 'Hit') {
+                const hc=ev.HitConfig||{}, dp=ev.DamageParams||{};
+                desc = `${esc(hc.charName||'?')} - ${esc(hc.skillTitle||'?')} (#${hc.hitNum||'?'}) - Dmg: ${Number(dp.finalDamage).toLocaleString()}`;
+            } else if (ev.Type === 'Buff') {
+                const owner = cleanOwner(ev.OwnerDisplay||ev.Owner||'?');
+                const name = esc(ev.Name||ev.ConfigId);
+                let stacks = (ev.Stacks!=null && ev.Stacks>0) ? ' x'+ev.Stacks : '';
+                desc = `${owner} - ${name}${stacks}`;
+            } else if (ev.Type === 'Skill Cast') {
+                desc = `${esc(ev.Owner||'')} / ${esc(ev.Name||ev.SkillId)}`;
+            }
+            h3.innerHTML += `<span class="desc">${desc}</span>`;
+            header.appendChild(h3);
+            header.innerHTML += `<span class="arrow">▶</span>`;
+
+            header.addEventListener('click', (e) => {
+                e.stopPropagation();
+                toggleMainEvent(oi, filteredIdx);
+            });
+
+            const body = document.createElement('div');
+            body.className = 'event-body';
+            if (isOpen) {
+                body.innerHTML = buildEventBody(ev);
+            } // else body stays empty (collapsed)
+
+            div.appendChild(header);
+            div.appendChild(body);
+            return div;
+        }
+
+        // ─── Toggle main event (no full re-render!) ──
+        function toggleMainEvent(origIndex, filteredIdx) {
+            const eventDiv = content.querySelector(`.event[data-orig-index="${origIndex}"]`);
+            if (!eventDiv) return;
+
+            const savedScroll = container.scrollTop;
+            const wasOpen = openStates[origIndex] || false;
+
+            if (wasOpen) {
+                openStates[origIndex] = false;
+                const body = eventDiv.querySelector('.event-body');
+                if (body) body.innerHTML = '';
+
+                // Remember the scroll position *before* the closed event
+                const topOfThis = fenwick.prefixSum(filteredIdx - 1);
+                const relativeScroll = savedScroll - topOfThis;
+
+                eventDiv.classList.remove('open');
+                const delta = updateHeightAtIndex(filteredIdx, EST);
+                delete measuredHeights[origIndex];
+                shiftElementsAfter(filteredIdx, delta);
+
+                // Restore the scroll so the same events above stay visible
+                container.scrollTop = topOfThis + relativeScroll;
+            } else {
+                openStates[origIndex] = true;
+                const ev = allEvents[origIndex];
+                const body = eventDiv.querySelector('.event-body');
+                if (body) body.innerHTML = buildEventBody(ev);
+                eventDiv.classList.add('open');
+
+                // Measure new height after DOM update, then adjust Fenwick tree and shift
+                requestAnimationFrame(() => {
+                    const actual = eventDiv.getBoundingClientRect().height;
+                    if (actual > 0) {
+                        measuredHeights[origIndex] = actual;
+                        const oldHeight = heights[filteredIdx];
+                        const delta = updateHeightAtIndex(filteredIdx, actual);
+                        if (Math.abs(delta) > 0.5) {
+                            shiftElementsAfter(filteredIdx, delta);
+                        }
+                    }
+                    // Restore scroll position (may need clamping)
+                    const maxScroll = totalHeightCached - container.clientHeight;
+                    container.scrollTop = Math.min(savedScroll, Math.max(0, maxScroll));
+                });
+            }
+        }
+
+        function shiftElementsAfter(startIndex, delta) {
+            const events = content.querySelectorAll('.event');
+            for (const ev of events) {
+                const idx = parseInt(ev.dataset.filteredIndex);
+                if (!isNaN(idx) && idx > startIndex) {
+                    ev.style.top = (parseFloat(ev.style.top) + delta) + 'px';
+                }
+            }
+        }
+
+        // ─── Sub‑section toggle (delegated, no re‑render) ──
+        content.addEventListener('click', e => {
+            const toggle = e.target.closest('.collapsible-toggle');
+            if (!toggle) return;
+            e.stopPropagation();
+
+            const targetId = toggle.dataset.target;
+            const contentEl = document.getElementById(targetId);
+            if (!contentEl) return;
+
+            const isOpen = toggle.classList.toggle('open');
+            contentEl.style.display = isOpen ? 'block' : 'none';
+
+            const eventDiv = toggle.closest('.event');
+            if (!eventDiv) return;
+            const oi = parseInt(eventDiv.dataset.origIndex);
+            const filteredIdx = parseInt(eventDiv.dataset.filteredIndex);
+            const key = `${oi}_${targetId}`;
+            subOpenStates[key] = isOpen;
+
+            const savedScroll = container.scrollTop;
+            requestAnimationFrame(() => {
+                const actual = eventDiv.getBoundingClientRect().height;
+                if (actual > 0 && !isNaN(filteredIdx)) {
+                    const oldHeight = heights[filteredIdx];
+                    const delta = updateHeightAtIndex(filteredIdx, actual);
+                    measuredHeights[oi] = actual;
+                    if (Math.abs(delta) > 0.5) {
+                        shiftElementsAfter(filteredIdx, delta);
+                    }
+                }
+                const maxScroll = totalHeightCached - container.clientHeight;
+                container.scrollTop = Math.min(savedScroll, Math.max(0, maxScroll));
+            });
+        });
+
+        // ─── Virtual scroll render (incremental, no full wipe) ────
+        function render() {
+            if (!filtered.length) {
+                content.innerHTML = '';
+                return;
+            }
+
+            const scrollTop = container.scrollTop;
+            const viewH = container.clientHeight;
+            const startIdx = findIndexForOffset(scrollTop);
+            let start = Math.max(0, startIdx - BUFFER);
+            const endIdx = findIndexForOffset(scrollTop + viewH);
+            let end = Math.min(filtered.length, endIdx + BUFFER);
+            if (start >= filtered.length) start = Math.max(0, filtered.length - 1);
+
+            // Build set of needed origIndexes
+            const neededOrig = new Set();
+            for (let i = start; i < end; i++) {
+                neededOrig.add(filtered[i]._origIndex);
+            }
+
+            // Remove elements no longer needed, update those that stay
+            const existing = content.querySelectorAll('.event');
+            for (const el of existing) {
+                const oi = parseInt(el.dataset.origIndex);
+                if (neededOrig.has(oi)) {
+                    const fi = parseInt(el.dataset.filteredIndex);
+                    const newTop = fenwick.prefixSum(fi - 1);
+                    if (el.style.top !== newTop + 'px') {
+                        el.style.top = newTop + 'px';
+                    }
+                    // Ensure open/closed state matches (could have changed while off‑screen)
+                    const shouldOpen = openStates[oi] || false;
+                    const isOpen = el.classList.contains('open');
+                    if (shouldOpen !== isOpen) {
+                        el.classList.toggle('open', shouldOpen);
+                        const body = el.querySelector('.event-body');
+                        if (body) {
+                            if (shouldOpen && body.innerHTML.trim() === '') {
+                                body.innerHTML = buildEventBody(allEvents[oi]);
+                            } else if (!shouldOpen) {
+                                body.innerHTML = '';
+                            }
+                        }
+                    }
+                    neededOrig.delete(oi);
+                } else {
+                    el.remove();
+                }
+            }
+
+            // Create new elements for newly visible events
+            for (const oi of neededOrig) {
+                const fi = filtered.findIndex(e => e._origIndex === oi);
+                if (fi === -1) continue;
+                const ev = allEvents[oi];
+                const div = createEventDiv(ev, fi);
+                content.appendChild(div);
+            }
+        }
+
+        // ─── Scroll handler (unchanged but now only triggers render) ────
+        let scrollScheduled = false;
+        container.addEventListener('scroll', () => {
+            if (scrollScheduled) return;
+            scrollScheduled = true;
+            requestAnimationFrame(() => {
+                render();
+                scrollScheduled = false;
+            });
+        });
+
+        // ─── Filter handlers ─────────────
+        window.filter = function(type) {
+            typeFilter = type;
+            document.querySelectorAll('.filters button').forEach(b => b.classList.remove('active'));
+            event.target.classList.add('active');
+            refilterAndRender(true);           // resetScroll=true, resetOpen=true (default)
+        };
+
+        window.onCharFilterChange = function() {
+            charFilter = document.getElementById('charFilter').value;
+            refilterAndRender(true);
+        };
+
+        window.onSkillFilterChange = function() {
+            skillFilter = document.getElementById('skillFilter').value;
+            refilterAndRender(true);
+        };
+
+        // ─── Data fetching ───────────────
+        async function fetchLog(incremental = false) {
+            try {
+                let url = '/api/log';
+                if (incremental && lastFetchCount > 0) url += '?after=' + lastFetchCount;
+                const res = await fetch(url);
+                const data = await res.json();
+                const newEvents = data.events || [];
+                
+                if (incremental && lastFetchCount > 0) {
+                    const startIdx = allEvents.length;
+                    newEvents.forEach((ev, i) => {
+                        ev._origIndex = startIdx + i;
+                        allEvents.push(ev);
+                    });
+                    lastFetchCount += newEvents.length;
+                    // Incremental update – do NOT reset open states
+                    refilterAndRender(false, false);
+                } else {
+                    allEvents = newEvents;
+                    allEvents.forEach((ev, i) => { ev._origIndex = i; });
+                    lastFetchCount = allEvents.length;
+                    // Initial load – start from top, reset everything
+                    refilterAndRender(true, true);
+                }
+                buildCharFilter();
+            } catch (err) {
+                console.error('fetch error', err);
+            }
+        }
+
+        fetchLog(false).then(() => setInterval(() => fetchLog(true), POLL_MS));
+    </script>
+
+</body>
+</html>
