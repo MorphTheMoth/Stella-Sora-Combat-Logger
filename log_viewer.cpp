@@ -34,8 +34,8 @@ std::string GetDefaultLogPath() {
         return std::string(path) + "\\Stella Sora Combat Logger\\ss_jsonlog.txt";
     return std::string("ss_jsonlog.txt");
 #else
-    printf("No log file in the arguments, usage: ./log_viewer [path/to/ss_jsonlog.txt]")
-    exit(0)
+    printf("No log file in the arguments, usage: ./log_viewer [path/to/ss_jsonlog.txt]");
+    exit(0);
 #endif
 }
 
@@ -130,7 +130,7 @@ int main(int argc, char** argv) {
     struct mg_mgr mgr;
     mg_mgr_init(&mgr);
     
-    const char* url = "http://localhost:8080";
+    const char* url = "http://0.0.0.0:8080";
     mg_http_listen(&mgr, url, fn, NULL);
     
     printf("Server running at %s\n", url);

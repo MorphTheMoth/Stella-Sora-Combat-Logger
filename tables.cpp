@@ -749,8 +749,91 @@ static void BuildEffectTable(const std::string& dataRoot,
         }
     }
 
+    // --- Last-resort: 8-digit buff ID potential decode ----------------------
+    // ID format: aaa[b]cc[d]eee  (exactly 8 digits)
+    //   aaa      = charId  (digits 0-2)
+    //   b        = digit 3 — only process if b <= 5
+    //     b != 5 : b is skipped; cc = digits 3-4 (potNumber = (buffId/1000)%100)
+    //     b == 5 : d is skipped; cc = digits 4-5 (potNumber = (buffId/100)%100)
+    //   cc       = pot number (2 digits, zero-padded)
+    // Pot name key: "Item.5" + charId + potNumber + ".1"  in Item.json (lang)
+    // Log: charName - PotName
+    // Covers both:
+    //   - existing g_EffectTable entries still unresolved (label == "?")
+    //   - IDs present in Effect.json that were never inserted (missed by earlier passes)
+    {
+        json jItemLangRoot = LoadJson(langPath + "Item.json", "[effect]");
+        if (!jItemLangRoot.is_discarded()) {
+            int lastResortBuilt = 0;
+
+            auto tryDecodePotential = [&](int32_t buffId) -> bool {
+                // Must be exactly 8 digits
+                if (buffId < 10000000 || buffId > 99999999) return false;
+
+                int32_t charId = buffId / 100000;        // digits 0-2  (aaa)
+                int     b      = (buffId / 10000) % 10;  // digit 3     (b)
+
+                if (b > 5) return false;
+
+                // b != 5: b is the skipped digit, cc = digits 3-4
+                // b == 5: d is the skipped digit, cc = digits 4-5
+                int32_t potNumber = (b != 5)
+                    ? (buffId / 1000) % 100
+                    : (buffId / 100)  % 100;
+
+                char potNumBuf[4];
+                snprintf(potNumBuf, sizeof(potNumBuf), "%02d", potNumber);
+                std::string langKey = "Item.5"
+                                      + std::to_string(charId)
+                                      + potNumBuf
+                                      + ".1";
+
+                auto lit = jItemLangRoot.find(langKey);
+                if (lit == jItemLangRoot.end()) return false;
+
+                std::string potName  = lit->get<std::string>();
+                std::string charName = CharName(jChar, charId);
+
+                Log("[effect] last-resort pot decode: %d -> %s - %s",
+                    buffId, charName.c_str(), potName.c_str());
+
+                g_EffectTable[buffId] = { charName, potName, -1 };
+                ++lastResortBuilt;
+                return true;
+            };
+
+            // Pass A: patch existing unresolved entries
+            for (auto& [key, val] : g_EffectTable) {
+                if (val.label == "?")
+                    tryDecodePotential(key);
+            }
+
+            // Pass B: IDs in Effect.json that never made it into g_EffectTable
+            for (auto& [key, effEntry] : jEffect.items()) {
+                int32_t configId = 0;
+                try { configId = std::stoi(key); } catch (...) { continue; }
+                if (g_EffectTable.count(configId)) continue;  // already handled
+                tryDecodePotential(configId);
+            }
+
+            // Pass C: IDs in Buff.json that never made it into g_EffectTable
+            {
+                json jBuffRoot = LoadJson(binPath + "Buff.json", "[effect]");
+                if (!jBuffRoot.is_discarded()) {
+                    for (auto& [key, buffEntry] : jBuffRoot.items()) {
+                        int32_t buffId = 0;
+                        try { buffId = std::stoi(key); } catch (...) { continue; }
+                        if (g_EffectTable.count(buffId)) continue;
+                        tryDecodePotential(buffId);
+                    }
+                }
+            }
+
+            Log("[effect] Built last-resort potential entries: %d", lastResortBuilt);
+        }
+    }
+
     // --- Hardcoded effects --------------------------------------------------
-    g_EffectTable[5011] = { "Enemy", "Defense Broken", -1 };
     g_EffectTable[990050012] = { "Enemy", "Defense Broken", -1 };
     g_EffectTable[631014002] = { "Enemy", "Forbidden Beauty / Meticulously Crafted", -1 };
     g_EffectTable[631014022] = { "Enemy", "Forbidden Beauty / Meticulously Crafted", -1 };

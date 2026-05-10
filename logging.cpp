@@ -204,7 +204,7 @@ std::string adventureActorDisplay(AdventureActor_o* actor) {
     char buf[256];
     const std::string& name = ActorDisplayName(isBelongToPlayer ? dataId : skinId);
     if (isBelongToPlayer)
-        snprintf(buf, sizeof(buf), "[%s]", name.c_str());
+        snprintf(buf, sizeof(buf), "%s", name.c_str());
     else
         snprintf(buf, sizeof(buf), "%s (dataId=%d, skinId=%d)", name.c_str(), dataId, skinId);
     return buf;

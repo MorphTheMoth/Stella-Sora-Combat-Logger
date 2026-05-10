@@ -2,9 +2,11 @@
 #include <windows.h>
 #include <cstdint>
 #include <cstdio>
+#include <string>
 #include "MinHook.h"
 #include "tables.h"
 #include "logging.h"
+#include "http_hooks.h"
 #include "game_structs.h"
 
 #ifdef WINHTTP_PROXY
@@ -47,7 +49,7 @@ static constexpr uintptr_t RVA_BUFF_ENTITY_EXCUTE   = 0x16C81C0;
 static constexpr uintptr_t RVA_CALC_NORMAL_DAMAGE   = 0x110C100;
 
 // =============================================================================
-//  Damage hook (kept as void* because DamageTuple is a custom struct)
+//  Damage hook
 // =============================================================================
 struct DamageTuple {
     bool    Item1;
@@ -245,7 +247,7 @@ static void* __fastcall Hook_SpawnSkill(void* self, int32_t skillId, void* metho
 // =============================================================================
 //  Hook installer / init
 // =============================================================================
-static bool InstallHook(uintptr_t target, void* hook, void** original, const char* name) {
+bool InstallHook(uintptr_t target, void* hook, void** original, const char* name) {
     MH_STATUS s = MH_CreateHook(reinterpret_cast<void*>(target), hook, original);
     if (s != MH_OK) { Log("[ERROR] MH_CreateHook failed for %s: %d", name, (int)s); return false; }
     s = MH_EnableHook(reinterpret_cast<void*>(target));
@@ -261,6 +263,8 @@ static DWORD WINAPI InitThread(LPVOID) {
     std::string logDir = GetLocalAppDataPath() + "\\Stella Sora Combat Logger";
     LoadConfig(logDir);
     BuildHitTable((GetLocalAppDataPath() + "\\StellaSoraData").c_str());
+    BuildGemAttrTable(GetLocalAppDataPath() + "\\StellaSoraData");
+    InitHttpLogger(logDir);
 
     uintptr_t base = 0;
     for (int i = 0; i < 60; i++) {
@@ -285,6 +289,8 @@ static DWORD WINAPI InitThread(LPVOID) {
     InstallHook(base + RVA_BUFF_ENTITY_EXCUTE,     reinterpret_cast<void*>(&Hook_BuffEntityExcute),   (void**)&g_OrigBuffEntityExcute,   "BuffEntity$$BuffExcute");
     InstallHook(base + RVA_CALC_NORMAL_DAMAGE,     reinterpret_cast<void*>(&Hook_CalcNormalDamage),   (void**)&g_OrigCalcNormalDamage,   "CommonHelper$$CalculateNormalDamage");
 
+    InstallHttpHooks(base);
+
     Log("[init] Ready.");
     return 0;
 }
@@ -300,6 +306,7 @@ BOOL APIENTRY DllMain(HMODULE hInst, DWORD reason, LPVOID reserved) {
         MH_Uninitialize();
         if (g_Log)     { Log("[uninit] DLL detached."); fclose(g_Log); g_Log = nullptr; }
         if (g_JsonLog) { fclose(g_JsonLog); g_JsonLog = nullptr; }
+        ShutdownHttpLogger();
     }
     return TRUE;
 }

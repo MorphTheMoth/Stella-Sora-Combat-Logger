@@ -7,7 +7,12 @@
     <link rel="icon" type="image/png" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAAACXBIWXMAAC4jAAAuIwF4pT92AAAFG0lEQVRoBe1Yv6ucVRDNvrxUWhgttbBImiAIEq0FUwtCtIyVRvEfSCo7EVsL7ewEIX+CppZEwdbEkCK1PxAbjXnrObMzs3Pnzr27axbMk1zYd2fmnDkz9353v/d9e+LE4/E/3oHlcvkxPjYWx26p6Hxh3WN+/zgu4GpYwPLYLEB3/mJsXu29H6PDfe4KG4fe0UST2HQRXKjmHywWC7OHkgdD5F8AWnCqqYvcRv21bUjTYlmAxWcNKCZXAIvhTt/IGvCPTAPzF/h8hY+PwD8f7Ic3UeGCV1kdlU7U8A7QAHC7K9lsKdV8a6Szcxzq16oKg9jwjIMfG38n+Z3czo1uSkCFd7sqfaBcAGjWfHOsEL/VS6wim/rZGYfsuVGxGM/CwKz5axmjD/xmzDe74uZYuVuZZD6FzS5muyHEL7HQkMY6R/rFLlJlEcJJ4MZbqRXlLhxqoaSxcieYNMZbqH5kU8DnsA3iol4vhTVoubpI76vKCbprWMqtLqUVXYOwFM/TiGtHplpMo1s5bFALdfqIv0Csy9METj92IAKIn8fnExIwOuGYQ1xYy+VVxtWe5gzymxzovKpa5QLis8vPUdDsYbIRdAbPFiCF4MtjdaQhdin60Qb2Hj5Nk3A/YEzH7ch321Cd/3JADcNzvPKV+7th8PNumhzn34zHGf4V82FzM77EJ45Gy7h2qSMx78JpBWsBVQLHrsBJF09GU0SdRBEX0PXMrXhGtsJNTkxQ4GKMZRsc6nzNOWP0EY/HFa6Pho/oPUfWRlO7SVDxZtdDA6dwi/s7+EMTtajL43ManweByCtyP/jZ9Ps+NP4A+EQm6G3Ww9X7AM/jU85YGyzcLXgNd9aTiMya7RIswM02e9Nc/cN4epQE3bibHY2FOfhPCeCdjrBFgPkTWtdvF9DirqGX7DsNdHz2y6IclkQbeWfM33bOtZHX1Cvw+kig/vdIfomFdQE0u8E+EZRnnw5EcRbkKLAyVNWK+RV+AMKvkaTK/jYE7O2qGuKz5pnCN68LmJtdrLRGMeQ/H7BGB5g8hvOW5kcAto1nzOAcRNyM+Ab7JpPA+XMDj3Bzk4B/I+RUfXKDRHz6xiWk8AeiLwfhbU02UDWR830RGch+aEkWkXH3GyIcB3Y35IuNtNlC4mPEsELuSfwRO5IHxeXhapRfxOVqmC5w+R4q7wHmz4kVeRbyq2QaPhsDM4vILxEOrkTfChwzD41jgcksxYHbVbhC2/LjrBqCB72S63kg2nPKTx4MBvDq/dVFgVtjoaabn5nUiGd4nMG1X7nlhhCx0vZyxc4Amy6AguB8GDTcjMUQLBcaOarlvIwN/SieScDskdobg3G94EWctl8lcuHzHbwbE50m33hlUAsQK39JYFUTsDn+lwQsuYbp7E+a9CsNhBtO4HVxYhzNf7dVaPWXjwGwns2FtLlIFZs8jI8UiI8Xd2MMHPlxrBMoAhRE+E3tpWCkEBMwTuHDcze8OkwjcTDuI858eXJV+6zOz2Eeje4LCqK/0cGWnjS57k1JyvGpeQOyNTtaGy+mRfLFZrbo7kgqP/6gbJWa5psjpJfqGyaHcQaZTZJiTW7g0/yB1ULsl+QHSMxOS2uezcStjhOS38iJI5+NPcwY6eY4arySY3vzIf5tWEQ8qyHcnGGJ762BfQihIzbOUR03KUFMGBPOrr10Z29XAePHs4kmT2qjcfrUuI/sHLtV247T5YQNr9J/ujg0KQ2PmtiEj/Iexx/lHfgHSeXGJcFC2O4AAAAASUVORK5CYII=">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: sans-serif; background: #1a1a1a; color: #ddd; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+        body { font-family: sans-serif; background: #161616; color: #ddd; height: 100vh; display: flex; flex-direction: column; overflow: hidden; align-items: center; }
+        .page {
+            max-width: 1050px;
+            width: 100%; height: 100%; display: flex;
+            flex-direction: column; background: #1a1a1a; margin: 0 auto;
+        }
         h1 { color: #aaa; margin-bottom: 15px; flex-shrink: 0; }
         .filters { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; flex-shrink: 0; }
         .filters button, .filters select {
@@ -19,10 +24,8 @@
         .filters button:hover, .filters select:hover { background: #444; }
         .filters select { width: 160px; }
         .stats { font-size: 11px; color: #888; margin-bottom: 10px; flex-shrink: 0; }
-
         .scroll-container {
-            flex: 1;
-            overflow-y: auto;
+            flex: 1; overflow-y: auto;
             position: relative;
             border-top: 1px solid #333;
             background: #1a1a1a;
@@ -69,9 +72,38 @@
         .collapsible.open + .collapsible-content { display: block; }
         .no-data { color: #666; font-style: italic; }
         .gap { margin-top: 12px; }
+
+        /* ── Search bar ── */
+        .search-bar {
+            display: none; align-items: center; gap: 8px;
+            padding: 6px 10px; background: #222; border-top: 1px solid #444;
+            flex-shrink: 0;
+        }
+        .search-bar.visible { display: flex; }
+        .search-bar input {
+            flex: 1; padding: 5px 10px; border: 1px solid #555; border-radius: 4px;
+            background: #2a2a2a; color: #ddd; font-size: 13px; outline: none;
+        }
+        .search-bar input:focus { border-color: #888; }
+        .search-bar .search-count { font-size: 12px; color: #888; min-width: 80px; white-space: nowrap; }
+        .search-bar button {
+            padding: 4px 10px; border: 1px solid #555; border-radius: 4px;
+            background: #2a2a2a; color: #ccc; cursor: pointer; font-size: 13px;
+        }
+        .search-bar button:hover { background: #444; }
+        .search-bar .close-btn { color: #888; font-size: 16px; line-height: 1; padding: 2px 8px; }
+
+        /* Highlighted search matches */
+        .event.search-match .event-header { background: #2a2a1a !important; border-left: 3px solid #a08020; }
+        .event.search-match .event-header:hover { background: #333322 !important; }
+        .event.search-current .event-header { background: #3a3010 !important; border-left: 3px solid #e0b030; }
+        .event.search-current .event-header .time,
+        .event.search-current .event-header .type,
+        .event.search-current .event-header .desc { color: #f0d060 !important; }
     </style>
 </head>
 <body>
+<div class="page">
     <h1>SS Combat Log Viewer</h1>
     <div class="filters">
         <button class="active" onclick="filter('all')">All</button>
@@ -88,13 +120,21 @@
     </div>
     <div class="stats" id="stats"></div>
 
+    <div class="search-bar" id="searchBar">
+        <input type="text" id="searchInput" placeholder="Search events… (Ctrl+F)" autocomplete="off" spellcheck="false">
+        <span class="search-count" id="searchCount"></span>
+        <button onclick="navigateSearch(-1)" title="Previous (Shift+Enter)">▲</button>
+        <button onclick="navigateSearch(1)" title="Next (Enter)">▼</button>
+        <button class="close-btn" onclick="closeSearch()" title="Close (Esc)">✕</button>
+    </div>
+
     <div class="scroll-container" id="scrollContainer">
         <div class="scroll-spacer" id="scrollSpacer"></div>
         <div class="scroll-content" id="scrollContent"></div>
     </div>
 
     <script>
-        // ─── Enum maps (unchanged) ────────────────────
+        // ─── Enum maps ────────────────────
         const damageSourceNames = { 1:'Player',2:'Monster',3:'Trap',4:'Perk',5:'Fatecard' };
         const damageTypeNames = { 0:'None',1:'Auto Attack',2:'Skill',3:'Ultimate',4:'Other',5:'Mark',6:'Projectile',7:'Minion' };
         const damageEffectNames = { 1:'Physics',2:'Magic',4:'Real',5:'No Damage',6:'No Damage Apply Feather No Ani',7:'No Damage Apply Feather',8:'None' };
@@ -121,6 +161,11 @@
         let fenwick = null;
         let totalHeightCached = 0;
         let lastFetchCount = 0;
+
+        // ─── Search state ─────────────────
+        let searchQuery = '';
+        let searchMatches = [];   // filteredIdx values that match
+        let searchMatchIdx = -1;  // current position in searchMatches
 
         const container = document.getElementById('scrollContainer');
         const spacer = document.getElementById('scrollSpacer');
@@ -203,7 +248,7 @@
 
         function getChars(ev) {
             const s = new Set();
-            if (ev.Type==='Hit') { const h=ev.HitConfig||{}; if(h.charName) s.add(h.charName); }
+            if (ev.Type==='Hit') { if(ev.AttackerDisplay) s.add(ev.AttackerDisplay); }
             else if (ev.Type==='Buff') {
                 if(ev.OwnerDisplay||ev.Owner) s.add(cleanOwner(ev.OwnerDisplay||ev.Owner));
                 if(ev.SourceDisplay||ev.Source) s.add(cleanOwner(ev.SourceDisplay||ev.Source));
@@ -258,6 +303,9 @@
             }
             filtered = applyFilters();
             buildFenwick();
+            buildSearchMatches();
+            if (searchMatchIdx >= searchMatches.length) searchMatchIdx = searchMatches.length > 0 ? 0 : -1;
+            updateSearchCount();
             document.getElementById('stats').textContent = `Showing ${filtered.length} of ${allEvents.length} events`;
             if (resetScroll || resetOpen) {
                 container.scrollTop = 0;
@@ -265,7 +313,7 @@
             render();
         }
 
-        // ─── Body builders (now aware of subOpenStates) ──
+        // ─── Body builders ──
         function buildEventBody(ev) {
             const oi = ev._origIndex;
             if (ev.Type === 'Hit') return hitBody(ev, oi);
@@ -277,7 +325,7 @@
         function hitBody(ev, oi) {
             const hc=ev.HitConfig||{}, dp=ev.DamageParams||{};
             let h=`<div class="section"><h4>Hit Information</h4><table>
-                <tr><th>Character</th><td>${esc(hc.charName||'?')}</td></tr>
+                <tr><th>Character</th><td>${ev.sourceType=='Player' ? esc(hc.charName||'?') : esc(ev.AttackerDisplay||ev.Attacker||'?')}</td></tr>
                 <tr><th>Skill</th><td>${esc(hc.skillTitle||'?')} (ID: ${esc(hc.skillId||'')})</td></tr>
                 <tr><th>Hit</th><td>#${esc(hc.hitNum||'')} (ID: ${esc(hc.hitDamageId||'')})</td></tr>
                 <tr><th>Skill Level</th><td>${esc(dp.skillLevel||'')}</td></tr>
@@ -291,14 +339,14 @@
             <div class="collapsible-content" id="dmg-${oi}" style="${subOpenStates[`${oi}_dmg-${oi}`] ? 'display:block' : ''}"><table>
                 <tr><th>Final Damage</th><td><strong>${Number(dp.finalDamage).toLocaleString()}</strong></td></tr>
                 <tr><th>Crit Ratio</th><td>${dp.critRatio!=null?dp.critRatio.toFixed(4):''}</td></tr>
-                <tr><th>DEF Amend</th><td>${dp.defAmend!=null?dp.defAmend.toFixed(4):''}</td></tr>
-                <tr><th>ER Amend</th><td>${dp.erAmend!=null?dp.erAmend.toFixed(4):''}</td></tr>
-                <tr><th>Skill % Amend</th><td>${dp.skillPercentAmend!=null?(dp.skillPercentAmend/10000).toFixed(2)+'%':''}</td></tr>
+                <tr><th>Base Multiplier</th><td>${dp.skillPercentAmend!=null?(dp.skillPercentAmend/10000).toFixed(2)+'%':''}</td></tr>
                 <tr><th>Slot DMG Ratio</th><td>${dp.slotDmgRatio!=null?dp.slotDmgRatio.toFixed(4):''}</td></tr>
-                <tr><th>From EE</th><td>${dp.fromEE!=null?dp.fromEE.toFixed(4):''}</td></tr>
+                <tr><th>Element %</th><td>${dp.fromEE!=null?dp.fromEE.toFixed(4):''}</td></tr>
                 <tr><th>Perk Intensity</th><td>${dp.perkIntensityRatio!=null?dp.perkIntensityRatio.toFixed(4):''}</td></tr>
                 <tr><th>Skill Intensity</th><td>${dp.skillIntensityRatio!=null?dp.skillIntensityRatio.toFixed(4):''}</td></tr>
                 <tr><th>Toughness Broken</th><td>${dp.toughnessBrokenDmgRatio!=null?dp.toughnessBrokenDmgRatio.toFixed(4):''}</td></tr>
+                <tr><th>DEF Amend</th><td>${dp.defAmend!=null?dp.defAmend.toFixed(4):''}</td></tr>
+                <tr><th>ER Amend</th><td>${dp.erAmend!=null?dp.erAmend.toFixed(4):''}</td></tr>
                 <tr><th>Env Amend</th><td>${dp.envAmendRatio!=null?dp.envAmendRatio.toFixed(4):''}</td></tr>
             </table></div><div class="gap"></div>`;
 
@@ -360,7 +408,6 @@
                 ${ev.SkillType?`<tr><th>Type</th><td>${esc(ev.SkillType)}</td></tr>`:''}
                 <tr><th>Skill ID</th><td>${ev.SkillId}</td></tr>
                 ${ev.FCPath?`<tr><th>FC Path</th><td>${esc(ev.FCPath)}</td></tr>`:''}
-                <tr><th>Time</th><td>${esc(ev.Time)}</td></tr>
             </table></div>`;
         }
 
@@ -385,7 +432,12 @@
             let desc = '';
             if (ev.Type === 'Hit') {
                 const hc=ev.HitConfig||{}, dp=ev.DamageParams||{};
-                desc = `${esc(hc.charName||'?')} - ${esc(hc.skillTitle||'?')} (#${hc.hitNum||'?'}) - Dmg: ${Number(dp.finalDamage).toLocaleString()}`;
+                const attName = esc(ev.AttackerDisplay||ev.Attacker||'?');
+                const skillPart = hc.skillTitle ? esc(hc.skillTitle) : '';
+                const hitPart = hc.hitNum!=null ? ` (#${hc.hitNum})` : '';
+                const skillStr = (skillPart||hitPart) ? ` - ${skillPart}${hitPart}` : '';
+                const baseMult = dp.skillPercentAmend!=null ? ` [${(dp.skillPercentAmend/10000).toFixed(2)}%]` : '';
+                desc = `${attName}${skillStr}${baseMult} - Dmg: ${Number(dp.finalDamage).toLocaleString()}`;
             } else if (ev.Type === 'Buff') {
                 const owner = cleanOwner(ev.OwnerDisplay||ev.Owner||'?');
                 const name = esc(ev.Name||ev.ConfigId);
@@ -407,14 +459,14 @@
             body.className = 'event-body';
             if (isOpen) {
                 body.innerHTML = buildEventBody(ev);
-            } // else body stays empty (collapsed)
+            }
 
             div.appendChild(header);
             div.appendChild(body);
             return div;
         }
 
-        // ─── Toggle main event (no full re-render!) ──
+        // ─── Toggle main event ──
         function toggleMainEvent(origIndex, filteredIdx) {
             const eventDiv = content.querySelector(`.event[data-orig-index="${origIndex}"]`);
             if (!eventDiv) return;
@@ -456,7 +508,6 @@
                             shiftElementsAfter(filteredIdx, delta);
                         }
                     }
-                    // Restore scroll position (may need clamping)
                     const maxScroll = totalHeightCached - container.clientHeight;
                     container.scrollTop = Math.min(savedScroll, Math.max(0, maxScroll));
                 });
@@ -473,7 +524,7 @@
             }
         }
 
-        // ─── Sub‑section toggle (delegated, no re‑render) ──
+        // ─── Sub‑section toggle ──
         content.addEventListener('click', e => {
             const toggle = e.target.closest('.collapsible-toggle');
             if (!toggle) return;
@@ -509,7 +560,7 @@
             });
         });
 
-        // ─── Virtual scroll render (incremental, no full wipe) ────
+        // ─── Virtual scroll render ────
         function render() {
             if (!filtered.length) {
                 content.innerHTML = '';
@@ -540,7 +591,6 @@
                     if (el.style.top !== newTop + 'px') {
                         el.style.top = newTop + 'px';
                     }
-                    // Ensure open/closed state matches (could have changed while off‑screen)
                     const shouldOpen = openStates[oi] || false;
                     const isOpen = el.classList.contains('open');
                     if (shouldOpen !== isOpen) {
@@ -568,9 +618,24 @@
                 const div = createEventDiv(ev, fi);
                 content.appendChild(div);
             }
+
+            // Apply search highlight classes to all visible events
+            if (searchQuery) {
+                const matchSet = new Set(searchMatches);
+                const currentFi = searchMatchIdx >= 0 ? searchMatches[searchMatchIdx] : -1;
+                content.querySelectorAll('.event').forEach(el => {
+                    const fi = parseInt(el.dataset.filteredIndex);
+                    el.classList.toggle('search-match', matchSet.has(fi) && fi !== currentFi);
+                    el.classList.toggle('search-current', fi === currentFi);
+                });
+            } else {
+                content.querySelectorAll('.event').forEach(el => {
+                    el.classList.remove('search-match', 'search-current');
+                });
+            }
         }
 
-        // ─── Scroll handler (unchanged but now only triggers render) ────
+        // ─── Scroll handler ────
         let scrollScheduled = false;
         container.addEventListener('scroll', () => {
             if (scrollScheduled) return;
@@ -581,12 +646,110 @@
             });
         });
 
+        // ─── Search helpers ───────────────
+        function getEventSearchText(ev) {
+            const parts = [ev.Time || '', ev.Type || ''];
+            if (ev.Type === 'Hit') {
+                const hc = ev.HitConfig || {}, dp = ev.DamageParams || {};
+                parts.push(ev.AttackerDisplay || ev.Attacker || '');
+                parts.push(hc.skillTitle || '');
+                parts.push(String(dp.finalDamage || ''));
+            } else if (ev.Type === 'Buff') {
+                parts.push(ev.SubType || '');
+                parts.push(cleanOwner(ev.OwnerDisplay || ev.Owner || ''));
+                parts.push(ev.Name || '');
+                parts.push(ev.Action || '');
+            } else if (ev.Type === 'Skill Cast') {
+                parts.push(ev.Owner || '');
+                parts.push(ev.Name || '');
+            }
+            return parts.join(' ').toLowerCase();
+        }
+
+        function buildSearchMatches() {
+            searchMatches = [];
+            if (!searchQuery) return;
+            const q = searchQuery.toLowerCase();
+            for (let fi = 0; fi < filtered.length; fi++) {
+                if (getEventSearchText(filtered[fi]).includes(q)) {
+                    searchMatches.push(fi);
+                }
+            }
+        }
+
+        function updateSearchCount() {
+            const el = document.getElementById('searchCount');
+            if (!searchQuery) { el.textContent = ''; return; }
+            if (searchMatches.length === 0) { el.textContent = 'No matches'; el.style.color = '#a04040'; return; }
+            el.style.color = '#888';
+            el.textContent = `${searchMatchIdx + 1} / ${searchMatches.length}`;
+        }
+
+        function scrollToMatch(fi) {
+            const top = fenwick.prefixSum(fi - 1);
+            const itemH = heights[fi] || EST;
+            const viewH = container.clientHeight;
+            // Centre the match in the viewport
+            container.scrollTop = Math.max(0, top - (viewH - itemH) / 2);
+            // Re-render so the element exists, then apply current class
+            render();
+        }
+
+        window.navigateSearch = function(dir) {
+            if (searchMatches.length === 0) return;
+            searchMatchIdx = (searchMatchIdx + dir + searchMatches.length) % searchMatches.length;
+            updateSearchCount();
+            scrollToMatch(searchMatches[searchMatchIdx]);
+        };
+
+        function openSearch() {
+            document.getElementById('searchBar').classList.add('visible');
+            document.getElementById('searchInput').focus();
+        }
+
+        window.closeSearch = function() {
+            document.getElementById('searchBar').classList.remove('visible');
+            searchQuery = '';
+            searchMatches = [];
+            searchMatchIdx = -1;
+            document.getElementById('searchInput').value = '';
+            updateSearchCount();
+            render();
+        };
+
+        document.getElementById('searchInput').addEventListener('input', e => {
+            searchQuery = e.target.value.trim();
+            buildSearchMatches();
+            searchMatchIdx = searchMatches.length > 0 ? 0 : -1;
+            updateSearchCount();
+            if (searchMatchIdx >= 0) scrollToMatch(searchMatches[searchMatchIdx]);
+            else render();
+        });
+
+        document.getElementById('searchInput').addEventListener('keydown', e => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                navigateSearch(e.shiftKey ? -1 : 1);
+            } else if (e.key === 'Escape') {
+                closeSearch();
+            }
+        });
+
+        document.addEventListener('keydown', e => {
+            if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+                e.preventDefault();
+                openSearch();
+            } else if (e.key === 'Escape' && document.getElementById('searchBar').classList.contains('visible')) {
+                closeSearch();
+            }
+        });
+
         // ─── Filter handlers ─────────────
         window.filter = function(type) {
             typeFilter = type;
             document.querySelectorAll('.filters button').forEach(b => b.classList.remove('active'));
             event.target.classList.add('active');
-            refilterAndRender(true);           // resetScroll=true, resetOpen=true (default)
+            refilterAndRender(true);
         };
 
         window.onCharFilterChange = function() {
@@ -615,13 +778,11 @@
                         allEvents.push(ev);
                     });
                     lastFetchCount += newEvents.length;
-                    // Incremental update – do NOT reset open states
                     refilterAndRender(false, false);
                 } else {
                     allEvents = newEvents;
                     allEvents.forEach((ev, i) => { ev._origIndex = i; });
                     lastFetchCount = allEvents.length;
-                    // Initial load – start from top, reset everything
                     refilterAndRender(true, true);
                 }
                 buildCharFilter();
@@ -632,6 +793,6 @@
 
         fetchLog(false).then(() => setInterval(() => fetchLog(true), POLL_MS));
     </script>
-
+</div>
 </body>
 </html>

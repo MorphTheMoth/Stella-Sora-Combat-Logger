@@ -72,3 +72,5 @@ json BuildSkillCastJson(int32_t skillId);
 // Utility
 std::string GetLocalAppDataPath();
 void InitializeLogger();
+
+bool InstallHook(uintptr_t target, void* hook, void** original, const char* name);
