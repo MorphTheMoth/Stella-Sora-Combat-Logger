@@ -9,37 +9,29 @@
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: sans-serif; background: #161616; color: #ddd; height: 100vh; display: flex; flex-direction: column; overflow: hidden; align-items: center; }
         .page {
-            max-width: 1050px;
-            width: 100%; height: 100%; display: flex;
-            flex-direction: column; background: #1a1a1a; margin: 0 auto;
+            max-width: 1050px; width: 100%; height: 100%; display: flex;
+            flex-direction: column; background: #1a1a1a; margin: 0 auto; position: relative;
         }
         h1 { color: #aaa; margin-bottom: 15px; flex-shrink: 0; }
         .filters { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; flex-shrink: 0; }
         .filters button, .filters select {
             padding: 6px 14px; border: 1px solid #555; border-radius: 4px; background: #2a2a2a; color: #ccc;
-            cursor: pointer; font-weight: normal; transition: background 0.15s; font-size: 14px;
-            user-select: none;
+            cursor: pointer; font-weight: normal; transition: background 0.15s; font-size: 14px; user-select: none;
         }
         .filters button.active { background: #5a5a5a; color: #fff; }
         .filters button:hover, .filters select:hover { background: #444; }
         .filters select { width: 160px; }
         .stats { font-size: 11px; color: #888; margin-bottom: 10px; flex-shrink: 0; }
         .scroll-container {
-            flex: 1; overflow-y: auto;
-            position: relative;
-            border-top: 1px solid #333;
-            background: #1a1a1a;
-            width: 100%;
+            flex: 1; overflow-y: auto; position: relative;
+            border-top: 1px solid #333; background: #1a1a1a; width: 100%;
         }
         .scroll-spacer { width: 100%; }
         .scroll-content { position: absolute; top: 0; left: 0; right: 0; }
 
         .event {
-            background: #222;
-            position: absolute;
-            left: 0; right: 0;
-            overflow: hidden;
-            border-bottom: 1px solid #333;
+            background: #222; position: absolute; left: 0; right: 0;
+            overflow: visible; border-bottom: 1px solid #333;
         }
         .event-header {
             padding: 5px 12px; cursor: pointer;
@@ -58,26 +50,54 @@
         .event.open .event-body { display: block; }
         .section { margin-bottom: 14px; }
         .section h4 { font-size: 13px; color: #aaa; margin-bottom: 4px; border-bottom: 1px solid #333; padding-bottom: 3px; }
-        table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 4px; }
+        table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 4px; table-layout: fixed; }
+        table.kv th { width: 35%; }
         th, td { padding: 3px 8px; text-align: left; border-bottom: 1px solid #2a2a2a; }
         th { color: #999; font-weight: normal; }
         td { color: #ccc; }
         .collapsible-toggle {
             cursor: pointer; color: #aaa; font-size: 13px; display: block;
-            user-select: none; margin-bottom: 4px;
+            user-select: none; margin-top: 8px; margin-bottom: 4px;
         }
+        .collapsible-toggle:first-child { margin-top: 0; }
         .collapsible-toggle::before { content: '[+] '; }
         .collapsible-toggle.open::before { content: '[-] '; }
-        .collapsible-content { display: none; margin-left: 10px; }
+        .collapsible-content { display: none; margin-left: 10px; margin-bottom: 6px; }
         .collapsible.open + .collapsible-content { display: block; }
         .no-data { color: #666; font-style: italic; }
         .gap { margin-top: 12px; }
 
+        /* ── Spacer trigger (sits between events, invisible until hovered) ── */
+        .spacer-trigger {
+            position: absolute; left: 0; right: 0; bottom: -5px; height: 10px;
+            z-index: 6; cursor: pointer; background: transparent;
+        }
+        .spacer-trigger::after {
+            content: ''; position: absolute; left: 0; right: 0;
+            top: 50%; height: 0; transition: height 0.1s, background 0.1s;
+        }
+        .spacer-trigger:hover::after {
+            height: 2px; background: rgba(109, 41, 86, 0.55);
+            top: calc(50% - 1px);
+        }
+
+        /* ── Rendered spacer gap between events ── */
+        .event-spacer {
+            position: absolute; left: 0; right: 0;
+            background: #1d1d1d;
+            cursor: pointer; display: flex; align-items: center; justify-content: center; z-index: 1;
+        }
+        .event-spacer::after { content: '×'; color: #2a2a2a; font-size: 16px; }
+        .event-spacer:hover { background: #191919; }
+        .event-spacer:hover::after { color: #555; }
+
         /* ── Search bar ── */
         .search-bar {
             display: none; align-items: center; gap: 8px;
-            padding: 6px 10px; background: #222; border-top: 1px solid #444;
-            flex-shrink: 0;
+            padding: 6px 10px; background: #222; border: 1px solid #444;
+            border-radius: 6px;
+            position: absolute; top: 8px; right: 12px; z-index: 10;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.5);
         }
         .search-bar.visible { display: flex; }
         .search-bar input {
@@ -167,6 +187,10 @@
         let searchMatches = [];   // filteredIdx values that match
         let searchMatchIdx = -1;  // current position in searchMatches
 
+        // ─── Spacer state ─────────────────
+        const SPACER_HEIGHT = 60;
+        let spacerByOrig = new Map(); // origIndex -> spacer height in px
+
         const container = document.getElementById('scrollContainer');
         const spacer = document.getElementById('scrollSpacer');
         const content = document.getElementById('scrollContent');
@@ -200,7 +224,9 @@
             let sum = 0;
             for (let i = 0; i < filtered.length; i++) {
                 const orig = filtered[i]._origIndex;
-                const h = (openStates[orig] && measuredHeights[orig]) ? measuredHeights[orig] : EST;
+                const eventH = (openStates[orig] && measuredHeights[orig]) ? measuredHeights[orig] : EST;
+                const spacerH = spacerByOrig.get(orig) || 0;
+                const h = eventH + spacerH;
                 heights[i] = h;
                 fenwick.add(i, h);
                 sum += h;
@@ -209,11 +235,14 @@
             spacer.style.height = totalHeightCached + 'px';
         }
 
-        function updateHeightAtIndex(idx, newHeight) {
+        function updateHeightAtIndex(idx, newEventHeight) {
+            const orig = filtered[idx]._origIndex;
+            const spacerH = spacerByOrig.get(orig) || 0;
+            const newTotal = newEventHeight + spacerH;
             const old = heights[idx];
-            if (Math.abs(old - newHeight) < 0.5) return 0;
-            heights[idx] = newHeight;
-            const delta = newHeight - old;
+            if (Math.abs(old - newTotal) < 0.5) return 0;
+            heights[idx] = newTotal;
+            const delta = newTotal - old;
             fenwick.add(idx, delta);
             totalHeightCached += delta;
             spacer.style.height = totalHeightCached + 'px';
@@ -324,7 +353,7 @@
 
         function hitBody(ev, oi) {
             const hc=ev.HitConfig||{}, dp=ev.DamageParams||{};
-            let h=`<div class="section"><h4>Hit Information</h4><table>
+            let h=`<div class="section"><h4>Hit Information</h4><table class="kv">
                 <tr><th>Character</th><td>${ev.sourceType=='Player' ? esc(hc.charName||'?') : esc(ev.AttackerDisplay||ev.Attacker||'?')}</td></tr>
                 <tr><th>Skill</th><td>${esc(hc.skillTitle||'?')} (ID: ${esc(hc.skillId||'')})</td></tr>
                 <tr><th>Hit</th><td>#${esc(hc.hitNum||'')} (ID: ${esc(hc.hitDamageId||'')})</td></tr>
@@ -335,8 +364,8 @@
                 <tr><th>Element Type</th><td>${elName(hc.elementType)}</td></tr>
             </table></div>`;
 
-            h+=`<div class="collapsible-toggle${subOpenStates[`${oi}_dmg-${oi}`] ? ' open' : ''}" data-target="dmg-${oi}">Damage Calculation</div>
-            <div class="collapsible-content" id="dmg-${oi}" style="${subOpenStates[`${oi}_dmg-${oi}`] ? 'display:block' : ''}"><table>
+            h+=`<div class="section"><div class="collapsible-toggle${subOpenStates[`${oi}_dmg-${oi}`] ? ' open' : ''}" data-target="dmg-${oi}">Damage Calculation</div>
+            <div class="collapsible-content" id="dmg-${oi}" style="${subOpenStates[`${oi}_dmg-${oi}`] ? 'display:block' : ''}"><table class="kv">
                 <tr><th>Final Damage</th><td><strong>${Number(dp.finalDamage).toLocaleString()}</strong></td></tr>
                 <tr><th>Crit Ratio</th><td>${dp.critRatio!=null?dp.critRatio.toFixed(4):''}</td></tr>
                 <tr><th>Base Multiplier</th><td>${dp.skillPercentAmend!=null?(dp.skillPercentAmend/10000).toFixed(2)+'%':''}</td></tr>
@@ -348,7 +377,7 @@
                 <tr><th>DEF Amend</th><td>${dp.defAmend!=null?dp.defAmend.toFixed(4):''}</td></tr>
                 <tr><th>ER Amend</th><td>${dp.erAmend!=null?dp.erAmend.toFixed(4):''}</td></tr>
                 <tr><th>Env Amend</th><td>${dp.envAmendRatio!=null?dp.envAmendRatio.toFixed(4):''}</td></tr>
-            </table></div><div class="gap"></div>`;
+            </table></div></div>`;
 
             h+=`<div class="section"><h4>Attacker: ${esc(ev.AttackerDisplay||ev.Attacker||'?')}</h4>`;
             if(ev.AttackerBuffs?.buffs?.length) {
@@ -390,7 +419,7 @@
         }
 
         function buffBody(ev) {
-            return `<div class="section"><h4>Buff / Effect Details</h4><table>
+            return `<div class="section"><h4>Buff / Effect Details</h4><table class="kv">
                 <tr><th>Name</th><td>${esc(ev.Name||ev.ConfigId)}</td></tr>
                 <tr><th>Action</th><td>${esc(ev.Action)}</td></tr>
                 <tr><th>Owner</th><td>${esc(cleanOwner(ev.OwnerDisplay||ev.Owner||'?'))}</td></tr>
@@ -402,7 +431,7 @@
         }
 
         function skillBody(ev) {
-            return `<div class="section"><h4>Skill Cast Details</h4><table>
+            return `<div class="section"><h4>Skill Cast Details</h4><table class="kv">
                 <tr><th>Skill Name</th><td>${esc(ev.Name||ev.SkillId)}</td></tr>
                 <tr><th>Owner</th><td>${esc(ev.Owner||'?')}</td></tr>
                 ${ev.SkillType?`<tr><th>Type</th><td>${esc(ev.SkillType)}</td></tr>`:''}
@@ -463,6 +492,13 @@
 
             div.appendChild(header);
             div.appendChild(body);
+
+            // Thin trigger strip overlapping the gap below this event
+            const trigger = document.createElement('div');
+            trigger.className = 'spacer-trigger';
+            trigger.addEventListener('click', e => { e.stopPropagation(); toggleSpacer(oi); });
+            div.appendChild(trigger);
+
             return div;
         }
 
@@ -522,6 +558,7 @@
                     ev.style.top = (parseFloat(ev.style.top) + delta) + 'px';
                 }
             }
+            renderSpacers();
         }
 
         // ─── Sub‑section toggle ──
@@ -633,6 +670,8 @@
                     el.classList.remove('search-match', 'search-current');
                 });
             }
+
+            renderSpacers();
         }
 
         // ─── Scroll handler ────
@@ -647,21 +686,43 @@
         });
 
         // ─── Search helpers ───────────────
+        function normalizeSearch(s) {
+            // Strip thousands separators (comma or dot) so 238,832 / 238.832 / 238832 all match
+            return s.replace(/[,.]/g, '');
+        }
+
         function getEventSearchText(ev) {
-            const parts = [ev.Time || '', ev.Type || ''];
+            // Derive the same typeText shown in the header
+            let typeText = ev.Type || '';
+            if (ev.Type === 'Buff') typeText = ev.SubType === 'Effect' ? 'Effect' : (ev.Action === 'Add' ? 'Buff Add' : 'Buff Remove');
+            const parts = [typeText];
+
             if (ev.Type === 'Hit') {
                 const hc = ev.HitConfig || {}, dp = ev.DamageParams || {};
+                // Attacker name
                 parts.push(ev.AttackerDisplay || ev.Attacker || '');
+                // Skill title
                 parts.push(hc.skillTitle || '');
-                parts.push(String(dp.finalDamage || ''));
+                // Hit number e.g. "#6"
+                if (hc.hitNum != null) parts.push('#' + hc.hitNum);
+                // Base multiplier percentage e.g. "133.00%"
+                if (dp.skillPercentAmend != null) parts.push((dp.skillPercentAmend / 10000).toFixed(2) + '%');
+                // Damage — include both raw and locale string so any separator style matches
+                if (dp.finalDamage != null) {
+                    parts.push(String(dp.finalDamage));
+                    parts.push(Number(dp.finalDamage).toLocaleString());
+                }
+                parts.push('Dmg');
             } else if (ev.Type === 'Buff') {
                 parts.push(ev.SubType || '');
                 parts.push(cleanOwner(ev.OwnerDisplay || ev.Owner || ''));
-                parts.push(ev.Name || '');
+                parts.push(ev.Name || ev.ConfigId || '');
                 parts.push(ev.Action || '');
+                // Stacks e.g. "x3"
+                if (ev.Stacks != null && ev.Stacks > 0) parts.push('x' + ev.Stacks);
             } else if (ev.Type === 'Skill Cast') {
                 parts.push(ev.Owner || '');
-                parts.push(ev.Name || '');
+                parts.push(ev.Name || ev.SkillId || '');
             }
             return parts.join(' ').toLowerCase();
         }
@@ -669,9 +730,9 @@
         function buildSearchMatches() {
             searchMatches = [];
             if (!searchQuery) return;
-            const q = searchQuery.toLowerCase();
+            const q = normalizeSearch(searchQuery.toLowerCase());
             for (let fi = 0; fi < filtered.length; fi++) {
-                if (getEventSearchText(filtered[fi]).includes(q)) {
+                if (normalizeSearch(getEventSearchText(filtered[fi])).includes(q)) {
                     searchMatches.push(fi);
                 }
             }
@@ -687,11 +748,17 @@
 
         function scrollToMatch(fi) {
             const top = fenwick.prefixSum(fi - 1);
-            const itemH = heights[fi] || EST;
+            const orig = filtered[fi]._origIndex;
+            const itemH = (heights[fi] - (spacerByOrig.get(orig) || 0)) || EST;
             const viewH = container.clientHeight;
-            // Centre the match in the viewport
-            container.scrollTop = Math.max(0, top - (viewH - itemH) / 2);
-            // Re-render so the element exists, then apply current class
+            const scrollTop = container.scrollTop;
+
+            if (top < scrollTop) {
+                container.scrollTop = top;
+            } else if (top + itemH > scrollTop + viewH) {
+                container.scrollTop = top + itemH - viewH;
+            }
+
             render();
         }
 
@@ -743,6 +810,58 @@
                 closeSearch();
             }
         });
+
+        // ─── Spacer logic ─────────────────
+        function toggleSpacer(orig) {
+            const fi = filtered.findIndex(e => e._origIndex === orig);
+            if (fi === -1) return;
+
+            const currentSpacerH = spacerByOrig.get(orig) || 0;
+            // Derive event-only height from the stored total
+            const eventOnlyH = heights[fi] - currentSpacerH;
+
+            if (spacerByOrig.has(orig)) {
+                spacerByOrig.delete(orig);
+            } else {
+                spacerByOrig.set(orig, SPACER_HEIGHT);
+            }
+
+            const savedScroll = container.scrollTop;
+            const delta = updateHeightAtIndex(fi, eventOnlyH);
+            shiftElementsAfter(fi, delta);
+            const maxScroll = totalHeightCached - container.clientHeight;
+            container.scrollTop = Math.min(savedScroll, Math.max(0, maxScroll));
+            render();
+        }
+
+        function renderSpacers() {
+            // Clear old spacer divs
+            content.querySelectorAll('.event-spacer').forEach(el => el.remove());
+            if (spacerByOrig.size === 0) return;
+
+            content.querySelectorAll('.event').forEach(el => {
+                const oi = parseInt(el.dataset.origIndex);
+                const fi = parseInt(el.dataset.filteredIndex);
+                const sh = spacerByOrig.get(oi) || 0;
+                if (sh === 0) return;
+
+                // Use actual rendered height so spacer sits flush against the event,
+                // and size it to reach exactly where the next event starts,
+                // absorbing any EST vs real-height mismatch.
+                const actualEventH = el.getBoundingClientRect().height;
+                const topOfSlot = fenwick.prefixSum(fi - 1);
+                const spacerTop = topOfSlot + actualEventH;
+                const spacerBottom = topOfSlot + heights[fi]; // where next event begins
+                const renderedH = Math.max(1, spacerBottom - spacerTop);
+
+                const sd = document.createElement('div');
+                sd.className = 'event-spacer';
+                sd.style.top = spacerTop + 'px';
+                sd.style.height = renderedH + 'px';
+                sd.addEventListener('click', () => toggleSpacer(oi));
+                content.appendChild(sd);
+            });
+        }
 
         // ─── Filter handlers ─────────────
         window.filter = function(type) {

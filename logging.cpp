@@ -116,7 +116,7 @@ void LoadConfig(const std::string& dir) {
         auto get = [&](const char* key, bool def) -> bool {
             return j.contains(key) ? j[key].get<bool>() : def;
         };
-        g_Cfg.suppress_useless_info          = get("suppress_useless_info",         true);
+        g_Cfg.suppress_useless_info          = get("suppress_useless_info",          true);
         g_Cfg.buffs                          = get("buffs",                          true);
         g_Cfg.effects                        = get("effects",                        true);
         g_Cfg.damage                         = get("damage",                         true);

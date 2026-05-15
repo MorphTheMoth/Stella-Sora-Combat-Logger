@@ -130,10 +130,10 @@ int main(int argc, char** argv) {
     struct mg_mgr mgr;
     mg_mgr_init(&mgr);
     
-    const char* url = "http://0.0.0.0:8080";
+    const char* url = "http://0.0.0.0:9299";
     mg_http_listen(&mgr, url, fn, NULL);
     
-    printf("Server running at %s\n", url);
+    printf("Server running at http://localhost:9299\n");
     printf("Press Ctrl+C to stop.\n");
     
     for (;;) mg_mgr_poll(&mgr, 1000);

@@ -22,11 +22,11 @@ struct LogConfig {
     bool effects                        = true;
     bool damage                         = true;
     bool skill_casts                    = true;
-    bool on_hit_attacker_stats          = false;
-    bool on_hit_defender_stats          = false;
+    bool on_hit_attacker_stats          = true;
+    bool on_hit_defender_stats          = true;
     bool on_hit_buff_list               = true;
-    bool on_hit_effect_list             = false;
-    bool on_hit_effect_list_information = false;
+    bool on_hit_effect_list             = true;
+    bool on_hit_effect_list_information = true;
 };
 
 extern FILE*                g_Log;
