@@ -137,6 +137,9 @@
         <select id="skillFilter" onchange="onSkillFilterChange()">
             <option value="">All Skills</option>
         </select>
+        <select id="defenderFilter" onchange="onDefenderFilterChange()">
+            <option value="">All Defenders</option>
+        </select>
     </div>
     <div class="stats" id="stats"></div>
 
@@ -168,11 +171,11 @@
         // ─── State ────────────────────────
         let allEvents = [];
         let filtered = [];
-        let typeFilter = 'all', charFilter = '', skillFilter = '';
+        let typeFilter = 'all', charFilter = '', skillFilter = '', defenderFilter = '';
 
         const EST = 40;           // estimated height of a collapsed event
         const BUFFER = 20;         // extra rendered events above/below viewport
-        const POLL_MS = 2000;
+        const POLL_MS = 50;
 
         let openStates = {};           // origIndex -> bool
         let measuredHeights = {};      // origIndex -> px (actual open height)
@@ -290,6 +293,14 @@
             if (ev.Type==='Skill Cast') return ev.Name||null;
             return null;
         }
+        function getDefender(ev) {
+            // Only Hit events have a clear defender
+            if (ev.Type === 'Hit') {
+                const name = ev.DefenderDisplay || ev.Defender;
+                if (name) return new Set([cleanOwner(name)]);
+            }
+            return new Set();
+        }
 
         function buildCharFilter() {
             const all = new Set(); allEvents.forEach(e => getChars(e).forEach(c => all.add(c)));
@@ -309,6 +320,21 @@
             sel.value = [...sel.options].some(o=>o.value===cur) ? cur : '';
             skillFilter = sel.value;
         }
+        function buildDefenderFilter() {
+            const all = new Set();
+            allEvents.forEach(e => getDefender(e).forEach(d => all.add(d)));
+            const sel = document.getElementById('defenderFilter');
+            const cur = sel.value;
+            sel.innerHTML = '<option value="">All Defenders</option>';
+            [...all].sort().forEach(c => {
+                const o = document.createElement('option');
+                o.value = c;
+                o.textContent = c;
+                sel.appendChild(o);
+            });
+            sel.value = [...sel.options].some(o => o.value === cur) ? cur : '';
+            defenderFilter = sel.value;
+        }
 
         function applyFilters() {
             let evs = allEvents.slice();
@@ -320,6 +346,7 @@
             if (charFilter) evs = evs.filter(e=>getChars(e).has(charFilter));
             buildSkillFilter(evs);
             if (skillFilter) evs = evs.filter(e=>getSkillName(e)===skillFilter);
+            if (defenderFilter) evs = evs.filter(e => getDefender(e).has(defenderFilter));
             return evs;
         }
 
@@ -701,10 +728,8 @@
                 const hc = ev.HitConfig || {}, dp = ev.DamageParams || {};
                 // Attacker name
                 parts.push(ev.AttackerDisplay || ev.Attacker || '');
-                // Skill title
-                parts.push(hc.skillTitle || '');
-                // Hit number e.g. "#6"
-                if (hc.hitNum != null) parts.push('#' + hc.hitNum);
+                // Skill title  // Hit number e.g. "#6"
+                parts.push((hc.skillTitle || '') + (hc.hitNum ? ' (#'+hc.hitNum+')' : ''));
                 // Base multiplier percentage e.g. "133.00%"
                 if (dp.skillPercentAmend != null) parts.push((dp.skillPercentAmend / 10000).toFixed(2) + '%');
                 // Damage — include both raw and locale string so any separator style matches
@@ -881,6 +906,11 @@
             refilterAndRender(true);
         };
 
+        window.onDefenderFilterChange = function() {
+            defenderFilter = document.getElementById('defenderFilter').value;
+            refilterAndRender(true);
+        };
+
         // ─── Data fetching ───────────────
         async function fetchLog(incremental = false) {
             try {
@@ -889,7 +919,8 @@
                 const res = await fetch(url);
                 const data = await res.json();
                 const newEvents = data.events || [];
-                
+                if (newEvents.length == 0)
+                  return
                 if (incremental && lastFetchCount > 0) {
                     const startIdx = allEvents.length;
                     newEvents.forEach((ev, i) => {
@@ -905,12 +936,19 @@
                     refilterAndRender(true, true);
                 }
                 buildCharFilter();
+                buildDefenderFilter();
             } catch (err) {
                 console.error('fetch error', err);
             }
         }
 
-        fetchLog(false).then(() => setInterval(() => fetchLog(true), POLL_MS));
+        function poll() {
+            fetchLog(true).finally(() => {
+                setTimeout(poll, POLL_MS);
+            });
+        }
+        fetchLog(false).then(() => { setTimeout(poll, POLL_MS); });
+
     </script>
 </div>
 </body>
