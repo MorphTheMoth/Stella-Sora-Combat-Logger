@@ -27,7 +27,7 @@ std::atomic<int64_t> g_BattleTimeFP{0};
 // =============================================================================
 static constexpr int64_t FP_ONE = 4294967296LL;
 
-std::string GameTime() {
+std::string gameTime() {
     int64_t raw = g_BattleTimeFP.load(std::memory_order_relaxed);
     if (raw > 0) {
         int64_t totalMs  = (raw * 1000LL) / FP_ONE;
@@ -55,9 +55,9 @@ static inline double Round(double v, int decimals = 6) {
 // =============================================================================
 //  LOGGING
 // =============================================================================
-void Log(const char* fmt, ...) {
+void log(const char* fmt, ...) {
     if (!g_Log) return;
-    std::string ts = GameTime();
+    std::string ts = gameTime();
     std::lock_guard<std::mutex> lk(g_Mutex);
     fprintf(g_Log, "[%s] ", ts.c_str());
     va_list args;
@@ -68,7 +68,7 @@ void Log(const char* fmt, ...) {
     fflush(g_Log);
 }
 
-void LogJson(const json& j) {
+void logJson(const json& j) {
     if (!g_JsonLog || j.empty()) return;
     std::lock_guard<std::mutex> lk(g_Mutex);
     fprintf(g_JsonLog, "%s\n", j.dump().c_str());
@@ -78,7 +78,7 @@ void LogJson(const json& j) {
 // =============================================================================
 //  CONFIG LOADING
 // =============================================================================
-void LoadConfig(const std::string& dir) {
+void loadConfig(const std::string& dir) {
     std::string path = dir + "\\log_config.json";
 
     FILE* f = fopen(path.c_str(), "r");
@@ -96,10 +96,22 @@ void LoadConfig(const std::string& dir) {
                 "  \"on_hit_defender_stats\":          true,\n"
                 "  \"on_hit_buff_list\":               true,\n"
                 "  \"on_hit_effect_list\":             true,\n"
-                "  \"on_hit_effect_list_information\": true\n"
+                "  \"on_hit_effect_list_information\": true,\n"
+                "  \"player_gizmo\":                   false,\n"
+                "  \"monster_gizmo\":                  false,\n"
+                "  \"bullet_gizmo\":                   false,\n"
+                "  \"hitbox_gizmo\":                   false,\n"
+                "  \"hearing_gizmo_for_player\":       false,\n"
+                "  \"hearing_gizmo_for_monster\":      false,\n"
+                "  \"vision_gizmo_for_player\":        false,\n"
+                "  \"vision_gizmo_for_monster\":       false,\n"
+                "  \"input_and_vision_gizmo\":         false,\n"
+                "  \"monster_path_gizmo\":             false,\n"
+                "  \"player_path_gizmo\":              false,\n"
+                "  \"camera_gizmo\":                   false\n"
                 "}\n");
             fclose(f);
-            Log("[config] log_config.json not found — wrote defaults to %s", path.c_str());
+            log("[config] log_config.json not found — wrote defaults to %s", path.c_str());
         }
         return;
     }
@@ -126,9 +138,48 @@ void LoadConfig(const std::string& dir) {
         g_Cfg.on_hit_buff_list               = get("on_hit_buff_list",               true);
         g_Cfg.on_hit_effect_list             = get("on_hit_effect_list",             true);
         g_Cfg.on_hit_effect_list_information = get("on_hit_effect_list_information", true);
-        Log("[config] Loaded log_config.json");
+        g_Cfg.player_gizmo                   = get("player_gizmo",                   false);
+        g_Cfg.monster_gizmo                  = get("monster_gizmo",                  false);
+        g_Cfg.bullet_gizmo                   = get("bullet_gizmo",                   false);
+        g_Cfg.hitbox_gizmo                   = get("hitbox_gizmo",                   false);
+        g_Cfg.hearing_gizmo_for_player       = get("hearing_gizmo_for_player",       false);
+        g_Cfg.hearing_gizmo_for_monster      = get("hearing_gizmo_for_monster",      false);
+        g_Cfg.vision_gizmo_for_player        = get("vision_gizmo_for_player",        false);
+        g_Cfg.vision_gizmo_for_monster       = get("vision_gizmo_for_monster",       false);
+        g_Cfg.input_and_vision_gizmo         = get("input_and_vision_gizmo",         false);
+        g_Cfg.monster_path_gizmo             = get("monster_path_gizmo",             false);
+        g_Cfg.player_path_gizmo              = get("player_path_gizmo",              false);
+        g_Cfg.camera_gizmo                   = get("camera_gizmo",                   false);
+
+        // Check if config is missing new fields and update it
+        if (!j.contains("player_gizmo") || !j.contains("monster_gizmo") ||
+            !j.contains("bullet_gizmo") || !j.contains("hitbox_gizmo") ||
+            !j.contains("hearing_gizmo_for_player") || !j.contains("hearing_gizmo_for_monster") ||
+            !j.contains("vision_gizmo_for_player") || !j.contains("vision_gizmo_for_monster") ||
+            !j.contains("input_and_vision_gizmo") || !j.contains("monster_path_gizmo") ||
+            !j.contains("player_path_gizmo") || !j.contains("camera_gizmo")) {
+            j["player_gizmo"] = false;
+            j["monster_gizmo"] = false;
+            j["bullet_gizmo"] = false;
+            j["hitbox_gizmo"] = false;
+            j["hearing_gizmo_for_player"] = false;
+            j["hearing_gizmo_for_monster"] = false;
+            j["vision_gizmo_for_player"] = false;
+            j["vision_gizmo_for_monster"] = false;
+            j["input_and_vision_gizmo"] = false;
+            j["monster_path_gizmo"] = false;
+            j["player_path_gizmo"] = false;
+            j["camera_gizmo"] = false;
+            FILE* f = fopen(path.c_str(), "w");
+            if (f) {
+                fprintf(f, "%s", j.dump(2).c_str());
+                fclose(f);
+                log("[config] Updated log_config.json with new debug gizmo options");
+            }
+        }
+        log("[config] Loaded log_config.json");
     } catch (...) {
-        Log("[config] Failed to parse log_config.json — using defaults");
+        log("[config] Failed to parse log_config.json — using defaults");
     }
 }
 
@@ -300,6 +351,95 @@ std::string buffIdToName(int32_t configId) {
     return buf;
 }
 
+
+// =============================================================================
+//  Debug Gizmos
+// =============================================================================
+#include <cstdint>
+#include <cstdarg>
+bool logGizsmos = false;
+
+bool EnableAllDebugGizmos()
+{
+
+    uintptr_t moduleBase = (uintptr_t)GetModuleHandleA("GameAssembly.dll");
+    if (!moduleBase) {
+        log("[DebugGizmos] ERROR: Failed to get module base");
+        return false;
+    }
+    if (logGizsmos) log("[DebugGizmos] Module base: 0x%llX", moduleBase);
+
+    typedef uintptr_t(*GetDebugHelper_t)(uintptr_t);
+    uintptr_t getterAddr = moduleBase + (0x180014840 - 0x180000000);
+    GetDebugHelper_t GetDebugHelper = (GetDebugHelper_t)getterAddr;
+
+    uintptr_t dat_f048 = moduleBase + (0x18715f048 - 0x180000000);
+    uintptr_t dat_f048_val = *(uintptr_t *)dat_f048;
+    if (logGizsmos) log("[DebugGizmos] DAT_18715f048 value: 0x%llX", dat_f048_val);
+    if (!dat_f048_val) {
+        log("[DebugGizmos] ERROR: DAT_18715f048 is null");
+        return false;
+    }
+
+    uintptr_t obj = GetDebugHelper(dat_f048_val);
+    if (logGizsmos) log("[DebugGizmos] AdventureModuleDebugHelper instance: 0x%llX", obj);
+    if (!obj) {
+        log("[DebugGizmos] ERROR: getter returned null — call this later in init");
+        return false;
+    }
+
+    if (logGizsmos) {
+      // Log current state with proper field names
+      log("[DebugGizmos] Current values:");
+      log("[DebugGizmos]   PlayerGizmo          (+0x28): %d", *(char *)(obj + 0x28));
+      log("[DebugGizmos]   MonsterGizmo         (+0x29): %d", *(char *)(obj + 0x29));
+      log("[DebugGizmos]   BulletGizmo          (+0x2A): %d", *(char *)(obj + 0x2A));
+      log("[DebugGizmos]   HitboxGizmo          (+0x2B): %d", *(char *)(obj + 0x2B));
+      log("[DebugGizmos]   HearingGizmoForPlayer  (+0x2C): %d", *(char *)(obj + 0x2C));
+      log("[DebugGizmos]   HearingGizmoForMonster (+0x2D): %d", *(char *)(obj + 0x2D));
+      log("[DebugGizmos]   VisionGizmoForPlayer   (+0x2E): %d", *(char *)(obj + 0x2E));
+      log("[DebugGizmos]   VisionGizmoForMonster  (+0x2F): %d", *(char *)(obj + 0x2F));
+      log("[DebugGizmos]   InputAndVisionGizmo  (+0x30): %d", *(char *)(obj + 0x30));
+      log("[DebugGizmos]   MonsterPathGizmo     (+0x31): %d", *(char *)(obj + 0x31));
+      log("[DebugGizmos]   PlayerPathGizmo      (+0x32): %d", *(char *)(obj + 0x32));
+      log("[DebugGizmos]   CameraGizmo          (+0x33): %d", *(char *)(obj + 0x33));
+    }
+
+    // Enable based on config
+    *(char *)(obj + 0x28) = g_Cfg.player_gizmo ? 1 : 0; // PlayerGizmo
+    *(char *)(obj + 0x29) = g_Cfg.monster_gizmo ? 1 : 0; // MonsterGizmo
+    *(char *)(obj + 0x2A) = g_Cfg.bullet_gizmo ? 1 : 0; // BulletGizmo
+    *(char *)(obj + 0x2B) = g_Cfg.hitbox_gizmo ? 1 : 0; // HitboxGizmo
+    *(char *)(obj + 0x2C) = g_Cfg.hearing_gizmo_for_player ? 1 : 0; // HearingGizmoForPlayer
+    *(char *)(obj + 0x2D) = g_Cfg.hearing_gizmo_for_monster ? 1 : 0; // HearingGizmoForMonster
+    *(char *)(obj + 0x2E) = g_Cfg.vision_gizmo_for_player ? 1 : 0; // VisionGizmoForPlayer
+    *(char *)(obj + 0x2F) = g_Cfg.vision_gizmo_for_monster ? 1 : 0; // VisionGizmoForMonster
+    *(char *)(obj + 0x30) = g_Cfg.input_and_vision_gizmo ? 1 : 0; // InputAndVisionGizmo
+    *(char *)(obj + 0x31) = g_Cfg.monster_path_gizmo ? 1 : 0; // MonsterPathGizmo
+    *(char *)(obj + 0x32) = g_Cfg.player_path_gizmo ? 1 : 0; // PlayerPathGizmo
+    *(char *)(obj + 0x33) = g_Cfg.camera_gizmo ? 1 : 0; // CameraGizmo
+
+    if (logGizsmos) {
+      // Verify
+      log("[DebugGizmos] Values after write:");
+      log("[DebugGizmos]   PlayerGizmo          (+0x28): %s", *(char *)(obj + 0x28) ? "OK" : "FAILED");
+      log("[DebugGizmos]   MonsterGizmo         (+0x29): %s", *(char *)(obj + 0x29) ? "OK" : "FAILED");
+      log("[DebugGizmos]   BulletGizmo          (+0x2A): %s", *(char *)(obj + 0x2A) ? "OK" : "FAILED");
+      log("[DebugGizmos]   HitboxGizmo          (+0x2B): %s", *(char *)(obj + 0x2B) ? "OK" : "FAILED");
+      log("[DebugGizmos]   HearingGizmoForPlayer  (+0x2C): %s", *(char *)(obj + 0x2C) ? "OK" : "FAILED");
+      log("[DebugGizmos]   HearingGizmoForMonster (+0x2D): %s", *(char *)(obj + 0x2D) ? "OK" : "FAILED");
+      log("[DebugGizmos]   VisionGizmoForPlayer   (+0x2E): %s", *(char *)(obj + 0x2E) ? "OK" : "FAILED");
+      log("[DebugGizmos]   VisionGizmoForMonster  (+0x2F): %s", *(char *)(obj + 0x2F) ? "OK" : "FAILED");
+      log("[DebugGizmos]   InputAndVisionGizmo  (+0x30): %s", *(char *)(obj + 0x30) ? "OK" : "FAILED");
+      log("[DebugGizmos]   MonsterPathGizmo     (+0x31): %s", *(char *)(obj + 0x31) ? "OK" : "FAILED");
+      log("[DebugGizmos]   PlayerPathGizmo      (+0x32): %s", *(char *)(obj + 0x32) ? "OK" : "FAILED");
+      log("[DebugGizmos]   CameraGizmo          (+0x33): %s", *(char *)(obj + 0x33) ? "OK" : "FAILED");
+
+      log("[DebugGizmos] Done.");
+    }
+    return true;
+}
+
 // =============================================================================
 //  JSON builders
 // =============================================================================
@@ -307,7 +447,7 @@ json BuildBuffJson(const char* type, int32_t configId, AdventureActor_o* owner, 
     json j;
     j["Type"] = "Buff";
     j["Action"] = isAdd > 0 ? "Add" : "Remove";
-    j["Time"] = GameTime();
+    j["Time"] = gameTime();
 
     if (g_SuppressedEffects.count(configId) != 0) return {};
     
@@ -450,7 +590,7 @@ json BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
                   int64_t finalDamage) {
     json j;
     j["Type"] = "Hit";
-    j["Time"] = GameTime();
+    j["Time"] = gameTime();
     
     if (fromActor) {
         j["Attacker"] = adventureActorId(fromActor);
@@ -552,7 +692,7 @@ json BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
 json BuildSkillCastJson(int32_t skillId) {
     json j;
     j["Type"] = "Skill Cast";
-    j["Time"] = GameTime();
+    j["Time"] = gameTime();
     j["SkillId"] = skillId;
     
     auto it = g_SkillTable.find(skillId);
@@ -586,7 +726,7 @@ void InitializeLogger() {
     std::string logDir = GetLocalAppDataPath() + "\\Stella Sora Combat Logger";
     CreateDirectoryA(logDir.c_str(), nullptr);
 
-    std::string logPath = logDir + "\\ss_dpslog.txt";
+    std::string logPath = logDir + "\\sanity_log.txt";
     g_Log = fopen(logPath.c_str(), "a");
     if (g_Log) {
         SYSTEMTIME t{};

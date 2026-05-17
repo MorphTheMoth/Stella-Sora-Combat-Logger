@@ -17,16 +17,28 @@ struct ActorEffectManage_o;
 struct Nova_Client_HitDamage_o;
 
 struct LogConfig {
-    bool suppress_useless_info          = true;
-    bool buffs                          = true;
-    bool effects                        = true;
-    bool damage                         = true;
-    bool skill_casts                    = true;
-    bool on_hit_attacker_stats          = true;
-    bool on_hit_defender_stats          = true;
-    bool on_hit_buff_list               = true;
-    bool on_hit_effect_list             = true;
-    bool on_hit_effect_list_information = true;
+    bool suppress_useless_info;
+    bool buffs;
+    bool effects;
+    bool damage;
+    bool skill_casts;
+    bool on_hit_attacker_stats;
+    bool on_hit_defender_stats;
+    bool on_hit_buff_list;
+    bool on_hit_effect_list;
+    bool on_hit_effect_list_information;
+    bool player_gizmo;
+    bool monster_gizmo;
+    bool bullet_gizmo;
+    bool hitbox_gizmo;
+    bool hearing_gizmo_for_player;
+    bool hearing_gizmo_for_monster;
+    bool vision_gizmo_for_player;
+    bool vision_gizmo_for_monster;
+    bool input_and_vision_gizmo;
+    bool monster_path_gizmo;
+    bool player_path_gizmo;
+    bool camera_gizmo;
 };
 
 extern FILE*                g_Log;
@@ -37,10 +49,10 @@ extern std::atomic<int64_t> g_BattleTimeFP;
 extern std::unordered_set<int32_t> g_SuppressedEffects;
 
 // Basic logging
-void Log(const char* fmt, ...);
-void LogJson(const json& j);
-std::string GameTime();
-void LoadConfig(const std::string& dir);
+void log(const char* fmt, ...);
+void logJson(const json& j);
+std::string gameTime();
+void loadConfig(const std::string& dir);
 
 // String helpers
 std::string Il2CppStringToStd(void* strObj);
@@ -74,3 +86,5 @@ std::string GetLocalAppDataPath();
 void InitializeLogger();
 
 bool InstallHook(uintptr_t target, void* hook, void** original, const char* name);
+
+bool EnableAllDebugGizmos();

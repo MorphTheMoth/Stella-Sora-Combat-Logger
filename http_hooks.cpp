@@ -241,13 +241,13 @@ void BuildGemAttrTable(const std::string& dataRoot) {
     // --- Load files -----------------------------------------------------------
     auto LoadJson = [&](const std::string& path, const char* tag) -> json {
         FILE* f = fopen(path.c_str(), "rb");
-        if (!f) { Log("[gem] %s not found: %s", tag, path.c_str()); return json{}; }
+        if (!f) { log("[gem] %s not found: %s", tag, path.c_str()); return json{}; }
         fseek(f, 0, SEEK_END); long sz = ftell(f); rewind(f);
         std::string raw(sz, '\0');
         fread(raw.data(), 1, sz, f);
         fclose(f);
         json j = json::parse(raw, nullptr, false);
-        if (j.is_discarded()) { Log("[gem] %s parse error: %s", tag, path.c_str()); return json{}; }
+        if (j.is_discarded()) { log("[gem] %s parse error: %s", tag, path.c_str()); return json{}; }
         return j;
     };
 
@@ -262,7 +262,7 @@ void BuildGemAttrTable(const std::string& dataRoot) {
             if (v.is_string())
                 g_ItemLang[k] = v.get<std::string>();
         }
-        Log("[gem] Loaded %d item lang entries", (int)g_ItemLang.size());
+        log("[gem] Loaded %d item lang entries", (int)g_ItemLang.size());
     }
 
     // --- Parse CharGemAttrValue entries --------------------------------------
@@ -287,7 +287,7 @@ void BuildGemAttrTable(const std::string& dataRoot) {
         g_GemAttrTable[id] = { attrType, firstSubtype, secondSubtype, value, label };
         ++built;
     }
-    Log("[gem] Built gem attr table: %d entries", built);
+    log("[gem] Built gem attr table: %d entries", built);
 }
 
 // Format one attribute ID for display, given the request's charId (needed for type 99)

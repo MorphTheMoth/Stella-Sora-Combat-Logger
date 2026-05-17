@@ -96,7 +96,7 @@ static int64_t __fastcall Hook_CalcNormalDamage( AdventureActor_o* fromActor, Ad
         skillAbsAmend, talentGroupAbsAmend, perkIntensityRatio, slotDmgRatio, fromEE, erAmend, defAmend, rcdSlotDmgRatio, toEERCD,
         skillIntensityRatio, toughnessBrokenDmgRatio, critRatio, envAmendRatio, dmg);
     
-    LogJson(hitJson);
+    logJson(hitJson);
     return dmg;
 }
 
@@ -123,7 +123,7 @@ static void __fastcall Hook_EffectOnInit(void* self, int32_t effType, int32_t so
     
     if (g_Cfg.effects) {
         json j = BuildBuffJson("Effect", configId, owner, fromActor, 1);
-        LogJson(j);
+        logJson(j);
     }
 }
 
@@ -141,7 +141,7 @@ static void __fastcall Hook_BuffEffectOnInit(void* self, AdventureActor_o* owner
     
     if (g_Cfg.buffs) {
         json j = BuildBuffJson("Buff", configId, owner, fromActor, 1);
-        LogJson(j);
+        logJson(j);
     }
 }
 
@@ -177,7 +177,7 @@ static void __fastcall Hook_BuffEntityExcute(BuffEntity_o* self, int32_t addType
     
     if (g_Cfg.buffs) {
         json j = BuildBuffJson("Buff", configId, owner, fromActor, addType==3 ? -1 : 1, buffNum);
-        LogJson(j);
+        logJson(j);
     }
 }
 
@@ -202,12 +202,13 @@ static void __fastcall Hook_EffectOnClear(AdventureEffectBase_o* effectBase, Met
                     configId = cfgCandidate->fields.id_;
 
                 json j = BuildBuffJson("Effect", configId, owner, fromActor, -1);
-                LogJson(j);
+                logJson(j);
             }
         }
     }
     g_OrigEffectOnClear(effectBase, method);
 }
+
 
 // =============================================================================
 //  Battle finish / timer / spawn
@@ -216,6 +217,7 @@ using FnUpdateLogic = void(__fastcall*)( void*, TrueSync_FP_o, void*);
 static FnUpdateLogic g_OrigUpdateLogic = nullptr;
 
 static void __fastcall Hook_UpdateLogic(void* self, TrueSync_FP_o logicDeltaTime, void* method) {
+    EnableAllDebugGizmos();    //tried doing it on Hook_BattleFinish (which runs on battle start) but it didnt work
     g_OrigUpdateLogic(self, logicDeltaTime, method);
     g_BattleTimeFP.fetch_add(logicDeltaTime.fields._serializedValue, std::memory_order_relaxed);
 }
@@ -239,7 +241,7 @@ static void* __fastcall Hook_SpawnSkill(void* self, int32_t skillId, void* metho
     if (!g_Cfg.skill_casts) return result;
     
     json j = BuildSkillCastJson(skillId);
-    LogJson(j);
+    logJson(j);
     
     return result;
 }
@@ -249,10 +251,10 @@ static void* __fastcall Hook_SpawnSkill(void* self, int32_t skillId, void* metho
 // =============================================================================
 bool InstallHook(uintptr_t target, void* hook, void** original, const char* name) {
     MH_STATUS s = MH_CreateHook(reinterpret_cast<void*>(target), hook, original);
-    if (s != MH_OK) { Log("[ERROR] MH_CreateHook failed for %s: %d", name, (int)s); return false; }
+    if (s != MH_OK) { log("[ERROR] MH_CreateHook failed for %s: %d", name, (int)s); return false; }
     s = MH_EnableHook(reinterpret_cast<void*>(target));
-    if (s != MH_OK) { Log("[ERROR] MH_EnableHook failed for %s: %d", name, (int)s); return false; }
-    Log("[init] Hooked %s at 0x%llX", name, (unsigned long long)target);
+    if (s != MH_OK) { log("[ERROR] MH_EnableHook failed for %s: %d", name, (int)s); return false; }
+    log("[init] Hooked %s at 0x%llX", name, (unsigned long long)target);
     return true;
 }
 
@@ -261,7 +263,7 @@ static DWORD WINAPI InitThread(LPVOID) {
     if (!g_Log) return 1;
 
     std::string logDir = GetLocalAppDataPath() + "\\Stella Sora Combat Logger";
-    LoadConfig(logDir);
+    loadConfig(logDir);
     BuildHitTable((GetLocalAppDataPath() + "\\StellaSoraData").c_str());
     BuildGemAttrTable(GetLocalAppDataPath() + "\\StellaSoraData");
     InitHttpLogger(logDir);
@@ -270,13 +272,13 @@ static DWORD WINAPI InitThread(LPVOID) {
     for (int i = 0; i < 60; i++) {
         base = reinterpret_cast<uintptr_t>(GetModuleHandleA("GameAssembly.dll"));
         if (base) break;
-        Log("[init] Waiting for GameAssembly.dll... attempt %d/60", i + 1);
+        log("[init] Waiting for GameAssembly.dll... attempt %d/60", i + 1);
         Sleep(500);
     }
-    if (!base) { Log("[ERROR] GameAssembly.dll never loaded!"); return 1; }
-    Log("[init] GameAssembly base=0x%llX", (unsigned long long)base);
+    if (!base) { log("[ERROR] GameAssembly.dll never loaded!"); return 1; }
+    log("[init] GameAssembly base=0x%llX", (unsigned long long)base);
 
-    if (MH_Initialize() != MH_OK) { Log("[ERROR] MH_Initialize failed."); return 1; }
+    if (MH_Initialize() != MH_OK) { log("[ERROR] MH_Initialize failed."); return 1; }
 
     InstallHook(base + RVA_DAMAGE,                 reinterpret_cast<void*>(&Hook_Damage),             (void**)&g_OrigDamage,             "AdventureActor$$Damage");
     InstallHook(base + RVA_EFFECT_ON_INIT,         reinterpret_cast<void*>(&Hook_EffectOnInit),       (void**)&g_OrigEffectOnInit,       "AdventureEffect$$OnInit");
@@ -290,8 +292,8 @@ static DWORD WINAPI InitThread(LPVOID) {
     InstallHook(base + RVA_CALC_NORMAL_DAMAGE,     reinterpret_cast<void*>(&Hook_CalcNormalDamage),   (void**)&g_OrigCalcNormalDamage,   "CommonHelper$$CalculateNormalDamage");
 
     InstallHttpHooks(base);
-
-    Log("[init] Ready.");
+    
+    log("[init] Ready.");
     return 0;
 }
 
@@ -304,7 +306,7 @@ BOOL APIENTRY DllMain(HMODULE hInst, DWORD reason, LPVOID reserved) {
     else if (reason == DLL_PROCESS_DETACH) {
         MH_DisableHook(MH_ALL_HOOKS);
         MH_Uninitialize();
-        if (g_Log)     { Log("[uninit] DLL detached."); fclose(g_Log); g_Log = nullptr; }
+        if (g_Log)     { log("[uninit] DLL detached."); fclose(g_Log); g_Log = nullptr; }
         if (g_JsonLog) { fclose(g_JsonLog); g_JsonLog = nullptr; }
         ShutdownHttpLogger();
     }

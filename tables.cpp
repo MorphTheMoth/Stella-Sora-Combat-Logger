@@ -11,9 +11,7 @@
 #include "json.hpp"
 
 using json = nlohmann::json;
-
-// Forward declaration — defined in proxy.cpp
-void Log(const char* fmt, ...);
+void log(const char* fmt, ...);
 
 #include "tables.h"
 
@@ -57,12 +55,12 @@ static bool ReadFile(const std::string& path, std::string& out) {
 static json LoadJson(const std::string& path, const char* tag) {
     std::string raw;
     if (!ReadFile(path, raw)) {
-        Log("%s %s not found", tag, path.c_str());
+        log("%s %s not found", tag, path.c_str());
         return json::parse("", nullptr, false); // discarded
     }
     json j = json::parse(raw, nullptr, false);
     if (j.is_discarded())
-        Log("%s %s parse error", tag, path.c_str());
+        log("%s %s parse error", tag, path.c_str());
     return j;
 }
 
@@ -359,7 +357,7 @@ static void BuildEffectTable(const std::string& dataRoot,
                 return ResolveLocKey(val, "Name", jAffixLang);
             };
             int n = SourcePass(jAffix, "Affix: ", nameResolver);
-            Log("[effect] Built affix entries: %d", n);
+            log("[effect] Built affix entries: %d", n);
         }
     }
 
@@ -513,7 +511,7 @@ static void BuildEffectTable(const std::string& dataRoot,
                     }
                 }
             }
-            Log("[effect] Built buff entries: %d", buffBuilt);
+            log("[effect] Built buff entries: %d", buffBuilt);
         }
     }
 
@@ -564,7 +562,7 @@ static void BuildEffectTable(const std::string& dataRoot,
                     break;
                 }
             }
-            Log("[effect] Built BuffValue-via-Potential entries: %d", bvBuilt);
+            log("[effect] Built BuffValue-via-Potential entries: %d", bvBuilt);
         }
     }
 
@@ -598,7 +596,7 @@ static void BuildEffectTable(const std::string& dataRoot,
                 return ResolveLocKey(val, "Title", jWordLang);
             };
             int n = SourcePass(jWord, "Word: ", nameResolver);
-            Log("[effect] Built word entries: %d", n);
+            log("[effect] Built word entries: %d", n);
         }
     }
 
@@ -623,7 +621,7 @@ static void BuildEffectTable(const std::string& dataRoot,
                     ++talentBuilt;
                 });
             }
-            Log("[effect] Built talent entries: %d", talentBuilt);
+            log("[effect] Built talent entries: %d", talentBuilt);
         }
     }
 
@@ -675,7 +673,7 @@ static void BuildEffectTable(const std::string& dataRoot,
                 evIdToInfo[configId] = git->second;
                 ++harmonyBuilt;
             }
-            Log("[effect] Built harmony (SecondarySkill) entries: %d", harmonyBuilt);
+            log("[effect] Built harmony (SecondarySkill) entries: %d", harmonyBuilt);
 
             // ─── Pass: EffectValue.json → referenced IDs via EffectTypeParam ───
             if (!jEffectValue.is_discarded()) {
@@ -704,7 +702,7 @@ static void BuildEffectTable(const std::string& dataRoot,
                         ++evReferencedBuilt;
                     }
                 }
-                Log("[effect] Built EffectValue-referenced harmony entries: %d", evReferencedBuilt);
+                log("[effect] Built EffectValue-referenced harmony entries: %d", evReferencedBuilt);
             }
         }
     }
@@ -745,7 +743,7 @@ static void BuildEffectTable(const std::string& dataRoot,
                     }
                 }
             }
-            Log("[effect] Built ScoreBossAbility entries: %d", bossBuilt);
+            log("[effect] Built ScoreBossAbility entries: %d", bossBuilt);
         }
     }
 
@@ -794,8 +792,8 @@ static void BuildEffectTable(const std::string& dataRoot,
                 std::string potName  = lit->get<std::string>();
                 std::string charName = CharName(jChar, charId);
 
-                Log("[effect] last-resort pot decode: %d -> %s - %s",
-                    buffId, charName.c_str(), potName.c_str());
+                //Log("[effect] last-resort pot decode: %d -> %s - %s",
+                //    buffId, charName.c_str(), potName.c_str());
 
                 g_EffectTable[buffId] = { charName, potName, -1 };
                 ++lastResortBuilt;
@@ -829,7 +827,7 @@ static void BuildEffectTable(const std::string& dataRoot,
                 }
             }
 
-            Log("[effect] Built last-resort potential entries: %d", lastResortBuilt);
+            log("[effect] Built last-resort potential entries: %d", lastResortBuilt);
         }
     }
 
@@ -838,7 +836,7 @@ static void BuildEffectTable(const std::string& dataRoot,
     g_EffectTable[631014002] = { "Enemy", "Forbidden Beauty / Meticulously Crafted", -1 };
     g_EffectTable[631014022] = { "Enemy", "Forbidden Beauty / Meticulously Crafted", -1 };
 
-    Log("[effect] Built effect table: %d entries (%d disc, %d suppressed)",
+    log("[effect] Built effect table: %d entries (%d disc, %d suppressed)",
         built + discBuilt, discBuilt, (int)g_SuppressedEffects.size());
 }
 
@@ -863,7 +861,7 @@ static void BuildSkillTable(const std::string& dataRoot, const json& jChar) {
             g_SkillTable[skillId] = { charName, stype, sname, "", skillId };
         }
     }
-    Log("[skill] Built character skill entries: %d", (int)g_SkillTable.size());
+    log("[skill] Built character skill entries: %d", (int)g_SkillTable.size());
 
     // Case 2: everything else from Skill.json + language file
     const std::string binPath  = dataRoot + "/EN/bin/";
@@ -886,7 +884,7 @@ static void BuildSkillTable(const std::string& dataRoot, const json& jChar) {
         g_SkillTable[skillId] = { "", "", briefDesc, fcPath, skillId };
         ++fallbackBuilt;
     }
-    Log("[skill] Built fallback skill entries: %d", fallbackBuilt);
+    log("[skill] Built fallback skill entries: %d", fallbackBuilt);
 }
 
 // =============================================================================
@@ -940,7 +938,7 @@ void BuildHitTable(const std::string& dataRoot) {
                                          ? model.substr(slash + 1) : model;
                 ++skinBuilt;
             }
-            Log("[lookup] Built monster skin map: %d entries", skinBuilt);
+            log("[lookup] Built monster skin map: %d entries", skinBuilt);
         }
     }
 
@@ -1020,11 +1018,11 @@ void BuildHitTable(const std::string& dataRoot) {
                     return false;
                 });
             }
-            Log("[lookup] Built potential hit entries: %d", potBuilt);
+            log("[lookup] Built potential hit entries: %d", potBuilt);
         }
     }
 
-    Log("[lookup] Built hit table: %d entries", built);
+    log("[lookup] Built hit table: %d entries", built);
 
     BuildEffectTable(dataRoot, jSkill, jLang, jChar, jPotential);
     BuildSkillTable(dataRoot, jChar);
