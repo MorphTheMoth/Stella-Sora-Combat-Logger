@@ -112,7 +112,7 @@ std::string ReadJsonLog(size_t after = 0) {
 
     json arr = json::array();
     std::string line;
-    size_t totalLines = 0;
+    int totalLines = 0;
     
     // Count total lines first (excluding empty/comment lines)
     std::ifstream countFile(LOG_FILE);
@@ -122,7 +122,8 @@ std::string ReadJsonLog(size_t after = 0) {
     }
     
     // Now read and parse only lines after `after`
-    size_t currentLine = 0;
+    int maxLines = 100;
+    int currentLine = 0;
     while (std::getline(file, line)) {
         if (line.empty() || line[0] == '=') continue;
         if (currentLine >= after) {
@@ -131,6 +132,7 @@ std::string ReadJsonLog(size_t after = 0) {
             } catch (...) {}
         }
         currentLine++;
+        if ((currentLine-(int)after) >= maxLines) break;
     }
     
     json result;
