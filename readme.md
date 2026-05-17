@@ -26,7 +26,7 @@ For linux I had issues with normally injecting a dll, but you can download the s
 ## Usage
 
 - To view the logs, download `ui.html` and `log_viewer.exe` from the release tab https://github.com/MorphTheMoth/Stella-Sora-Combat-Logger/releases
-- Put them in the same folder, and run `log_viewer.exe` or `./log_viewer.exe` from command line (if you double click it, it works, but you can only close it from task manager), if the log file is large it will take a little time to load it all
+- Put them in the same folder, and run `log_viewer.exe` or `./log_viewer.exe` from command line (if you double click it, it works, but you can only close it from task manager).
 - Open http://localhost:9299
 - If the log viewer doesn't find the log file automatically, run `./log_viewer.exe "path/to/ss_jsonlog.txt"`
 
