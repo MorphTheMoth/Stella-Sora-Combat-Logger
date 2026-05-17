@@ -17,6 +17,8 @@
     #include <unistd.h>
     #include <pwd.h>
     #include <sys/types.h>
+    #include <sys/stat.h>
+    #include <dirent.h>
 #endif
 
 #include "mongoose.h"
@@ -100,43 +102,98 @@ std::string GetDefaultLogPath() {
 }
 
 // =============================================================================
-//  Thread-safe file reading
+//  Line index - maps logical line numbers to byte offsets in LOG_FILE
 // =============================================================================
 std::mutex file_mutex;
 
-// Returns a JSON object: { "events": [...], "totalLines": N }
+struct LineIndex {
+    // offsets[i] = byte offset where logical line i begins.
+    // A "logical line" is any non-empty line that doesn't start with '='.
+    std::vector<std::streampos> offsets;
+    std::streampos              eof_offset = 0;
+    bool                        valid      = false;
+};
+
+static LineIndex g_index;
+
+// Full scan - only runs once (or after /clear). Holds file_mutex.
+static void RebuildIndex(std::ifstream& file) {
+    g_index.offsets.clear();
+    g_index.valid = false;
+    file.clear();
+    file.seekg(0, std::ios::beg);
+    std::string line;
+    while (true) {
+        std::streampos pos = file.tellg();
+        if (!std::getline(file, line)) break;
+        if (line.empty() || line[0] == '=') continue;
+        g_index.offsets.push_back(pos);
+    }
+    file.clear();
+    file.seekg(0, std::ios::end);
+    g_index.eof_offset = file.tellg();
+    g_index.valid = true;
+}
+
+// Cheap incremental scan - only reads bytes appended since last call. Holds file_mutex.
+static void ExtendIndex(std::ifstream& file) {
+    file.clear();
+    file.seekg(0, std::ios::end);
+    std::streampos current_eof = file.tellg();
+    if (current_eof <= g_index.eof_offset) return;
+    file.clear();
+    file.seekg(g_index.eof_offset);
+    std::string line;
+    while (true) {
+        std::streampos pos = file.tellg();
+        if (!std::getline(file, line)) break;
+        if (line.empty() || line[0] == '=') continue;
+        g_index.offsets.push_back(pos);
+    }
+    file.clear();
+    file.seekg(0, std::ios::end);
+    g_index.eof_offset = file.tellg();
+}
+
+// Call after /clear so the next read triggers a fresh RebuildIndex.
+static void InvalidateIndex() {
+    std::lock_guard<std::mutex> lock(file_mutex);
+    g_index.valid = false;
+    g_index.offsets.clear();
+    g_index.eof_offset = 0;
+}
+
+// Returns { "events": [...], "totalLines": N }.
+// After the first full scan the index is only extended by new bytes,
+// and each poll jumps straight to `after` via seekg - no full-file scan.
 std::string ReadJsonLog(size_t after = 0) {
     std::lock_guard<std::mutex> lock(file_mutex);
+
     std::ifstream file(LOG_FILE);
     if (!file.is_open()) return "{\"events\":[],\"totalLines\":0}";
 
+    if (!g_index.valid)
+        RebuildIndex(file);
+    else
+        ExtendIndex(file);
+
+    size_t totalLines = g_index.offsets.size();
+
     json arr = json::array();
-    std::string line;
-    int totalLines = 0;
-    
-    // Count total lines first (excluding empty/comment lines)
-    std::ifstream countFile(LOG_FILE);
-    std::string dummy;
-    while (std::getline(countFile, dummy)) {
-        if (!dummy.empty() && dummy[0] != '=') totalLines++;
-    }
-    
-    // Now read and parse only lines after `after`
-    int maxLines = 100;
-    int currentLine = 0;
-    while (std::getline(file, line)) {
-        if (line.empty() || line[0] == '=') continue;
-        if (currentLine >= after) {
-            try {
-                arr.push_back(json::parse(line));
-            } catch (...) {}
+    if (after < totalLines) {
+        file.clear();
+        file.seekg(g_index.offsets[after]);
+        std::string line;
+        int maxLines = 100, read = 0;
+        while (read < maxLines && std::getline(file, line)) {
+            if (line.empty() || line[0] == '=') continue;
+            try { arr.push_back(json::parse(line)); } catch (...) {}
+            ++read;
         }
-        currentLine++;
-        if ((currentLine-(int)after) >= maxLines) break;
     }
-    
+
     json result;
-    result["events"] = arr;
+    result["events"]     = arr;
     result["totalLines"] = totalLines;
     return result.dump();
 }
@@ -164,6 +221,110 @@ static std::string RemoteAddr(struct mg_connection* c) {
             static_cast<unsigned>(mg_ntohs(c->rem.port)));
     }
     return std::string(buf);
+}
+
+// =============================================================================
+//  Saved logs helpers
+// =============================================================================
+
+// Returns the "saved logs" folder path, always sibling to LOG_FILE.
+static std::string SavedLogsDir() {
+#ifdef _WIN32
+    size_t sep = LOG_FILE.find_last_of("\\/");
+#else
+    size_t sep = LOG_FILE.find_last_of('/');
+#endif
+    std::string base = (sep != std::string::npos) ? LOG_FILE.substr(0, sep + 1) : "";
+    return base + "saved logs";
+}
+
+// Ensures the "saved logs" folder exists. Returns true on success.
+static bool EnsureSavedLogsDir() {
+    std::string dir = SavedLogsDir();
+#ifdef _WIN32
+    DWORD attr = GetFileAttributesA(dir.c_str());
+    if (attr == INVALID_FILE_ATTRIBUTES)
+        return CreateDirectoryA(dir.c_str(), NULL) != 0;
+    return (attr & FILE_ATTRIBUTE_DIRECTORY) != 0;
+#else
+    struct stat st;
+    if (stat(dir.c_str(), &st) == 0)
+        return S_ISDIR(st.st_mode);
+    return mkdir(dir.c_str(), 0755) == 0;
+#endif
+}
+
+// Returns the full path for a saved log file given a plain name.
+static std::string SavedLogPath(const std::string& name) {
+#ifdef _WIN32
+    return SavedLogsDir() + "\\" + name + ".txt";
+#else
+    return SavedLogsDir() + "/" + name + ".txt";
+#endif
+}
+
+// Sanitise the name: strip path separators and dots that could escape the dir.
+static std::string SanitiseName(const std::string& raw) {
+    std::string out;
+    out.reserve(raw.size());
+    for (char ch : raw) {
+        if (ch == '/' || ch == '\\' || ch == '.' || ch == ':') continue;
+        out += ch;
+    }
+    return out;
+}
+
+// Reads the current log file and copies it verbatim to "saved logs/<name>.txt".
+static bool SaveCurrentLog(const std::string& name, std::string& errMsg) {
+    if (name.empty()) { errMsg = "empty name"; return false; }
+    if (!EnsureSavedLogsDir()) { errMsg = "could not create saved logs folder"; return false; }
+
+    std::ifstream src(LOG_FILE, std::ios::binary);
+    if (!src.is_open()) { errMsg = "source log not readable"; return false; }
+
+    std::string dest_path = SavedLogPath(name);
+    std::ofstream dst(dest_path, std::ios::binary | std::ios::trunc);
+    if (!dst.is_open()) { errMsg = "could not write " + dest_path; return false; }
+
+    dst << src.rdbuf();
+    return true;
+}
+
+// Like ReadJsonLog but for a saved (static) file - builds a local offset index
+// on each call so it can seekg directly to `after` without scanning from the top.
+std::string ReadJsonLogFrom(const std::string& path, size_t after = 0) {
+    std::lock_guard<std::mutex> lock(file_mutex);
+    std::ifstream file(path);
+    if (!file.is_open()) return "{\"events\":[],\"totalLines\":0}";
+
+    // Build a local line-offset index for this file.
+    std::vector<std::streampos> offsets;
+    std::string line;
+    while (true) {
+        std::streampos pos = file.tellg();
+        if (!std::getline(file, line)) break;
+        if (line.empty() || line[0] == '=') continue;
+        offsets.push_back(pos);
+    }
+
+    size_t totalLines = offsets.size();
+    json arr = json::array();
+
+    if (after < totalLines) {
+        file.clear();
+        file.seekg(offsets[after]);
+        int maxLines = 100, read = 0;
+        while (read < maxLines && std::getline(file, line)) {
+            if (line.empty() || line[0] == '=') continue;
+            try { arr.push_back(json::parse(line)); } catch (...) {}
+            ++read;
+        }
+    }
+
+    json result;
+    result["events"]     = arr;
+    result["totalLines"] = totalLines;
+    return result.dump();
 }
 
 // =============================================================================
@@ -198,13 +359,104 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
             if (mg_http_get_var(&q, "after", after_buf, sizeof(after_buf)) > 0) {
                 after = static_cast<size_t>(std::stoull(after_buf));
             }
-            std::string body = ReadJsonLog(after);
+
+            // If ?savedlog=<name> is present, serve that saved file instead.
+            char savedlog_buf[256] = {0};
+            std::string body;
+            if (mg_http_get_var(&q, "savedlog", savedlog_buf, sizeof(savedlog_buf)) > 0) {
+                std::string safe_name = SanitiseName(std::string(savedlog_buf));
+                std::string saved_path = SavedLogPath(safe_name);
+                std::ifstream check(saved_path);
+                if (check.good()) {
+                    body = ReadJsonLogFrom(saved_path, after);
+                    mg_http_reply(c, 200, "Content-Type: application/json\r\n", "%s", body.c_str());
+                    HttpLog(200, method, uri, query, remote);
+                } else {
+                    mg_http_reply(c, 404, "Content-Type: application/json\r\n",
+                        "{\"error\":\"saved log not found\"}");
+                    HttpLog(404, method, uri, query, remote);
+                }
+            } else {
+                body = ReadJsonLog(after);
+                mg_http_reply(c, 200, "Content-Type: application/json\r\n", "%s", body.c_str());
+                HttpLog(200, method, uri, query, remote);
+            }
+        } else if (uri == "/savelog" && method == "POST") {
+            // Expect JSON body: { "name": "<save name>" }
+            std::string req_body = MgStrToStd(hm->body);
+            std::string save_name;
+            try {
+                json j = json::parse(req_body);
+                save_name = SanitiseName(j.value("name", ""));
+            } catch (...) {}
+
+            if (save_name.empty()) {
+                mg_http_reply(c, 400, "Content-Type: application/json\r\n",
+                    "{\"error\":\"missing or invalid name\"}");
+                HttpLog(400, method, uri, query, remote);
+            } else {
+                std::string errMsg;
+                if (SaveCurrentLog(save_name, errMsg)) {
+                    ServerLog("Saved log as: %s", SavedLogPath(save_name).c_str());
+                    std::string ok = "{\"ok\":true,\"file\":\"" + SavedLogPath(save_name) + "\"}";
+                    mg_http_reply(c, 200, "Content-Type: application/json\r\n", "%s", ok.c_str());
+                    HttpLog(200, method, uri, query, remote);
+                } else {
+                    std::string err = "{\"error\":\"" + errMsg + "\"}";
+                    mg_http_reply(c, 500, "Content-Type: application/json\r\n", "%s", err.c_str());
+                    HttpLog(500, method, uri, query, remote);
+                }
+            }
+        } else if (uri == "/savedlogslist") {
+            json names = json::array();
+#ifdef _WIN32
+            std::string pattern = SavedLogsDir() + "\\*.txt";
+            WIN32_FIND_DATAA fd;
+            HANDLE hFind = FindFirstFileA(pattern.c_str(), &fd);
+            if (hFind != INVALID_HANDLE_VALUE) {
+                do {
+                    std::string fname = fd.cFileName;
+                    // Strip ".txt" suffix
+                    if (fname.size() > 4)
+                        names.push_back(fname.substr(0, fname.size() - 4));
+                } while (FindNextFileA(hFind, &fd));
+                FindClose(hFind);
+            }
+#else
+            DIR* dir = opendir(SavedLogsDir().c_str());
+            if (dir) {
+                struct dirent* entry;
+                while ((entry = readdir(dir)) != nullptr) {
+                    std::string fname = entry->d_name;
+                    if (fname.size() > 4 && fname.substr(fname.size() - 4) == ".txt")
+                        names.push_back(fname.substr(0, fname.size() - 4));
+                }
+                closedir(dir);
+            }
+#endif
+            std::string body = json{{"logs", names}}.dump();
             mg_http_reply(c, 200, "Content-Type: application/json\r\n", "%s", body.c_str());
             HttpLog(200, method, uri, query, remote);
         } else if (uri == "/clear") {
-            std::ofstream clear(LOG_FILE, std::ios::trunc);
-            clear.close();
-            mg_http_reply(c, 200, "Content-Type: application/json\r\n", "{\"ok\":true}");
+            char savedlog_buf[256] = {0};
+            struct mg_str q = hm->query;
+            if (mg_http_get_var(&q, "savedlog", savedlog_buf, sizeof(savedlog_buf)) > 0) {
+                // Delete a specific saved log file.
+                std::string safe_name = SanitiseName(std::string(savedlog_buf));
+                std::string saved_path = SavedLogPath(safe_name);
+                if (std::remove(saved_path.c_str()) == 0) {
+                    ServerLog("Deleted saved log: %s", saved_path.c_str());
+                    mg_http_reply(c, 200, "Content-Type: application/json\r\n", "{\"ok\":true}");
+                } else {
+                    mg_http_reply(c, 404, "Content-Type: application/json\r\n", "{\"error\":\"file not found\"}");
+                }
+            } else {
+                // Clear the live log file.
+                std::ofstream clear(LOG_FILE, std::ios::trunc);
+                clear.close();
+                InvalidateIndex();
+                mg_http_reply(c, 200, "Content-Type: application/json\r\n", "{\"ok\":true}");
+            }
             HttpLog(200, method, uri, query, remote);
         } else {
             mg_http_reply(c, 404, "", "Not Found");

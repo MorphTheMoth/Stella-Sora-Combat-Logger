@@ -142,6 +142,11 @@
         <select id="defenderFilter" onchange="onDefenderFilterChange()">
             <option value="">All Defenders</option>
         </select>
+        <br>
+        <select id="savedLogFilter" onchange="onSavedLogChange()">
+            <option value="">Live</option>
+        </select>
+        <button id="saveLogBtn" onclick="saveLog()">Save Log</button>
         <button class="clear-btn" id="clearLogBtn" onclick="clearLog()">Clear Log</button>
     </div>
     <div class="stats" id="stats"></div>
@@ -274,6 +279,46 @@
             }
             return ans;
         }
+
+        // ─── Saved Logs ───────────────────
+
+        async function loadSavedLogsList() {
+            try {
+                const res = await fetch('/savedlogslist');
+                const data = await res.json();
+                const logs = data.logs || [];
+                const sel = document.getElementById('savedLogFilter');
+                // Keep the Live option, remove others
+                while (sel.options.length > 1) sel.remove(1);
+                logs.forEach(name => {
+                    const o = document.createElement('option');
+                    o.value = name;
+                    o.textContent = name;
+                    sel.appendChild(o);
+                });
+            } catch(e) {
+                console.error('Failed to load saved logs list', e);
+            }
+        }
+
+        let currentSavedLog = null; // null = live mode
+        window.onSavedLogChange = async function() {
+            const val = document.getElementById('savedLogFilter').value;
+            currentSavedLog = val || null;
+            // Clear all state
+            allEvents = [];
+            filtered = [];
+            lastFetchCount = 0;
+            openStates = {};
+            measuredHeights = {};
+            subOpenStates = {};
+            spacerByOrig.clear();
+            content.innerHTML = '';
+            // Clear search
+            closeSearch();
+            refilterAndRender(true, true);
+        };
+
 
         // ─── Helpers ──────────────────────
         function esc(s) {
@@ -914,10 +959,43 @@
             refilterAndRender(true);
         };
 
+        async function saveLog() {
+            const name = prompt("Enter a name for this saved log:");
+            if (!name || !name.trim()) return;
+
+            try {
+                const res = await fetch('/savelog', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: name.trim() })
+                });
+                const data = await res.json();
+
+                if (!res.ok || !data.ok) {
+                    alert('Save failed: ' + (data.error || 'Unknown error'));
+                    return;
+                }
+
+                await loadSavedLogsList();
+
+                const sel = document.getElementById('savedLogFilter');
+                sel.value = name.trim();
+                sel.dispatchEvent(new Event('change'));
+                await onSavedLogChange();
+
+            } catch (err) {
+                console.error('Save log error', err);
+                alert('Error saving log');
+            }
+        }
+
         async function clearLog(){
             if (!confirm('Are you sure you want to clear the log?')) return;
             try {
-                const res = await fetch('/clear', { method: 'POST' });
+                let url = '/clear'
+                if (currentSavedLog)
+                    url += '?savedlog=' + encodeURIComponent(currentSavedLog)
+                const res = await fetch(url, { method: 'POST' });
                 const data = await res.json();
                 if (data.ok) {
                     allEvents = [];
@@ -931,6 +1009,10 @@
                     refilterAndRender(true, true);
                     // Clear search bar if open
                     closeSearch();
+                    if (currentSavedLog) {
+                        loadSavedLogsList();
+                        currentSavedLog = null;
+                    }
                 } else {
                     alert('Clear failed');
                 }
@@ -944,12 +1026,24 @@
         async function fetchLog(incremental = false) {
             try {
                 let url = '/api/log';
-                if (incremental && lastFetchCount > 0) url += '?after=' + lastFetchCount;
+                const params = [];
+                if (currentSavedLog) 
+                    params.push('savedlog=' + encodeURIComponent(currentSavedLog));
+                if (incremental && lastFetchCount > 0) 
+                    params.push('after=' + lastFetchCount);
+
+                if (params.length) url += '?' + params.join('&');
+
+                t = allEvents.length;
                 const res = await fetch(url);
                 const data = await res.json();
+                if (allEvents.length != t) {
+                  console.log("Event count mismatch after fetching, dropping new events");
+                  return;
+                }
+                
                 const newEvents = data.events || [];
-                if (newEvents.length == 0)
-                  return
+                if (newEvents.length == 0) return;
                 if (incremental && lastFetchCount > 0) {
                     const startIdx = allEvents.length;
                     newEvents.forEach((ev, i) => {
@@ -971,13 +1065,20 @@
             }
         }
 
+        let lastEventCount = -1;
         function poll() {
+            // if its checking a saved log, it polls until the log is full
+            if (currentSavedLog && lastEventCount == allEvents.length) {
+                setTimeout(poll, POLL_MS);
+                return;
+            }
+            lastEventCount = allEvents.length;
             fetchLog(true).finally(() => {
                 setTimeout(poll, POLL_MS);
             });
         }
         fetchLog(false).then(() => { setTimeout(poll, POLL_MS); });
-
+        loadSavedLogsList();
     </script>
 </div>
 </body>
