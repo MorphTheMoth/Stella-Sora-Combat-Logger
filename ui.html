@@ -21,6 +21,8 @@
         .filters button.active { background: #5a5a5a; color: #fff; }
         .filters button:hover, .filters select:hover { background: #444; }
         .filters select { width: 160px; }
+        .filters button.clear-btn { background: #301818; color: #cdb1b1; border-color: #533939; }
+        .filters button.clear-btn:hover { background: #562a2a; }
         .stats { font-size: 11px; color: #888; margin-bottom: 10px; flex-shrink: 0; }
         .scroll-container {
             flex: 1; overflow-y: auto; position: relative;
@@ -140,6 +142,7 @@
         <select id="defenderFilter" onchange="onDefenderFilterChange()">
             <option value="">All Defenders</option>
         </select>
+        <button class="clear-btn" id="clearLogBtn" onclick="clearLog()">Clear Log</button>
     </div>
     <div class="stats" id="stats"></div>
 
@@ -910,6 +913,32 @@
             defenderFilter = document.getElementById('defenderFilter').value;
             refilterAndRender(true);
         };
+
+        async function clearLog(){
+            if (!confirm('Are you sure you want to clear the log?')) return;
+            try {
+                const res = await fetch('/clear', { method: 'POST' });
+                const data = await res.json();
+                if (data.ok) {
+                    allEvents = [];
+                    filtered = [];
+                    lastFetchCount = 0;
+                    // reset open states, search, etc.
+                    openStates = {};
+                    measuredHeights = {};
+                    subOpenStates = {};
+                    spacerByOrig.clear();
+                    refilterAndRender(true, true);
+                    // Clear search bar if open
+                    closeSearch();
+                } else {
+                    alert('Clear failed');
+                }
+            } catch(e) {
+                console.error(e);
+                alert('Error clearing log');
+            }
+        }
 
         // ─── Data fetching ───────────────
         async function fetchLog(incremental = false) {
