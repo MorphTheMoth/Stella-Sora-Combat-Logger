@@ -16,10 +16,11 @@ Currently WIP, I plan to add more things, mainly an easier way to read through t
 - Run `stellaDllInjector.exe stellaCombatLogger.dll` before you open the game
 - Open the game
 
-A folder called Stella Sora Combat Logger should get created in %localappdata% with the log files, ss_dpslog.txt has logs to check if all the hooks went well and if the id tables are getting created, http_log.txt has emblems rolls logs, ss_jsonlog has the actual combat logs.
+A folder called Stella Sora Combat Logger should get created in %localappdata% with the log files, sanity_log.txt has logs to check if all the hooks went well and if the id tables are getting created, http_log.txt has emblems rolls logs, ss_jsonlog has the actual combat logs.
 
 - To view the logs, download `ui.html` and `log_viewer.exe` from the release tab https://github.com/MorphTheMoth/Stella-Sora-Combat-Logger/releases
-- Put them in the same folder, and run `./log_viewer.exe` from command line, if the log file is large it will take a little time to load it all
+- Put them in the same folder, and run `log_viewer.exe` or `./log_viewer.exe` from command line (if you double click it, it works, but you can only close it from task manager), if the log file is large it will take a little time to load it all
+- Open http://localhost:9299
 - If the log viewer doesn't find the log file automatically, run `./log_viewer.exe "path/to/ss_jsonlog.txt"`
 
 
