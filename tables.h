@@ -31,5 +31,6 @@ extern std::unordered_map<int32_t, std::string> g_CharMap;
 extern std::unordered_map<int32_t, std::string> g_ActorNameMap; // dataId (player) or skinId (enemy) -> display name
 extern std::unordered_map<int32_t, SkillInfo>   g_SkillTable;
 
+bool IsSuppressed(int32_t id);
 const std::string& ActorDisplayName(int32_t id);
 extern void BuildHitTable(const std::string& dataRoot);

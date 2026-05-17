@@ -443,13 +443,13 @@ bool EnableAllDebugGizmos()
 // =============================================================================
 //  JSON builders
 // =============================================================================
-json BuildBuffJson(const char* type, int32_t configId, AdventureActor_o* owner, AdventureActor_o* fromActor, int isAdd, int32_t buffNum) {
+void BuildBuffJson(const char* type, int32_t configId, AdventureActor_o* owner, AdventureActor_o* fromActor, int isAdd, int32_t buffNum) {
     json j;
     j["Type"] = "Buff";
     j["Action"] = isAdd > 0 ? "Add" : "Remove";
     j["Time"] = gameTime();
 
-    if (g_SuppressedEffects.count(configId) != 0) return {};
+    if (IsSuppressed(configId)) return;
     
     if (owner) {
         j["Owner"] = adventureActorId(owner);
@@ -478,9 +478,10 @@ json BuildBuffJson(const char* type, int32_t configId, AdventureActor_o* owner, 
     
     j["SubType"] = type;
     
-    return j;
+    logJson(j);
 }
 
+// Build a JSON object listing all active Buffs on an actor.
 json BuildBuffListJson(AdventureActor_o* fromActor) {
     json j;
     if (!fromActor) return j;
@@ -503,7 +504,7 @@ json BuildBuffListJson(AdventureActor_o* fromActor) {
             int32_t configId = 0;
             if (be->fields.buffConfig)
                 configId = be->fields.buffConfig->fields.id_;
-
+            if (IsSuppressed(configId)) continue;
             json buff;
             buff["configId"] = configId;
             buff["name"]     = buffIdToName(configId);
@@ -552,6 +553,7 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails)
 
             auto* cfgPtr = effect->fields._effectConfig_k__BackingField;
             int configId = cfgPtr ? cfgPtr->fields.id_ : 0;
+            if (IsSuppressed(configId)) continue;
             je["configId"] = configId;
             je["name"] = buffIdToName(configId);
             je["sourceType"] = effect->fields.sourceType;
@@ -578,7 +580,7 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails)
     return j;
 }
 
-json BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_Client_HitDamage_o* hitDamageConfig,
+void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_Client_HitDamage_o* hitDamageConfig,
                   int32_t skillLevel, bool isCrit, bool isDot,
                   int32_t* hudColorIndex, double* skillPercentAmend,
                   double* talentGroupPercentAmend, double* skillAbsAmend,
@@ -685,11 +687,11 @@ json BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
         if (!effects.empty())
             j["AttackerEffects"] = effects;
     }
-    
-    return j;
+
+    logJson(j);
 }
 
-json BuildSkillCastJson(int32_t skillId) {
+void BuildSkillCastJson(int32_t skillId) {
     json j;
     j["Type"] = "Skill Cast";
     j["Time"] = gameTime();
@@ -706,7 +708,7 @@ json BuildSkillCastJson(int32_t skillId) {
         j["Name"] = "Unknown";
     }
     
-    return j;
+    logJson(j);
 }
 
 // =============================================================================

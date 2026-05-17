@@ -232,7 +232,7 @@ static int SourcePass(const json& jSource, const std::string& labelPrefix,
 //  BuildEffectTable
 // =============================================================================
 
-static bool IsSuppressed(int32_t id) {
+bool IsSuppressed(int32_t id) {
     return g_SuppressedEffects.count(id) > 0;
 }
 

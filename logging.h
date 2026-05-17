@@ -66,10 +66,10 @@ json logAdventureActorSpecialAttrsJson(AdventureActor_o* actor);
 std::string buffIdToName(int32_t configId);
 
 // JSON builders for different event types
-json BuildBuffJson(const char* type, int32_t configId, AdventureActor_o* owner, AdventureActor_o* fromActor, int isAdd, int32_t buffNum = 0);
+void BuildBuffJson(const char* type, int32_t configId, AdventureActor_o* owner, AdventureActor_o* fromActor, int isAdd, int32_t buffNum = 0);
 json BuildBuffListJson(AdventureActor_o* fromActor);
 json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails);
-json BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_Client_HitDamage_o* hitDamageConfig, 
+void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_Client_HitDamage_o* hitDamageConfig, 
                   int32_t skillLevel, bool isCrit, bool isDot,
                   int32_t* hudColorIndex, double* skillPercentAmend,
                   double* talentGroupPercentAmend, double* skillAbsAmend,
@@ -79,7 +79,7 @@ json BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
                   double* skillIntensityRatio, double* toughnessBrokenDmgRatio,
                   double* critRatio, double* envAmendRatio,
                   int64_t finalDamage);
-json BuildSkillCastJson(int32_t skillId);
+void BuildSkillCastJson(int32_t skillId);
 
 // Utility
 std::string GetLocalAppDataPath();

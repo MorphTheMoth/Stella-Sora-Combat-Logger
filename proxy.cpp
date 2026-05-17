@@ -91,12 +91,11 @@ static int64_t __fastcall Hook_CalcNormalDamage( AdventureActor_o* fromActor, Ad
         skillAbsAmend, talentGroupAbsAmend, perkIntensityRatio, slotDmgRatio, fromEE, erAmend, defAmend, rcdSlotDmgRatio, toEERCD,
         skillIntensityRatio, toughnessBrokenDmgRatio, critRatio, envAmendRatio, method);
 
-    json hitJson = BuildHitJson(
+    BuildHitJson(
         fromActor, toActor, hitDamageConfig, skillLevel, isCrit, isDot, hudColorIndex, skillPercentAmend, talentGroupPercentAmend, 
         skillAbsAmend, talentGroupAbsAmend, perkIntensityRatio, slotDmgRatio, fromEE, erAmend, defAmend, rcdSlotDmgRatio, toEERCD,
         skillIntensityRatio, toughnessBrokenDmgRatio, critRatio, envAmendRatio, dmg);
     
-    logJson(hitJson);
     return dmg;
 }
 
@@ -122,8 +121,7 @@ static void __fastcall Hook_EffectOnInit(void* self, int32_t effType, int32_t so
         configId = effectConfig->fields.id_;
     
     if (g_Cfg.effects) {
-        json j = BuildBuffJson("Effect", configId, owner, fromActor, 1);
-        logJson(j);
+        BuildBuffJson("Effect", configId, owner, fromActor, 1);
     }
 }
 
@@ -140,8 +138,7 @@ static void __fastcall Hook_BuffEffectOnInit(void* self, AdventureActor_o* owner
         configId = buffEffectConfig->fields.id_;
     
     if (g_Cfg.buffs) {
-        json j = BuildBuffJson("Buff", configId, owner, fromActor, 1);
-        logJson(j);
+        BuildBuffJson("Buff", configId, owner, fromActor, 1);
     }
 }
 
@@ -176,8 +173,7 @@ static void __fastcall Hook_BuffEntityExcute(BuffEntity_o* self, int32_t addType
         owner = fromActor;
     
     if (g_Cfg.buffs) {
-        json j = BuildBuffJson("Buff", configId, owner, fromActor, addType==3 ? -1 : 1, buffNum);
-        logJson(j);
+        BuildBuffJson("Buff", configId, owner, fromActor, addType==3 ? -1 : 1, buffNum);
     }
 }
 
@@ -201,8 +197,7 @@ static void __fastcall Hook_EffectOnClear(AdventureEffectBase_o* effectBase, Met
                 if (cfgCandidate && cfgCandidate)
                     configId = cfgCandidate->fields.id_;
 
-                json j = BuildBuffJson("Effect", configId, owner, fromActor, -1);
-                logJson(j);
+                BuildBuffJson("Effect", configId, owner, fromActor, -1);
             }
         }
     }
@@ -240,8 +235,7 @@ static void* __fastcall Hook_SpawnSkill(void* self, int32_t skillId, void* metho
     if (skillId < 10000000) return result;
     if (!g_Cfg.skill_casts) return result;
     
-    json j = BuildSkillCastJson(skillId);
-    logJson(j);
+    BuildSkillCastJson(skillId);
     
     return result;
 }
