@@ -3,7 +3,7 @@
 
 Injects a dll into the game that logs a informations about the combat, using it on the live servers is risky, i suggest using the nebula private server https://github.com/Melledy/Nebula.
 
-Currently WIP, I plan to add more things, mainly an easier way to read through the logs.
+<img width="1188" height="990" alt="image" src="https://github.com/user-attachments/assets/30f325fa-bda3-4058-a9e3-061029a92fbb" />
 
 
 ## Installation
@@ -18,18 +18,17 @@ Currently WIP, I plan to add more things, mainly an easier way to read through t
 
 A folder called Stella Sora Combat Logger should get created in %localappdata% with the log files, sanity_log.txt has logs to check if all the hooks went well and if the id tables are getting created, http_log.txt has emblems rolls logs, ss_jsonlog has the actual combat logs.
 
+In `log_config.json` there are toggles for logging and enabling hitboxes.
+
+For linux I had issues with normally injecting a dll, but you can download the stellaCombatLogger-Linux.dll, rename it to `winhttp.dll`, put `WINEDLLOVERRIDES="winhttp=n,b" %command%` in the steam launch options, move the `winhttp.dll` in the game folder inside the wine prefix `/pfx/drive_c/YostarGames/StellaSora_EN/` and wine will inject the dll for you.
+
+
+## Usage
+
 - To view the logs, download `ui.html` and `log_viewer.exe` from the release tab https://github.com/MorphTheMoth/Stella-Sora-Combat-Logger/releases
 - Put them in the same folder, and run `log_viewer.exe` or `./log_viewer.exe` from command line (if you double click it, it works, but you can only close it from task manager), if the log file is large it will take a little time to load it all
 - Open http://localhost:9299
 - If the log viewer doesn't find the log file automatically, run `./log_viewer.exe "path/to/ss_jsonlog.txt"`
-
-
-For linux I had issues with normally injecting a dll, but you can download the stellaCombatLogger-Linux.dll, rename it to `winhttp.dll`, put `WINEDLLOVERRIDES="winhttp=n,b" %command%` in the steam launch options, move the `winhttp.dll` in the game folder inside the wine prefix `/pfx/drive_c/YostarGames/StellaSora_EN/` and wine will inject the dll for you.
-
-## Usage
-
-Once the program runs, it will create a folder in `/AppData/Local/Stella Sora Combat Logger`.
-The log file is created there, there's also a config file to select which logs you want.
 
 
 ## Build from source
