@@ -15,6 +15,7 @@ using json = nlohmann::json;
 struct AdventureActor_o;
 struct ActorEffectManage_o;
 struct Nova_Client_HitDamage_o;
+struct AttributeList_o;
 
 struct LogConfig {
     bool suppress_useless_info;
@@ -78,7 +79,7 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
                   double* defAmend, double* rcdSlotDmgRatio, double* toEERCD,
                   double* skillIntensityRatio, double* toughnessBrokenDmgRatio,
                   double* critRatio, double* envAmendRatio,
-                  int64_t finalDamage);
+                  int64_t finalDamage, AttributeList_o* attackerInfo, AttributeList_o* defenderInfo);
 void BuildSkillCastJson(int32_t skillId);
 
 // Utility

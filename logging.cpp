@@ -1,8 +1,8 @@
 #pragma GCC diagnostic ignored "-Wattributes"
 
+#include "game_structs.h"
 #include "logging.h"
 #include "tables.h"
-#include "game_structs.h"
 
 #include <windows.h>
 #include <cstdio>
@@ -228,46 +228,31 @@ const char* AttrName(int i) {
 std::string adventureActorId(AdventureActor_o* actor) {
     if (!actor) return "null";
     
-    int64_t entityId = actor->fields._Id_k__BackingField;
-    int32_t dataId   = actor->fields._dataID_k__BackingField;
-    int32_t skinId   = actor->fields._skinID_k__BackingField;
+    int32_t dataId = actor->fields._dataID_k__BackingField;
+    int32_t skinId = actor->fields._skinID_k__BackingField;
     
     bool isBelongToPlayer = false;
     auto* attrList = actor->fields.attributeList;
     if (attrList)
         isBelongToPlayer = attrList->fields.isBelongToPlayer;
     
-    return ActorDisplayName(isBelongToPlayer ? dataId : skinId);
-}
-
-std::string adventureActorDisplay(AdventureActor_o* actor) {
-    if (!actor) return "null";
-
-    int64_t entityId    = actor->fields._Id_k__BackingField;
-    int32_t dataId      = actor->fields._dataID_k__BackingField;
-    int32_t skinId      = actor->fields._skinID_k__BackingField;
-
-    bool isBelongToPlayer = false;
-    auto* attrList = actor->fields.attributeList;
-    if (attrList)
-        isBelongToPlayer = attrList->fields.isBelongToPlayer;
-    
-    char buf[256];
-    const std::string& name = ActorDisplayName(isBelongToPlayer ? dataId : skinId);
+    // Return a compact string: "p:<dataId>" for players, "e:<skinId>" for enemies.
+    // JS will resolve these to display names using the same game data files.
+    char buf[32];
     if (isBelongToPlayer)
-        snprintf(buf, sizeof(buf), "%s", name.c_str());
+        snprintf(buf, sizeof(buf), "p:%d", dataId);
     else
-        snprintf(buf, sizeof(buf), "%s (dataId=%d, skinId=%d)", name.c_str(), dataId, skinId);
+        snprintf(buf, sizeof(buf), "e:%d", skinId);
     return buf;
 }
 
-json logAdventureActorAttrsJson(AdventureActor_o* actor) {
-    json j;
-    if (!actor) return j;
+std::string adventureActorDisplay(AdventureActor_o* actor) {
+    // Display is now resolved in JS; emit the same key as adventureActorId.
+    return adventureActorId(actor);
+}
 
-    int64_t entityId = actor->fields._Id_k__BackingField;
-    auto* attrList   = actor->fields.attributeList;
-    j["entityId"] = entityId;
+json logAdventureActorAttrsJson(AttributeList_o* attrList) {
+    json j;
     if (!attrList) return j;
     auto* entries = attrList->fields.entries;
     if (!entries) return j;
@@ -290,7 +275,6 @@ json logAdventureActorAttrsJson(AdventureActor_o* actor) {
 
         json attr;
         attr["id"]     = i;
-        attr["name"]   = AttrName(i);
         attr["origin"] = Round(origin, 4);
         attr["base"]   = Round(base_, 4);
         attr["pct"]    = Round(pct, 4);
@@ -326,7 +310,6 @@ json logAdventureActorSpecialAttrsJson(AdventureActor_o* actor) {
 
         json sattr;
         sattr["id"]      = i;
-        sattr["name"]    = AttrName(i);
         sattr["current"] = Round(current, 6);
         sattr["maxType"] = max_type;
         sattrs.push_back(sattr);
@@ -463,16 +446,6 @@ void BuildBuffJson(const char* type, int32_t configId, AdventureActor_o* owner, 
     
     j["ConfigId"] = configId;
     
-    auto eit = g_EffectTable.find(configId);
-    if (eit != g_EffectTable.end()) {
-        const EffectInfo& ei = eit->second;
-        j["Name"] = ei.label;
-        if (ei.charName != "?")
-            j["CharName"] = ei.charName;
-    } else {
-        j["Name"] = "Unknown";
-    }
-    
     if (buffNum > 0)
         j["Stacks"] = buffNum;
     
@@ -507,7 +480,6 @@ json BuildBuffListJson(AdventureActor_o* fromActor) {
             if (IsSuppressed(configId)) continue;
             json buff;
             buff["configId"] = configId;
-            buff["name"]     = buffIdToName(configId);
             buff["stacks"]   = be->fields.buffNum;
             buff["totalTime"] = Round((double)be->fields.configBuffTime.fields._serializedValue / FP_ONE, 2);
             buff["leftTime"]  = Round((double)be->fields.buffLeftTime.fields._serializedValue / FP_ONE, 2);
@@ -555,7 +527,6 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails)
             int configId = cfgPtr ? cfgPtr->fields.id_ : 0;
             if (IsSuppressed(configId)) continue;
             je["configId"] = configId;
-            je["name"] = buffIdToName(configId);
             je["sourceType"] = effect->fields.sourceType;
             je["effectType"] = effect->fields._effectType;
             je["takeLimit"]  = effect->fields._takeEffectLimit;
@@ -581,15 +552,11 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails)
 }
 
 void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_Client_HitDamage_o* hitDamageConfig,
-                  int32_t skillLevel, bool isCrit, bool isDot,
-                  int32_t* hudColorIndex, double* skillPercentAmend,
-                  double* talentGroupPercentAmend, double* skillAbsAmend,
-                  double* talentGroupAbsAmend, double* perkIntensityRatio,
-                  double* slotDmgRatio, double* fromEE, double* erAmend,
-                  double* defAmend, double* rcdSlotDmgRatio, double* toEERCD,
-                  double* skillIntensityRatio, double* toughnessBrokenDmgRatio,
-                  double* critRatio, double* envAmendRatio,
-                  int64_t finalDamage) {
+                  int32_t skillLevel, bool isCrit, bool isDot, int32_t* hudColorIndex, double* skillPercentAmend,
+                  double* talentGroupPercentAmend, double* skillAbsAmend, double* talentGroupAbsAmend, double* perkIntensityRatio,
+                  double* slotDmgRatio, double* fromEE, double* erAmend, double* defAmend, double* rcdSlotDmgRatio, double* toEERCD,
+                  double* skillIntensityRatio, double* toughnessBrokenDmgRatio, double* critRatio, double* envAmendRatio,
+                  int64_t finalDamage, AttributeList_o* attackerInfo, AttributeList_o* defenderInfo) {
     json j;
     j["Type"] = "Hit";
     j["Time"] = gameTime();
@@ -621,14 +588,6 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
         if (f.hitdamageInfo_)
             hitCfg["info"] = Il2CppStringToStd(f.hitdamageInfo_);
         
-        auto it = g_HitTable.find(f.id_);
-        if (it != g_HitTable.end()) {
-            const HitInfo& h = it->second;
-            hitCfg["charName"]   = h.charName;
-            hitCfg["skillTitle"] = h.skillTitle;
-            hitCfg["hitNum"]     = h.hitNum;
-        }
-        
         j["HitConfig"] = hitCfg;
     }
     
@@ -655,8 +614,11 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
     dmgParams["finalDamage"] = finalDamage;
     j["DamageParams"] = dmgParams;
     
+
+
+
     if (fromActor && g_Cfg.on_hit_attacker_stats) {
-        json attackerStats = logAdventureActorAttrsJson(fromActor);
+        json attackerStats = logAdventureActorAttrsJson(attackerInfo);
         json attackerSpecial = logAdventureActorSpecialAttrsJson(fromActor);
         j["AttackerStats"] = attackerStats;
         if (!attackerSpecial.empty())
@@ -664,7 +626,7 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
     }
     
     if (toActor && g_Cfg.on_hit_defender_stats) {
-        json defenderStats = logAdventureActorAttrsJson(toActor);
+        json defenderStats = logAdventureActorAttrsJson(defenderInfo);
         json defenderSpecial = logAdventureActorSpecialAttrsJson(toActor);
         j["DefenderStats"] = defenderStats;
         if (!defenderSpecial.empty())
@@ -686,6 +648,13 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
         json effects = BuildEffectListJson(effectManage, g_Cfg.on_hit_effect_list_information);
         if (!effects.empty())
             j["AttackerEffects"] = effects;
+    }    
+
+    if (toActor && g_Cfg.on_hit_effect_list) {
+        ActorEffectManage_o* effectManage = toActor->fields.effectManage;
+        json effects = BuildEffectListJson(effectManage, g_Cfg.on_hit_effect_list_information);
+        if (!effects.empty())
+            j["DefenderEffects"] = effects;
     }
 
     logJson(j);
@@ -696,17 +665,6 @@ void BuildSkillCastJson(int32_t skillId) {
     j["Type"] = "Skill Cast";
     j["Time"] = gameTime();
     j["SkillId"] = skillId;
-    
-    auto it = g_SkillTable.find(skillId);
-    if (it != g_SkillTable.end()) {
-        const SkillInfo& s = it->second;
-        j["Name"] = s.skillName;
-        j["Owner"] = s.ownerName;
-        j["SkillType"] = s.skillType;
-        j["FCPath"] = s.fcPath;
-    } else {
-        j["Name"] = "Unknown";
-    }
     
     logJson(j);
 }

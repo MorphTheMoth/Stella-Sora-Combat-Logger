@@ -22,7 +22,7 @@
 #endif
 
 #include "mongoose.h"
-#include "json.hpp"
+#include "../json.hpp"
 
 using json = nlohmann::json;
 
@@ -340,7 +340,7 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
         std::string remote = RemoteAddr(c);
 
         if (uri == "/") {
-            std::ifstream file("ui.html");
+            std::ifstream file("index.html");
             if (file.good()) {
                 std::stringstream buffer;
                 buffer << file.rdbuf();
@@ -349,7 +349,20 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                 HttpLog(200, method, uri, query, remote);
             } else {
                 mg_http_reply(c, 404, "Content-Type: text/html\r\n",
-                    "<html><body><h1>ui.html not found</h1></body></html>");
+                    "<html><body><h1>index.html not found</h1></body></html>");
+                HttpLog(404, method, uri, query, remote);
+            }
+        } else if (uri == "/dataLoader.js" || uri == "/log.js" || uri == "/analytics.js" || uri == "/tableResolver.js") {
+            std::string filename = uri.substr(1);
+            std::ifstream file(filename);
+            if (file.good()) {
+                std::stringstream buffer;
+                buffer << file.rdbuf();
+                std::string js = buffer.str();
+                mg_http_reply(c, 200, "Content-Type: application/javascript\r\n", "%s", js.c_str());
+                HttpLog(200, method, uri, query, remote);
+            } else {
+                mg_http_reply(c, 404, "Content-Type: text/plain\r\n", "File not found");
                 HttpLog(404, method, uri, query, remote);
             }
         } else if (uri.find("/api/log") == 0) {
