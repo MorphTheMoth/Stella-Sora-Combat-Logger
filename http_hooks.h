@@ -12,7 +12,6 @@ void ShutdownHttpLogger();
 void LogHttp(const char* fmt, ...);
 
 // Loads CharGemAttrValue.json + Item language file for attribute name resolution.
-// Call after BuildHitTable so the same dataRoot convention is used.
 void BuildGemAttrTable(const std::string& dataRoot);
 
 // Installs all HTTP-layer MinHook hooks. Call after MH_Initialize().

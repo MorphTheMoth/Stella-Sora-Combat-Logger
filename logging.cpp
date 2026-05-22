@@ -2,7 +2,6 @@
 
 #include "game_structs.h"
 #include "logging.h"
-#include "tables.h"
 
 #include <windows.h>
 #include <cstdio>
@@ -97,6 +96,8 @@ void loadConfig(const std::string& dir) {
                 "  \"on_hit_buff_list\":               true,\n"
                 "  \"on_hit_effect_list\":             true,\n"
                 "  \"on_hit_effect_list_information\": true,\n"
+                "  \"on_hit_attacker_attr_dict\":      true,\n"
+                "  \"on_hit_defender_attr_dict\":      true,\n"
                 "  \"player_gizmo\":                   false,\n"
                 "  \"monster_gizmo\":                  false,\n"
                 "  \"bullet_gizmo\":                   false,\n"
@@ -138,6 +139,8 @@ void loadConfig(const std::string& dir) {
         g_Cfg.on_hit_buff_list               = get("on_hit_buff_list",               true);
         g_Cfg.on_hit_effect_list             = get("on_hit_effect_list",             true);
         g_Cfg.on_hit_effect_list_information = get("on_hit_effect_list_information", true);
+        g_Cfg.on_hit_attacker_attr_dict      = get("on_hit_attacker_attr_dict",      true);
+        g_Cfg.on_hit_defender_attr_dict      = get("on_hit_defender_attr_dict",      true);
         g_Cfg.player_gizmo                   = get("player_gizmo",                   false);
         g_Cfg.monster_gizmo                  = get("monster_gizmo",                  false);
         g_Cfg.bullet_gizmo                   = get("bullet_gizmo",                   false);
@@ -157,7 +160,8 @@ void loadConfig(const std::string& dir) {
             !j.contains("hearing_gizmo_for_player") || !j.contains("hearing_gizmo_for_monster") ||
             !j.contains("vision_gizmo_for_player") || !j.contains("vision_gizmo_for_monster") ||
             !j.contains("input_and_vision_gizmo") || !j.contains("monster_path_gizmo") ||
-            !j.contains("player_path_gizmo") || !j.contains("camera_gizmo")) {
+            !j.contains("player_path_gizmo") || !j.contains("camera_gizmo") ||
+            !j.contains("on_hit_attacker_attr_dict") || !j.contains("on_hit_defender_attr_dict")) {
             j["player_gizmo"] = false;
             j["monster_gizmo"] = false;
             j["bullet_gizmo"] = false;
@@ -170,6 +174,8 @@ void loadConfig(const std::string& dir) {
             j["monster_path_gizmo"] = false;
             j["player_path_gizmo"] = false;
             j["camera_gizmo"] = false;
+            j["on_hit_attacker_attr_dict"] = true;
+            j["on_hit_defender_attr_dict"] = true;
             FILE* f = fopen(path.c_str(), "w");
             if (f) {
                 fprintf(f, "%s", j.dump(2).c_str());
@@ -319,22 +325,6 @@ json logAdventureActorSpecialAttrsJson(AdventureActor_o* actor) {
     return j;
 }
 
-std::string buffIdToName(int32_t configId) {
-    char buf[256];
-    auto eit = g_EffectTable.find(configId);
-    if (eit != g_EffectTable.end()) {
-        const EffectInfo& ei = eit->second;
-        if (ei.charName != "?")
-            snprintf(buf, sizeof(buf), "%s / %s", ei.charName.c_str(), ei.label.c_str());
-        else
-            snprintf(buf, sizeof(buf), "%s", ei.label.c_str());
-    } else {
-        snprintf(buf, sizeof(buf), "configId=%d (unknown)", configId);
-    }
-    return buf;
-}
-
-
 // =============================================================================
 //  Debug Gizmos
 // =============================================================================
@@ -431,8 +421,6 @@ void BuildBuffJson(const char* type, int32_t configId, AdventureActor_o* owner, 
     j["Type"] = "Buff";
     j["Action"] = isAdd > 0 ? "Add" : "Remove";
     j["Time"] = gameTime();
-
-    if (IsSuppressed(configId)) return;
     
     if (owner) {
         j["Owner"] = adventureActorId(owner);
@@ -477,7 +465,6 @@ json BuildBuffListJson(AdventureActor_o* fromActor) {
             int32_t configId = 0;
             if (be->fields.buffConfig)
                 configId = be->fields.buffConfig->fields.id_;
-            if (IsSuppressed(configId)) continue;
             json buff;
             buff["configId"] = configId;
             buff["stacks"]   = be->fields.buffNum;
@@ -525,7 +512,6 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails)
 
             auto* cfgPtr = effect->fields._effectConfig_k__BackingField;
             int configId = cfgPtr ? cfgPtr->fields.id_ : 0;
-            if (IsSuppressed(configId)) continue;
             je["configId"] = configId;
             je["sourceType"] = effect->fields.sourceType;
             je["effectType"] = effect->fields._effectType;
@@ -551,12 +537,57 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails)
     return j;
 }
 
+// Build a JSON array from a Dictionary<int,int> (attrId -> stackCount).
+// When gdc and the three function pointers are provided, each entry is fully
+// resolved through GetOnceAttr -> GetValueConfigId -> GetOnceAttrValue so that
+// attrType/value/elem/dmgType/levelTypeData/levelData/paramType are all emitted.
+json BuildAdditionalAttrDictJson(
+    System_Collections_Generic_Dictionary_int__int__o* dict,
+    AdventureActor_o*                    fromActor,
+    GameDataController_o*                gdc,
+    FnGetOnceAttr                        GetOnceAttr,
+    FnGetValueConfigId                   GetValueConfigId)
+{
+    json arr = json::array();
+    if (!dict || !dict->klass || !dict->fields._entries) return arr;
+
+    auto* entryArr = reinterpret_cast<DictEntryArray_Int_Int_L*>(dict->fields._entries);
+    int32_t capacity = static_cast<int32_t>(entryArr->max_length);
+    if (capacity <= 0 || capacity > 4096) return arr;
+
+    for (int32_t i = 0; i < capacity; ++i) {
+        const DictEntry_Int_Int_L& e = entryArr->m_Items[i];
+        if (e.hashCode <= 0) continue; // vacant or deleted slot
+
+        json entry;
+        entry["attrId"] = e.key;
+        entry["stacks"] = e.value;
+
+        // Full GDC resolution — resolve valueConfigId only
+        if (gdc && fromActor && GetOnceAttr && GetValueConfigId) {
+            Nova_Client_OnceAdditionalAttribute_o* def = GetOnceAttr(gdc, e.key, nullptr);
+            if (def && def->klass) {
+                int32_t valueConfigId = GetValueConfigId(
+                    fromActor, def->fields.id_, def->fields.levelTypeData_, def->fields.levelData_, nullptr);
+                entry["valueConfigId"] = valueConfigId;
+            }
+        }
+
+        arr.push_back(entry);
+    }
+    return arr;
+}
+
 void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_Client_HitDamage_o* hitDamageConfig,
                   int32_t skillLevel, bool isCrit, bool isDot, int32_t* hudColorIndex, double* skillPercentAmend,
                   double* talentGroupPercentAmend, double* skillAbsAmend, double* talentGroupAbsAmend, double* perkIntensityRatio,
                   double* slotDmgRatio, double* fromEE, double* erAmend, double* defAmend, double* rcdSlotDmgRatio, double* toEERCD,
                   double* skillIntensityRatio, double* toughnessBrokenDmgRatio, double* critRatio, double* envAmendRatio,
-                  int64_t finalDamage, AttributeList_o* attackerInfo, AttributeList_o* defenderInfo) {
+                  int64_t finalDamage, AttributeList_o* attackerInfo, AttributeList_o* defenderInfo,
+                  System_Collections_Generic_Dictionary_int__int__o* fromAttrDict,
+                  System_Collections_Generic_Dictionary_int__int__o* toAttrDict,
+                  GameDataController_o* gdc,
+                  FnGetOnceAttr GetOnceAttr, FnGetValueConfigId GetValueConfigId) {
     json j;
     j["Type"] = "Hit";
     j["Time"] = gameTime();
@@ -655,6 +686,18 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
         json effects = BuildEffectListJson(effectManage, g_Cfg.on_hit_effect_list_information);
         if (!effects.empty())
             j["DefenderEffects"] = effects;
+    }
+
+    if (g_Cfg.on_hit_attacker_attr_dict) {
+        json attrDict = BuildAdditionalAttrDictJson(fromAttrDict, fromActor, gdc, GetOnceAttr, GetValueConfigId);
+        if (!attrDict.empty())
+            j["AttackerAttrDict"] = attrDict;
+    }
+
+    if (g_Cfg.on_hit_defender_attr_dict) {
+        json attrDict = BuildAdditionalAttrDictJson(toAttrDict, fromActor, gdc, GetOnceAttr, GetValueConfigId);
+        if (!attrDict.empty())
+            j["DefenderAttrDict"] = attrDict;
     }
 
     logJson(j);

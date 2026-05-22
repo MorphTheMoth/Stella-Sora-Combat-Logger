@@ -8,6 +8,7 @@
 #include <unordered_set>
 #include <vector>
 #include "json.hpp"
+#include "game_structs.h"
 
 using json = nlohmann::json;
 
@@ -16,6 +17,13 @@ struct AdventureActor_o;
 struct ActorEffectManage_o;
 struct Nova_Client_HitDamage_o;
 struct AttributeList_o;
+struct GameDataController_o;
+struct Nova_Client_OnceAdditionalAttribute_o;
+struct System_Collections_Generic_Dictionary_int__int__o;
+
+// Function pointer types shared between proxy.cpp and logging.cpp
+using FnGetOnceAttr      = Nova_Client_OnceAdditionalAttribute_o* (__fastcall*)(GameDataController_o*, int32_t, void*);
+using FnGetValueConfigId = int32_t                                (__fastcall*)(AdventureActor_o*, int32_t, int32_t, int32_t, void*);
 
 struct LogConfig {
     bool suppress_useless_info;
@@ -28,6 +36,8 @@ struct LogConfig {
     bool on_hit_buff_list;
     bool on_hit_effect_list;
     bool on_hit_effect_list_information;
+    bool on_hit_attacker_attr_dict;
+    bool on_hit_defender_attr_dict;
     bool player_gizmo;
     bool monster_gizmo;
     bool bullet_gizmo;
@@ -47,7 +57,6 @@ extern FILE*                g_JsonLog;
 extern std::mutex           g_Mutex;
 extern LogConfig            g_Cfg;
 extern std::atomic<int64_t> g_BattleTimeFP;
-extern std::unordered_set<int32_t> g_SuppressedEffects;
 
 // Basic logging
 void log(const char* fmt, ...);
@@ -62,7 +71,7 @@ const char* AttrName(int i);
 // Actor logging
 std::string adventureActorId(AdventureActor_o* actor);
 std::string adventureActorDisplay(AdventureActor_o* actor);
-json logAdventureActorAttrsJson(AdventureActor_o* actor);
+json logAdventureActorAttrsJson(AttributeList_o* attrList);
 json logAdventureActorSpecialAttrsJson(AdventureActor_o* actor);
 std::string buffIdToName(int32_t configId);
 
@@ -70,16 +79,27 @@ std::string buffIdToName(int32_t configId);
 void BuildBuffJson(const char* type, int32_t configId, AdventureActor_o* owner, AdventureActor_o* fromActor, int isAdd, int32_t buffNum = 0);
 json BuildBuffListJson(AdventureActor_o* fromActor);
 json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails);
-void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_Client_HitDamage_o* hitDamageConfig, 
-                  int32_t skillLevel, bool isCrit, bool isDot,
-                  int32_t* hudColorIndex, double* skillPercentAmend,
-                  double* talentGroupPercentAmend, double* skillAbsAmend,
-                  double* talentGroupAbsAmend, double* perkIntensityRatio,
-                  double* slotDmgRatio, double* fromEE, double* erAmend,
-                  double* defAmend, double* rcdSlotDmgRatio, double* toEERCD,
-                  double* skillIntensityRatio, double* toughnessBrokenDmgRatio,
-                  double* critRatio, double* envAmendRatio,
-                  int64_t finalDamage, AttributeList_o* attackerInfo, AttributeList_o* defenderInfo);
+json BuildAdditionalAttrDictJson(
+    System_Collections_Generic_Dictionary_int__int__o* dict,
+    AdventureActor_o*     fromActor,
+    GameDataController_o* gdc,
+    FnGetOnceAttr         GetOnceAttr,
+    FnGetValueConfigId    GetValueConfigId);
+void BuildHitJson(
+    AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_Client_HitDamage_o* hitDamageConfig,
+    int32_t skillLevel, bool isCrit, bool isDot,
+    int32_t* hudColorIndex, double* skillPercentAmend,
+    double* talentGroupPercentAmend, double* skillAbsAmend,
+    double* talentGroupAbsAmend, double* perkIntensityRatio,
+    double* slotDmgRatio, double* fromEE, double* erAmend,
+    double* defAmend, double* rcdSlotDmgRatio, double* toEERCD,
+    double* skillIntensityRatio, double* toughnessBrokenDmgRatio,
+    double* critRatio, double* envAmendRatio,
+    int64_t finalDamage, AttributeList_o* attackerInfo, AttributeList_o* defenderInfo,
+    System_Collections_Generic_Dictionary_int__int__o* fromAttrDict,
+    System_Collections_Generic_Dictionary_int__int__o* toAttrDict,
+    GameDataController_o* gdc,
+    FnGetOnceAttr GetOnceAttr, FnGetValueConfigId GetValueConfigId);
 void BuildSkillCastJson(int32_t skillId);
 
 // Utility
@@ -89,3 +109,16 @@ void InitializeLogger();
 bool InstallHook(uintptr_t target, void* hook, void** original, const char* name);
 
 bool EnableAllDebugGizmos();
+
+struct DictEntry_Int_Int_L {
+    int32_t hashCode;
+    int32_t next;
+    int32_t key;
+    int32_t value;
+};
+struct DictEntryArray_Int_Int_L {
+    Il2CppObject            obj;
+    Il2CppArrayBounds*      bounds;
+    il2cpp_array_size_t     max_length;
+    DictEntry_Int_Int_L     m_Items[1]; // flexible
+};
