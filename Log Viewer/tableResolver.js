@@ -1,10 +1,8 @@
 // tableResolver.js
-// Mirrors the lookup-table logic from tables.cpp.
 // Call initTables(dataRoot) once on startup (or after a data reload).
 // Then use the resolver functions below to enrich raw log events.
 //
-// dataRoot is the base URL (or path prefix) where the game data files live,
-// matching the directory layout tables.cpp used:
+// dataRoot is the base URL (or path prefix) where the game data files live:
 //   <dataRoot>/character.json
 //   <dataRoot>/item.json
 //   <dataRoot>/disc.json
@@ -29,7 +27,7 @@ const suppressedIds = new Set();
 // int skillId -> { ownerName, skillType, skillName, fcPath }
 const skillTable    = new Map();
 
-// Attribute index -> name string (mirrors AttrName() in logging.cpp)
+// Attribute index -> name string
 const ATTR_NAMES = [
     'NONE','ATK','DEF','MAXHP','HITRATE','EVD','CRITRATE','CRITRESIST',
     'CRITPOWER_P','PENETRATE','DEF_IGNORE','WER','FER','SER','AER','LER',
@@ -87,8 +85,8 @@ function buffIdToName(configId) {
 
 function enrichEvent(ev) {
     switch (ev.Type) {
-        case 'Hit':      enrichHit(ev);       break;
-        case 'Buff':     enrichBuff(ev);      break;
+        case 'Hit':        enrichHit(ev);       break;
+        case 'Buff':       enrichBuff(ev);      break;
         case 'Skill Cast': enrichSkillCast(ev); break;
     }
 }
@@ -114,6 +112,8 @@ function enrichHit(ev) {
     enrichBuffList(ev.DefenderBuffs);
     enrichEffectList(ev.AttackerEffects);
     enrichEffectList(ev.DefenderEffects);
+    enrichAttrDictList(ev.AttackerAttrDict);
+    enrichAttrDictList(ev.DefenderAttrDict);
 
     // Attr name injection
     enrichAttrList(ev.AttackerStats?.attrs);
@@ -168,6 +168,16 @@ function enrichAttrList(attrs) {
     }
 }
 
+function enrichAttrDictList(attrDictList) {
+    if (!Array.isArray(attrDictList)) return;
+    for (const entry of attrDictList) {
+        if (entry.attrId != null) {
+            entry.configId = entry.attrId;
+            entry.name = buffIdToName(entry.attrId);
+        }
+    }
+}
+
 // ─── Table initialisation ─────────────────────────────────────────────────────
 
 let _dataRoot = 'https://raw.githubusercontent.com/AutumnVN/StellaSoraData/refs/heads/main/';
@@ -183,13 +193,17 @@ async function loadJson(path, tag) {
     }
 }
 
-// ─── Prefix helpers (mirror tables.cpp) ──────────────────────────────────────
+// ─── Prefix helpers ──────────────────────────────────────
 
 const BUFF_PREFIXES = [
     'Buff,LevelUp,',
     'Effect,LevelUp,',
     'EffectValue,NoLevel,',
     'BuffValue,NoLevel,',
+];
+const ATTR_DICT_PREFIXES = [
+    'OnceAdditionalAttributeValue,NoLevel,',
+    'OnceAdditionalAttribute,LevelUp,',
 ];
 const HIT_DAMAGE_PREFIX = 'HitDamage,DamageNum,';
 
@@ -336,6 +350,7 @@ function buildEffectTable(dataFiles, jChar, jSkill, jSkillLang, jPotential) {
         jAffix, jAffixLang, jGem, jBuffVal, jMonster,
         jBuff, jBuffValue, jWord, jWordLang, jTalent, jTalentLang,
         jSecSkill, jDisc, jScoreBoss, jScoreBossLang, jItemLangRoot,
+        jOnceAttr, jSecSkillLang,
     } = dataFiles;
 
     const charMap = {};
@@ -400,47 +415,6 @@ function buildEffectTable(dataFiles, jChar, jSkill, jSkillLang, jPotential) {
         }
     }
 
-    // MainSkill fallback pass
-    if (jMainSkill) {
-        // effectId -> disc name
-        const effectIdToDiscName = new Map();
-        for (const [, msVal] of Object.entries(jMainSkill)) {
-            if (!msVal.EffectId || !msVal.Name) continue;
-            const discName = resolveLocKey(msVal, 'Name', jMainSkillLang ?? {});
-            for (const effId of msVal.EffectId) effectIdToDiscName.set(effId, discName);
-        }
-        for (const [, msVal] of Object.entries(jMainSkill)) {
-            if (!msVal.EffectId || !msVal.Name) continue;
-            let discLabel = resolveLocKey(msVal, 'Name', jMainSkillLang ?? {});
-            if (discLabel !== '?') discLabel = 'Disc: ' + discLabel;
-            for (const effId of msVal.EffectId) {
-                insertEffect(effId, '?', discLabel, 0, true);
-            }
-        }
-
-        // EffectValue.json pass
-        if (jEffectValue) {
-            const effectIdToDiscNameEV = new Map();
-            for (const [, msVal] of Object.entries(jMainSkill)) {
-                if (!msVal.EffectId || !msVal.Name) continue;
-                const discName = resolveLocKey(msVal, 'Name', jMainSkillLang ?? {});
-                for (const effId of msVal.EffectId) effectIdToDiscNameEV.set(effId, discName);
-            }
-            for (const [evKey, evVal] of Object.entries(jEffectValue)) {
-                const evId = parseInt(evKey, 10);
-                for (let n = 1; ; ++n) {
-                    const paramKey = 'EffectTypeParam' + n;
-                    if (!(paramKey in evVal)) break;
-                    const referencedId = parseInt(evVal[paramKey], 10);
-                    if (!referencedId || effectTable.has(referencedId)) continue;
-                    const discName = effectIdToDiscNameEV.get(evId);
-                    if (discName && discName !== '?')
-                        effectTable.set(referencedId, { charName: '?', label: 'Disc: ' + discName, levelTypeData: 0 });
-                }
-            }
-        }
-    }
-
     // TravelerDuelChallengeAffix pass
     if (jAffix && jAffixLang) {
         for (const [, val] of Object.entries(jAffix)) {
@@ -498,27 +472,6 @@ function buildEffectTable(dataFiles, jChar, jSkill, jSkillLang, jPotential) {
             }
         }
 
-        // Disc icon map: numeric suffix -> label
-        const kDiscBufPrefix = 'Icon/Buff/Icon_DiscBuff_';
-        const discIconToLabel = new Map();
-        if (jDisc) {
-            const kSecFields = ['secondarySkill1','secondarySkill2','secondarySkill3','secondarySkill4'];
-            const iconSuffix = s => { const p = s.lastIndexOf('_'); return p !== -1 ? s.slice(p+1) : s; };
-            for (const [, dval] of Object.entries(jDisc)) {
-                const discName = dval.name ?? '?';
-                if (discName === '?') continue;
-                if (dval.mainSkill?.icon)
-                    discIconToLabel.set(iconSuffix(dval.mainSkill.icon), 'Disc: ' + discName);
-                for (const field of kSecFields) {
-                    const ss = dval[field];
-                    if (!ss?.icon) continue;
-                    const skillName = ss.name ?? '?';
-                    if (skillName === '?') continue;
-                    discIconToLabel.set(iconSuffix(ss.icon), 'Disc-Harmony: ' + discName + ' - ' + skillName);
-                }
-            }
-        }
-
         const jItemRoot = dataFiles.jItemRoot;
         for (const [bkey, bval] of Object.entries(jBuff)) {
             const buffId = parseInt(bkey, 10);
@@ -534,14 +487,6 @@ function buildEffectTable(dataFiles, jChar, jSkill, jSkillLang, jPotential) {
                     effectTable.set(buffId, { charName: cname, label, levelTypeData: -1 });
                     continue;
                 }
-            }
-
-            // Path 2: Icon_DiscBuff_ lookup
-            const icon = bval.Icon;
-            if (icon?.startsWith(kDiscBufPrefix)) {
-                const suffix = icon.slice(kDiscBufPrefix.length);
-                const label  = discIconToLabel.get(suffix);
-                if (label) effectTable.set(buffId, { charName: '?', label, levelTypeData: -1 });
             }
         }
     }
@@ -611,46 +556,25 @@ function buildEffectTable(dataFiles, jChar, jSkill, jSkillLang, jPotential) {
         }
     }
 
-    // SecondarySkill.json pass (Disc-Harmony effects)
-    if (jSecSkill && jDisc) {
-        const kSecSkillFields = ['secondarySkill1','secondarySkill2','secondarySkill3','secondarySkill4'];
-        const groupIdToInfo   = new Map();
-        for (const [, dval] of Object.entries(jDisc)) {
-            const discName = dval.name ?? '?';
-            for (const field of kSecSkillFields) {
-                const ss = dval[field];
-                if (!ss?.id) continue;
-                groupIdToInfo.set(ss.id, { discName, skillName: ss.name ?? '?' });
-            }
-        }
-
-        const evIdToInfo  = new Map();
-        const jEV         = jEffectValue;
-
-        for (const [ssKey, ssVal] of Object.entries(jSecSkill)) {
-            const configId = parseInt(ssKey, 10);
-            if (!configId || effectTable.has(configId) || !ssVal.GroupId) continue;
-            const info = groupIdToInfo.get(ssVal.GroupId);
-            if (!info) continue;
-            const label = 'Disc-Harmony: ' + info.discName + ' - ' + info.skillName;
-            effectTable.set(configId, { charName: '?', label, levelTypeData: 0 });
-            evIdToInfo.set(configId, info);
-        }
-
-        if (jEV) {
-            for (const [evKey, evVal] of Object.entries(jEV)) {
-                const evId   = parseInt(evKey, 10);
-                const parent = evIdToInfo.get(evId);
-                if (!parent) continue;
-                const label = 'Disc-Harmony: ' + parent.discName + ' - ' + parent.skillName;
-                for (let n = 1; n <= 7; ++n) {
-                    const paramKey = 'EffectTypeParam' + n;
-                    if (!(paramKey in evVal)) break;
-                    const referencedId = parseInt(evVal[paramKey], 10);
-                    if (!referencedId || effectTable.has(referencedId)) continue;
-                    effectTable.set(referencedId, { charName: '?', label, levelTypeData: 0 });
+    // OnceAdditionalAttribute.json pass
+    if (jOnceAttr) {
+        for (const [oaKey, oaVal] of Object.entries(jOnceAttr)) {
+            const configId = parseInt(oaKey, 10);
+            if (!configId || effectTable.has(configId)) continue;
+            const charId = Math.trunc(configId / 100000);
+            const cname  = charName(charId);
+            let label = '?';
+            for (let p = 1; ; ++p) {
+                const paramKey = 'Param' + p;
+                if (!(paramKey in oaVal)) break;
+                const param = oaVal[paramKey];
+                for (const prefix of ATTR_DICT_PREFIXES) {
+                    const attrId = extractPrefixedId(param, prefix);
+                    if (attrId) { label = 'AttrDict:' + attrId; break; }
                 }
+                if (label !== '?') break;
             }
+            effectTable.set(configId, { charName: cname, label, levelTypeData: 0 });
         }
     }
 
@@ -669,6 +593,50 @@ function buildEffectTable(dataFiles, jChar, jSkill, jSkillLang, jPotential) {
                     if (buffId && !effectTable.has(buffId))
                         effectTable.set(buffId, { charName: '?', label, levelTypeData: 0 });
                 }
+            }
+        }
+    }
+
+    // Last-resort: 7-digit disc buff ID decode
+    //   Digits 1-4: discId
+    //   Digit 5:    0 = Melody, 1 = Harmony 1, 2 = Harmony 2
+    //   Digits 6-7: ignored for naming
+    if (jItemLangRoot) {
+        const tryDecodeDisc = (buffId) => {
+            if (buffId < 1000000 || buffId > 9999999) return false;
+            const discId   = Math.trunc(buffId / 1000);
+            const digit5   = Math.trunc(buffId / 100) % 10;
+            if (digit5 > 2) return false;
+            const discName = jItemLangRoot[`Item.21${discId}.1`];
+            if (!discName) return false;
+            let label;
+            if (digit5 === 0) {
+                label = `Disc Melody: ${discName}`;
+            } else {
+                const harmonyNum  = digit5;
+                const secSkillKey = `SecondarySkill.${discId}${digit5}01.1`;
+                const harmonyName = jSecSkillLang?.[secSkillKey];
+                label = harmonyName
+                    ? `Disc Harmony ${harmonyNum}: ${discName} - ${harmonyName}`
+                    : `Disc Harmony ${harmonyNum}: ${discName}`;
+            }
+            effectTable.set(buffId, { charName: '?', label, levelTypeData: -1 });
+            return true;
+        };
+        // Pass A: patch unresolved
+        for (const [id, val] of effectTable) { if (val.label === '?') tryDecodeDisc(id); }
+        // Pass B: Effect.json IDs not yet in table
+        if (jEffect) {
+            for (const key of Object.keys(jEffect)) {
+                const configId = parseInt(key, 10);
+                if (!effectTable.has(configId)) tryDecodeDisc(configId);
+            }
+        }
+        // Pass C: Buff.json IDs not yet in table
+        if (jBuff) {
+            for (const key of Object.keys(jBuff)) {
+                const buffId = parseInt(key, 10);
+                if (!effectTable.has(buffId)) tryDecodeDisc(buffId);
             }
         }
     }
@@ -766,14 +734,14 @@ async function initTables(dataRoot) {
         jFloorBuff, jSubNote, jAffinityLevel, jEffectValue,
         jAffix, jAffixLang, jGem, jBuffVal, jMonster,
         jBuff, jBuffValue, jWord, jWordLang, jTalent, jTalentLang,
-        jSecSkill, jDisc, jScoreBoss, jScoreBossLang,
-        jPotential, jMonsterSkin, jItemLangRoot,
+        jSecSkill, jOnceAttr, jDisc, jScoreBoss, jScoreBossLang,
+        jPotential, jMonsterSkin, jItemLangRoot, jSecSkillLang,
     ] = await Promise.all([
-        loadJson(`${_dataRoot}character.json`,              'char'),
+        loadJson(`${_dataRoot}character.json`,               'char'),
         loadJson(`${bin}HitDamage.json`,                     'hit'),
         loadJson(`${bin}Skill.json`,                         'skill'),
         loadJson(`${lang}Skill.json`,                        'skillLang'),
-        loadJson(`${_dataRoot}item.json`,                   'itemRoot'),
+        loadJson(`${_dataRoot}item.json`,                    'itemRoot'),
         loadJson(`${bin}Effect.json`,                        'effect'),
         loadJson(`${bin}Item.json`,                          'item'),
         loadJson(`${lang}Item.json`,                         'itemLang'),
@@ -795,12 +763,14 @@ async function initTables(dataRoot) {
         loadJson(`${bin}Talent.json`,                        'talent'),
         loadJson(`${lang}Talent.json`,                       'talentLang'),
         loadJson(`${bin}SecondarySkill.json`,                'secSkill'),
-        loadJson(`${_dataRoot}disc.json`,                   'disc'),
+        loadJson(`${bin}OnceAdditionalAttribute.json`,       'onceAttr'),
+        loadJson(`${_dataRoot}disc.json`,                    'disc'),
         loadJson(`${bin}ScoreBossAbility.json`,              'scoreBoss'),
         loadJson(`${lang}ScoreBossAbility.json`,             'scoreBossLang'),
         loadJson(`${bin}Potential.json`,                     'potential'),
         loadJson(`${bin}MonsterSkin.json`,                   'monsterSkin'),
         loadJson(`${lang}Item.json`,                         'itemLangRoot'),
+        loadJson(`${lang}SecondarySkill.json`,                'secSkillLang'),
     ]);
 
     if (!jChar || !jSkill || !jSkillLang) {
@@ -819,8 +789,8 @@ async function initTables(dataRoot) {
         jFloorBuff, jSubNote, jAffinityLevel, jEffectValue,
         jAffix, jAffixLang, jGem, jBuffVal, jMonster,
         jBuff, jBuffValue, jWord, jWordLang, jTalent, jTalentLang,
-        jSecSkill, jDisc, jScoreBoss, jScoreBossLang,
-        jItemRoot, jItemLangRoot,
+        jSecSkill, jOnceAttr, jDisc, jScoreBoss, jScoreBossLang,
+        jItemRoot, jItemLangRoot, jSecSkillLang,
     }, jChar, jSkill, jSkillLang, jPotential);
 
     buildSkillTable(jChar, jSkill, jSkillLang);

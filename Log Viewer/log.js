@@ -81,6 +81,12 @@ function hitBody(ev, oi) {
         m.forEach((v,id)=>{ h+=`<tr><td>${esc(v.name)}</td><td>${v.count}</td><td>${id}</td></tr>`; });
         h+=`</table></div>`;
     }
+    if(ev.AttackerAttrDict?.length) {
+        h+=`<div class="collapsible-toggle${subOpenStates[`${oi}_aattrdict-${oi}`] ? ' open' : ''}" data-target="aattrdict-${oi}">Attacker Attr Dict (${ev.AttackerAttrDict.length})</div>
+        <div class="collapsible-content" id="aattrdict-${oi}" style="${subOpenStates[`${oi}_aattrdict-${oi}`] ? 'display:block' : ''}"><table><tr><th>Name</th><th>Stacks</th><th>Value Config ID</th><th>Attr ID</th></tr>`;
+        ev.AttackerAttrDict.forEach(a=>{ h+=`<tr><td>${esc(a.name||String(a.attrId))}</td><td>${a.stacks}</td><td>${a.valueConfigId}</td><td>${a.attrId}</td></tr>`; });
+        h+=`</table></div>`;
+    }
     if(ev.AttackerStats?.attrs?.length) {
         h+=`<div class="collapsible-toggle${subOpenStates[`${oi}_astats-${oi}`] ? ' open' : ''}" data-target="astats-${oi}">Attacker Stats</div>
         <div class="collapsible-content" id="astats-${oi}" style="${subOpenStates[`${oi}_astats-${oi}`] ? 'display:block' : ''}"><table><tr><th>Name</th><th>Origin</th><th>Base</th><th>Pct</th><th>Abs</th><th>LimPct</th></tr>`;
@@ -101,6 +107,12 @@ function hitBody(ev, oi) {
         <div class="collapsible-content" id="deffects-${oi}" style="${subOpenStates[`${oi}_deffects-${oi}`] ? 'display:block' : ''}"><table><tr><th>Name</th><th>Count</th><th>ID</th></tr>`;
         const m=new Map(); ev.DefenderEffects.effects.forEach(e=>{ const id=e.configId; if(!m.has(id)) m.set(id,{name:e.name,count:0}); m.get(id).count++; });
         m.forEach((v,id)=>{ h+=`<tr><td>${esc(v.name)}</td><td>${v.count}</td><td>${id}</td></tr>`; });
+        h+=`</table></div>`;
+    }
+    if(ev.DefenderAttrDict?.length) {
+        h+=`<div class="collapsible-toggle${subOpenStates[`${oi}_dattrdict-${oi}`] ? ' open' : ''}" data-target="dattrdict-${oi}">Defender Attr Dict (${ev.DefenderAttrDict.length})</div>
+        <div class="collapsible-content" id="dattrdict-${oi}" style="${subOpenStates[`${oi}_dattrdict-${oi}`] ? 'display:block' : ''}"><table><tr><th>Name</th><th>Stacks</th><th>Value Config ID</th><th>Attr ID</th></tr>`;
+        ev.DefenderAttrDict.forEach(a=>{ h+=`<tr><td>${esc(a.name||String(a.attrId))}</td><td>${a.stacks}</td><td>${a.valueConfigId}</td><td>${a.attrId}</td></tr>`; });
         h+=`</table></div>`;
     }
     if(ev.DefenderStats?.attrs?.length) {

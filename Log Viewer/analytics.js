@@ -389,12 +389,30 @@ const Analytics = (() => {
             });
             return [...m.entries()].map(([id, v]) => ({ id, name: v.name, stacks: v.stacks }));
         }
+        if (src === 'attackerAttrDict' && ev.AttackerAttrDict?.length) {
+            const m = new Map();
+            ev.AttackerAttrDict.forEach(a => {
+                const id = String(a.attrId);
+                if (!m.has(id)) m.set(id, { name: a.name || id, stacks: 0 });
+                m.get(id).stacks += a.stacks ?? 1;
+            });
+            return [...m.entries()].map(([id, v]) => ({ id, name: v.name, stacks: v.stacks }));
+        }
+        if (src === 'defenderAttrDict' && ev.DefenderAttrDict?.length) {
+            const m = new Map();
+            ev.DefenderAttrDict.forEach(a => {
+                const id = String(a.attrId);
+                if (!m.has(id)) m.set(id, { name: a.name || id, stacks: 0 });
+                m.get(id).stacks += a.stacks ?? 1;
+            });
+            return [...m.entries()].map(([id, v]) => ({ id, name: v.name, stacks: v.stacks }));
+        }
         return [];
     }
 
-    const srcPfx = { attackerBuffs: '[AB]', attackerEffects: '[AE]', defenderBuffs: '[DB]', defenderEffects: '[DE]' };
-    const srcLabel = { attackerBuffs: 'Attacker Buffs', attackerEffects: 'Attacker Effects', defenderBuffs: 'Defender Buffs', defenderEffects: 'Defender Effects' };
-    const srcColor = { attackerBuffs: '#6a9fd8', attackerEffects: '#d4a84b', defenderBuffs: '#c0605a', defenderEffects: '#8c4ba0' };
+    const srcPfx    = { attackerBuffs: '[AB]', attackerEffects: '[AE]', defenderBuffs: '[DB]', defenderEffects: '[DE]', attackerAttrDict: '[AA]', defenderAttrDict: '[DA]' };
+    const srcLabel  = { attackerBuffs: 'Attacker Buffs', attackerEffects: 'Attacker Effects', defenderBuffs: 'Defender Buffs', defenderEffects: 'Defender Effects', attackerAttrDict: 'Attacker Attrs', defenderAttrDict: 'Defender Attrs' };
+    const srcColor  = { attackerBuffs: '#6a9fd8', attackerEffects: '#d4a84b', defenderBuffs: '#c0605a', defenderEffects: '#8c4ba0', attackerAttrDict: '#5abf8a', defenderAttrDict: '#bf855a' };
 
     function buffKey(src, id) { return `${srcPfx[src]}|${id}`; }
 
@@ -470,7 +488,7 @@ const Analytics = (() => {
 
     function buildMaxStacksMap(hits) {
         const maxStacks = {};
-        ['attackerBuffs','attackerEffects','defenderBuffs','defenderEffects'].forEach(src => {
+        ['attackerBuffs','attackerEffects','defenderBuffs','defenderEffects','attackerAttrDict','defenderAttrDict'].forEach(src => {
             hits.forEach(ev => {
                 getBuffItems(ev, src).forEach(item => {
                     const k = buffKey(src, item.id);
@@ -495,7 +513,7 @@ const Analytics = (() => {
         const allHits = getPlayerHits();
         const hits = charFilterVal ? allHits.filter(ev => getCharName(ev) === charFilterVal) : allHits;
 
-        const stackingSet  = buildStackingSet(allHits, ['attackerBuffs','attackerEffects','defenderBuffs','defenderEffects']);
+        const stackingSet  = buildStackingSet(allHits, ['attackerBuffs','attackerEffects','defenderBuffs','defenderEffects','attackerAttrDict','defenderAttrDict']);
         const maxStacksMap = buildMaxStacksMap(allHits);
 
         let labels, datasets;
@@ -771,7 +789,7 @@ const Analytics = (() => {
 
     // Initialize toggle button active states (AE + DE on by default)
     (function initSrcToggles() {
-        const defaults = new Set(['attackerEffects', 'defenderEffects']);
+        const defaults = new Set(['attackerEffects', 'defenderEffects', 'attackerAttrDict', 'defenderAttrDict']);
         document.querySelectorAll('.bp-src-btn').forEach(btn => {
             const on = defaults.has(btn.dataset.src);
             btn.dataset.active = on ? '1' : '0';
