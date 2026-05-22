@@ -587,7 +587,7 @@ int main(int argc, char** argv) {
     if (LOG_FILE.empty())
         LOG_FILE = GetDefaultLogPath();
     if (!g_local_mode)
-        ServerLog("Fetching files automatically from github, run with \"-local\" to use local files.")
+        ServerLog("Fetching files automatically from github, run with \"-local\" to use local files.");
 
     // Check if file or folder exists
 #ifdef _WIN32
