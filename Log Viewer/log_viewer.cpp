@@ -88,6 +88,91 @@ static void ServerLog(const char* fmt, ...) {
 //  Global log file path
 // =============================================================================
 std::string LOG_FILE;
+static bool g_local_mode = false;
+
+static const char* REMOTE_BASE =
+    "https://raw.githubusercontent.com/MorphTheMoth/Stella-Sora-Combat-Logger/refs/heads/main/Log%20Viewer";
+
+// =============================================================================
+//  Remote file fetch — WinINet on Windows, libcurl on Linux
+// =============================================================================
+#ifdef _WIN32
+#include <wininet.h>
+
+static std::string FetchRemoteFile(const std::string& url) {
+    ServerLog("Fetching: %s", url.c_str());
+    std::string result;
+
+    HINTERNET hInet = InternetOpenA("LogViewer/1.0",
+                                    INTERNET_OPEN_TYPE_PRECONFIG,
+                                    NULL, NULL, 0);
+    if (!hInet) {
+        ServerLog("FetchRemoteFile: InternetOpen failed (%lu)", GetLastError());
+        return result;
+    }
+
+    HINTERNET hUrl = InternetOpenUrlA(hInet, url.c_str(), NULL, 0,
+                                      INTERNET_FLAG_SECURE |
+                                      INTERNET_FLAG_RELOAD |
+                                      INTERNET_FLAG_NO_CACHE_WRITE,
+                                      0);
+    if (!hUrl) {
+        ServerLog("FetchRemoteFile: InternetOpenUrl failed (%lu)", GetLastError());
+        InternetCloseHandle(hInet);
+        return result;
+    }
+
+    char buf[8192];
+    DWORD bytesRead = 0;
+    while (InternetReadFile(hUrl, buf, sizeof(buf), &bytesRead) && bytesRead > 0)
+        result.append(buf, bytesRead);
+
+    InternetCloseHandle(hUrl);
+    InternetCloseHandle(hInet);
+    return result;
+}
+
+#else
+#include <curl/curl.h>
+
+static size_t curl_write_cb(char* ptr, size_t size, size_t nmemb, void* userdata) {
+    static_cast<std::string*>(userdata)->append(ptr, size * nmemb);
+    return size * nmemb;
+}
+
+static std::string FetchRemoteFile(const std::string& url) {
+    ServerLog("Fetching: %s", url.c_str());
+    std::string result;
+
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        ServerLog("FetchRemoteFile: curl_easy_init failed");
+        return result;
+    }
+
+    curl_easy_setopt(curl, CURLOPT_URL,            url.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION,  curl_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA,      &result);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT,        10L);
+
+    CURLcode res = curl_easy_perform(curl);
+    if (res != CURLE_OK) {
+        ServerLog("FetchRemoteFile: curl error: %s", curl_easy_strerror(res));
+        result.clear();
+    } else {
+        long http_code = 0;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+        if (http_code != 200) {
+            ServerLog("FetchRemoteFile: HTTP %ld for %s", http_code, url.c_str());
+            result.clear();
+        }
+    }
+
+    curl_easy_cleanup(curl);
+    return result;
+}
+#endif
 
 std::string GetDefaultLogPath() {
 #ifdef _WIN32
@@ -339,31 +424,40 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
         std::string query  = MgStrToStd(hm->query);
         std::string remote = RemoteAddr(c);
 
-        if (uri == "/") {
-            std::ifstream file("index.html");
-            if (file.good()) {
-                std::stringstream buffer;
-                buffer << file.rdbuf();
-                std::string html = buffer.str();
-                mg_http_reply(c, 200, "Content-Type: text/html\r\n", "%s", html.c_str());
-                HttpLog(200, method, uri, query, remote);
+        if (uri == "/" || uri == "/dataLoader.js" || uri == "/log.js" ||
+            uri == "/analytics.js" || uri == "/tableResolver.js") {
+            if (!g_local_mode) {
+                // Proxy the file from GitHub so the browser gets the right Content-Type.
+                std::string url = std::string(REMOTE_BASE);
+                url += (uri == "/") ? "/index.html" : uri;
+                std::string body = FetchRemoteFile(url);
+                if (!body.empty()) {
+                    const char* ct = (uri == "/")
+                        ? "Content-Type: text/html\r\n"
+                        : "Content-Type: application/javascript\r\n";
+                    mg_http_reply(c, 200, ct, "%s", body.c_str());
+                    HttpLog(200, method, uri, query, remote);
+                } else {
+                    mg_http_reply(c, 502, "Content-Type: text/plain\r\n", "Failed to fetch remote file");
+                    HttpLog(502, method, uri, query, remote);
+                }
             } else {
-                mg_http_reply(c, 404, "Content-Type: text/html\r\n",
-                    "<html><body><h1>index.html not found</h1></body></html>");
-                HttpLog(404, method, uri, query, remote);
-            }
-        } else if (uri == "/dataLoader.js" || uri == "/log.js" || uri == "/analytics.js" || uri == "/tableResolver.js") {
-            std::string filename = uri.substr(1);
-            std::ifstream file(filename);
-            if (file.good()) {
-                std::stringstream buffer;
-                buffer << file.rdbuf();
-                std::string js = buffer.str();
-                mg_http_reply(c, 200, "Content-Type: application/javascript\r\n", "%s", js.c_str());
-                HttpLog(200, method, uri, query, remote);
-            } else {
-                mg_http_reply(c, 404, "Content-Type: text/plain\r\n", "File not found");
-                HttpLog(404, method, uri, query, remote);
+                // Local mode: serve files from disk.
+                std::string filename = (uri == "/") ? "index.html" : uri.substr(1);
+                std::string content_type = (uri == "/")
+                    ? "Content-Type: text/html\r\n"
+                    : "Content-Type: application/javascript\r\n";
+                std::ifstream file(filename);
+                if (file.good()) {
+                    std::stringstream buffer;
+                    buffer << file.rdbuf();
+                    std::string body = buffer.str();
+                    mg_http_reply(c, 200, content_type.c_str(), "%s", body.c_str());
+                    HttpLog(200, method, uri, query, remote);
+                } else {
+                    mg_http_reply(c, 404, "Content-Type: text/plain\r\n", "File not found");
+                    HttpLog(404, method, uri, query, remote);
+                }
             }
         } else if (uri.find("/api/log") == 0) {
             size_t after = 0;
@@ -482,11 +576,18 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
 //  Main
 // =============================================================================
 int main(int argc, char** argv) {
-    if (argc > 1) {
-        LOG_FILE = argv[1];
-    } else {
-        LOG_FILE = GetDefaultLogPath();
+    // Scan all arguments: last arg that doesn't start with '-' is the log path;
+    // '-local' anywhere enables local file serving mode.
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "-local")
+            g_local_mode = true;
+        else
+            LOG_FILE = argv[i];
     }
+    if (LOG_FILE.empty())
+        LOG_FILE = GetDefaultLogPath();
+    if (!g_local_mode)
+        ServerLog("Fetching files automatically from github, run with \"-local\" to use local files.")
 
     // Check if file or folder exists
 #ifdef _WIN32
@@ -513,6 +614,7 @@ int main(int argc, char** argv) {
 #endif
 
     ServerLog("Reading log from: %s", LOG_FILE.c_str());
+    ServerLog("Mode: %s", g_local_mode ? "local (serving files from disk)" : "remote (serving files from GitHub)");
     mg_log_set(MG_LL_NONE);
 
     struct mg_mgr mgr;
