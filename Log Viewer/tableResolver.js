@@ -21,6 +21,44 @@ const hitTable      = new Map();
 // int configId -> { charName, label, levelTypeData }
 const effectTable   = new Map();
 
+// int configId -> { effectType, attrType, subType, value }  (from EffectValue.json)
+const effectValueTable = new Map();
+
+// int valueConfigId -> [{ attrType, subType, value }, ...]  (from OnceAdditionalAttributeValue.json)
+const onceAttrValueTable = new Map();
+
+// ─── EffectType enum ──────────────────────────────────────────────────────────
+const EFFECT_TYPE_NAMES = {
+    1:'STATE_CHANGE', 2:'CURRENTCD', 3:'CD', 6:'ADDBUFF', 7:'ADD_SKILL_LV',
+    8:'SET_SKILL_LV', 9:'IMM_BUFF', 10:'ADDSKILLAMOUNT', 11:'RESUMSKILLAMOUNT',
+    12:'ATTR_FIX', 13:'REMOVE_BUFF', 14:'EFFECT_CD_FIX', 15:'EFFECT_MAX_CD_FIX',
+    16:'AMEND_NO_COST', 17:'DAMAGE_IMM_ACC', 18:'EFFECT_MUL', 19:'EFFECT_HP_RECOVRY',
+    21:'KILL_IMMEDIATELY', 22:'ADD_BUFF_DURATION_EXISTING', 23:'HIT_ELEMENT_TYPE_EXTEND',
+    24:'CHANGE_EFFECT_RATE', 25:'ADD_TAG', 27:'EFFECT_HP_REVERTTO', 28:'EFFECT_HP_ABSORB',
+    29:'CHANGE_BUFF_LAMINATEDNUM', 30:'CHANGE_BUFF_TIME', 34:'SPECIAL_ATTR_FIX',
+    35:'AMMO_FIX', 36:'MONSTER_ATTR_FIX', 37:'PLAYER_ATTR_FIX', 38:'IMMUNE_DEAD',
+    39:'ENTER_TRANSPARENT', 40:'UNABLE_RECOVER_ENERGY', 41:'CLEAR_MONSTER_AI_BRANCH_CD',
+    42:'ADD_SHIELD', 43:'REDUCE_HP_BY_CURRENTHP', 44:'REDUCE_HP_BY_MAXHP',
+    45:'HITTED_ADDITIONAL_ATTR_FIX', 46:'ATTR_ASSIGNMENT', 47:'CAST_AREAEFFECT',
+    48:'PASSIVE_SKILL', 49:'IMM_CERTAIN_HITDAMAGEID', 50:'STATE_AMOUNT',
+    51:'DROP_ITEM_PICKUP_RANGE_FIX', 52:'ELEMENTTYPE_ATTR_FIX', 53:'DAMAGETYPE_ATTR_FIX',
+    54:'HITTED_ADDITIONAL_ELEMENTTYPE_ATTR_FIX', 55:'HITTED_ADDITIONAL_DAMAGETYPE_ATTR_FIX',
+    56:'ELEMENTTYPE_ATTR_PERCENT_FIX', 57:'DAMAGETYPE_ATTR_PERCENT_FIX',
+    58:'HITTED_ADDITIONAL_ELEMENTTYPE_ATTR_PERCENT_FIX',
+    59:'HITTED_ADDITIONAL_DAMAGETYPE_ATTR_PERCENT_FIX',
+    60:'ELEMENTTYPE_ATTR_ASSIGNMENT', 61:'DAMAGETYPE_ATTR_ASSIGNMENT',
+    62:'ELEMENTTYPE_ATTR_PERCENT_ASSIGNMENT', 63:'DAMAGETYPE_ATTR_PERCENT_ASSIGNMENT',
+};
+const EFFECT_SUBTYPE_NAMES = { 1:'Base', 2:'Pct', 3:'Abs' };
+
+function effectTypeName(v) { return v != null ? (EFFECT_TYPE_NAMES[v] || v + ' (?)') : ''; }
+function effectSubTypeName(v) { return v != null ? (EFFECT_SUBTYPE_NAMES[v] || v + ' (?)') : ''; }
+
+function effectTypeHasAttr(et) {
+    const name = EFFECT_TYPE_NAMES[et] || '';
+    return name.includes('ATTR');
+}
+
 // int configId -> suppressed (boolean set, stored as Set<int>)
 const suppressedIds = new Set();
 
@@ -158,6 +196,13 @@ function enrichEffectList(effectList) {
     if (!effectList?.effects) return;
     for (const e of effectList.effects) {
         e.name = buffIdToName(e.configId);
+        const ev = effectValueTable.get(e.configId);
+        if (ev) {
+            if (ev.attrType != null) e.effectType  = ev.effectType;
+            if (ev.attrType != null) e.attrType    = ev.attrType;
+            if (ev.subType  != null) e.subType     = ev.subType;
+            if (ev.value    != null) e.value       = ev.value;
+        }
     }
 }
 
@@ -170,11 +215,41 @@ function enrichAttrList(attrs) {
 
 function enrichAttrDictList(attrDictList) {
     if (!Array.isArray(attrDictList)) return;
-    for (const entry of attrDictList) {
+    // We may splice in extra entries for slots 2 & 3, so iterate by index carefully.
+    let i = 0;
+    while (i < attrDictList.length) {
+        const entry = attrDictList[i];
         if (entry.attrId != null) {
             entry.configId = entry.attrId;
             entry.name = buffIdToName(entry.attrId);
         }
+        // Attach onceAttrValue data if we have a valueConfigId
+        const vcId = entry.valueConfigId != null ? parseInt(entry.valueConfigId, 10) : null;
+        if (vcId) {
+            const slots = onceAttrValueTable.get(vcId);
+            if (slots && slots.length > 0) {
+                // Apply slot 1 data to this entry
+                const s1 = slots[0];
+                entry.attrType = s1.attrType;
+                entry.subType  = s1.subType;
+                entry.value    = s1.value;
+
+                // Splice in copies for slots 2 & 3
+                for (let sn = 1; sn < slots.length; sn++) {
+                    const sx = slots[sn];
+                    const extra = Object.assign({}, entry);
+                    extra.attrType = sx.attrType;
+                    extra.subType  = sx.subType;
+                    extra.value    = sx.value;
+                    extra.name     = (entry.name || String(entry.attrId || '')) + ' #' + (sn + 1);
+                    attrDictList.splice(i + sn, 0, extra);
+                }
+                // Skip past the newly inserted entries
+                i += slots.length;
+                continue;
+            }
+        }
+        i++;
     }
 }
 
@@ -697,6 +772,49 @@ function buildEffectTable(dataFiles, jChar, jSkill, jSkillLang, jPotential) {
         effectTable.set(id, { charName: cname, label, levelTypeData: -1 });
 }
 
+// ─── buildEffectValueTable ────────────────────────────────────────────────────
+
+function buildEffectValueTable(jEffectValue) {
+    effectValueTable.clear();
+    if (!jEffectValue) return;
+    for (const [key, ev] of Object.entries(jEffectValue)) {
+        const configId = parseInt(key, 10);
+        if (!configId) continue;
+        const et = ev.EffectType != null ? parseInt(ev.EffectType, 10) : null;
+        const entry = { effectType: et };
+        if (et != null && effectTypeHasAttr(et)) {
+            entry.attrType = ev.EffectTypeFirstSubtype != null ? parseInt(ev.EffectTypeFirstSubtype, 10) : null;
+            entry.subType  = ev.EffectTypeSecondSubtype != null ? parseInt(ev.EffectTypeSecondSubtype, 10) : null;
+            entry.value    = ev.EffectTypeParam1 != null && ev.EffectTypeParam1 !== '' ? parseFloat(ev.EffectTypeParam1) : null;
+        }
+        effectValueTable.set(configId, entry);
+    }
+}
+
+// ─── buildOnceAttrValueTable ──────────────────────────────────────────────────
+
+function buildOnceAttrValueTable(jOnceAttrValue) {
+    onceAttrValueTable.clear();
+    if (!jOnceAttrValue) return;
+    for (const [key, oa] of Object.entries(jOnceAttrValue)) {
+        const vcId = parseInt(key, 10);
+        if (!vcId) continue;
+        const slots = [];
+        for (let n = 1; n <= 3; n++) {
+            const attrType = oa[`AttributeType${n}`];
+            const paramType = oa[`ParameterType${n}`];
+            const rawVal   = oa[`Value${n}`];
+            if (!attrType && !paramType && !rawVal) continue;
+            const at = attrType != null ? parseInt(attrType, 10) : null;
+            const pt = paramType != null ? parseInt(paramType, 10) : null;
+            const vv = rawVal != null ? rawVal / 100 : null;
+            if (!at && !pt) continue;          // truly empty slot
+            slots.push({ slotNum: n, attrType: at, subType: pt, value: vv });
+        }
+        if (slots.length) onceAttrValueTable.set(vcId, slots);
+    }
+}
+
 // ─── buildSkillTable ──────────────────────────────────────────────────────────
 
 function buildSkillTable(jChar, jSkill, jSkillLang) {
@@ -741,7 +859,7 @@ async function initTables(dataRoot) {
         jFloorBuff, jSubNote, jAffinityLevel, jEffectValue,
         jAffix, jAffixLang, jGem, jBuffVal, jMonster,
         jBuff, jBuffValue, jWord, jWordLang, jTalent, jTalentLang,
-        jSecSkill, jOnceAttr, jDisc, jScoreBoss, jScoreBossLang,
+        jSecSkill, jOnceAttr, jOnceAttrValue, jDisc, jScoreBoss, jScoreBossLang,
         jPotential, jMonsterSkin, jItemLangRoot, jSecSkillLang,
     ] = await Promise.all([
         loadJson(`${_dataRoot}character.json`,               'char'),
@@ -771,6 +889,7 @@ async function initTables(dataRoot) {
         loadJson(`${lang}Talent.json`,                       'talentLang'),
         loadJson(`${bin}SecondarySkill.json`,                'secSkill'),
         loadJson(`${bin}OnceAdditionalAttribute.json`,       'onceAttr'),
+        loadJson(`${bin}OnceAdditionalAttributeValue.json`, 'onceAttrValue'),
         loadJson(`${_dataRoot}disc.json`,                    'disc'),
         loadJson(`${bin}ScoreBossAbility.json`,              'scoreBoss'),
         loadJson(`${lang}ScoreBossAbility.json`,             'scoreBossLang'),
@@ -784,6 +903,9 @@ async function initTables(dataRoot) {
         console.error('[tableResolver] Missing required data files — tables not built');
         return;
     }
+
+    buildEffectValueTable(jEffectValue);
+    buildOnceAttrValueTable(jOnceAttrValue);
 
     buildActorNameMap(jChar, jMonsterSkin);
 
