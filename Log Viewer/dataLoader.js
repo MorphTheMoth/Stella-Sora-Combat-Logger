@@ -8,10 +8,10 @@ function dtName(v){ return v!=null ? (damageTypeNames[v]||v+' (?)') : ''; }
 function deName(v){ return v!=null ? (damageEffectNames[v]||v+' (?)') : ''; }
 function elName(v){ return v!=null ? (elementTypeNames[v]||v+' (?)') : ''; }
 function cleanOwner(s){ return s ? s.replace(/^\[|\]$/g,'') : '?'; }
-// ─── Shared state ────────────────────────
+
+// ─── Shared state ─────────────────
 let allEvents = [];
 let filtered = [];
-let typeFilter = 'all', charFilter = '', skillFilter = '', defenderFilter = '';
 
 const EST = 40;
 const BUFFER = 20;
@@ -26,7 +26,7 @@ let totalHeightCached = 0;
 let lastFetchCount = 0;
 let currentSavedLog = null;
 
-// ─── Fenwick tree ────────────────────────
+// ─── Fenwick tree ─────────────────
 class Fenwick {
     constructor(size) {
         this.size = size;
@@ -134,98 +134,6 @@ window.onSavedLogChange = async function() {
     closeSearch();
     refilterAndRender(true, true);
 };
-
-// ─── Helpers ──────────────────────
-function esc(s) {
-    const m = { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;' };
-    return String(s).replace(/[&<>"']/g, c => m[c]);
-}
-
-function getChars(ev) {
-    const s = new Set();
-    if (ev.Type==='Hit') { if(ev.AttackerDisplay) s.add(ev.AttackerDisplay); }
-    else if (ev.Type==='Buff') {
-        if(ev.OwnerDisplay||ev.Owner) s.add(cleanOwner(ev.OwnerDisplay||ev.Owner));
-        if(ev.SourceDisplay||ev.Source) s.add(cleanOwner(ev.SourceDisplay||ev.Source));
-    } else if (ev.Type==='Skill Cast') { if(ev.Owner) s.add(ev.Owner); }
-    return s;
-}
-function getSkillName(ev) {
-    if (ev.Type==='Hit') return (ev.HitConfig||{}).skillTitle||null;
-    if (ev.Type==='Buff') return ev.Name||null;
-    if (ev.Type==='Skill Cast') return ev.Name||null;
-    return null;
-}
-function getDefender(ev) {
-    if (ev.Type === 'Hit') {
-        const name = ev.DefenderDisplay || ev.Defender;
-        if (name) return new Set([cleanOwner(name)]);
-    }
-    return new Set();
-}
-
-function buildCharFilter() {
-    const all = new Set(); allEvents.forEach(e => getChars(e).forEach(c => all.add(c)));
-    const sel = document.getElementById('charFilter');
-    const cur = sel.value;
-    sel.innerHTML = '<option value="">All Characters</option>';
-    [...all].sort().forEach(c => { const o=document.createElement('option'); o.value=c; o.textContent=c; sel.appendChild(o); });
-    sel.value = [...sel.options].some(o=>o.value===cur) ? cur : '';
-    charFilter = sel.value;
-}
-function buildSkillFilter(evs) {
-    const all = new Set(); evs.forEach(e => { const n=getSkillName(e); if(n) all.add(n); });
-    const sel = document.getElementById('skillFilter');
-    const cur = sel.value;
-    sel.innerHTML = '<option value="">All Skills</option>';
-    const MAX = 28;
-    [...all].sort().forEach(s => {
-        const o = document.createElement('option');
-        o.value = s;
-        o.textContent = s.length > MAX ? s.slice(0, MAX) + '…' : s;
-        o.title = s;
-        sel.appendChild(o);
-    });
-    sel.value = [...sel.options].some(o=>o.value===cur) ? cur : '';
-    skillFilter = sel.value;
-}
-function buildDefenderFilter() {
-    const hitCounts = {};
-    allEvents.forEach(e => getDefender(e).forEach(d => { hitCounts[d] = (hitCounts[d] || 0) + 1; }));
-    const all = Object.keys(hitCounts);
-    const sel = document.getElementById('defenderFilter');
-    const cur = sel.value;
-    sel.innerHTML = '<option value="">All Defenders</option>';
-    const MAX = 28;
-    [...all].sort().forEach(c => {
-        const o = document.createElement('option');
-        o.value = c;
-        o.textContent = c.length > MAX ? c.slice(0, MAX) + '…' : c;
-        o.title = c;
-        sel.appendChild(o);
-    });
-    if (cur && [...sel.options].some(o => o.value === cur)) {
-        sel.value = cur;
-    } else {
-        const top = all.sort((a, b) => hitCounts[b] - hitCounts[a])[0] || '';
-        sel.value = top;
-    }
-    defenderFilter = sel.value;
-}
-
-function applyFilters() {
-    let evs = allEvents.slice();
-    if (typeFilter!=='all') {
-        if (typeFilter==='Buff'||typeFilter==='Effect')
-            evs = evs.filter(e=>e.Type==='Buff' && e.SubType===typeFilter);
-        else evs = evs.filter(e=>e.Type===typeFilter);
-    }
-    if (charFilter) evs = evs.filter(e=>getChars(e).has(charFilter));
-    buildSkillFilter(evs);
-    if (skillFilter) evs = evs.filter(e=>getSkillName(e)===skillFilter);
-    if (defenderFilter) evs = evs.filter(e => (getDefender(e).has(defenderFilter) || getDefender(e).size === 0));
-    return evs;
-}
 
 // ─── Save / Clear / Fetch ─────────────────
 window.saveLog = async function() {

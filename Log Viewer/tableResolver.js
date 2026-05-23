@@ -336,6 +336,13 @@ function buildHitTable(jHit, jSkill, jLang, jChar, jPotential, jItemRoot) {
             });
         }
     }
+
+    // Hardcoded Hits
+    const hardcoded = [
+        [155310101, 'Shia', 'Electro Music', 1],
+    ];
+    for (const [hitId, cname, skillTitle, hitNum] of hardcoded)
+        hitTable.set(hitId, { cname, skillTitle, hitNum });
 }
 
 // ─── buildEffectTable ─────────────────────────────────────────────────────────
@@ -684,7 +691,7 @@ function buildEffectTable(dataFiles, jChar, jSkill, jSkillLang, jPotential) {
         [990050012, 'Enemy', 'Defense Broken'],
         [631014002, 'Enemy', 'Forbidden Beauty / Meticulously Crafted'],
         [631014022, 'Enemy', 'Forbidden Beauty / Meticulously Crafted'],
-        [155310101, 'Shia',  'Electro Music'],
+        [13295011, 'Minova', 'Astral Hex'],
     ];
     for (const [id, cname, label] of hardcoded)
         effectTable.set(id, { charName: cname, label, levelTypeData: -1 });

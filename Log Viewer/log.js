@@ -1,3 +1,101 @@
+// ─── Helpers ──────────────────────
+function esc(s) {
+    const m = { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;' };
+    return String(s).replace(/[&<>"']/g, c => m[c]);
+}
+
+function getChars(ev) {
+    const s = new Set();
+    if (ev.Type==='Hit') { if(ev.AttackerDisplay) s.add(ev.AttackerDisplay); }
+    else if (ev.Type==='Buff') {
+        if(ev.OwnerDisplay||ev.Owner) s.add(cleanOwner(ev.OwnerDisplay||ev.Owner));
+        if(ev.SourceDisplay||ev.Source) s.add(cleanOwner(ev.SourceDisplay||ev.Source));
+    } else if (ev.Type==='Skill Cast') { if(ev.Owner) s.add(ev.Owner); }
+    return s;
+}
+function getSkillName(ev) {
+    if (ev.Type==='Hit') return (ev.HitConfig||{}).skillTitle||null;
+    if (ev.Type==='Buff') return ev.Name||null;
+    if (ev.Type==='Skill Cast') return ev.Name||null;
+    return null;
+}
+function getDefender(ev) {
+    if (ev.Type === 'Hit') {
+        const name = ev.DefenderDisplay || ev.Defender;
+        if (name) return new Set([cleanOwner(name)]);
+    }
+    return new Set();
+}
+
+// ─── Filter state ─────────────────
+let typeFilter = new Set(['Hit', 'Skill Cast']);
+let charFilter = '', skillFilter = '', defenderFilter = '';
+
+function buildCharFilter() {
+    const all = new Set(); allEvents.forEach(e => getChars(e).forEach(c => all.add(c)));
+    const sel = document.getElementById('charFilter');
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">All Characters</option>';
+    [...all].sort().forEach(c => { const o=document.createElement('option'); o.value=c; o.textContent=c; sel.appendChild(o); });
+    sel.value = [...sel.options].some(o=>o.value===cur) ? cur : '';
+    charFilter = sel.value;
+}
+function buildSkillFilter(evs) {
+    const all = new Set(); evs.forEach(e => { const n=getSkillName(e); if(n) all.add(n); });
+    const sel = document.getElementById('skillFilter');
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">All Skills</option>';
+    const MAX = 28;
+    [...all].sort().forEach(s => {
+        const o = document.createElement('option');
+        o.value = s;
+        o.textContent = s.length > MAX ? s.slice(0, MAX) + '…' : s;
+        o.title = s;
+        sel.appendChild(o);
+    });
+    sel.value = [...sel.options].some(o=>o.value===cur) ? cur : '';
+    skillFilter = sel.value;
+}
+function buildDefenderFilter() {
+    const hitCounts = {};
+    allEvents.forEach(e => getDefender(e).forEach(d => { hitCounts[d] = (hitCounts[d] || 0) + 1; }));
+    const all = Object.keys(hitCounts);
+    const sel = document.getElementById('defenderFilter');
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">All Defenders</option>';
+    const MAX = 28;
+    [...all].sort().forEach(c => {
+        const o = document.createElement('option');
+        o.value = c;
+        o.textContent = c.length > MAX ? c.slice(0, MAX) + '…' : c;
+        o.title = c;
+        sel.appendChild(o);
+    });
+    if (cur && [...sel.options].some(o => o.value === cur)) {
+        sel.value = cur;
+    } else {
+        const top = all.sort((a, b) => hitCounts[b] - hitCounts[a])[0] || '';
+        sel.value = top;
+    }
+    defenderFilter = sel.value;
+}
+
+function applyFilters() {
+    let evs = allEvents.slice();
+    if (typeFilter.size > 0) {
+        evs = evs.filter(ev => {
+            // Effect is stored as Type='Buff', SubType='Effect'
+            const effectiveType = (ev.Type === 'Buff' && ev.SubType === 'Effect') ? 'Effect' : ev.Type;
+            return typeFilter.has(effectiveType);
+        });
+    }
+    if (charFilter) evs = evs.filter(e => getChars(e).has(charFilter));
+    buildSkillFilter(evs);
+    if (skillFilter) evs = evs.filter(e => getSkillName(e) === skillFilter);
+    if (defenderFilter) evs = evs.filter(e => (getDefender(e).has(defenderFilter) || getDefender(e).size === 0));
+    return evs;
+}
+
 // ─── Search state ─────────────────
 let searchQuery = '';
 let searchMatches = [];
@@ -23,7 +121,7 @@ function refilterAndRender(resetScroll = false, resetOpen = true) {
     buildSearchMatches();
     if (searchMatchIdx >= searchMatches.length) searchMatchIdx = searchMatches.length > 0 ? 0 : -1;
     updateSearchCount();
-    document.getElementById('stats').textContent = `Showing ${filtered.length} of ${allEvents.length} events`;
+    document.getElementById('stats').textContent = `${filtered.length} / ${allEvents.length}`;
     if (resetScroll || resetOpen) {
         container.scrollTop = 0;
     }
@@ -188,7 +286,7 @@ function createEventDiv(ev, filteredIdx) {
 
     header.addEventListener('click', (e) => {
         e.stopPropagation();
-        toggleMainEvent(oi, filteredIdx);
+        toggleMainEvent(oi);
     });
 
     const body = document.createElement('div');
@@ -209,9 +307,11 @@ function createEventDiv(ev, filteredIdx) {
 }
 
 // ─── Toggle main event ──────────────────────
-function toggleMainEvent(origIndex, filteredIdx) {
+function toggleMainEvent(origIndex) {
     const eventDiv = content.querySelector(`.event[data-orig-index="${origIndex}"]`);
     if (!eventDiv) return;
+
+    const filteredIdx = parseInt(eventDiv.dataset.filteredIndex);
 
     const savedScroll = container.scrollTop;
     const wasOpen = openStates[origIndex] || false;
@@ -319,11 +419,18 @@ function render() {
         neededOrig.add(filtered[i]._origIndex);
     }
 
+    // Build a fresh orig→filteredIndex map so we never use stale dataset values
+    const origToFi = new Map();
+    for (let i = start; i < end; i++) {
+        origToFi.set(filtered[i]._origIndex, i);
+    }
+
     const existing = content.querySelectorAll('.event');
     for (const el of existing) {
         const oi = parseInt(el.dataset.origIndex);
         if (neededOrig.has(oi)) {
-            const fi = parseInt(el.dataset.filteredIndex);
+            const fi = origToFi.get(oi);
+            el.dataset.filteredIndex = fi; // keep dataset in sync
             const newTop = fenwick.prefixSum(fi - 1);
             if (el.style.top !== newTop + 'px') {
                 el.style.top = newTop + 'px';
@@ -548,10 +655,14 @@ function renderSpacers() {
 }
 
 // ─── Filter handlers ─────────────
-window.filter = function(type) {
-    typeFilter = type;
-    document.querySelectorAll('.filters button').forEach(b => b.classList.remove('active'));
-    event.target.classList.add('active');
+window.toggleTypeFilter = function(btn) {
+    const type = btn.dataset.type;
+    if (typeFilter.has(type)) {
+        typeFilter.delete(type);
+    } else {
+        typeFilter.add(type);
+    }
+    btn.classList.toggle('active', typeFilter.has(type));
     refilterAndRender(true);
 };
 

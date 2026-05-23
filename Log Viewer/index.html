@@ -14,17 +14,33 @@
             flex-direction: column; background: #1a1a1a; margin: 0 auto; position: relative;
         }
         h1 { color: #aaa; margin-bottom: 15px; flex-shrink: 0; }
-        .filters { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; flex-shrink: 0; }
-        .filters button, .filters select {
-            padding: 6px 14px; border: 1px solid #555; border-radius: 4px; background: #2a2a2a; color: #ccc;
-            cursor: pointer; font-weight: normal; transition: background 0.15s; font-size: 14px; user-select: none;
+        .filters {
+            display: flex; gap: 6px; margin-bottom: 0;
+            flex-wrap: wrap; align-items: center; flex-shrink: 0;
+            padding: 10px 16px;
+            border-bottom: 1px solid #2c2c2c;
+            background: #1f1f1f;
         }
-        .filters button.active { background: #5a5a5a; color: #fff; }
-        .filters button:hover, .filters select:hover { background: #444; }
-        .filters select { width: 160px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
-        .filters button.clear-btn { background: #301818; color: #cdb1b1; border-color: #533939; }
-        .filters button.clear-btn:hover { background: #562a2a; }
-        .stats { font-size: 11px; color: #888; margin-bottom: 10px; flex-shrink: 0; }
+        .filters button, .filters select {
+            padding: 5px 12px; border: 1px solid #333; border-radius: 4px;
+            background: #242424; color: #888; cursor: pointer;
+            font-size: 12px; user-select: none;
+            transition: background 0.12s, color 0.12s, border-color 0.12s;
+            appearance: none;
+        }
+        .filters button:hover, .filters select:hover {
+            background: #2e2e2e; color: #bbb; border-color: #444;
+        }
+        .filters button.active {
+            background: #303030; color: #ddd; border-color: #555;
+        }
+        .filters button.clear-btn {
+            color: #b07070; border-color: #4a3030;
+        }
+        .filters button.clear-btn:hover {
+            background: #2e2020; color: #cc8888; border-color: #5a3535;
+        }
+        .stats { font-size: 11px; color: #888; margin: 5px; flex-shrink: 0; align-self: flex-end; align-content: center; }
         .scroll-container {
             flex: 1; overflow-y: auto; position: relative;
             border-top: 1px solid #333; background: #1a1a1a; width: 100%;
@@ -118,18 +134,24 @@
 
         /* ── Tab navigation ── */
         .tab-bar {
-            display: flex; gap: 0; flex-shrink: 0;
-            border-bottom: 2px solid #333; margin-bottom: 0;
+            display: flex; flex-shrink: 0;
+            padding: 0 12px;
+            background: #1f1f1f;
+            border-bottom: 1px solid #2c2c2c;
         }
         .tab-btn {
-            padding: 8px 22px; background: transparent; border: none;
-            color: #888; cursor: pointer; font-size: 13px; font-weight: 600;
-            border-bottom: 2px solid transparent; margin-bottom: -2px;
-            transition: color 0.15s, border-color 0.15s; letter-spacing: 0.04em;
-            text-transform: uppercase;
+            padding: 8px 18px; background: transparent; border: none;
+            border-bottom: 2px solid transparent; margin-bottom: -1px;
+            color: #666; cursor: pointer; font-size: 12px; font-weight: 500;
+            letter-spacing: 0.04em; text-transform: uppercase;
+            transition: color 0.12s, border-color 0.12s;
         }
-        .tab-btn:hover { color: #bbb; }
-        .tab-btn.active { color: #ddd; border-bottom-color: #a060c0; }
+        .tab-btn:hover { color: #aaa; }
+        .tab-btn.active { color: #ccc; border-bottom-color: #555; }
+
+
+
+
 
         /* ── Analytics panel ── */
         #analyticsPanel {
@@ -187,28 +209,15 @@
 </head>
 <body>
 <div class="page">
-    <h1>SS Combat Log Viewer</h1>
-    <div class="filters">
-        <button class="active" onclick="filter('all')">All</button>
-        <button onclick="filter('Hit')">Hits</button>
-        <button onclick="filter('Buff')">Buffs</button>
-        <button onclick="filter('Effect')">Effects</button>
-        <button onclick="filter('Skill Cast')">Skill Casts</button>
-        <select id="charFilter" onchange="onCharFilterChange()">
-            <option value="">All Characters</option>
-        </select>
-        <select id="skillFilter" onchange="onSkillFilterChange()">
-            <option value="">All Skills</option>
-        </select>
-        <select id="defenderFilter" onchange="onDefenderFilterChange()">
-            <option value="">All Defenders</option>
-        </select>
-        <br>
-        <select id="savedLogFilter" onchange="onSavedLogChange()">
-            <option value="">Live</option>
-        </select>
-        <button id="saveLogBtn" onclick="saveLog()">Save Log</button>
-        <button class="clear-btn" id="clearLogBtn" onclick="clearLog()">Clear Log</button>
+    <div style="display:flex; justify-content:space-between; align-items:center; padding:14px 16px; border-bottom:1px solid #2c2c2c; background:#1f1f1f; flex-shrink:0;">
+        <h1 style="margin:0; font-size:16px; color:#aaa; font-weight:500; letter-spacing:0.04em;">SS Combat Log Viewer</h1>
+        <div style="display:flex; gap:6px; align-items:center;">
+            <select id="savedLogFilter" onchange="onSavedLogChange()" style="padding:5px 12px; border:1px solid #333; border-radius:4px; background:#242424; color:#888; font-size:12px; cursor:pointer; appearance:none; width: 200px;">
+                <option value="">Live</option>
+            </select>
+            <button id="saveLogBtn" onclick="saveLog()" style="padding:5px 12px; border:1px solid #333; border-radius:4px; background:#242424; color:#888; font-size:12px; cursor:pointer;">Save Log</button>
+            <button class="clear-btn" id="clearLogBtn" onclick="clearLog()" style="padding:5px 12px; border:1px solid #4a3030; border-radius:4px; background:#242424; color:#b07070; font-size:12px; cursor:pointer;">Clear Log</button>
+        </div>
     </div>
 
     <div class="tab-bar">
@@ -216,7 +225,26 @@
         <button class="tab-btn" id="tabAnalytics" onclick="switchTab('analytics')">Analytics</button>
     </div>
 
+
     <div id="logPanel">
+
+        <div class="filters">
+            <button class="type-filter-btn active" data-type="Hit" onclick="toggleTypeFilter(this)">Hits</button>
+            <button class="type-filter-btn" data-type="Buff" onclick="toggleTypeFilter(this)">Buffs</button>
+            <button class="type-filter-btn" data-type="Effect" onclick="toggleTypeFilter(this)">Effects</button>
+            <button class="type-filter-btn active" data-type="Skill Cast" onclick="toggleTypeFilter(this)">Skill Casts</button>
+            <div style="display:flex; gap:6px; flex:1; min-width:0;">
+                <select id="charFilter" onchange="onCharFilterChange()" style="flex:1; min-width:0;">
+                    <option value="">All Characters</option>
+                </select>
+                <select id="skillFilter" onchange="onSkillFilterChange()" style="flex:1; min-width:0;">
+                    <option value="">All Skills</option>
+                </select>
+                <select id="defenderFilter" onchange="onDefenderFilterChange()" style="flex:1; min-width:0;">
+                    <option value="">All Defenders</option>
+                </select>
+            </div>
+        </div>
         <div class="stats" id="stats"></div>
         <div class="search-bar" id="searchBar">
             <input type="text" id="searchInput" placeholder="Search events… (Ctrl+F)" autocomplete="off" spellcheck="false">
