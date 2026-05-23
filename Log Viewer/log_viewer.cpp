@@ -425,7 +425,7 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
         std::string remote = RemoteAddr(c);
 
         if (uri == "/" || uri == "/dataLoader.js" || uri == "/log.js" ||
-            uri == "/analytics.js" || uri == "/tableResolver.js") {
+            uri == "/analytics.js" || uri == "/tableResolver.js" || uri == "/dmgCalc.js") {
             if (!g_local_mode) {
                 // Proxy the file from GitHub so the browser gets the right Content-Type.
                 std::string url = std::string(REMOTE_BASE);

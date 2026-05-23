@@ -275,7 +275,7 @@ json logAdventureActorAttrsJson(AttributeList_o* attrList) {
         double limPct = e.limitedPercentAmend;
 
         auto nearZero = [](double v) { return v > -1e-7 && v < 1e-7; };
-        if ((nearZero(origin) || nearZero(origin - 1)) &&
+        if (nearZero(origin) &&
             nearZero(base_) && nearZero(pct) && nearZero(abs_) && nearZero(limPct))
             continue;
 
