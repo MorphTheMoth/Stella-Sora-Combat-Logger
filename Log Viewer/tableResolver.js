@@ -59,9 +59,6 @@ function effectTypeHasAttr(et) {
     return name.includes('ATTR');
 }
 
-// int configId -> suppressed (boolean set, stored as Set<int>)
-const suppressedIds = new Set();
-
 // int skillId -> { ownerName, skillType, skillName, fcPath }
 const skillTable    = new Map();
 
@@ -102,10 +99,6 @@ function resolveActorKey(key) {
     const name = actorNameMap.get(id) ?? String(id);
     if (isPlayer) return name;
     return `${name} (skinId=${id})`;       // enemies keep id visible for debugging
-}
-
-function isSuppressed(configId) {
-    return suppressedIds.has(configId);
 }
 
 // ─── Name helpers ─────────────────────────────────────────────────────────────
@@ -196,7 +189,7 @@ function enrichEffectList(effectList) {
     if (!effectList?.effects) return;
     for (const e of effectList.effects) {
         e.name = buffIdToName(e.configId);
-        const ev = effectValueTable.get(e.configId);
+        const ev = effectValueTable.get(e.valueConfigId);
         if (ev) {
             if (ev.attrType != null) e.effectType  = ev.effectType;
             if (ev.attrType != null) e.attrType    = ev.attrType;
@@ -424,7 +417,6 @@ function buildHitTable(jHit, jSkill, jLang, jChar, jPotential, jItemRoot) {
 
 function buildEffectTable(dataFiles, jChar, jSkill, jSkillLang, jPotential) {
     effectTable.clear();
-    suppressedIds.clear();
 
     const {
         jEffect, jItem, jItemLang, jMainSkill, jMainSkillLang,
@@ -432,7 +424,7 @@ function buildEffectTable(dataFiles, jChar, jSkill, jSkillLang, jPotential) {
         jAffix, jAffixLang, jGem, jBuffVal, jMonster,
         jBuff, jBuffValue, jWord, jWordLang, jTalent, jTalentLang,
         jSecSkill, jDisc, jScoreBoss, jScoreBossLang, jItemLangRoot,
-        jOnceAttr, jSecSkillLang,
+        jOnceAttr, jSecSkillLang, jSubNoteLang,
     } = dataFiles;
 
     const charMap = {};
@@ -441,17 +433,31 @@ function buildEffectTable(dataFiles, jChar, jSkill, jSkillLang, jPotential) {
     }
     const charName = (id) => charNameFromMap(charMap, id);
 
-    // SubNoteSkill + AffinityLevel suppression
+    // SubNoteSkill: load language file and insert named effects
     const subNoteEffectIds  = new Set();
-    const affinityEffectIds = new Set();
     if (jSubNote) {
+        const jSubNoteLang = dataFiles.jSubNoteLang;
         for (const [, val] of Object.entries(jSubNote)) {
-            for (const id of (val.EffectId ?? [])) { subNoteEffectIds.add(id); suppressedIds.add(id); }
+            const nameKey  = val.Name;                         // e.g. "SubNoteSkill.90020.1"
+            const noteName = jSubNoteLang?.[nameKey] ?? nameKey ?? '?';
+            const label    = `Note: ${noteName}`;
+            for (const id of (val.EffectId ?? [])) {
+                subNoteEffectIds.add(id);
+                insertEffect(id, '?', label, -1);
+            }
         }
     }
+
+    // AffinityLevel: insert named effects
+    const affinityEffectIds = new Set();
     if (jAffinityLevel) {
         for (const [, val] of Object.entries(jAffinityLevel)) {
-            for (const id of (val.Effect ?? [])) { affinityEffectIds.add(id); suppressedIds.add(id); }
+            const level = val.AffinityLevel_ ?? '?';
+            const label = `Affinity lvl ${level}`;
+            for (const id of (val.Effect ?? [])) {
+                affinityEffectIds.add(id);
+                insertEffect(id, '?', label, -1);
+            }
         }
     }
 
@@ -506,35 +512,6 @@ function buildEffectTable(dataFiles, jChar, jSkill, jSkillLang, jPotential) {
                 if (!effId || effectTable.has(effId)) return;
                 effectTable.set(effId, { charName: '?', label: 'Affix: ' + name, levelTypeData: 0 });
             });
-        }
-    }
-
-    // FloorBuff suppression
-    if (jFloorBuff) {
-        for (const [, fbVal] of Object.entries(jFloorBuff)) {
-            for (const id of (fbVal.EffectId ?? [])) suppressedIds.add(id);
-        }
-    }
-
-    // CharGemAttrValue suppression
-    if (jGem) {
-        for (const [, gval] of Object.entries(jGem)) {
-            if (gval.EffectId != null) suppressedIds.add(gval.EffectId);
-        }
-    }
-
-    // Monster buff suppression
-    if (jBuffVal && jMonster) {
-        const buffValEffects = new Map();
-        for (const [bvKey, bvVal] of Object.entries(jBuffVal)) {
-            if (!bvVal.Effects) continue;
-            buffValEffects.set(parseInt(bvKey, 10), bvVal.Effects);
-        }
-        for (const [, mVal] of Object.entries(jMonster)) {
-            for (const buffId of (mVal.BuffIds ?? [])) {
-                const effs = buffValEffects.get(buffId);
-                if (effs) for (const effId of effs) suppressedIds.add(effId);
-            }
         }
     }
 
@@ -807,7 +784,7 @@ function buildOnceAttrValueTable(jOnceAttrValue) {
             if (!attrType && !paramType && !rawVal) continue;
             const at = attrType != null ? parseInt(attrType, 10) : null;
             const pt = paramType != null ? parseInt(paramType, 10) : null;
-            const vv = rawVal != null ? rawVal / 100 : null;
+            const vv = rawVal != null ? rawVal / 10000 : null;
             if (!at && !pt) continue;          // truly empty slot
             slots.push({ slotNum: n, attrType: at, subType: pt, value: vv });
         }
@@ -856,7 +833,7 @@ async function initTables(dataRoot) {
     const [
         jChar, jHit, jSkill, jSkillLang, jItemRoot,
         jEffect, jItem, jItemLang, jMainSkill, jMainSkillLang,
-        jFloorBuff, jSubNote, jAffinityLevel, jEffectValue,
+        jFloorBuff, jSubNote, jSubNoteLang, jAffinityLevel, jEffectValue,
         jAffix, jAffixLang, jGem, jBuffVal, jMonster,
         jBuff, jBuffValue, jWord, jWordLang, jTalent, jTalentLang,
         jSecSkill, jOnceAttr, jOnceAttrValue, jDisc, jScoreBoss, jScoreBossLang,
@@ -874,6 +851,7 @@ async function initTables(dataRoot) {
         loadJson(`${lang}MainSkill.json`,                    'mainSkillLang'),
         loadJson(`${bin}FloorBuff.json`,                     'floorBuff'),
         loadJson(`${bin}SubNoteSkill.json`,                  'subNote'),
+        loadJson(`${lang}SubNoteSkill.json`,                 'subNoteLang'),
         loadJson(`${bin}AffinityLevel.json`,                 'affinity'),
         loadJson(`${bin}EffectValue.json`,                   'effectValue'),
         loadJson(`${bin}TravelerDuelChallengeAffix.json`,    'affix'),
@@ -915,7 +893,7 @@ async function initTables(dataRoot) {
 
     buildEffectTable({
         jEffect, jItem, jItemLang, jMainSkill, jMainSkillLang,
-        jFloorBuff, jSubNote, jAffinityLevel, jEffectValue,
+        jFloorBuff, jSubNote, jSubNoteLang, jAffinityLevel, jEffectValue,
         jAffix, jAffixLang, jGem, jBuffVal, jMonster,
         jBuff, jBuffValue, jWord, jWordLang, jTalent, jTalentLang,
         jSecSkill, jOnceAttr, jDisc, jScoreBoss, jScoreBossLang,
@@ -924,5 +902,5 @@ async function initTables(dataRoot) {
 
     buildSkillTable(jChar, jSkill, jSkillLang);
 
-    console.log(`[tableResolver] Ready — actors:${actorNameMap.size} hits:${hitTable.size} effects:${effectTable.size} suppressed:${suppressedIds.size} skills:${skillTable.size}`);
+    console.log(`[tableResolver] Ready — actors:${actorNameMap.size} hits:${hitTable.size} effects:${effectTable.size} skills:${skillTable.size}`);
 }

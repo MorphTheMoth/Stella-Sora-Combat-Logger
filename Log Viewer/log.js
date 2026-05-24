@@ -174,15 +174,15 @@ function hitBody(ev, oi) {
     }
     if(ev.AttackerEffects?.effects?.length) {
         h+=`<div class="collapsible-toggle${subOpenStates[`${oi}_aeffects-${oi}`] ? ' open' : ''}" data-target="aeffects-${oi}">Attacker Effects (${ev.AttackerEffects.effects.length})</div>
-        <div class="collapsible-content" id="aeffects-${oi}" style="${subOpenStates[`${oi}_aeffects-${oi}`] ? 'display:block' : ''}"><table><tr><th>Name</th><th>Count</th><th>Type</th><th>Attr</th><th>SubType</th><th>Value</th><th>ID</th></tr>`;
+        <div class="collapsible-content" id="aeffects-${oi}" style="${subOpenStates[`${oi}_aeffects-${oi}`] ? 'display:block' : ''}"><table class="wide-name"><tr><th>Name</th><th>Count</th><th>Type</th><th>Attr</th><th>SubType</th><th>Value</th><th>ID</th></tr>`;
         const m=new Map(); ev.AttackerEffects.effects.forEach(e=>{ const id=e.configId; if(!m.has(id)) m.set(id,{e,count:0}); m.get(id).count++; });
-        m.forEach((v,id)=>{ const e=v.e; const etName=e.effectType!=null?effectTypeName(e.effectType):''; const atName=e.attrType!=null?attrName(e.attrType):''; const stName=e.subType!=null?effectSubTypeName(e.subType):''; const val=e.value!=null?e.value:''; h+=`<tr><td>${esc(e.name)}</td><td>${v.count}</td><td>${esc(etName)}</td><td>${esc(atName)}</td><td>${esc(stName)}</td><td>${val}</td><td>${id}</td></tr>`; });
+        m.forEach((v,id)=>{ const e=v.e; const etName=e.effectType!=null?effectTypeName(e.effectType):''; const atName=e.attrType!=null?attrName(e.attrType):''; const stName=e.subType!=null?effectSubTypeName(e.subType):''; const raw=e.value; const val=raw!=null?(Math.abs(raw)<15?(raw*100).toFixed(2)+'%':raw):''; h+=`<tr><td>${esc(e.name)}</td><td>${v.count}</td><td>${esc(etName)}</td><td>${esc(atName)}</td><td>${esc(stName)}</td><td>${val}</td><td>${id}</td></tr>`; });
         h+=`</table></div>`;
     }
     if(ev.AttackerAttrDict?.length) {
         h+=`<div class="collapsible-toggle${subOpenStates[`${oi}_aattrdict-${oi}`] ? ' open' : ''}" data-target="aattrdict-${oi}">Attacker Attr Dict (${ev.AttackerAttrDict.length})</div>
-        <div class="collapsible-content" id="aattrdict-${oi}" style="${subOpenStates[`${oi}_aattrdict-${oi}`] ? 'display:block' : ''}"><table><tr><th>Name</th><th>Stacks</th><th>Attr</th><th>SubType</th><th>Value</th><th>Value Config ID</th><th>Attr ID</th></tr>`;
-        ev.AttackerAttrDict.forEach(a=>{ const atName=a.attrType!=null?attrName(a.attrType):''; const stName=a.subType!=null?effectSubTypeName(a.subType):''; const val=a.value!=null?a.value:''; h+=`<tr><td>${esc(a.name||String(a.attrId))}</td><td>${a.stacks}</td><td>${esc(atName)}</td><td>${esc(stName)}</td><td>${val}</td><td>${a.valueConfigId}</td><td>${a.attrId}</td></tr>`; });
+        <div class="collapsible-content" id="aattrdict-${oi}" style="${subOpenStates[`${oi}_aattrdict-${oi}`] ? 'display:block' : ''}"><table class="wide-name"><tr><th>Name</th><th>Stacks</th><th>Attr</th><th>SubType</th><th>Value</th><th>Value Config ID</th><th>Attr ID</th></tr>`;
+        ev.AttackerAttrDict.forEach(a=>{ const atName=a.attrType!=null?attrName(a.attrType):''; const stName=a.subType!=null?effectSubTypeName(a.subType):''; const raw=a.value; const val=raw!=null?(Math.abs(raw)<15?(raw*100).toFixed(2)+'%':raw):''; h+=`<tr><td>${esc(a.name||String(a.attrId))}</td><td>${a.stacks}</td><td>${esc(atName)}</td><td>${esc(stName)}</td><td>${val}</td><td>${a.valueConfigId}</td><td>${a.attrId}</td></tr>`; });
         h+=`</table></div>`;
     }
     if(ev.AttackerStats?.attrs?.length) {
@@ -202,15 +202,15 @@ function hitBody(ev, oi) {
     }
     if(ev.DefenderEffects?.effects?.length) {
         h+=`<div class="collapsible-toggle${subOpenStates[`${oi}_deffects-${oi}`] ? ' open' : ''}" data-target="deffects-${oi}">Defender Effects (${ev.DefenderEffects.effects.length})</div>
-        <div class="collapsible-content" id="deffects-${oi}" style="${subOpenStates[`${oi}_deffects-${oi}`] ? 'display:block' : ''}"><table><tr><th>Name</th><th>Count</th><th>Type</th><th>Attr</th><th>SubType</th><th>Value</th><th>ID</th></tr>`;
+        <div class="collapsible-content" id="deffects-${oi}" style="${subOpenStates[`${oi}_deffects-${oi}`] ? 'display:block' : ''}"><table class="wide-name"><tr><th>Name</th><th>Count</th><th>Type</th><th>Attr</th><th>SubType</th><th>Value</th><th>ID</th></tr>`;
         const m=new Map(); ev.DefenderEffects.effects.forEach(e=>{ const id=e.configId; if(!m.has(id)) m.set(id,{e,count:0}); m.get(id).count++; });
-        m.forEach((v,id)=>{ const e=v.e; const etName=e.effectType!=null?effectTypeName(e.effectType):''; const atName=e.attrType!=null?attrName(e.attrType):''; const stName=e.subType!=null?effectSubTypeName(e.subType):''; const val=e.value!=null?e.value:''; h+=`<tr><td>${esc(e.name)}</td><td>${v.count}</td><td>${esc(etName)}</td><td>${esc(atName)}</td><td>${esc(stName)}</td><td>${val}</td><td>${id}</td></tr>`; });
+        m.forEach((v,id)=>{ const e=v.e; const etName=e.effectType!=null?effectTypeName(e.effectType):''; const atName=e.attrType!=null?attrName(e.attrType):''; const stName=e.subType!=null?effectSubTypeName(e.subType):''; const raw=e.value; const val=raw!=null?(Math.abs(raw)<15?(raw*100).toFixed(2)+'%':raw):''; h+=`<tr><td>${esc(e.name)}</td><td>${v.count}</td><td>${esc(etName)}</td><td>${esc(atName)}</td><td>${esc(stName)}</td><td>${val}</td><td>${id}</td></tr>`; });
         h+=`</table></div>`;
     }
     if(ev.DefenderAttrDict?.length) {
         h+=`<div class="collapsible-toggle${subOpenStates[`${oi}_dattrdict-${oi}`] ? ' open' : ''}" data-target="dattrdict-${oi}">Defender Attr Dict (${ev.DefenderAttrDict.length})</div>
-        <div class="collapsible-content" id="dattrdict-${oi}" style="${subOpenStates[`${oi}_dattrdict-${oi}`] ? 'display:block' : ''}"><table><tr><th>Name</th><th>Stacks</th><th>Attr</th><th>SubType</th><th>Value</th><th>Value Config ID</th><th>Attr ID</th></tr>`;
-        ev.DefenderAttrDict.forEach(a=>{ const atName=a.attrType!=null?attrName(a.attrType):''; const stName=a.subType!=null?effectSubTypeName(a.subType):''; const val=a.value!=null?a.value:''; h+=`<tr><td>${esc(a.name||String(a.attrId))}</td><td>${a.stacks}</td><td>${esc(atName)}</td><td>${esc(stName)}</td><td>${val}</td><td>${a.valueConfigId}</td><td>${a.attrId}</td></tr>`; });
+        <div class="collapsible-content" id="dattrdict-${oi}" style="${subOpenStates[`${oi}_dattrdict-${oi}`] ? 'display:block' : ''}"><table class="wide-name"><tr><th>Name</th><th>Stacks</th><th>Attr</th><th>SubType</th><th>Value</th><th>Value Config ID</th><th>Attr ID</th></tr>`;
+        ev.DefenderAttrDict.forEach(a=>{ const atName=a.attrType!=null?attrName(a.attrType):''; const stName=a.subType!=null?effectSubTypeName(a.subType):''; const raw=a.value; const val=raw!=null?(Math.abs(raw)<15?(raw*100).toFixed(2)+'%':raw):''; h+=`<tr><td>${esc(a.name||String(a.attrId))}</td><td>${a.stacks}</td><td>${esc(atName)}</td><td>${esc(stName)}</td><td>${val}</td><td>${a.valueConfigId}</td><td>${a.attrId}</td></tr>`; });
         h+=`</table></div>`;
     }
     if(ev.DefenderStats?.attrs?.length) {

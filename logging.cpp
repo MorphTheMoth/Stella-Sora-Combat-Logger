@@ -479,6 +479,7 @@ json BuildBuffListJson(AdventureActor_o* fromActor) {
 
 // Build a JSON object listing all active AdventureEffects on an actor.
 json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails) {
+    //ActorEffectManage has a list of Effects, each effect has a list of its derivative effects that are actually active
     json j;
     if (!effectManage) return j;
 
@@ -508,32 +509,63 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails)
             AdventureEffect_o* effect = *reinterpret_cast<AdventureEffect_o**>(entry + valOffset);
             if (!effect) continue;
 
-            json je;
+            auto* stack = effect->fields._effectStack; // System_Collections_Generic_Stack_AdventureEffectBase__o*
+            if (stack && stack->fields._array) {
+                auto* array = stack->fields._array;     // AdventureEffectBase_array*
+                int size = stack->fields._size;         // number of items currently in stack
 
-            auto* cfgPtr = effect->fields._effectConfig_k__BackingField;
-            int configId = cfgPtr ? cfgPtr->fields.id_ : 0;
-            je["configId"] = configId;
-            je["sourceType"] = effect->fields.sourceType;
-            je["effectType"] = effect->fields._effectType;
-            je["takeLimit"]  = effect->fields._takeEffectLimit;
-            je["damage"]     = static_cast<int64_t>(effect->fields.Damage);
+                constexpr size_t arrayHeaderSize = 0x20; // klass(8) + monitor(8) + bounds(8) + max_length(8)
+                uintptr_t itemsStart = reinterpret_cast<uintptr_t>(array) + arrayHeaderSize;
 
-            if (effect->fields._owner)
-                je["owner"] = adventureActorId(effect->fields._owner);
+                for (int s = 0; s < size; ++s) {
 
-            if (includeDetails && cfgPtr) {
-                json cfg;
-                cfg["levelType"] = cfgPtr->fields.levelTypeData_;
-                cfg["levelData"] = cfgPtr->fields.levelData_;
-                cfg["trigger"]   = cfgPtr->fields.trigger_;
-                je["config"] = cfg;
+                    json je;
+                    AdventureEffectBase_o* base = *reinterpret_cast<AdventureEffectBase_o**>(itemsStart + s * sizeof(void*));
+                    if (!base) continue;
+
+                    AdventureEffect_o* parentEffect = base->fields._effect; 
+                    auto* cfgPtr = parentEffect->fields._effectConfig_k__BackingField;
+                    auto* ValueCfgPtr = parentEffect->fields._effectValueConfig_k__BackingField;
+                    je["configId"] = cfgPtr ? cfgPtr->fields.id_ : 0;
+                    je["valueConfigId"] = ValueCfgPtr ? ValueCfgPtr->fields.id_ : 0;
+                    je["sourceType"] = parentEffect->fields.sourceType;
+                    je["damage"]     = static_cast<int64_t>(parentEffect->fields.Damage);
+
+                    if (parentEffect->fields._owner)
+                        je["owner"] = adventureActorId(parentEffect->fields._owner);
+
+                    effects.push_back(je);
+                }
             }
-
-            effects.push_back(je);
         }
     }
 
     j["effects"] = effects;
+
+
+    auto* timeTrigList = effectManage->fields._timeTriggerEffects;
+    json timeTrig = json::array();
+
+    if (timeTrigList) {
+        auto* itemsArr = timeTrigList->fields._items; // AdventureEffect_array*
+        int   size     = timeTrigList->fields._size;
+
+        if (itemsArr && size > 0) {
+            for (int i = 0; i < size; ++i) {
+                AdventureEffect_o* effect = itemsArr->m_Items[i];
+                if (!effect) continue;
+                json te;
+                te["id"]         = effect->fields.id;   // unique effect id (key in effectsDict)
+                auto* cfgPtr = effect->fields._effectConfig_k__BackingField;
+                te["configId"]   = cfgPtr ? cfgPtr->fields.id_ : 0;
+                te["sourceType"] = effect->fields.sourceType;
+                te["effectType"] = effect->fields._effectType;
+                timeTrig.push_back(te);
+            }
+        }
+    }
+    j["timeTriggerEffects"] = timeTrig;
+
     return j;
 }
 
@@ -576,6 +608,13 @@ json BuildAdditionalAttrDictJson(
         arr.push_back(entry);
     }
     return arr;
+}
+
+
+
+static inline double RoundTo(double value, int decimals) {
+    double factor = std::pow(10.0, decimals);
+    return std::round(value * factor) / factor;
 }
 
 void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_Client_HitDamage_o* hitDamageConfig,
@@ -621,29 +660,28 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
         
         j["HitConfig"] = hitCfg;
     }
-    
     json dmgParams;
-    dmgParams["skillLevel"] = skillLevel + 1;
-    dmgParams["isCrit"] = isCrit;
-    dmgParams["isDot"] = isDot;
-    dmgParams["hudColor"] = hudColorIndex ? *hudColorIndex : -1;
-    dmgParams["skillPercentAmend"] = Round(skillPercentAmend ? *skillPercentAmend : 0.0);
-    dmgParams["talentGroupPercentAmend"] = talentGroupPercentAmend ? *talentGroupPercentAmend : 0.0;
-    dmgParams["skillAbsAmend"] = skillAbsAmend ? *skillAbsAmend : 0.0;
-    dmgParams["talentGroupAbsAmend"] = talentGroupAbsAmend ? *talentGroupAbsAmend : 0.0;
-    dmgParams["perkIntensityRatio"] = perkIntensityRatio ? *perkIntensityRatio : 0.0;
-    dmgParams["slotDmgRatio"] = slotDmgRatio ? *slotDmgRatio : 0.0;
-    dmgParams["fromEE"] = fromEE ? *fromEE : 0.0;
-    dmgParams["erAmend"] = erAmend ? *erAmend : 0.0;
-    dmgParams["defAmend"] = defAmend ? *defAmend : 0.0;
-    dmgParams["rcdSlotDmgRatio"] = rcdSlotDmgRatio ? *rcdSlotDmgRatio : 0.0;
-    dmgParams["toEERCD"] = toEERCD ? *toEERCD : 0.0;
-    dmgParams["skillIntensityRatio"] = skillIntensityRatio ? *skillIntensityRatio : 0.0;
-    dmgParams["toughnessBrokenDmgRatio"] = toughnessBrokenDmgRatio ? *toughnessBrokenDmgRatio : 0.0;
-    dmgParams["critRatio"] = critRatio ? *critRatio : 0.0;
-    dmgParams["envAmendRatio"] = envAmendRatio ? *envAmendRatio : 0.0;
-    dmgParams["finalDamage"] = finalDamage;
-    j["DamageParams"] = dmgParams;
+    dmgParams["skillLevel"]              = skillLevel + 1;
+    dmgParams["isCrit"]                  = isCrit;
+    dmgParams["isDot"]                   = isDot;
+    dmgParams["hudColor"]                = hudColorIndex ? *hudColorIndex : -1;
+    dmgParams["skillPercentAmend"]       = Round(skillPercentAmend ? *skillPercentAmend : 0.0);
+    dmgParams["talentGroupPercentAmend"] = RoundTo(talentGroupPercentAmend ? *talentGroupPercentAmend : 0.0, 4);
+    dmgParams["skillAbsAmend"]           = RoundTo(skillAbsAmend ? *skillAbsAmend : 0.0, 4);
+    dmgParams["talentGroupAbsAmend"]     = RoundTo(talentGroupAbsAmend ? *talentGroupAbsAmend : 0.0, 4);
+    dmgParams["perkIntensityRatio"]      = RoundTo(perkIntensityRatio ? *perkIntensityRatio : 0.0, 4);
+    dmgParams["slotDmgRatio"]            = RoundTo(slotDmgRatio ? *slotDmgRatio : 0.0, 4);
+    dmgParams["fromEE"]                  = RoundTo(fromEE ? *fromEE : 0.0, 4);
+    dmgParams["erAmend"]                 = RoundTo(erAmend ? *erAmend : 0.0, 4);
+    dmgParams["defAmend"]                = RoundTo(defAmend ? *defAmend : 0.0, 4);
+    dmgParams["rcdSlotDmgRatio"]         = RoundTo(rcdSlotDmgRatio ? *rcdSlotDmgRatio : 0.0, 4);
+    dmgParams["toEERCD"]                 = RoundTo(toEERCD ? *toEERCD : 0.0, 4);
+    dmgParams["skillIntensityRatio"]     = RoundTo(skillIntensityRatio ? *skillIntensityRatio : 0.0, 4);
+    dmgParams["toughnessBrokenDmgRatio"] = RoundTo(toughnessBrokenDmgRatio ? *toughnessBrokenDmgRatio : 0.0, 4);
+    dmgParams["critRatio"]               = RoundTo(critRatio ? *critRatio : 0.0, 4);
+    dmgParams["envAmendRatio"]           = RoundTo(envAmendRatio ? *envAmendRatio : 0.0, 4);
+    dmgParams["finalDamage"]             = finalDamage;
+    j["DamageParams"]                    = dmgParams;
     
 
 
