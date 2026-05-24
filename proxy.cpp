@@ -164,6 +164,87 @@ static GameDataController_o* GetGDC() {
     return g_gdc;
 }
 
+struct ElementOrDmgAttrKey {
+    int32_t raw;
+    int32_t attributeType;       // bits [23:16]
+    int32_t elementOrDamageType; // bits [15:8]
+    bool    isElementType;       // bit  [31:24]
+    int32_t mode;                // bits [7:0]: 0=base, 1=assign, 2=percentAmend
+};
+
+static ElementOrDmgAttrKey DecodeKey(int32_t key) {
+    ElementOrDmgAttrKey k;
+    k.raw                = key;
+    k.isElementType      = (key >> 24) & 0xFF;
+    k.attributeType      = (key >> 16) & 0xFF;
+    k.elementOrDamageType = (key >> 8) & 0xFF;
+    k.mode               = key & 0xFF;
+    return k;
+}
+
+static const char* ModeName(int32_t mode) {
+    switch (mode) {
+        case 0: return "base";
+        case 1: return "assign";
+        case 2: return "percentAmend";
+        default: return "unknown";
+    }
+}
+
+static void ApplyElementOrDmgDict(ActorAdditionalAttrInfo_o* staticFields, AttributeList_o* attrInfo, const char* label)
+{
+    auto* dict = staticFields->fields.attributeWithElementOrDamageTypeDict;
+    if (!dict) { log("  [%s] null", label); return; }
+    if (!dict->fields._entries) { log("  [%s] _entries null", label); return; }
+
+    struct Entry { int32_t hashCode; int32_t next; int32_t key; float value; };
+    struct EntryArray {
+        Il2CppObject         obj;
+        Il2CppArrayBounds*   bounds;
+        il2cpp_array_size_t  max_length;
+        Entry                m_Items[1];
+    };
+
+    auto* arr      = reinterpret_cast<EntryArray*>(dict->fields._entries);
+    int32_t cap    = (int32_t)arr->max_length;
+    int32_t count  = dict->fields._count;
+
+    if (cap <= 0 || cap > 4096) { log("  [%s] capacity looks wrong, skipping", label); return; }
+
+    auto* entries    = attrInfo->fields.entries;
+    int32_t maxIndex = (int32_t)entries->max_length;
+
+    for (int32_t i = 0; i < cap; ++i) {
+        Entry& e = arr->m_Items[i];
+        if (e.hashCode <= 0) continue;
+
+        ElementOrDmgAttrKey k = DecodeKey(e.key);
+        int32_t idx = (int32_t)k.attributeType;
+
+        if (idx < 0 || idx >= maxIndex) {
+            log("  [%s] attrType=0x%02x out of range (max=%d), skipping", label, idx, maxIndex);
+            continue;
+        }
+
+        AttributeEntry_Fields& attr = entries->m_Items[idx].fields;
+
+        switch (k.mode) {
+            case 0: // base
+                attr.baseAmend += (double)e.value;
+            break; case 1: // assign
+                log("attributeWithElementOrDamageTypeDict, mode=assign, what does it do ??");
+                attr.absAmend += (double)e.value;
+            break; case 2: // percentAmend
+                attr.percentAmend += (double)e.value;
+            break; default:
+                log("  [%s] attrType=0x%02x unknown mode=%d, skipping", label, idx, k.mode);
+                break;
+        }
+
+        //log("  [%s] applied attrType=0x%02x mode=%s value=%.6f", label, idx, ModeName(k.mode), e.value);
+    }
+}
+
 static int64_t __fastcall Hook_CalcNormalDamage( AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_Client_HitDamage_o* hitDamageConfig,
     int32_t skillLevel, bool isCrit, bool isDot, int32_t* hudColorIndex, double* skillPercentAmend, 
     double* talentGroupPercentAmend, double* skillAbsAmend, double* talentGroupAbsAmend, double* perkIntensityRatio, double* slotDmgRatio,
@@ -174,15 +255,7 @@ static int64_t __fastcall Hook_CalcNormalDamage( AdventureActor_o* fromActor, Ad
     // fromActor is a child of AdventureActor.
     Il2CppClass* parentKlass = fromActor->klass->_1.parent;
     AdventureActor_StaticFields* staticFields = reinterpret_cast<AdventureActor_c*>(parentKlass)->static_fields;
-    log("uniqueAttackIdTemp: %d", staticFields->uniqueAttackIdTemp);
-
-    // ── Snapshot attribute lists before the original call ───────────────────
-    AttributeList_o* attackerInfo = 0;
-    AttributeList_o* defenderInfo = 0;
-    if (staticFields->fromAdditionalAttrInfo)
-        attackerInfo = DeepCopyAttributeList(staticFields->fromAdditionalAttrInfo->fields._attributeList_k__BackingField);
-    if (staticFields->toAdditionalAttrInfo)
-        defenderInfo = DeepCopyAttributeList(staticFields->toAdditionalAttrInfo->fields._attributeList_k__BackingField);
+    //log("uniqueAttackIdTemp: %d", staticFields->uniqueAttackIdTemp);
 
     // ── Original call ────────────────────────────────────────────────────────
     int64_t dmg = g_OrigCalcNormalDamage(
@@ -199,6 +272,17 @@ static int64_t __fastcall Hook_CalcNormalDamage( AdventureActor_o* fromActor, Ad
         GetOnceAttr      = reinterpret_cast<FnGetOnceAttr>     (g_base + RVA_GET_ONCE_ATTR);
         GetValueConfigId = reinterpret_cast<FnGetValueConfigId>(g_base + RVA_GET_VALUE_CONFIG_ID);
     }
+
+    // ── Snapshot attribute lists before the original call ───────────────────
+    AttributeList_o* attackerInfo = 0;
+    AttributeList_o* defenderInfo = 0;
+    if (staticFields->fromAdditionalAttrInfo)
+        attackerInfo = DeepCopyAttributeList(staticFields->fromAdditionalAttrInfo->fields._attributeList_k__BackingField);
+        ApplyElementOrDmgDict( staticFields->fromAdditionalAttrInfo, attackerInfo, "FROM");
+    if (staticFields->toAdditionalAttrInfo)
+        defenderInfo = DeepCopyAttributeList(staticFields->toAdditionalAttrInfo->fields._attributeList_k__BackingField);
+        ApplyElementOrDmgDict( staticFields->toAdditionalAttrInfo, defenderInfo, "TO");
+
 
     BuildHitJson(
         fromActor, toActor, hitDamageConfig, skillLevel, isCrit, isDot, hudColorIndex,
