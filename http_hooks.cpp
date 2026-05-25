@@ -46,10 +46,6 @@ void ShutdownHttpLogger() {
 void LogHttp(const char* fmt, ...) {
     if (!g_HttpLog) return;
     std::lock_guard<std::mutex> lk(g_HttpMtx);
-    time_t t = time(nullptr);
-    char ts[32];
-    strftime(ts, sizeof(ts), "%H:%M:%S", localtime(&t));
-    fprintf(g_HttpLog, "[%s] ", ts);
     va_list args;
     va_start(args, fmt);
     vfprintf(g_HttpLog, fmt, args);
@@ -392,8 +388,7 @@ static int32_t LogGemRefreshReq(System_Byte_array* body) {
         snprintf(locks + pos, sizeof(locks) - pos, "]");
     }
 
-    LogHttp("GEM_REFRESH_REQ  CharId=%u  SlotId=%u  GemIndex=%u  LockAttrs=%s",
-            charId, slotId, gemIndex + 1, locks);
+    LogHttp("REQ %u %u %u %s", charId, slotId, gemIndex + 1, locks);
     return (int32_t)charId;
 }
 
@@ -419,15 +414,13 @@ static void LogGemRefreshResp(System_Byte_array* body, int32_t charId) {
         }
     }
 
-    // Attributes: flat array of attr IDs — look up each one
+    // Raw attr IDs — no label resolution
     char attrs[1024] = "[]";
     if (!attributes.empty()) {
         int pos = snprintf(attrs, sizeof(attrs), "[");
-        for (size_t i = 0; i < attributes.size(); i++) {
-            std::string label = FormatGemAttr(attributes[i], charId);
+        for (size_t i = 0; i < attributes.size(); i++)
             pos += snprintf(attrs + pos, sizeof(attrs) - pos,
-                            "%s%s", i ? ", " : "", label.c_str());
-        }
+                            "%s%u", i ? "," : "", attributes[i]);
         snprintf(attrs + pos, sizeof(attrs) - pos, "]");
     }
 
@@ -441,7 +434,7 @@ static void LogGemRefreshResp(System_Byte_array* body, int32_t charId) {
         snprintf(olock + pos, sizeof(olock) - pos, "]");
     }
 
-    LogHttp("GEM_REFRESH_RESP  Attributes=%s  OverlockCount=%s", attrs, olock);
+    LogHttp("RESP %s %s", attrs, olock);
 }
 
 // =============================================================================

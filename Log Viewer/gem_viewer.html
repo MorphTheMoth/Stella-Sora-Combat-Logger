@@ -1,0 +1,791 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gem Roll Viewer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: sans-serif; background: #161616; color: #ddd; height: 100vh; display: flex; flex-direction: column; overflow: hidden; align-items: center; }
+        .page {
+            max-width: 1050px; width: 100%; height: 100%; display: flex;
+            flex-direction: column; background: #1a1a1a; margin: 0 auto; position: relative;
+        }
+
+        /* ── Header ── */
+        .app-header {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 14px 16px; border-bottom: 1px solid #2c2c2c;
+            background: #1f1f1f; flex-shrink: 0;
+        }
+        .app-header h1 { font-size: 16px; color: #aaa; font-weight: 500; letter-spacing: 0.04em; }
+        .app-header .header-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+        input[type="file"] { display: none; }
+        .load-btn {
+            padding: 5px 14px; border: 1px solid #333; border-radius: 4px;
+            background: #242424; color: #888; font-size: 12px; cursor: pointer;
+            transition: background 0.12s, color 0.12s, border-color 0.12s; user-select: none;
+        }
+        .load-btn:hover { background: #2e2e2e; color: #bbb; border-color: #444; }
+        .load-btn.primary { border-color: #3a4a3a; color: #7a9a7a; }
+        .load-btn.primary:hover { background: #1e2a1e; color: #9aba9a; border-color: #4a6a4a; }
+        #fileStats { font-size: 11px; color: #555; }
+
+        /* ── Tab bar ── */
+        .tab-bar {
+            display: flex; flex-shrink: 0;
+            padding: 0 12px; background: #1f1f1f;
+            border-bottom: 1px solid #2c2c2c;
+        }
+        .tab-btn {
+            padding: 8px 18px; background: transparent; border: none;
+            border-bottom: 2px solid transparent; margin-bottom: -1px;
+            color: #666; cursor: pointer; font-size: 12px; font-weight: 500;
+            letter-spacing: 0.04em; text-transform: uppercase;
+            transition: color 0.12s, border-color 0.12s;
+        }
+        .tab-btn:hover { color: #aaa; }
+        .tab-btn.active { color: #ccc; border-bottom-color: #555; }
+
+        /* ── Panels ── */
+        #logPanel { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
+        #logPanel.hidden { display: none; }
+        #resultsPanel { display: none; flex: 1; overflow-y: auto; padding: 20px; background: #1a1a1a; }
+        #resultsPanel.visible { display: block; }
+
+        /* ── Log filters bar ── */
+        .filters {
+            display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
+            padding: 10px 16px; border-bottom: 1px solid #2c2c2c; background: #1f1f1f; flex-shrink: 0;
+        }
+        .filters select, .filters button {
+            padding: 5px 12px; border: 1px solid #333; border-radius: 4px;
+            background: #242424; color: #888; cursor: pointer; font-size: 12px;
+            appearance: none; transition: background 0.12s, color 0.12s, border-color 0.12s;
+        }
+        .filters select:hover, .filters button:hover { background: #2e2e2e; color: #bbb; border-color: #444; }
+        .filters button.active { background: #303030; color: #ddd; border-color: #555; }
+        .log-stats { font-size: 11px; color: #555; padding: 5px 16px; flex-shrink: 0; background: #1f1f1f; border-bottom: 1px solid #252525; }
+
+        /* ── Log scroll ── */
+        .scroll-container { flex: 1; overflow-y: auto; background: #1a1a1a; }
+        .roll-list { list-style: none; }
+        .roll-item {
+            border-bottom: 1px solid #222; padding: 6px 16px;
+            display: flex; align-items: baseline; gap: 10px; font-size: 12px;
+            transition: background 0.08s;
+        }
+        .roll-item:hover { background: #202020; }
+        .roll-idx { color: #3a3a3a; min-width: 42px; font-size: 11px; font-variant-numeric: tabular-nums; }
+        .roll-slot {
+            font-size: 10px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+            border-radius: 3px; padding: 1px 6px; min-width: 56px; text-align: center; flex-shrink: 0;
+        }
+        .slot-1 { background: #1e2a1e; color: #7aba7a; border: 1px solid #2e4a2e; }
+        .slot-2 { background: #1e1e2a; color: #7a7aba; border: 1px solid #2e2e4a; }
+        .slot-3 { background: #2a1e1e; color: #ba7a7a; border: 1px solid #4a2e2e; }
+        .roll-char { color: #555; min-width: 52px; font-size: 11px; }
+        .roll-gem  { color: #555; min-width: 32px; font-size: 11px; }
+        .roll-attrs { display: flex; gap: 4px; flex-wrap: wrap; flex: 1; }
+        .attr-pill {
+            font-size: 11px; color: #aaa; background: #232323; border: 1px solid #2c2c2c;
+            border-radius: 3px; padding: 1px 7px; font-variant-numeric: tabular-nums;
+            display: flex; flex-direction: column; align-items: center; line-height: 1.3;
+        }
+        .attr-pill .pill-id   { font-size: 10px; color: #555; line-height: 1.1; }
+        .attr-pill .pill-name { font-size: 11px; color: #bbb; }
+        .attr-pill.locked { border-color: #4a3a20; background: #1e180a; }
+        .attr-pill.locked .pill-name { color: #c8a050; }
+        .attr-pill.locked .pill-id   { color: #7a5a20; }
+
+        /* ── Results panel ── */
+        .chart-grid { display: grid; grid-template-columns: 1fr; gap: 20px; max-width: 920px; margin: 0 auto; width: 100%; }
+        .chart-card { background: #222; border: 1px solid #2e2e2e; border-radius: 8px; padding: 16px 20px; }
+        .chart-card h3 {
+            font-size: 12px; color: #888; margin-bottom: 12px;
+            text-transform: uppercase; letter-spacing: 0.07em;
+            border-bottom: 1px solid #2c2c2c; padding-bottom: 8px;
+        }
+        .chart-controls { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+        .chart-controls label { font-size: 12px; color: #666; }
+        .chart-controls select {
+            padding: 4px 10px; border: 1px solid #383838; border-radius: 4px;
+            background: #282828; color: #bbb; font-size: 12px; cursor: pointer; appearance: none;
+        }
+        .chart-canvas-wrap { position: relative; height: 280px; }
+
+        .slot-tabs { display: flex; gap: 6px; }
+        .slot-tab {
+            padding: 4px 14px; border-radius: 4px; border: 1px solid #333; background: #242424;
+            color: #555; font-size: 12px; cursor: pointer; transition: all 0.12s;
+        }
+        .slot-tab:hover { color: #aaa; border-color: #444; }
+        .slot-tab.active-s1 { border-color: #2e4a2e; color: #7aba7a; background: #191f19; }
+        .slot-tab.active-s2 { border-color: #2e2e4a; color: #7a7aba; background: #19191f; }
+        .slot-tab.active-s3 { border-color: #4a2e2e; color: #ba7a7a; background: #1f1919; }
+
+        .legend-table { width: 100%; margin-top: 14px; font-size: 12px; border-collapse: collapse; }
+        .legend-table td { padding: 4px 6px; border-bottom: 1px solid #252525; }
+        .leg-color { width: 10px; height: 10px; border-radius: 2px; display: inline-block; vertical-align: middle; }
+        .leg-name { color: #bbb; }
+        .leg-id   { color: #555; font-size: 11px; padding-right: 8px; font-variant-numeric: tabular-nums; }
+        .leg-val  { color: #888; text-align: right; font-variant-numeric: tabular-nums; }
+        .leg-pct  { color: #555; text-align: right; width: 52px; font-variant-numeric: tabular-nums; }
+
+        .no-file {
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            flex: 1; color: #383838; gap: 10px; height: 100%;
+        }
+        .no-file span { font-size: 13px; }
+        .no-file .hint { font-size: 11px; color: #2c2c2c; }
+    </style>
+</head>
+<body>
+<div class="page">
+
+    <!-- Header -->
+    <div class="app-header">
+        <h1>Gem Roll Viewer</h1>
+        <div class="header-actions">
+            <span id="liveDot" title="connecting…" style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#444;margin-right:2px;flex-shrink:0;align-self:center;"></span>
+            <span id="dataStatus" style="font-size:11px;color:#555;">loading attr data…</span>
+            <span id="fileStats"></span>
+            <label class="load-btn primary" for="logFile">Load Log</label>
+            <input type="file" id="logFile" accept=".txt,.log" onchange="onFileLoad(event)">
+        </div>
+    </div>
+
+    <!-- Tab bar -->
+    <div class="tab-bar">
+        <button class="tab-btn active" id="tabLog" onclick="switchTab('log')">Rolls</button>
+        <button class="tab-btn" id="tabResults" onclick="switchTab('results')">Results</button>
+    </div>
+
+    <!-- Log panel -->
+    <div id="logPanel">
+        <div class="filters">
+            <button class="active" id="filterAll" onclick="setSlotFilter(0)">All</button>
+            <button id="filterS1" onclick="setSlotFilter(1)">Slot 1</button>
+            <button id="filterS2" onclick="setSlotFilter(2)">Slot 2</button>
+            <button id="filterS3" onclick="setSlotFilter(3)">Slot 3</button>
+            <select id="charFilterSel" onchange="applyFilters()">
+                <option value="">All Characters</option>
+            </select>
+        </div>
+        <div class="log-stats" id="logStats"></div>
+        <div class="scroll-container">
+            <ul class="roll-list" id="rollList">
+                <div class="no-file">
+                    <span>No log loaded</span>
+                    <span class="hint">Click "Load Log" to open an http_log.txt file</span>
+                </div>
+            </ul>
+        </div>
+    </div>
+
+    <!-- Results panel -->
+    <div id="resultsPanel">
+        <div class="chart-grid">
+
+            <!-- Per-slot odds card -->
+            <div class="chart-card">
+                <h3>Attribute Roll Odds</h3>
+                <div class="chart-controls">
+                    <div class="slot-tabs">
+                        <button class="slot-tab active-s1" id="stab1" onclick="selectSlotChart(1)">Slot 1</button>
+                        <button class="slot-tab" id="stab2" onclick="selectSlotChart(2)">Slot 2</button>
+                        <button class="slot-tab" id="stab3" onclick="selectSlotChart(3)">Slot 3</button>
+                    </div>
+                    <div style="margin-left:auto; display:flex; gap:8px; align-items:center;">
+                        <label>Granularity:</label>
+                        <select id="granularity" onchange="refreshAttrChart()">
+                            <option value="stat_type">Stat Type</option>
+                            <option value="attr">Attribute ID</option>
+                            <option value="slot_attr">Slot Position › Attribute</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="chart-canvas-wrap">
+                    <canvas id="chartAttr"></canvas>
+                </div>
+                <table class="legend-table" id="legendAttr"></table>
+            </div>
+
+            <!-- Overall by-slot card -->
+            <div class="chart-card">
+                <h3>Overall Distribution by Emblem Type</h3>
+                <div class="chart-canvas-wrap" style="height:220px;">
+                    <canvas id="chartSlot"></canvas>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════════════
+//  Attribute resolution  (mirrors http_hooks.cpp logic, client-side)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// effectAttributeType enum → name  (from kEffectAttrNames in http_hooks.cpp)
+const EFFECT_ATTR_NAMES = {
+    1:"ATK",2:"DEF",3:"MAXHP",4:"HITRATE",5:"EVD",6:"CRITRATE",7:"CRITRESIST",
+    8:"CRITPOWER_P",9:"PENETRATE",10:"DEF_IGNORE",11:"WER",12:"FER",13:"SER",
+    14:"AER",15:"LER",16:"DER",17:"WEE",18:"FEE",19:"SEE",20:"AEE",21:"LEE",
+    22:"DEE",23:"WEP",24:"FEP",25:"SEP",26:"AEP",27:"LEP",28:"DEP",29:"WEI",
+    30:"FEI",31:"SEI",32:"AEI",33:"LEI",34:"DEI",35:"WEERCD",36:"FEERCD",
+    37:"SEERCD",38:"AEERCD",39:"LEERCD",40:"DEERCD",41:"WEIGHT",
+    42:"TOUGHNESS_MAX",43:"TOUGHNESS_DAMAGE_ADJUST",44:"SHIELD_MAX",
+    46:"MOVESPEED",47:"ATKSPD_P",48:"INTENSITY",49:"GENDMG",50:"DMGPLUS",
+    51:"FINALDMG",52:"FINALDMGPLUS",53:"GENDMGRCD",54:"DMGPLUSRCD",
+    55:"SUPPRESS",56:"NORMALDMG",57:"SKILLDMG",58:"ULTRADMG",59:"OTHERDMG",
+    60:"RCDNORMALDMG",61:"RCDSKILLDMG",62:"RCDULTRADMG",63:"RCDOTHERDMG",
+    64:"MARKDMG",65:"RCDMARKDMG",66:"SUMMONDMG",67:"RCDSUMMONDMG",
+    68:"PROJECTILEDMG",69:"RCDPROJECTILEDMG",70:"NORMALCRITRATE",
+    71:"SKILLCRITRATE",72:"ULTRACRITRATE",73:"MARKCRITRATE",74:"SUMMONCRITRATE",
+    75:"PROJECTILECRITRATE",76:"OTHERCRITRATE",77:"NORMALCRITPOWER",
+    78:"SKILLCRITPOWER",79:"ULTRACRITPOWER",80:"MARKCRITPOWER",
+    81:"SUMMONCRITPOWER",82:"PROJECTILECRITPOWER",83:"OTHERCRITPOWER",
+    84:"ENERGY_MAX",85:"SKILL_INTENSITY",86:"TOUGHNESS_BROKEN_DMG",
+    87:"ADD_SHIELD_STRENGTHEN",88:"BE_ADD_SHIELD_STRENGTHEN",89:"NORMAL_SUPPRESS",
+    90:"SKILL_SUPPRESS",91:"ULTRA_SUPPRESS",92:"MARK_SUPPRESS",93:"SUMMON_SUPPRESS",
+    94:"PROJECTILE_SUPPRESS",95:"OTHER_SUPPRESS",96:"ENV_AMEND",
+};
+
+function effectAttrName(subtype) {
+    return EFFECT_ATTR_NAMES[subtype] || ('ATTR' + subtype);
+}
+
+// FormatValue: < 1 → percentage, else integer
+function formatValue(v) {
+    if (v < 1.0) return Math.round(v * 100) + '%';
+    return Math.round(v).toString();
+}
+
+// BuildAttrLabel — mirrors BuildAttrLabel() from http_hooks.cpp
+// attrType 12: stat boost, 37: charge efficiency, 7: ability level-up, 99: potential (needs charId)
+function buildAttrLabel(attrType, firstSubtype, secondSubtype, value) {
+    const val = formatValue(value);
+    switch (attrType) {
+        case 12: // stat boost
+            return val + ' ' + effectAttrName(firstSubtype);
+        case 37: { // charge efficiency
+            const slot = firstSubtype === 1 ? 'Main' : 'Support';
+            return val + ' Charge Efficiency (' + slot + ')';
+        }
+        case 7: { // ability level-up
+            const names = ['?', 'AA', 'Skill', 'Support Skill', 'Ultimate'];
+            const name = (firstSubtype >= 1 && firstSubtype <= 4) ? names[firstSubtype] : 'Ability';
+            return name + ' +' + val;
+        }
+        case 99:
+            return null; // needs charId runtime resolution — show as "Potential <firstSubtype>"
+        default:
+            return 'Type' + attrType + '(' + val + ')';
+    }
+}
+
+// gemAttrTable: attrId → { attrType, firstSubtype, secondSubtype, value, label }
+// Built from CharGemAttrValue.json when the user loads the data file.
+let gemAttrTable = {}; // empty until data file is loaded
+
+function buildGemAttrTable(json) {
+    const table = {};
+    for (const [key, entry] of Object.entries(json)) {
+        const id = parseInt(key);
+        if (isNaN(id) || !entry.AttrType) continue;
+        const attrType      = parseInt(entry.AttrType)              || 0;
+        const firstSubtype  = parseInt(entry.AttrTypeFirstSubtype)  || 0;
+        const secondSubtype = parseInt(entry.AttrTypeSecondSubtype) || 0;
+        const value         = parseFloat(entry.Value)               || 0;
+        const label         = buildAttrLabel(attrType, firstSubtype, secondSubtype, value);
+        table[id] = { attrType, firstSubtype, secondSubtype, value, label };
+    }
+    return table;
+}
+
+// Resolve an attrId to a display name
+// For type 99 (potential), charId is needed — we show "Potential <firstSubtype>" as fallback
+function resolveAttrLabel(attrId, charId) {
+    const info = gemAttrTable[attrId];
+    if (!info) return null;
+    if (info.attrType === 99) {
+        return 'Potential ' + info.firstSubtype + ' +' + formatValue(info.value);
+    }
+    return info.label || null;
+}
+
+// Return a group key+label for "stat_type" granularity.
+//   - attrType 99 (Potential): group by value tier  → "Potential +1", "Potential +2", ...
+//   - attrType  7 (Skill lvl): group by firstSubtype → "AA Lvl +", "Skill Lvl +", ...
+//   - Everything else: IDs sharing floor(id/10) are the same stat family
+//     (e.g. 2201 "7% SKILLDMG" and 2202 "8% SKILLDMG" → family 220 → "SKILLDMG")
+function statTypeKey(attrId) {
+    const info = gemAttrTable[attrId];
+    if (!info) return { key: 'unk:' + attrId, label: String(attrId) };
+
+    if (info.attrType === 99) {
+        const tier = Math.round(info.value);
+        return { key: 'potential:' + tier, label: 'Potential +' + tier };
+    }
+
+    if (info.attrType === 7) {
+        const names = ['?', 'AA', 'Skill', 'Support Skill', 'Ultimate'];
+        const name = (info.firstSubtype >= 1 && info.firstSubtype <= 4)
+            ? names[info.firstSubtype] : 'Ability';
+        return { key: 'skilllvl:' + info.firstSubtype, label: name + ' Lvl +' };
+    }
+
+    // Generic family: same stat name, different value tiers → group by floor(attrId/10)
+    const family = Math.floor(attrId / 10);
+    const raw = info.label || ('Type' + info.attrType);
+    // Strip leading numeric value prefix ("7% ", "150 ", etc.) to get bare stat name
+    const statName = raw.replace(/^[\d.]+%?\s*/, '');
+    return { key: 'family:' + family, label: statName || raw };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Data store
+// ═══════════════════════════════════════════════════════════════════════════
+const store = {
+    rolls: [],
+    filtered: [],
+    slotFilter: 0,
+    charFilter: '',
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  File loaders
+// ═══════════════════════════════════════════════════════════════════════════
+const ATTR_DATA_URL = 'https://raw.githubusercontent.com/AutumnVN/StellaSoraData/refs/heads/main/EN/bin/CharGemAttrValue.json';
+
+async function fetchAttrData() {
+    const el = document.getElementById('dataStatus');
+    try {
+        const res = await fetch(ATTR_DATA_URL);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
+        gemAttrTable = buildGemAttrTable(json);
+        const count = Object.keys(gemAttrTable).length;
+        el.textContent = `attr data: ${count} entries`;
+        el.style.color = '#4a6a4a';
+        if (store.rolls.length > 0) {
+            renderRollList();
+            refreshResultsCharts();
+        }
+    } catch (err) {
+        el.textContent = `attr data failed: ${err.message}`;
+        el.style.color = '#7a3a3a';
+    }
+}
+
+async function fetchLog() {
+    try {
+        const res = await fetch('/http_log.txt');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const text = await res.text();
+        parseLog(text, 'http_log.txt');
+    } catch (err) {
+        // server not available — fall back to manual file load (already in UI)
+    }
+}
+
+function startLiveReload() {
+    // only connect when served from the local server
+    if (location.protocol === 'file:') return;
+
+    const es = new EventSource('/events');
+    const dot = document.getElementById('liveDot');
+    let errTimer = null;
+
+    es.onopen = () => {
+        if (dot) { dot.style.background = '#4a8a4a'; dot.title = 'live'; }
+        if (errTimer) { clearTimeout(errTimer); errTimer = null; }
+    };
+    es.onmessage = e => {
+        if (e.data === 'update') fetchLog();
+    };
+    es.onerror = () => {
+        if (dot) { dot.style.background = '#6a3a3a'; dot.title = 'disconnected'; }
+        es.close();
+        // retry once after 3 s, but don't loop if server is just gone
+        if (!errTimer) errTimer = setTimeout(startLiveReload, 3000);
+    };
+}
+
+function onFileLoad(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => parseLog(ev.target.result, file.name);
+    reader.readAsText(file);
+}
+
+function parseLog(text, filename) {
+    const lines = text.split('\n');
+    const rolls = [];
+    let pending = null;
+
+    for (const raw of lines) {
+        const line = raw.trim();
+        if (!line || line.startsWith('===')) continue;
+
+        if (line.startsWith('REQ ')) {
+            const parts = line.slice(4).trim().split(/\s+/);
+            const charId    = parseInt(parts[0]) || 0;
+            const slotId    = parseInt(parts[1]) || 0;
+            const gemIdx    = parseInt(parts[2]) || 0;
+            const lockRaw   = parts.slice(3).join('');
+            const lockAttrs = parseIdList(lockRaw);
+            pending = { charId, slotId, gemIdx, lockAttrs };
+            continue;
+        }
+
+        if (line.startsWith('RESP ')) {
+            const body = line.slice(5).trim();
+            const m = body.match(/^\[([^\]]*)\]\s*\[([^\]]*)\]$/);
+            const attrs         = m ? parseIdList('[' + m[1] + ']') : [];
+            const overlockCount = m ? parseIdList('[' + m[2] + ']') : [];
+            const req = pending || { charId: 0, slotId: 0, gemIdx: 0, lockAttrs: [] };
+            rolls.push({
+                idx: rolls.length + 1,
+                charId:   req.charId,
+                slotId:   req.slotId,
+                gemIdx:   req.gemIdx,
+                lockAttrs: req.lockAttrs,
+                attrs,
+                overlockCount,
+            });
+            pending = null;
+        }
+    }
+
+    store.rolls = rolls;
+    store.slotFilter = 0;
+    store.charFilter = '';
+
+    const chars = [...new Set(rolls.map(r => r.charId).filter(Boolean))].sort((a,b)=>a-b);
+    const sel = document.getElementById('charFilterSel');
+    sel.innerHTML = '<option value="">All Characters</option>';
+    chars.forEach(c => {
+        const opt = document.createElement('option');
+        opt.value = c; opt.textContent = 'Char ' + c;
+        sel.appendChild(opt);
+    });
+
+    document.getElementById('fileStats').textContent = filename + ' · ' + rolls.length + ' rolls';
+    applyFilters();
+    refreshResultsCharts();
+}
+
+function parseIdList(str) {
+    const inner = str.replace(/^\[/, '').replace(/\]$/, '').trim();
+    if (!inner) return [];
+    return inner.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Filters
+// ═══════════════════════════════════════════════════════════════════════════
+function setSlotFilter(n) {
+    store.slotFilter = n;
+    [0,1,2,3].forEach(i => {
+        const btn = document.getElementById(i === 0 ? 'filterAll' : 'filterS' + i);
+        if (btn) btn.classList.toggle('active', i === n);
+    });
+    applyFilters();
+}
+
+function applyFilters() {
+    store.charFilter = document.getElementById('charFilterSel').value;
+    let filtered = store.rolls;
+    if (store.slotFilter > 0) filtered = filtered.filter(r => r.slotId === store.slotFilter);
+    if (store.charFilter)     filtered = filtered.filter(r => r.charId == store.charFilter);
+    store.filtered = filtered;
+    renderRollList();
+    const total = store.rolls.length, shown = filtered.length;
+    document.getElementById('logStats').textContent =
+        `${shown} of ${total} roll${total !== 1 ? 's' : ''}`;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Roll list render
+// ═══════════════════════════════════════════════════════════════════════════
+function renderRollList() {
+    const ul = document.getElementById('rollList');
+    if (store.rolls.length === 0) {
+        ul.innerHTML = '<div class="no-file"><span>No log loaded</span><span class="hint">Click "Load Log" to open an http_log.txt file</span></div>';
+        return;
+    }
+
+    const frag = document.createDocumentFragment();
+    for (const r of store.filtered) {
+        const li = document.createElement('li');
+        li.className = 'roll-item';
+        const lockSet = new Set(r.lockAttrs);
+        const slotCls = ['','slot-1','slot-2','slot-3'][r.slotId] || 'slot-1';
+        const slotLabel = r.slotId ? 'Slot ' + r.slotId : '?';
+
+        const pills = r.attrs.map(id => {
+            const locked = lockSet.has(id);
+            const name = resolveAttrLabel(id, r.charId);
+            const nameHtml = name
+                ? `<span class="pill-id">${id}</span><span class="pill-name">${escHtml(name)}</span>`
+                : `<span class="pill-name">${id}</span>`;
+            return `<span class="attr-pill${locked ? ' locked' : ''}">${nameHtml}</span>`;
+        }).join('');
+
+        li.innerHTML = `
+            <span class="roll-idx">#${r.idx}</span>
+            <span class="roll-slot ${slotCls}">${slotLabel}</span>
+            <span class="roll-char">${r.charId || '—'}</span>
+            <span class="roll-gem">g${r.gemIdx}</span>
+            <span class="roll-attrs">${pills || '<span style="color:#383838">—</span>'}</span>
+        `;
+        frag.appendChild(li);
+    }
+    ul.innerHTML = '';
+    ul.appendChild(frag);
+}
+
+function escHtml(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Tab switching
+// ═══════════════════════════════════════════════════════════════════════════
+function switchTab(tab) {
+    document.getElementById('tabLog').classList.toggle('active', tab === 'log');
+    document.getElementById('tabResults').classList.toggle('active', tab === 'results');
+    document.getElementById('logPanel').classList.toggle('hidden', tab !== 'log');
+    document.getElementById('resultsPanel').classList.toggle('visible', tab === 'results');
+    if (tab === 'results') refreshResultsCharts();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Charts
+// ═══════════════════════════════════════════════════════════════════════════
+let chartAttrInst = null;
+let chartSlotInst = null;
+let activeSlotChart = 1;
+
+const SLOT_COLORS = ['#7aba7a','#7a7aba','#ba7a7a'];
+const PALETTE = [
+    '#6a9fd8','#d4a84b','#7aba7a','#ba7a7a','#a07aba','#7abaab',
+    '#d4844b','#8ad48a','#d48aaa','#4babd4','#d4d44b','#ab7a6a',
+    '#6ad4c4','#c46ad4','#d4c46a','#6a8ad4','#d46a8a','#8ad4b4',
+    '#c4a06a','#6ac4d4','#d46ab4','#a0d46a','#6a6ad4','#d4a06a',
+];
+
+function selectSlotChart(n) {
+    activeSlotChart = n;
+    [1,2,3].forEach(i => {
+        document.getElementById('stab' + i).className =
+            'slot-tab' + (i === n ? ' active-s' + i : '');
+    });
+    refreshAttrChart();
+}
+
+function refreshResultsCharts() {
+    refreshAttrChart();
+    refreshSlotChart();
+}
+
+function refreshAttrChart() {
+    const granularity = document.getElementById('granularity').value;
+    const slot = activeSlotChart;
+    const rolls = store.rolls.filter(r => r.slotId === slot);
+
+    const ctx = document.getElementById('chartAttr').getContext('2d');
+    if (chartAttrInst) { chartAttrInst.destroy(); chartAttrInst = null; }
+    document.getElementById('legendAttr').innerHTML = '';
+
+    if (rolls.length === 0) return;
+
+    // counts[key] = count, keyLabel[key] = display label, keyIds[key] = Set of attrIds in group
+    // keyBreakdown[key] = { attrId → count }  (only populated for stat_type)
+    const counts      = {};
+    const keyLabel    = {};
+    const keyIds      = {};
+    const keyBreakdown = {};
+    let total = 0;
+
+    for (const r of rolls) {
+        const lockSet = new Set(r.lockAttrs);
+        for (let i = 0; i < r.attrs.length; i++) {
+            const attrId = r.attrs[i];
+            if (lockSet.has(attrId)) continue; // locked — not a fresh roll
+
+            let key, label;
+            if (granularity === 'stat_type') {
+                const sg = statTypeKey(attrId);
+                key = sg.key; label = sg.label;
+            } else if (granularity === 'slot_attr') {
+                key = `${i}:${attrId}`;
+                const name = resolveAttrLabel(attrId, 0);
+                label = name ? `[${i}] ${name}` : `[${i}] ${attrId}`;
+            } else {
+                key = String(attrId);
+                label = resolveAttrLabel(attrId, 0) || String(attrId);
+            }
+
+            counts[key]   = (counts[key]   || 0) + 1;
+            keyLabel[key] = label;
+            if (!keyIds[key]) keyIds[key] = new Set();
+            keyIds[key].add(attrId);
+
+            if (granularity === 'stat_type') {
+                if (!keyBreakdown[key]) keyBreakdown[key] = {};
+                keyBreakdown[key][attrId] = (keyBreakdown[key][attrId] || 0) + 1;
+            }
+            total++;
+        }
+    }
+
+    const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+    // ordered keys array so tooltip can look up breakdown by bar index
+    const entryKeys = entries.map(([key]) => key);
+    const labels  = entries.map(([key]) => keyLabel[key]);
+    const values  = entries.map(e => e[1]);
+    const colors  = labels.map((_, i) => PALETTE[i % PALETTE.length]);
+
+    chartAttrInst = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels,
+            datasets: [{
+                data: values,
+                backgroundColor: colors.map(c => c + 'bb'),
+                borderColor: colors,
+                borderWidth: 1,
+                borderRadius: 3,
+            }]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    callbacks: {
+                        label: ctx => {
+                            const v = ctx.parsed.y;
+                            const pct = total > 0 ? (v / total * 100).toFixed(2) : '0.00';
+                            return ` ${v} rolls (${pct}%)`;
+                        },
+                        afterLabel: ctx => {
+                            if (granularity !== 'stat_type') return [];
+                            const key = entryKeys[ctx.dataIndex];
+                            const bd  = keyBreakdown[key];
+                            if (!bd) return [];
+                            // sort by attrId ascending; percentages normalised to group total
+                            const groupTotal = Object.values(bd).reduce((s, n) => s + n, 0);
+                            return Object.entries(bd)
+                                .sort((a, b) => Number(a[0]) - Number(b[0]))
+                                .map(([attrId, cnt]) => {
+                                    const name = resolveAttrLabel(Number(attrId), 0) || attrId;
+                                    const p = groupTotal > 0 ? (cnt / groupTotal * 100).toFixed(2) : '0.00';
+                                    return `  ${attrId}  ${name}  ·  ${cnt} (${p}%)`;
+                                });
+                        }
+                    }
+                }
+            },
+            scales: {
+                x: {
+                    ticks: { color: '#666', font: { size: 10 }, maxRotation: 55 },
+                    grid: { color: '#242424' },
+                },
+                y: {
+                    ticks: { color: '#666', font: { size: 11 } },
+                    grid: { color: '#242424' },
+                    beginAtZero: true,
+                }
+            }
+        }
+    });
+
+    // Legend table
+    const tbody = document.getElementById('legendAttr');
+    tbody.innerHTML = entries.slice(0, 40).map(([key, count], i) => {
+        const label = keyLabel[key];
+        const pct   = total > 0 ? (count / total * 100).toFixed(2) : '0.00';
+
+        // ID cell: for stat_type show all grouped IDs; for others show the single attrId
+        let idCell;
+        if (granularity === 'stat_type') {
+            const ids = [...(keyIds[key] || [])].sort((a,b)=>a-b);
+            idCell = ids.length > 4
+                ? ids.slice(0,4).join(', ') + '…'
+                : ids.join(', ');
+        } else if (granularity === 'slot_attr') {
+            const [pos, attrId] = key.split(':');
+            idCell = `[${pos}] ${attrId}`;
+        } else {
+            idCell = key; // the attrId itself
+        }
+
+        return `<tr>
+            <td style="width:16px"><span class="leg-color" style="background:${colors[i]}"></span></td>
+            <td class="leg-id">${idCell}</td>
+            <td class="leg-name">${escHtml(label)}</td>
+            <td class="leg-val">${count}</td>
+            <td class="leg-pct">${pct}%</td>
+        </tr>`;
+    }).join('') + (entries.length > 40
+        ? `<tr><td colspan="5" style="color:#383838;font-style:italic;padding-top:6px">…${entries.length - 40} more</td></tr>`
+        : '');
+}
+
+function refreshSlotChart() {
+    const slotCounts = [0, 0, 0];
+    for (const r of store.rolls) {
+        if (r.slotId >= 1 && r.slotId <= 3) slotCounts[r.slotId - 1]++;
+    }
+    const total = slotCounts.reduce((a, b) => a + b, 0);
+
+    const ctx = document.getElementById('chartSlot').getContext('2d');
+    if (chartSlotInst) { chartSlotInst.destroy(); chartSlotInst = null; }
+    if (total === 0) return;
+
+    chartSlotInst = new Chart(ctx, {
+        type: 'doughnut',
+        data: {
+            labels: ['Slot 1', 'Slot 2', 'Slot 3'],
+            datasets: [{
+                data: slotCounts,
+                backgroundColor: SLOT_COLORS.map(c => c + 'aa'),
+                borderColor: SLOT_COLORS,
+                borderWidth: 1,
+            }]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    position: 'right',
+                    labels: { color: '#777', font: { size: 12 }, padding: 16 }
+                },
+                tooltip: {
+                    callbacks: {
+                        label: ctx => {
+                            const v = ctx.parsed;
+                            const pct = (v / total * 100).toFixed(1);
+                            return ` ${v} rolls (${pct}%)`;
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+fetchAttrData();
+fetchLog();
+startLiveReload();
+</script>
+</body>
+</html>
