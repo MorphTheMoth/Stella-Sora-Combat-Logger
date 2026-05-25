@@ -257,13 +257,15 @@ std::string adventureActorDisplay(AdventureActor_o* actor) {
     return adventureActorId(actor);
 }
 
-json logAdventureActorAttrsJson(AttributeList_o* attrList) {
+// overlay is optional — when provided, its amendments are added on top of the
+// live AttributeList values at serialization time (no mutation of game memory).
+json logAdventureActorAttrsJson(AttributeList_o* attrList, const std::vector<ElemDictEntry>* overlay) {
     json j;
     if (!attrList) return j;
     auto* entries = attrList->fields.entries;
     if (!entries) return j;
 
-    int32_t count = entries->max_length;
+    int32_t count = (int32_t)entries->max_length;
     json attrs = json::array();
 
     for (int i = 0; i < count && i < 98; ++i) {
@@ -273,6 +275,18 @@ json logAdventureActorAttrsJson(AttributeList_o* attrList) {
         double pct    = e.percentAmend;
         double abs_   = e.absAmend;
         double limPct = e.limitedPercentAmend;
+
+        // Apply element/dmg dict amendments on top without touching game memory
+        if (overlay) {
+            for (const auto& ov : *overlay) {
+                if (ov.attributeType != i) continue;
+                switch (ov.mode) {
+                    case 0: base_ += ov.value; break;
+                    case 1: abs_  += ov.value; log("attributeType=assign ??"); break; // assign treated as abs
+                    case 2: pct   += ov.value; break;
+                }
+            }
+        }
 
         auto nearZero = [](double v) { return v > -1e-7 && v < 1e-7; };
         if (nearZero(origin) &&
@@ -332,10 +346,8 @@ json logAdventureActorSpecialAttrsJson(AdventureActor_o* actor) {
 #include <cstdarg>
 bool logGizsmos = false;
 
-bool EnableAllDebugGizmos()
+bool EnableAllDebugGizmos(uintptr_t moduleBase)
 {
-
-    uintptr_t moduleBase = (uintptr_t)GetModuleHandleA("GameAssembly.dll");
     if (!moduleBase) {
         log("[DebugGizmos] ERROR: Failed to get module base");
         return false;
@@ -414,8 +426,54 @@ bool EnableAllDebugGizmos()
 }
 
 // =============================================================================
-//  JSON builders
+//  ElementOrDmgDict helpers (used in BuildHitJson to overlay attrs at log time)
 // =============================================================================
+struct ElementOrDmgAttrKey {
+    int32_t attributeType;        // bits [23:16]
+    int32_t elementOrDamageType;  // bits [15:8]
+    bool    isElementType;        // bits [31:24]
+    int32_t mode;                 // bits [7:0]: 0=base, 1=assign, 2=percentAmend
+};
+
+static ElementOrDmgAttrKey DecodeElemKey(int32_t key) {
+    ElementOrDmgAttrKey k;
+    k.isElementType       = (key >> 24) & 0xFF;
+    k.attributeType       = (key >> 16) & 0xFF;
+    k.elementOrDamageType = (key >>  8) & 0xFF;
+    k.mode                = key & 0xFF;
+    return k;
+}
+
+// Read all entries from an attributeWithElementOrDamageTypeDict into a flat list
+// so we can apply them on top of an AttributeList_o at serialization time
+// without touching the live game data.
+static std::vector<ElemDictEntry> ReadElemDict(ActorAdditionalAttrInfo_o* info) {
+    std::vector<ElemDictEntry> out;
+    if (!info) return out;
+    auto* dict = info->fields.attributeWithElementOrDamageTypeDict;
+    if (!dict || !dict->fields._entries) return out;
+
+    struct Entry { int32_t hashCode; int32_t next; int32_t key; float value; };
+    struct EntryArray {
+        Il2CppObject        obj;
+        Il2CppArrayBounds*  bounds;
+        il2cpp_array_size_t max_length;
+        Entry               m_Items[1];
+    };
+    auto* arr    = reinterpret_cast<EntryArray*>(dict->fields._entries);
+    int32_t cap  = (int32_t)arr->max_length;
+    if (cap <= 0 || cap > 4096) return out;
+
+    for (int32_t i = 0; i < cap; ++i) {
+        const Entry& e = arr->m_Items[i];
+        if (e.hashCode <= 0) continue;
+        ElementOrDmgAttrKey k = DecodeElemKey(e.key);
+        out.push_back({ k.attributeType, k.mode, (double)e.value });
+    }
+    return out;
+}
+
+
 void BuildBuffJson(const char* type, int32_t configId, AdventureActor_o* owner, AdventureActor_o* fromActor, int isAdd, int32_t buffNum) {
     json j;
     j["Type"] = "Buff";
@@ -622,11 +680,17 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
                   double* talentGroupPercentAmend, double* skillAbsAmend, double* talentGroupAbsAmend, double* perkIntensityRatio,
                   double* slotDmgRatio, double* fromEE, double* erAmend, double* defAmend, double* rcdSlotDmgRatio, double* toEERCD,
                   double* skillIntensityRatio, double* toughnessBrokenDmgRatio, double* critRatio, double* envAmendRatio,
-                  int64_t finalDamage, AttributeList_o* attackerInfo, AttributeList_o* defenderInfo,
+                  int64_t finalDamage,
+                  AttributeList_o* attackerInfo, AttributeList_o* defenderInfo, 
+                  ActorAdditionalAttrInfo_o* fromAdditionalAttrInfo,
+                  ActorAdditionalAttrInfo_o* toAdditionalAttrInfo,
                   System_Collections_Generic_Dictionary_int__int__o* fromAttrDict,
                   System_Collections_Generic_Dictionary_int__int__o* toAttrDict,
                   GameDataController_o* gdc,
                   FnGetOnceAttr GetOnceAttr, FnGetValueConfigId GetValueConfigId) {
+    // Build element/dmg dict overlays once — read-only, no game memory mutation
+    std::vector<ElemDictEntry> fromOverlay = ReadElemDict(fromAdditionalAttrInfo);
+    std::vector<ElemDictEntry> toOverlay   = ReadElemDict(toAdditionalAttrInfo);
     json j;
     j["Type"] = "Hit";
     j["Time"] = gameTime();
@@ -687,7 +751,7 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
 
 
     if (fromActor && g_Cfg.on_hit_attacker_stats) {
-        json attackerStats = logAdventureActorAttrsJson(attackerInfo);
+        json attackerStats = logAdventureActorAttrsJson(attackerInfo, fromOverlay.empty() ? nullptr : &fromOverlay);
         json attackerSpecial = logAdventureActorSpecialAttrsJson(fromActor);
         j["AttackerStats"] = attackerStats;
         if (!attackerSpecial.empty())
@@ -695,7 +759,7 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
     }
     
     if (toActor && g_Cfg.on_hit_defender_stats) {
-        json defenderStats = logAdventureActorAttrsJson(defenderInfo);
+        json defenderStats = logAdventureActorAttrsJson(defenderInfo, toOverlay.empty() ? nullptr : &toOverlay);
         json defenderSpecial = logAdventureActorSpecialAttrsJson(toActor);
         j["DefenderStats"] = defenderStats;
         if (!defenderSpecial.empty())

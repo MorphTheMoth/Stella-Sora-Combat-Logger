@@ -68,7 +68,14 @@ static LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep) {
 #endif
 
     if (g_Log) fflush(g_Log);
-    return EXCEPTION_CONTINUE_SEARCH;  // let the process die normally
+    if (er->ExceptionCode == EXCEPTION_ACCESS_VIOLATION ||
+        er->ExceptionCode == EXCEPTION_ILLEGAL_INSTRUCTION ||
+        er->ExceptionCode == EXCEPTION_STACK_OVERFLOW)
+    {
+        if (g_Log) fflush(g_Log);
+        return EXCEPTION_CONTINUE_SEARCH;   // let it propagate / crash normally
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
 }
 
 // =============================================================================
@@ -113,25 +120,7 @@ static DamageTuple* __fastcall Hook_Damage( DamageTuple* sret, AdventureActor_o*
     return result;
 }
 
-AttributeList_o* DeepCopyAttributeList(AttributeList_o* src) {
-    if (!src) return nullptr;
-    if (!src->fields.entries) return nullptr;
-    uint32_t count = src->fields.entries->max_length;
 
-    if (count == 0 || count > 1024) return nullptr;
-    size_t arraySize = sizeof(AttributeEntry_array) + count * sizeof(AttributeEntry_o);
-    AttributeList_o* copy = new AttributeList_o(*src);
-
-    AttributeEntry_array* entriesCopy = (AttributeEntry_array*)new uint8_t[arraySize];
-    memcpy(entriesCopy, src->fields.entries, arraySize);
-    copy->fields.entries = entriesCopy;
-
-    if (src->fields.assignmentValueDict) {
-        auto* dictCopy = new std::remove_pointer_t<decltype(src->fields.assignmentValueDict)>(*src->fields.assignmentValueDict);
-        copy->fields.assignmentValueDict = dictCopy;
-    }
-    return copy;
-}
 
 // =============================================================================
 //  CalculateNormalDamage hook
@@ -140,16 +129,14 @@ using FnCalcNormalDamage = int64_t(__fastcall*)( AdventureActor_o*, AdventureAct
     int32_t, bool, bool, int32_t*, double*, double*, double*, double*, double*, double*, double*, double*, double*, double*, double*, double*, double*, double*, double*, void*);
 static FnCalcNormalDamage g_OrigCalcNormalDamage = nullptr;
 
-// Cached GDC instance — resolved once on first use
-static GameDataController_o* g_gdc = nullptr;
+
+static std::atomic<GameDataController_o*> g_gdc{nullptr};  // atomic, not raw pointer
 
 static GameDataController_o* GetGDC() {
-    if (g_gdc) return g_gdc;
+    GameDataController_o* cached = g_gdc.load(std::memory_order_relaxed);
+    if (cached) return cached;
     if (!g_base) return nullptr;
 
-    // GameDataController_TypeInfo
-    // It's a pointer to GameDataController_c, whose _1.parent is Singleton_GameDataController__c
-    // which holds static_fields->g_instance
     GameDataController_c* gdcTypeInfo = *reinterpret_cast<GameDataController_c**>(g_base + 0x714E958);
     if (!gdcTypeInfo) { log("[GDC] gdcTypeInfo is null"); return nullptr; }
 
@@ -159,112 +146,55 @@ static GameDataController_o* GetGDC() {
     auto* sf = reinterpret_cast<Singleton_GameDataController__StaticFields*>(parentClass->static_fields);
     if (!sf) { log("[GDC] singleton static_fields is null"); return nullptr; }
 
-    g_gdc = sf->g_instance;
-    if (!g_gdc) log("[GDC] g_instance is null — GDC not yet initialized");
-    return g_gdc;
+    GameDataController_o* instance = sf->g_instance;  // store in a local first
+    if (!instance) { log("[GDC] g_instance is null — GDC not yet initialized"); return nullptr; }
+
+    g_gdc.store(instance, std::memory_order_relaxed);  // only cache if non-null
+    return instance;
 }
 
-struct ElementOrDmgAttrKey {
-    int32_t raw;
-    int32_t attributeType;       // bits [23:16]
-    int32_t elementOrDamageType; // bits [15:8]
-    bool    isElementType;       // bit  [31:24]
-    int32_t mode;                // bits [7:0]: 0=base, 1=assign, 2=percentAmend
-};
 
-static ElementOrDmgAttrKey DecodeKey(int32_t key) {
-    ElementOrDmgAttrKey k;
-    k.raw                = key;
-    k.isElementType      = (key >> 24) & 0xFF;
-    k.attributeType      = (key >> 16) & 0xFF;
-    k.elementOrDamageType = (key >> 8) & 0xFF;
-    k.mode               = key & 0xFF;
-    return k;
-}
 
-static const char* ModeName(int32_t mode) {
-    switch (mode) {
-        case 0: return "base";
-        case 1: return "assign";
-        case 2: return "percentAmend";
-        default: return "unknown";
-    }
-}
 
-static void ApplyElementOrDmgDict(ActorAdditionalAttrInfo_o* staticFields, AttributeList_o* attrInfo, const char* label)
-{
-    auto* dict = staticFields->fields.attributeWithElementOrDamageTypeDict;
-    if (!dict) { log("  [%s] null", label); return; }
-    if (!dict->fields._entries) { log("  [%s] _entries null", label); return; }
-
-    struct Entry { int32_t hashCode; int32_t next; int32_t key; float value; };
-    struct EntryArray {
-        Il2CppObject         obj;
-        Il2CppArrayBounds*   bounds;
-        il2cpp_array_size_t  max_length;
-        Entry                m_Items[1];
-    };
-
-    auto* arr      = reinterpret_cast<EntryArray*>(dict->fields._entries);
-    int32_t cap    = (int32_t)arr->max_length;
-    int32_t count  = dict->fields._count;
-
-    if (cap <= 0 || cap > 4096) { log("  [%s] capacity looks wrong, skipping", label); return; }
-
-    auto* entries    = attrInfo->fields.entries;
-    int32_t maxIndex = (int32_t)entries->max_length;
-
-    for (int32_t i = 0; i < cap; ++i) {
-        Entry& e = arr->m_Items[i];
-        if (e.hashCode <= 0) continue;
-
-        ElementOrDmgAttrKey k = DecodeKey(e.key);
-        int32_t idx = (int32_t)k.attributeType;
-
-        if (idx < 0 || idx >= maxIndex) {
-            log("  [%s] attrType=0x%02x out of range (max=%d), skipping", label, idx, maxIndex);
-            continue;
-        }
-
-        AttributeEntry_Fields& attr = entries->m_Items[idx].fields;
-
-        switch (k.mode) {
-            case 0: // base
-                attr.baseAmend += (double)e.value;
-            break; case 1: // assign
-                log("attributeWithElementOrDamageTypeDict, mode=assign, what does it do ??");
-                attr.absAmend += (double)e.value;
-            break; case 2: // percentAmend
-                attr.percentAmend += (double)e.value;
-            break; default:
-                log("  [%s] attrType=0x%02x unknown mode=%d, skipping", label, idx, k.mode);
-                break;
-        }
-
-        //log("  [%s] applied attrType=0x%02x mode=%s value=%.6f", label, idx, ModeName(k.mode), e.value);
-    }
-}
-
-static int64_t __fastcall Hook_CalcNormalDamage( AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_Client_HitDamage_o* hitDamageConfig,
-    int32_t skillLevel, bool isCrit, bool isDot, int32_t* hudColorIndex, double* skillPercentAmend, 
+static int64_t __fastcall Hook_CalcNormalDamage(
+    AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_Client_HitDamage_o* hitDamageConfig,
+    int32_t skillLevel, bool isCrit, bool isDot, int32_t* hudColorIndex, double* skillPercentAmend,
     double* talentGroupPercentAmend, double* skillAbsAmend, double* talentGroupAbsAmend, double* perkIntensityRatio, double* slotDmgRatio,
     double* fromEE, double* erAmend, double* defAmend, double* rcdSlotDmgRatio, double* toEERCD, double* skillIntensityRatio,
     double* toughnessBrokenDmgRatio, double* critRatio, double* envAmendRatio, void* method)
 {
-    // ── Walk up to AdventureActor_c to get static fields ────────────────────
-    // fromActor is a child of AdventureActor.
-    Il2CppClass* parentKlass = fromActor->klass->_1.parent;
-    AdventureActor_StaticFields* staticFields = reinterpret_cast<AdventureActor_c*>(parentKlass)->static_fields;
-    //log("uniqueAttackIdTemp: %d", staticFields->uniqueAttackIdTemp);
+    log("[CND] enter fromActor=%p toActor=%p hitCfg=%p", fromActor, toActor, hitDamageConfig);
 
-    // ── Original call ────────────────────────────────────────────────────────
+    // ── Step 1: walk klass chain for static fields ───────────────────────────
+    if (!fromActor)         { log("[CND] BAIL: fromActor is null");         return 0; }
+    if (!fromActor->klass)  { log("[CND] BAIL: fromActor->klass is null");  return 0; }
+    log("[CND] klass=%p", fromActor->klass);
+
+    Il2CppClass* parentKlass = fromActor->klass->_1.parent;
+    log("[CND] parentKlass=%p", parentKlass);
+    if (!parentKlass) { log("[CND] BAIL: parentKlass is null"); return 0; }
+
+    AdventureActor_c* actorClass = reinterpret_cast<AdventureActor_c*>(parentKlass);
+    log("[CND] actorClass->static_fields ptr=%p", actorClass->static_fields);
+    if (!actorClass->static_fields) { log("[CND] BAIL: static_fields is null"); return 0; }
+
+    AdventureActor_StaticFields* staticFields = actorClass->static_fields;
+    log("[CND] staticFields OK, fromAddInfo=%p toAddInfo=%p fromAttrDict=%p toAttrDict=%p",
+        staticFields->fromAdditionalAttrInfo,
+        staticFields->toAdditionalAttrInfo,
+        staticFields->fromAdditionalAttrDict,
+        staticFields->toAdditionalAttrDict);
+
+    // ── Step 2: original call ────────────────────────────────────────────────
+    log("[CND] calling original");
     int64_t dmg = g_OrigCalcNormalDamage(
         fromActor, toActor, hitDamageConfig, skillLevel, isCrit, isDot, hudColorIndex,
         skillPercentAmend, talentGroupPercentAmend, skillAbsAmend, talentGroupAbsAmend,
         perkIntensityRatio, slotDmgRatio, fromEE, erAmend, defAmend, rcdSlotDmgRatio,
         toEERCD, skillIntensityRatio, toughnessBrokenDmgRatio, critRatio, envAmendRatio, method);
+    log("[CND] original returned dmg=%lld", (long long)dmg);
 
-    // ── Resolve GDC and function pointers for attr dict resolution ───────────
+    // ── Step 3: GDC ─────────────────────────────────────────────────────────
     GameDataController_o* gdc = GetGDC();
     FnGetOnceAttr      GetOnceAttr      = nullptr;
     FnGetValueConfigId GetValueConfigId = nullptr;
@@ -272,27 +202,29 @@ static int64_t __fastcall Hook_CalcNormalDamage( AdventureActor_o* fromActor, Ad
         GetOnceAttr      = reinterpret_cast<FnGetOnceAttr>     (g_base + RVA_GET_ONCE_ATTR);
         GetValueConfigId = reinterpret_cast<FnGetValueConfigId>(g_base + RVA_GET_VALUE_CONFIG_ID);
     }
+    log("[CND] gdc=%p GetOnceAttr=%p GetValueConfigId=%p", gdc, GetOnceAttr, GetValueConfigId);
 
-    // ── Snapshot attribute lists before the original call ───────────────────
-    AttributeList_o* attackerInfo = 0;
-    AttributeList_o* defenderInfo = 0;
-    if (staticFields->fromAdditionalAttrInfo)
-        attackerInfo = DeepCopyAttributeList(staticFields->fromAdditionalAttrInfo->fields._attributeList_k__BackingField);
-        ApplyElementOrDmgDict( staticFields->fromAdditionalAttrInfo, attackerInfo, "FROM");
-    if (staticFields->toAdditionalAttrInfo)
-        defenderInfo = DeepCopyAttributeList(staticFields->toAdditionalAttrInfo->fields._attributeList_k__BackingField);
-        ApplyElementOrDmgDict( staticFields->toAdditionalAttrInfo, defenderInfo, "TO");
+    // ── Step 4: resolve raw attr lists  ──────────────────────────────────────
+    AttributeList_o* attackerInfo = staticFields->fromAdditionalAttrInfo
+        ? staticFields->fromAdditionalAttrInfo->fields._attributeList_k__BackingField : nullptr;
+    AttributeList_o* defenderInfo = staticFields->toAdditionalAttrInfo
+        ? staticFields->toAdditionalAttrInfo->fields._attributeList_k__BackingField   : nullptr;
+    log("[CND] attackerInfo=%p defenderInfo=%p", attackerInfo, defenderInfo);
 
-
+    // ── Step 5: BuildHitJson ─────────────────────────────────────────────────
+    log("[CND] calling BuildHitJson");
     BuildHitJson(
         fromActor, toActor, hitDamageConfig, skillLevel, isCrit, isDot, hudColorIndex,
         skillPercentAmend, talentGroupPercentAmend, skillAbsAmend, talentGroupAbsAmend,
         perkIntensityRatio, slotDmgRatio, fromEE, erAmend, defAmend, rcdSlotDmgRatio,
         toEERCD, skillIntensityRatio, toughnessBrokenDmgRatio, critRatio, envAmendRatio,
         dmg, attackerInfo, defenderInfo,
+        staticFields->fromAdditionalAttrInfo,
+        staticFields->toAdditionalAttrInfo,
         staticFields->fromAdditionalAttrDict,
         staticFields->toAdditionalAttrDict,
         gdc, GetOnceAttr, GetValueConfigId);
+    log("[CND] BuildHitJson done");
 
     return dmg;
 }
@@ -410,7 +342,7 @@ using FnUpdateLogic = void(__fastcall*)( void*, TrueSync_FP_o, void*);
 static FnUpdateLogic g_OrigUpdateLogic = nullptr;
 
 static void __fastcall Hook_UpdateLogic(void* self, TrueSync_FP_o logicDeltaTime, void* method) {
-    EnableAllDebugGizmos();    //tried doing it on Hook_BattleFinish (which runs on battle start) but it didnt work
+    EnableAllDebugGizmos(g_base);    //tried doing it on Hook_BattleFinish (which runs on battle start) but it didnt work
     g_OrigUpdateLogic(self, logicDeltaTime, method);
     g_BattleTimeFP.fetch_add(logicDeltaTime.fields._serializedValue, std::memory_order_relaxed);
 }
@@ -454,6 +386,7 @@ static DWORD WINAPI InitThread(LPVOID) {
     InitializeLogger();
     if (!g_Log) return 1;
 
+    AddVectoredExceptionHandler(1, CrashHandler);
     SetUnhandledExceptionFilter(CrashHandler);
 
     std::string logDir = GetLocalAppDataPath() + "\\Stella Sora Combat Logger";

@@ -20,6 +20,7 @@ struct AttributeList_o;
 struct GameDataController_o;
 struct Nova_Client_OnceAdditionalAttribute_o;
 struct System_Collections_Generic_Dictionary_int__int__o;
+struct ActorAdditionalAttrInfo_o;
 
 // Function pointer types shared between proxy.cpp and logging.cpp
 using FnGetOnceAttr      = Nova_Client_OnceAdditionalAttribute_o* (__fastcall*)(GameDataController_o*, int32_t, void*);
@@ -71,7 +72,8 @@ const char* AttrName(int i);
 // Actor logging
 std::string adventureActorId(AdventureActor_o* actor);
 std::string adventureActorDisplay(AdventureActor_o* actor);
-json logAdventureActorAttrsJson(AttributeList_o* attrList);
+struct ElemDictEntry { int32_t attributeType; int32_t mode; double value; };
+json logAdventureActorAttrsJson(AttributeList_o* attrList, const std::vector<ElemDictEntry>* overlay = nullptr);
 json logAdventureActorSpecialAttrsJson(AdventureActor_o* actor);
 std::string buffIdToName(int32_t configId);
 
@@ -95,7 +97,10 @@ void BuildHitJson(
     double* defAmend, double* rcdSlotDmgRatio, double* toEERCD,
     double* skillIntensityRatio, double* toughnessBrokenDmgRatio,
     double* critRatio, double* envAmendRatio,
-    int64_t finalDamage, AttributeList_o* attackerInfo, AttributeList_o* defenderInfo,
+    int64_t finalDamage,
+    AttributeList_o* attackerInfo, AttributeList_o* defenderInfo,
+    ActorAdditionalAttrInfo_o* fromAdditionalAttrInfo,
+    ActorAdditionalAttrInfo_o* toAdditionalAttrInfo,
     System_Collections_Generic_Dictionary_int__int__o* fromAttrDict,
     System_Collections_Generic_Dictionary_int__int__o* toAttrDict,
     GameDataController_o* gdc,
@@ -108,7 +113,7 @@ void InitializeLogger();
 
 bool InstallHook(uintptr_t target, void* hook, void** original, const char* name);
 
-bool EnableAllDebugGizmos();
+bool EnableAllDebugGizmos(uintptr_t moduleBase);
 
 struct DictEntry_Int_Int_L {
     int32_t hashCode;
