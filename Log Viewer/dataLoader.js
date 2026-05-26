@@ -126,6 +126,7 @@ window.onSavedLogChange = async function() {
     allEvents = [];
     filtered = [];
     lastFetchCount = 0;
+    lastEventCount = -1;
     openStates = {};
     measuredHeights = {};
     subOpenStates = {};
