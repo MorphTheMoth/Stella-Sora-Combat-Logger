@@ -166,9 +166,9 @@
     <div id="logPanel">
         <div class="filters">
             <button class="active" id="filterAll" onclick="setSlotFilter(0)">All</button>
-            <button id="filterS1" onclick="setSlotFilter(1)">Slot 1</button>
-            <button id="filterS2" onclick="setSlotFilter(2)">Slot 2</button>
-            <button id="filterS3" onclick="setSlotFilter(3)">Slot 3</button>
+            <button id="filterS1" onclick="setSlotFilter(1)">Lvl 70</button>
+            <button id="filterS2" onclick="setSlotFilter(2)">Lvl 80</button>
+            <button id="filterS3" onclick="setSlotFilter(3)">Lvl 90</button>
             <select id="charFilterSel" onchange="applyFilters()">
                 <option value="">All Characters</option>
             </select>
@@ -193,9 +193,9 @@
                 <h3>Attribute Roll Odds</h3>
                 <div class="chart-controls">
                     <div class="slot-tabs">
-                        <button class="slot-tab active-s1" id="stab1" onclick="selectSlotChart(1)">Slot 1</button>
-                        <button class="slot-tab" id="stab2" onclick="selectSlotChart(2)">Slot 2</button>
-                        <button class="slot-tab" id="stab3" onclick="selectSlotChart(3)">Slot 3</button>
+                        <button class="slot-tab active-s1" id="stab1" onclick="selectSlotChart(1)">Lvl 70</button>
+                        <button class="slot-tab" id="stab2" onclick="selectSlotChart(2)">Lvl 80</button>
+                        <button class="slot-tab" id="stab3" onclick="selectSlotChart(3)">Lvl 90</button>
                     </div>
                     <div style="margin-left:auto; display:flex; gap:8px; align-items:center;">
                         <label>Granularity:</label>
@@ -232,27 +232,27 @@
 
 // effectAttributeType enum → name  (from kEffectAttrNames in http_hooks.cpp)
 const EFFECT_ATTR_NAMES = {
-    1:"ATK",2:"DEF",3:"MAXHP",4:"HITRATE",5:"EVD",6:"CRITRATE",7:"CRITRESIST",
-    8:"CRITPOWER_P",9:"PENETRATE",10:"DEF_IGNORE",11:"WER",12:"FER",13:"SER",
-    14:"AER",15:"LER",16:"DER",17:"WEE",18:"FEE",19:"SEE",20:"AEE",21:"LEE",
-    22:"DEE",23:"WEP",24:"FEP",25:"SEP",26:"AEP",27:"LEP",28:"DEP",29:"WEI",
-    30:"FEI",31:"SEI",32:"AEI",33:"LEI",34:"DEI",35:"WEERCD",36:"FEERCD",
-    37:"SEERCD",38:"AEERCD",39:"LEERCD",40:"DEERCD",41:"WEIGHT",
-    42:"TOUGHNESS_MAX",43:"TOUGHNESS_DAMAGE_ADJUST",44:"SHIELD_MAX",
-    46:"MOVESPEED",47:"ATKSPD_P",48:"INTENSITY",49:"GENDMG",50:"DMGPLUS",
-    51:"FINALDMG",52:"FINALDMGPLUS",53:"GENDMGRCD",54:"DMGPLUSRCD",
-    55:"SUPPRESS",56:"NORMALDMG",57:"SKILLDMG",58:"ULTRADMG",59:"OTHERDMG",
-    60:"RCDNORMALDMG",61:"RCDSKILLDMG",62:"RCDULTRADMG",63:"RCDOTHERDMG",
-    64:"MARKDMG",65:"RCDMARKDMG",66:"SUMMONDMG",67:"RCDSUMMONDMG",
-    68:"PROJECTILEDMG",69:"RCDPROJECTILEDMG",70:"NORMALCRITRATE",
-    71:"SKILLCRITRATE",72:"ULTRACRITRATE",73:"MARKCRITRATE",74:"SUMMONCRITRATE",
-    75:"PROJECTILECRITRATE",76:"OTHERCRITRATE",77:"NORMALCRITPOWER",
-    78:"SKILLCRITPOWER",79:"ULTRACRITPOWER",80:"MARKCRITPOWER",
-    81:"SUMMONCRITPOWER",82:"PROJECTILECRITPOWER",83:"OTHERCRITPOWER",
-    84:"ENERGY_MAX",85:"SKILL_INTENSITY",86:"TOUGHNESS_BROKEN_DMG",
-    87:"ADD_SHIELD_STRENGTHEN",88:"BE_ADD_SHIELD_STRENGTHEN",89:"NORMAL_SUPPRESS",
-    90:"SKILL_SUPPRESS",91:"ULTRA_SUPPRESS",92:"MARK_SUPPRESS",93:"SUMMON_SUPPRESS",
-    94:"PROJECTILE_SUPPRESS",95:"OTHER_SUPPRESS",96:"ENV_AMEND",
+    1: "Atk", 2: "Def", 3: "Max Hp", 4: "Hit Rate", 5: "Evd", 6: "Crit Rate", 7: "Crit Resist",
+    8: "Crit Power P", 9: "Penetrate", 10: "Def Ignore", 11: "Wer", 12: "Fer", 13: "Ser",
+    14: "Aer", 15: "Ler", 16: "Der", 17: "Aqua Dmg", 18: "Ignis Dmg", 19: "Terra Dmg", 20: "Ventus Dmg", 21: "Lux Dmg",
+    22: "Umbra Dmg", 23: "Aqua Pen", 24: "Ignis Pen", 25: "Terra Pen", 26: "Ventus Pen", 27: "Lux Pen", 28: "Umbra Pen", 29: "Wei",
+    30: "Fei", 31: "Sei", 32: "Aei", 33: "Lei", 34: "Dei", 35: "Weercd", 36: "Feercd",
+    37: "Seercd", 38: "Aeercd", 39: "Leercd", 40: "Deercd", 41: "Weight",
+    42: "Toughness Max", 43: "Toughness Damage Adjust", 44: "Shield Max",
+    46: "Move Speed", 47: "Atk Spd P", 48: "Intensity", 49: "Gen Dmg", 50: "Dmg Plus",
+    51: "Final Dmg", 52: "Final Dmg Plus", 53: "Gen Dmg Rcd", 54: "Dmg Plus Rcd",
+    55: "Suppress", 56: "Normal Dmg", 57: "Skill Dmg", 58: "Ultra Dmg", 59: "Other Dmg",
+    60: "Rcd Normal Dmg", 61: "Rcd Skill Dmg", 62: "Rcd Ultra Dmg", 63: "Rcd Other Dmg",
+    64: "Mark Dmg", 65: "Rcd Mark Dmg", 66: "Minion Dmg", 67: "Rcd Minion Dmg",
+    68: "Derivative Dmg", 69: "Rcd Derivative Dmg", 70: "Normal Crit Rate",
+    71: "Skill Crit Rate", 72: "Ultra Crit Rate", 73: "Mark Crit Rate", 74: "Minion Crit Rate",
+    75: "Derivative Crit Rate", 76: "Other Crit Rate", 77: "Normal Crit Power",
+    78: "Skill Crit Power", 79: "Ultra Crit Power", 80: "Mark Crit Power",
+    81: "Minion Crit Power", 82: "Derivative Crit Power", 83: "Other Crit Power",
+    84: "Energy Max", 85: "Skill Intensity", 86: "Toughness Broken Dmg",
+    87: "Add Shield Strengthen", 88: "Be Add Shield Strengthen", 89: "Normal Suppress",
+    90: "Skill Suppress", 91: "Ultra Suppress", 92: "Mark Suppress", 93: "Minion Suppress",
+    94: "Derivative Suppress", 95: "Other Suppress", 96: "Env Amend",
 };
 
 function effectAttrName(subtype) {
@@ -754,7 +754,7 @@ function refreshSlotChart() {
     chartSlotInst = new Chart(ctx, {
         type: 'doughnut',
         data: {
-            labels: ['Slot 1', 'Slot 2', 'Slot 3'],
+            labels: ['Lvl 70', 'Lvl 80', 'Lvl 90'],
             datasets: [{
                 data: slotCounts,
                 backgroundColor: SLOT_COLORS.map(c => c + 'aa'),
