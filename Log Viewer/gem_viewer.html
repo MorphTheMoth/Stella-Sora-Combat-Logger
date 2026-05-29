@@ -318,11 +318,17 @@ function resolveAttrLabel(attrId, charId) {
     return info.label || null;
 }
 
+// Elemental Dmg subtypes (attrType 12, firstSubtype 17–22)
+const ELEM_DMG_SUBTYPES = new Set([17, 18, 19, 20, 21, 22]);
+// Elemental Pen subtypes (attrType 12, firstSubtype 23–28)
+const ELEM_PEN_SUBTYPES = new Set([23, 24, 25, 26, 27, 28]);
+
 // Return a group key+label for "stat_type" granularity.
 //   - attrType 99 (Potential): group by value tier  → "Potential +1", "Potential +2", ...
 //   - attrType  7 (Skill lvl): group by firstSubtype → "AA Lvl +", "Skill Lvl +", ...
+//   - Elemental Dmg (attrType 12, subtypes 17-22): grouped as "Element Dmg"
+//   - Elemental Pen (attrType 12, subtypes 23-28): grouped as "Pen"
 //   - Everything else: IDs sharing floor(id/10) are the same stat family
-//     (e.g. 2201 "7% SKILLDMG" and 2202 "8% SKILLDMG" → family 220 → "SKILLDMG")
 function statTypeKey(attrId) {
     const info = gemAttrTable[attrId];
     if (!info) return { key: 'unk:' + attrId, label: String(attrId) };
@@ -337,6 +343,16 @@ function statTypeKey(attrId) {
         const name = (info.firstSubtype >= 1 && info.firstSubtype <= 4)
             ? names[info.firstSubtype] : 'Ability';
         return { key: 'skilllvl:' + info.firstSubtype, label: name + ' Lvl +' };
+    }
+
+    // Elemental Dmg → single group
+    if (info.attrType === 12 && ELEM_DMG_SUBTYPES.has(info.firstSubtype)) {
+        return { key: 'elem_dmg', label: 'Element Dmg' };
+    }
+
+    // Elemental Pen → single group
+    if (info.attrType === 12 && ELEM_PEN_SUBTYPES.has(info.firstSubtype)) {
+        return { key: 'elem_pen', label: 'Pen' };
     }
 
     // Generic family: same stat name, different value tiers → group by floor(attrId/10)
@@ -683,11 +699,18 @@ function refreshAttrChart() {
                             if (!bd) return [];
                             // sort by attrId ascending; percentages normalised to group total
                             const groupTotal = Object.values(bd).reduce((s, n) => s + n, 0);
+                            const isHardGroup = (key === 'elem_dmg' || key === 'elem_pen');
                             return Object.entries(bd)
                                 .sort((a, b) => Number(a[0]) - Number(b[0]))
                                 .map(([attrId, cnt]) => {
-                                    const name = resolveAttrLabel(Number(attrId), 0) || attrId;
+                                    const info = gemAttrTable[Number(attrId)];
                                     const p = groupTotal > 0 ? (cnt / groupTotal * 100).toFixed(2) : '0.00';
+                                    if (isHardGroup) {
+                                        // Show only the value level, not the element name
+                                        const lvl = info ? formatValue(info.value) : attrId;
+                                        return `  ${lvl}  ·  ${cnt} (${p}%)`;
+                                    }
+                                    const name = resolveAttrLabel(Number(attrId), 0) || attrId;
                                     return `  ${attrId}  ${name}  ·  ${cnt} (${p}%)`;
                                 });
                         }
