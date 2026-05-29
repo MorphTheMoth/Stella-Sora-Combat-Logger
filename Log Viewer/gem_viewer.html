@@ -233,7 +233,7 @@
 // effectAttributeType enum → name  (from kEffectAttrNames in http_hooks.cpp)
 const EFFECT_ATTR_NAMES = {
     1: "Atk", 2: "Def", 3: "Max Hp", 4: "Hit Rate", 5: "Evd", 6: "Crit Rate", 7: "Crit Resist",
-    8: "Crit Power P", 9: "Penetrate", 10: "Def Ignore", 11: "Wer", 12: "Fer", 13: "Ser",
+    8: "Crit Damage", 9: "Penetrate", 10: "Def Ignore", 11: "Wer", 12: "Fer", 13: "Ser",
     14: "Aer", 15: "Ler", 16: "Der", 17: "Aqua Dmg", 18: "Ignis Dmg", 19: "Terra Dmg", 20: "Ventus Dmg", 21: "Lux Dmg",
     22: "Umbra Dmg", 23: "Aqua Pen", 24: "Ignis Pen", 25: "Terra Pen", 26: "Ventus Pen", 27: "Lux Pen", 28: "Umbra Pen", 29: "Wei",
     30: "Fei", 31: "Sei", 32: "Aei", 33: "Lei", 34: "Dei", 35: "Weercd", 36: "Feercd",
@@ -246,9 +246,9 @@ const EFFECT_ATTR_NAMES = {
     64: "Mark Dmg", 65: "Rcd Mark Dmg", 66: "Minion Dmg", 67: "Rcd Minion Dmg",
     68: "Derivative Dmg", 69: "Rcd Derivative Dmg", 70: "Normal Crit Rate",
     71: "Skill Crit Rate", 72: "Ultra Crit Rate", 73: "Mark Crit Rate", 74: "Minion Crit Rate",
-    75: "Derivative Crit Rate", 76: "Other Crit Rate", 77: "Normal Crit Power",
-    78: "Skill Crit Power", 79: "Ultra Crit Power", 80: "Mark Crit Power",
-    81: "Minion Crit Power", 82: "Derivative Crit Power", 83: "Other Crit Power",
+    75: "Derivative Crit Rate", 76: "Other Crit Rate", 77: "Normal Crit Damage",
+    78: "Skill Crit Damage", 79: "Ultra Crit Damage", 80: "Mark Crit Damage",
+    81: "Minion Crit Damage", 82: "Derivative Crit Damage", 83: "Other Crit Damage",
     84: "Energy Max", 85: "Skill Intensity", 86: "Toughness Broken Dmg",
     87: "Add Shield Strengthen", 88: "Be Add Shield Strengthen", 89: "Normal Suppress",
     90: "Skill Suppress", 91: "Ultra Suppress", 92: "Mark Suppress", 93: "Minion Suppress",
@@ -697,20 +697,29 @@ function refreshAttrChart() {
                             const key = entryKeys[ctx.dataIndex];
                             const bd  = keyBreakdown[key];
                             if (!bd) return [];
-                            // sort by attrId ascending; percentages normalised to group total
                             const groupTotal = Object.values(bd).reduce((s, n) => s + n, 0);
                             const isHardGroup = (key === 'elem_dmg' || key === 'elem_pen');
+                            if (isHardGroup) {
+                                // Re-aggregate by value level (ignore which element it is)
+                                const byLevel = {};
+                                for (const [attrId, cnt] of Object.entries(bd)) {
+                                    const info = gemAttrTable[Number(attrId)];
+                                    const lvl = info ? formatValue(info.value) : String(attrId);
+                                    byLevel[lvl] = (byLevel[lvl] || 0) + cnt;
+                                }
+                                // Sort numerically by stripping % and parsing
+                                return Object.entries(byLevel)
+                                    .sort((a, b) => parseFloat(a[0]) - parseFloat(b[0]))
+                                    .map(([lvl, cnt]) => {
+                                        const p = groupTotal > 0 ? (cnt / groupTotal * 100).toFixed(2) : '0.00';
+                                        return `  ${lvl}  ·  ${cnt} (${p}%)`;
+                                    });
+                            }
                             return Object.entries(bd)
                                 .sort((a, b) => Number(a[0]) - Number(b[0]))
                                 .map(([attrId, cnt]) => {
-                                    const info = gemAttrTable[Number(attrId)];
-                                    const p = groupTotal > 0 ? (cnt / groupTotal * 100).toFixed(2) : '0.00';
-                                    if (isHardGroup) {
-                                        // Show only the value level, not the element name
-                                        const lvl = info ? formatValue(info.value) : attrId;
-                                        return `  ${lvl}  ·  ${cnt} (${p}%)`;
-                                    }
                                     const name = resolveAttrLabel(Number(attrId), 0) || attrId;
+                                    const p = groupTotal > 0 ? (cnt / groupTotal * 100).toFixed(2) : '0.00';
                                     return `  ${attrId}  ${name}  ·  ${cnt} (${p}%)`;
                                 });
                         }
