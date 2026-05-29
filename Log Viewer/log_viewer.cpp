@@ -269,7 +269,7 @@ std::string ReadJsonLog(size_t after = 0) {
         file.clear();
         file.seekg(g_index.offsets[after]);
         std::string line;
-        int maxLines = 100, read = 0;
+        int maxLines = 250, read = 0;
         while (read < maxLines && std::getline(file, line)) {
             if (line.empty() || line[0] == '=') continue;
             try { arr.push_back(json::parse(line)); } catch (...) {}
@@ -398,7 +398,7 @@ std::string ReadJsonLogFrom(const std::string& path, size_t after = 0) {
     if (after < totalLines) {
         file.clear();
         file.seekg(offsets[after]);
-        int maxLines = 100, read = 0;
+        int maxLines = 250, read = 0;
         while (read < maxLines && std::getline(file, line)) {
             if (line.empty() || line[0] == '=') continue;
             try { arr.push_back(json::parse(line)); } catch (...) {}
@@ -424,7 +424,7 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
         std::string query  = MgStrToStd(hm->query);
         std::string remote = RemoteAddr(c);
 
-        if (uri == "/" || uri == "/dataLoader.js" || uri == "/log.js" ||
+        if (uri == "/" || uri == "/dataLoader.js" || uri == "/log.js"|| uri == "/effectImpact.js" ||
             uri == "/analytics.js" || uri == "/tableResolver.js" || uri == "/dmgCalc.js") {
             if (!g_local_mode) {
                 // Proxy the file from GitHub so the browser gets the right Content-Type.

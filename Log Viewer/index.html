@@ -359,6 +359,212 @@
         /* Arrow reuse */
         .dc-event-header .arrow { color: #777; transition: transform 0.15s; flex-shrink: 0; }
 
+        /* ── Effects panel ── */
+        .dc-effects-panel {
+            flex-shrink: 0;
+            background: #1c1c1c;
+            border-bottom: 1px solid #2c2c2c;
+            font-size: 12px;
+        }
+        .dc-effects-header {
+            display: flex; align-items: center; gap: 8px;
+            padding: 6px 12px; cursor: pointer; user-select: none;
+            background: #1f1f1f;
+            transition: background 0.1s;
+        }
+        .dc-effects-header:hover { background: #252525; }
+        .dc-effects-arrow {
+            color: #555; font-size: 10px; transition: transform 0.15s;
+            display: inline-block; flex-shrink: 0;
+        }
+        .dc-effects-arrow.open { transform: rotate(90deg); }
+        .dc-effects-title { color: #888; font-size: 11px; font-weight: 500; letter-spacing: 0.03em; text-transform: uppercase; }
+        .dc-effects-count { color: #555; font-size: 11px; margin-left: auto; }
+        .dc-effects-body {
+            padding: 6px 10px 8px;
+        }
+        .dc-effects-empty { color: #555; font-style: italic; font-size: 11px; }
+        .dc-effects-list { display: flex; flex-wrap: wrap; gap: 4px; }
+        .dc-effects-group-label {
+            width: 100%; color: #666; font-size: 10px; text-transform: uppercase;
+            letter-spacing: 0.05em; padding: 2px 0; margin-top: 2px;
+        }
+        .dc-effects-group-label:first-child { margin-top: 0; }
+        .dc-source-toggle {
+            display: flex; align-items: center; gap: 5px;
+            cursor: pointer; padding: 3px 4px; border-radius: 3px;
+            user-select: none; transition: background 0.1s;
+        }
+        .dc-source-toggle:hover { background: #252525; color: #999; }
+        .dc-source-arrow { font-size: 9px; color: #555; flex-shrink: 0; }
+        .dc-source-count {
+            margin-left: auto; background: #252525; border: 1px solid #2e2e2e;
+            border-radius: 3px; padding: 0 5px; font-size: 10px; color: #555;
+        }
+        .dc-effects-chips-wrap {
+            display: flex; flex-wrap: wrap; gap: 4px;
+            padding: 4px 0 6px 12px;
+        }
+        .dc-effects-side-header {
+            width: 100%; color: #888; font-size: 10px; font-weight: 600;
+            text-transform: uppercase; letter-spacing: 0.08em;
+            padding: 4px 0 2px; margin-top: 6px;
+            border-top: 1px solid #2c2c2c;
+        }
+        .dc-effects-side-header:first-child { margin-top: 0; border-top: none; }
+        .dc-effect-chip {
+            display: inline-flex; flex-direction: column; gap: 1px;
+            padding: 3px 8px; border-radius: 4px;
+            border: 1px solid #333; background: #252525;
+            cursor: pointer; user-select: none;
+            transition: background 0.1s, border-color 0.1s, opacity 0.1s;
+        }
+        .dc-effect-chip:hover { background: #2e2e2e; border-color: #444; }
+        .dc-effect-chip.dc-effect-disabled {
+            opacity: 0.38; background: #1e1e1e; border-color: #2a2a2a;
+            text-decoration: line-through;
+        }
+        .dc-effect-chip.dc-effect-disabled:hover { opacity: 0.55; }
+        .dc-effect-name { color: #bbb; font-size: 11px; }
+        .dc-effect-stat { color: #6a9f6a; font-size: 10px; }
+        .dc-effect-chip.dc-effect-disabled .dc-effect-name { color: #555; }
+        .dc-effect-chip.dc-effect-disabled .dc-effect-stat { color: #4a6a4a; }
+
+        /* ── Effect Impact panel ── */
+        #eiPanel {
+            display: none; flex: 1; flex-direction: column; overflow: hidden;
+            background: #1a1a1a;
+        }
+        #eiPanel.visible { display: flex; }
+        .ei-empty, .ei-loading {
+            flex: 1; display: flex; align-items: center; justify-content: center;
+            color: #555; font-size: 13px; font-style: italic;
+        }
+        .ei-header-bar {
+            display: flex; align-items: center; gap: 12px; flex-shrink: 0;
+            padding: 8px 16px; background: #1f1f1f;
+            border-bottom: 1px solid #2c2c2c;
+        }
+        .ei-title { font-size: 12px; font-weight: 600; color: #bbb; letter-spacing: 0.04em; text-transform: uppercase; }
+        .ei-subtitle { font-size: 11px; color: #555; }
+        .ei-refresh-btn {
+            margin-left: auto; padding: 4px 12px;
+            border: 1px solid #333; border-radius: 4px;
+            background: #242424; color: #888; font-size: 12px; cursor: pointer;
+            transition: background 0.1s, color 0.1s;
+        }
+        .ei-refresh-btn:hover { background: #2e2e2e; color: #bbb; }
+
+        /* Filter chip bar */
+        .ei-filter-bar {
+            display: flex; align-items: center; gap: 6px; flex-shrink: 0; flex-wrap: wrap;
+            padding: 6px 16px; background: #1c1c1c;
+            border-bottom: 1px solid #2a2a2a;
+        }
+        .ei-filter-label { font-size: 11px; color: #555; margin-right: 2px; flex-shrink: 0; }
+        .ei-src-chip {
+            padding: 3px 10px; border-radius: 3px; font-size: 11px; cursor: pointer;
+            border: 1px solid transparent; user-select: none;
+            transition: opacity 0.12s, border-color 0.12s, background 0.12s;
+            opacity: 0.35;
+        }
+        .ei-src-chip.ei-chip-active { opacity: 1; }
+        .ei-src-chip.ei-chip-atk {
+            background: #1b2633; color: #6a9fd8; border-color: #253345;
+        }
+        .ei-src-chip.ei-chip-atk.ei-chip-active { border-color: #3a5a7a; }
+        .ei-src-chip.ei-chip-def {
+            background: #261b26; color: #c06a8a; border-color: #3a253a;
+        }
+        .ei-src-chip.ei-chip-def.ei-chip-active { border-color: #6a3a5a; }
+        .ei-src-chip:hover { opacity: 1; }
+        .ei-chip-all {
+            padding: 3px 10px; border-radius: 3px; font-size: 11px; cursor: pointer;
+            border: 1px solid #333; background: #242424; color: #666;
+            transition: color 0.12s, border-color 0.12s;
+        }
+        .ei-chip-all:hover { color: #aaa; border-color: #555; }
+
+        .ei-scroll-wrap { flex: 1; overflow-y: auto; overflow-x: auto; }
+        .ei-table {
+            width: 100%; border-collapse: collapse; font-size: 12px;
+            min-width: 700px;
+        }
+        .ei-table thead { position: sticky; top: 0; z-index: 2; }
+        .ei-th {
+            padding: 7px 10px; text-align: left;
+            background: #222; color: #777; font-weight: 500;
+            border-bottom: 1px solid #333;
+            white-space: nowrap; user-select: none;
+        }
+        .ei-th[onclick] { cursor: pointer; }
+        .ei-th[onclick]:hover { color: #aaa; background: #282828; }
+        .ei-th-num { text-align: right; }
+        .ei-th-side { width: 38px; }
+        .ei-th-source { width: 9%; }
+        .ei-th-name { width: 32%; }
+        .ei-th-stat { width: 18%; }
+        .ei-sort-arrow { margin-left: 4px; color: #888; font-size: 10px; }
+        .ei-sort-inactive { color: #3a3a3a; }
+
+        .ei-row { border-bottom: 1px solid #252525; transition: background 0.08s; }
+        .ei-row:hover { background: #262626; }
+        .ei-td { padding: 6px 10px; vertical-align: middle; color: #bbb; }
+        .ei-td-num { text-align: right; }
+        .ei-td-side { padding: 6px 6px; }
+        .ei-td-stat { white-space: nowrap; }
+
+        /* Source column cell — spans all rows of group */
+        .ei-td-source {
+            vertical-align: top; padding: 8px 8px 8px 10px;
+            border-right: 1px solid #252525;
+            background: #1d1d1d;
+        }
+        .ei-source-name {
+            display: block; font-size: 10px; font-weight: 600;
+            text-transform: uppercase; letter-spacing: 0.06em;
+            line-height: 1.4; word-break: break-word;
+        }
+        .ei-src-atk { color: #4a7aaa; }
+        .ei-src-def { color: #aa4a6a; }
+        .ei-src-chip.ei-chip-src {
+            background: #202428; color: #8a9aaa; border-color: #2e3540;
+        }
+        .ei-src-chip.ei-chip-src.ei-chip-active { border-color: #4a5a70; }
+        .ei-added-badge {
+            display: inline-block; font-size: 9px; font-weight: 700;
+            background: #1a3020; color: #4abf7a; border: 1px solid #2a5a3a;
+            border-radius: 3px; padding: 0 4px; margin-left: 5px;
+            vertical-align: middle; letter-spacing: 0.04em;
+        }
+
+
+        .ei-side-badge {
+            display: inline-block; padding: 1px 5px; border-radius: 3px;
+            font-size: 10px; font-weight: 600; letter-spacing: 0.04em;
+        }
+        .ei-side-atk { background: #282828; color: #959595; border: 1px solid #4d4d4d; }
+        .ei-side-def { background: #282828; color: #959595; border: 1px solid #4d4d4d; }
+        .ei-attr { color: #aaa; margin-right: 4px; }
+        .ei-val { color: #6a9f6a; font-size: 11px; }
+        .ei-stacks {
+            color: #b8903a; font-size: 10px; font-weight: 600;
+            background: #2a2010; border: 1px solid #3a3010;
+            border-radius: 3px; padding: 0 4px; margin-left: 3px;
+        }
+        .ei-pos  { color: #6abf7a; }
+        .ei-neg  { color: #bf6a6a; }
+        .ei-neutral { color: #666; }
+        .ei-bold { font-weight: 600; }
+        .ei-muted { color: #555; font-size: 11px; }
+        .ei-cov-wrap { display: flex; flex-direction: column; gap: 2px; align-items: flex-end; }
+        .ei-cov-hits { color: #555; font-size: 10px; }
+        .ei-cov-bar-bg {
+            width: 60px; height: 3px; background: #2a2a2a; border-radius: 2px; overflow: hidden;
+        }
+        .ei-cov-bar-fill { height: 100%; background: #4a7a5a; border-radius: 2px; }
+        .ei-empty-row { text-align: center; color: #555; padding: 20px; font-style: italic; }
+
 
 
     </style>
@@ -366,7 +572,7 @@
 <body>
 <div class="page">
     <div style="display:flex; justify-content:space-between; align-items:center; padding:14px 16px; border-bottom:1px solid #2c2c2c; background:#1f1f1f; flex-shrink:0;">
-        <h1 style="margin:0; font-size:16px; color:#aaa; font-weight:500; letter-spacing:0.04em;">SS Combat Log Viewer</h1>
+        <h1 style="margin:0; font-size:16px; color:#aaa; font-weight:500; letter-spacing:0.04em;">Stella Sora Combat Log Viewer</h1>
         <div style="display:flex; gap:6px; align-items:center;">
             <select id="savedLogFilter" onchange="onSavedLogChange()" style="padding:5px 12px; border:1px solid #333; border-radius:4px; background:#242424; color:#888; font-size:12px; cursor:pointer; appearance:none; width: 200px;">
                 <option value="">Live</option>
@@ -380,6 +586,7 @@
         <button class="tab-btn active" id="tabLog" onclick="switchTab('log')">Log</button>
         <button class="tab-btn" id="tabAnalytics" onclick="switchTab('analytics')">Analytics</button>
         <button class="tab-btn" id="tabDmgCalc" onclick="switchTab('dmgcalc')">Dmg Calc</button>
+        <button class="tab-btn" id="tabEffectImpact" onclick="switchTab('effectimpact')">Effect Impact</button>
     </div>
 
 
@@ -511,6 +718,22 @@
     </div>
 
     <div id="dmgCalcPanel">
+        <div class="filters" id="dcFilters">
+            <div style="display:flex; gap:6px; flex:1; min-width:0;">
+                <select id="dcCharFilter" onchange="dcOnCharFilterChange()" style="flex:1; min-width:0;">
+                    <option value="">All Characters</option>
+                </select>
+                <select id="dcSkillFilter" onchange="dcOnSkillFilterChange()" style="flex:1; min-width:0;">
+                    <option value="">All Skills</option>
+                </select>
+                <select id="dcDefenderFilter" onchange="dcOnDefenderFilterChange()" style="flex:1; min-width:0;">
+                    <option value="">All Defenders</option>
+                </select>
+            </div>
+        </div>
+        <div class="dc-effects-panel" id="dcEffectsPanel">
+            <!-- rendered by renderEffectsPanel() -->
+        </div>
         <div class="dc-formula-bar" id="dcFormulaBar">
             <!-- rendered by renderFormulaBar() -->
         </div>
@@ -526,11 +749,16 @@
     </div>
 
 
+    <div id="eiPanel">
+        <!-- rendered by effectImpact.js -->
+    </div>
+
     <script src="tableResolver.js"></script>
     <script src="dataLoader.js"></script>
     <script src="log.js"></script>
     <script src="analytics.js"></script>
     <script src="dmgCalc.js"></script>
+    <script src="effectImpact.js"></script>
 </div>
 </body>
 </html>

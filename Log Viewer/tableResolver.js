@@ -147,10 +147,18 @@ function enrichHit(ev) {
     enrichAttrDictList(ev.DefenderAttrDict);
 
     // Attr name injection
+    padStats(ev.AttackerStats?.attrs);
+    padStats(ev.DefenderStats?.attrs);
     enrichAttrList(ev.AttackerStats?.attrs);
     enrichAttrList(ev.AttackerSpecial?.specialAttrs);
     enrichAttrList(ev.DefenderStats?.attrs);
     enrichAttrList(ev.DefenderSpecial?.specialAttrs);
+}
+
+function padStats(attrList) {
+  for (let i=0; i<=97; i++)
+    if (!attrList[i] || attrList[i].id > i)
+      attrList.splice(i, 0, {origin: 0, base:0, pct: 0, abs: 0, limPct: 0, id: i});
 }
 
 function enrichBuff(ev) {
@@ -189,6 +197,8 @@ function enrichEffectList(effectList) {
     if (!effectList?.effects) return;
     for (const e of effectList.effects) {
         e.name = buffIdToName(e.configId);
+        const ei = effectTable.get(e.configId);
+        if (ei) e.source = ei.source ?? 'Unknown';
         const ev = effectValueTable.get(e.valueConfigId);
         if (ev) {
             if (ev.attrType != null) e.effectType  = ev.effectType;
@@ -215,6 +225,8 @@ function enrichAttrDictList(attrDictList) {
         if (entry.attrId != null) {
             entry.configId = entry.attrId;
             entry.name = buffIdToName(entry.attrId);
+            const ei = effectTable.get(entry.attrId);
+            if (ei) entry.source = ei.source ?? 'Unknown';
         }
         // Attach onceAttrValue data if we have a valueConfigId
         const vcId = entry.valueConfigId != null ? parseInt(entry.valueConfigId, 10) : null;
@@ -363,12 +375,12 @@ function charNameFromMap(charMap, charId) {
     return charMap[charId]?.name ?? '?';
 }
 
-function insertEffect(configId, charName, label, ldt, overwriteUnresolved = false) {
+function insertEffect(configId, charName, label, ldt, overwriteUnresolved = false, source = 'Unknown') {
     const existing = effectTable.get(configId);
     if (!existing) {
-        effectTable.set(configId, { charName, label, levelTypeData: ldt });
+        effectTable.set(configId, { charName, label, levelTypeData: ldt, source });
     } else if (overwriteUnresolved && existing.label === '?') {
-        effectTable.set(configId, { charName, label, levelTypeData: ldt });
+        effectTable.set(configId, { charName, label, levelTypeData: ldt, source });
     }
 }
 
@@ -495,7 +507,7 @@ function buildEffectTable(dataFiles, jChar, jSkill, jSkillLang, jPotential) {
             const label    = `Note: ${noteName}`;
             for (const id of (val.EffectId ?? [])) {
                 subNoteEffectIds.add(id);
-                insertEffect(id, '?', label, -1);
+                insertEffect(id, '?', label, -1, false, 'Notes');
             }
         }
     }
@@ -508,7 +520,7 @@ function buildEffectTable(dataFiles, jChar, jSkill, jSkillLang, jPotential) {
             const label = `Affinity lvl ${level}`;
             for (const id of (val.Effect ?? [])) {
                 affinityEffectIds.add(id);
-                insertEffect(id, '?', label, -1);
+                insertEffect(id, '?', label, -1, false, 'Affinity');
             }
         }
     }
@@ -529,7 +541,8 @@ function buildEffectTable(dataFiles, jChar, jSkill, jSkillLang, jPotential) {
         const cname      = charName(charId);
         forEachBuffParam(sval, (_prefix, effId) => {
             if (!effId || effectTable.has(effId)) return;
-            effectTable.set(effId, { charName: cname, label: skillTitle, levelTypeData: 3 });
+            const src = cname && cname !== '?' ? `${cname} Skills` : 'Skills';
+            effectTable.set(effId, { charName: cname, label: skillTitle, levelTypeData: 3, source: src });
         });
     }
 
@@ -551,7 +564,8 @@ function buildEffectTable(dataFiles, jChar, jSkill, jSkillLang, jPotential) {
             } else if (ldt === 3) {
                 label = buffIdToSkillTitle.get(configId) ?? '?';
             }
-            effectTable.set(configId, { charName: cname, label, levelTypeData: ldt });
+            const src = cname && cname !== '?' ? `${cname} Skills` : 'Skills';
+            effectTable.set(configId, { charName: cname, label, levelTypeData: ldt, source: src });
         }
     }
 
@@ -562,7 +576,7 @@ function buildEffectTable(dataFiles, jChar, jSkill, jSkillLang, jPotential) {
             if (name === '?') continue;
             forEachBuffParam(val, (_prefix, effId) => {
                 if (!effId || effectTable.has(effId)) return;
-                effectTable.set(effId, { charName: '?', label: 'Affix: ' + name, levelTypeData: 0 });
+                effectTable.set(effId, { charName: '?', label: 'Affix: ' + name, levelTypeData: 0, source: 'Unknown' });
             });
         }
     }
@@ -595,7 +609,8 @@ function buildEffectTable(dataFiles, jChar, jSkill, jSkillLang, jPotential) {
                 const label = iit?.name ?? '?';
                 if (label !== '?') {
                     const cname = potRef.charId ? charName(potRef.charId) : '?';
-                    effectTable.set(buffId, { charName: cname, label, levelTypeData: -1 });
+                    const src   = cname && cname !== '?' ? `${cname} Potentials` : 'Potentials';
+                    effectTable.set(buffId, { charName: cname, label, levelTypeData: -1, source: src });
                     continue;
                 }
             }
@@ -622,7 +637,8 @@ function buildEffectTable(dataFiles, jChar, jSkill, jSkillLang, jPotential) {
                 const label = jItemRoot[potRef.potKey]?.name ?? '?';
                 if (label === '?') continue;
                 const cname = potRef.charId ? charName(potRef.charId) : '?';
-                effectTable.set(bvId, { charName: cname, label, levelTypeData: -1 });
+                const src   = cname && cname !== '?' ? `${cname} Potentials` : 'Potentials';
+                effectTable.set(bvId, { charName: cname, label, levelTypeData: -1, source: src });
                 break;
             }
         }
@@ -636,7 +652,8 @@ function buildEffectTable(dataFiles, jChar, jSkill, jSkillLang, jPotential) {
             forEachBuffParam(potVal, (_prefix, effId) => {
                 if (!effId || effectTable.has(effId)) return;
                 const label = jItemRoot[potKey]?.name ?? '?';
-                effectTable.set(effId, { charName: cname, label, levelTypeData: -1 });
+                const src   = cname && cname !== '?' ? `${cname} Potentials` : 'Potentials';
+                effectTable.set(effId, { charName: cname, label, levelTypeData: -1, source: src });
             });
         }
     }
@@ -648,7 +665,7 @@ function buildEffectTable(dataFiles, jChar, jSkill, jSkillLang, jPotential) {
             if (name === '?') continue;
             forEachBuffParam(val, (_prefix, effId) => {
                 if (!effId || effectTable.has(effId)) return;
-                effectTable.set(effId, { charName: '?', label: 'Word: ' + name, levelTypeData: 0 });
+                effectTable.set(effId, { charName: '?', label: 'Word: ' + name, levelTypeData: 0, source: 'Unknown' });
             });
         }
     }
@@ -662,7 +679,8 @@ function buildEffectTable(dataFiles, jChar, jSkill, jSkillLang, jPotential) {
             const cname  = charName(charId);
             forEachBuffParam(tval, (_prefix, effId) => {
                 if (!effId || effectTable.has(effId)) return;
-                effectTable.set(effId, { charName: cname, label: 'Talent: ' + talentTitle, levelTypeData: 0 });
+                const src = cname && cname !== '?' ? `${cname} Talents` : 'Talents';
+                effectTable.set(effId, { charName: cname, label: 'Talent: ' + talentTitle, levelTypeData: 0, source: src });
             });
         }
     }
@@ -685,7 +703,7 @@ function buildEffectTable(dataFiles, jChar, jSkill, jSkillLang, jPotential) {
                 }
                 if (label !== '?') break;
             }
-            effectTable.set(configId, { charName: cname, label, levelTypeData: 0 });
+            effectTable.set(configId, { charName: cname, label, levelTypeData: 0, source: 'Unknown' });
         }
     }
 
@@ -702,7 +720,7 @@ function buildEffectTable(dataFiles, jChar, jSkill, jSkillLang, jPotential) {
                 for (const prefix of kSbaPrefixes) {
                     const buffId = extractPrefixedId(ability[paramKey], prefix);
                     if (buffId && !effectTable.has(buffId))
-                        effectTable.set(buffId, { charName: '?', label, levelTypeData: 0 });
+                        effectTable.set(buffId, { charName: '?', label, levelTypeData: 0, source: 'Unknown' });
                 }
             }
         }
@@ -731,7 +749,7 @@ function buildEffectTable(dataFiles, jChar, jSkill, jSkillLang, jPotential) {
                     ? `Disc Harmony ${harmonyNum}: ${discName} - ${harmonyName}`
                     : `Disc Harmony ${harmonyNum}: ${discName}`;
             }
-            effectTable.set(buffId, { charName: '?', label, levelTypeData: -1 });
+            effectTable.set(buffId, { charName: '?', label, levelTypeData: -1, source: 'Discs' });
             return true;
         };
         // Pass A: patch unresolved
@@ -767,7 +785,8 @@ function buildEffectTable(dataFiles, jChar, jSkill, jSkillLang, jPotential) {
             const potName   = jItemLangRoot[langKey];
             if (!potName) return false;
             const cname = charName(charId);
-            effectTable.set(buffId, { charName: cname, label: potName, levelTypeData: -1 });
+            const src   = cname && cname !== '?' ? `${cname} Potentials` : 'Potentials';
+            effectTable.set(buffId, { charName: cname, label: potName, levelTypeData: -1, source: src });
             return true;
         };
         // Pass A: patch unresolved
@@ -795,10 +814,11 @@ function buildEffectTable(dataFiles, jChar, jSkill, jSkillLang, jPotential) {
         [990050012, 'Enemy', 'Defense Broken'],
         [631014002, 'Enemy', 'Forbidden Beauty / Meticulously Crafted'],
         [631014022, 'Enemy', 'Forbidden Beauty / Meticulously Crafted'],
-        [13295011, 'Minova', 'Astral Hex'],
+        [13295011,  'Minova', 'Astral Hex'],
+        [15503011,  'Shia', 'Moongaze Stacks'],
     ];
     for (const [id, cname, label] of hardcoded)
-        effectTable.set(id, { charName: cname, label, levelTypeData: -1 });
+        effectTable.set(id, { charName: cname, label, levelTypeData: -1, source: 'Unknown' });
 }
 
 // ─── buildEffectValueTable ────────────────────────────────────────────────────
