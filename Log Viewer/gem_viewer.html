@@ -198,9 +198,15 @@
                         <button class="slot-tab" id="stab3" onclick="selectSlotChart(3)">Lvl 90</button>
                     </div>
                     <div style="margin-left:auto; display:flex; gap:8px; align-items:center;">
+                        <label>Filter:</label>
+                        <select id="statFilter" onchange="refreshAttrChart()"
+                            style="padding:4px 10px;border:1px solid #383838;border-radius:4px;background:#282828;color:#bbb;font-size:12px;appearance:none;min-width:160px;">
+                            <option value="">All stats</option>
+                        </select>
                         <label>Granularity:</label>
                         <select id="granularity" onchange="refreshAttrChart()">
                             <option value="stat_type">Stat Type</option>
+                            <option value="slot_stat_type">Slot Position › Stat Type</option>
                             <option value="attr">Attribute ID</option>
                             <option value="slot_attr">Slot Position › Attribute</option>
                         </select>
@@ -233,7 +239,7 @@
 // effectAttributeType enum → name  (from kEffectAttrNames in http_hooks.cpp)
 const EFFECT_ATTR_NAMES = {
     1: "Atk", 2: "Def", 3: "Max Hp", 4: "Hit Rate", 5: "Evd", 6: "Crit Rate", 7: "Crit Resist",
-    8: "Crit Damage", 9: "Penetrate", 10: "Def Ignore", 11: "Wer", 12: "Fer", 13: "Ser",
+    8: "Crit Power P", 9: "Penetrate", 10: "Def Ignore", 11: "Wer", 12: "Fer", 13: "Ser",
     14: "Aer", 15: "Ler", 16: "Der", 17: "Aqua Dmg", 18: "Ignis Dmg", 19: "Terra Dmg", 20: "Ventus Dmg", 21: "Lux Dmg",
     22: "Umbra Dmg", 23: "Aqua Pen", 24: "Ignis Pen", 25: "Terra Pen", 26: "Ventus Pen", 27: "Lux Pen", 28: "Umbra Pen", 29: "Wei",
     30: "Fei", 31: "Sei", 32: "Aei", 33: "Lei", 34: "Dei", 35: "Weercd", 36: "Feercd",
@@ -246,9 +252,9 @@ const EFFECT_ATTR_NAMES = {
     64: "Mark Dmg", 65: "Rcd Mark Dmg", 66: "Minion Dmg", 67: "Rcd Minion Dmg",
     68: "Derivative Dmg", 69: "Rcd Derivative Dmg", 70: "Normal Crit Rate",
     71: "Skill Crit Rate", 72: "Ultra Crit Rate", 73: "Mark Crit Rate", 74: "Minion Crit Rate",
-    75: "Derivative Crit Rate", 76: "Other Crit Rate", 77: "Normal Crit Damage",
-    78: "Skill Crit Damage", 79: "Ultra Crit Damage", 80: "Mark Crit Damage",
-    81: "Minion Crit Damage", 82: "Derivative Crit Damage", 83: "Other Crit Damage",
+    75: "Derivative Crit Rate", 76: "Other Crit Rate", 77: "Normal Crit Power",
+    78: "Skill Crit Power", 79: "Ultra Crit Power", 80: "Mark Crit Power",
+    81: "Minion Crit Power", 82: "Derivative Crit Power", 83: "Other Crit Power",
     84: "Energy Max", 85: "Skill Intensity", 86: "Toughness Broken Dmg",
     87: "Add Shield Strengthen", 88: "Be Add Shield Strengthen", 89: "Normal Suppress",
     90: "Skill Suppress", 91: "Ultra Suppress", 92: "Mark Suppress", 93: "Minion Suppress",
@@ -640,6 +646,10 @@ function refreshAttrChart() {
             if (granularity === 'stat_type') {
                 const sg = statTypeKey(attrId);
                 key = sg.key; label = sg.label;
+            } else if (granularity === 'slot_stat_type') {
+                const sg = statTypeKey(attrId);
+                key = `${i}:${sg.key}`;
+                label = `[${i}] ${sg.label}`;
             } else if (granularity === 'slot_attr') {
                 key = `${i}:${attrId}`;
                 const name = resolveAttrLabel(attrId, 0);
@@ -654,7 +664,7 @@ function refreshAttrChart() {
             if (!keyIds[key]) keyIds[key] = new Set();
             keyIds[key].add(attrId);
 
-            if (granularity === 'stat_type') {
+            if (granularity === 'stat_type' || granularity === 'slot_stat_type') {
                 if (!keyBreakdown[key]) keyBreakdown[key] = {};
                 keyBreakdown[key][attrId] = (keyBreakdown[key][attrId] || 0) + 1;
             }
@@ -662,7 +672,31 @@ function refreshAttrChart() {
         }
     }
 
-    const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+    // Populate stat filter dropdown with all known bare stat labels (deduplicated)
+    const statFilterSel = document.getElementById('statFilter');
+    if (statFilterSel) {
+        const currentVal = statFilterSel.value;
+        const bareLabels = [...new Set(Object.values(keyLabel).map(l => l.replace(/^\[\d+\]\s*/, '')))].sort();
+        // Check if any potential entries exist to conditionally show the meta-option
+        const hasPotentials = bareLabels.some(l => /^Potential \+/.test(l));
+        statFilterSel.innerHTML = '<option value="">All stats</option>' +
+            (hasPotentials ? '<option value="__potentials__">Potentials</option>' : '') +
+            bareLabels.map(l => `<option value="${escHtml(l)}"${l === currentVal ? ' selected' : ''}>${escHtml(l)}</option>`).join('');
+        // Restore selection if it still exists
+        if ([...statFilterSel.options].some(o => o.value === currentVal)) {
+            statFilterSel.value = currentVal;
+        }
+    }
+
+    // Apply stat filter — match against the bare stat name (strip slot prefix)
+    const filterRaw = (statFilterSel?.value || '').trim();
+    const allEntries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+    const entries = filterRaw === '__potentials__'
+        ? allEntries.filter(([key]) => /^Potential \+/.test(keyLabel[key].replace(/^\[\d+\]\s*/, '')))
+        : filterRaw
+            ? allEntries.filter(([key]) => keyLabel[key].replace(/^\[\d+\]\s*/, '') === filterRaw)
+            : allEntries;
+
     // ordered keys array so tooltip can look up breakdown by bar index
     const entryKeys = entries.map(([key]) => key);
     const labels  = entries.map(([key]) => keyLabel[key]);
@@ -693,7 +727,7 @@ function refreshAttrChart() {
                             return ` ${v} rolls (${pct}%)`;
                         },
                         afterLabel: ctx => {
-                            if (granularity !== 'stat_type') return [];
+                            if (granularity !== 'stat_type' && granularity !== 'slot_stat_type') return [];
                             const key = entryKeys[ctx.dataIndex];
                             const bd  = keyBreakdown[key];
                             if (!bd) return [];
@@ -748,7 +782,7 @@ function refreshAttrChart() {
 
         // ID cell: for stat_type show all grouped IDs; for others show the single attrId
         let idCell;
-        if (granularity === 'stat_type') {
+        if (granularity === 'stat_type' || granularity === 'slot_stat_type') {
             const ids = [...(keyIds[key] || [])].sort((a,b)=>a-b);
             idCell = ids.length > 4
                 ? ids.slice(0,4).join(', ') + '…'
