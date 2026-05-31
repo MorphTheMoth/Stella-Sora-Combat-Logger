@@ -207,6 +207,7 @@
                         <select id="granularity" onchange="refreshAttrChart()">
                             <option value="stat_type">Stat Type</option>
                             <option value="slot_stat_type">Slot Position › Stat Type</option>
+                            <option value="rarity_count">Rarity Count</option>
                             <option value="attr">Attribute ID</option>
                             <option value="slot_attr">Slot Position › Attribute</option>
                         </select>
@@ -307,8 +308,9 @@ function buildGemAttrTable(json) {
         const firstSubtype  = parseInt(entry.AttrTypeFirstSubtype)  || 0;
         const secondSubtype = parseInt(entry.AttrTypeSecondSubtype) || 0;
         const value         = parseFloat(entry.Value)               || 0;
+        const level         = parseInt(entry.Level)                 || 0;
         const label         = buildAttrLabel(attrType, firstSubtype, secondSubtype, value);
-        table[id] = { attrType, firstSubtype, secondSubtype, value, label };
+        table[id] = { attrType, firstSubtype, secondSubtype, value, level, label };
     }
     return table;
 }
@@ -369,6 +371,67 @@ function statTypeKey(attrId) {
     return { key: 'family:' + family, label: statName || raw };
 }
 
+// Return the number of distinct rarity tiers for a given stat family,
+// counting only attrIds that actually appear in the loaded rolls.
+// elem_dmg and elem_pen are always treated as having 4 rarities.
+let _familyRarityCache = {};   // invalidated on each log load
+let _seenAttrIds = new Set();  // populated in buildRarityCache()
+
+function buildRarityCache() {
+    _familyRarityCache = {};
+    _seenAttrIds = new Set();
+    for (const r of store.rolls) {
+        for (const id of r.attrs) _seenAttrIds.add(id);
+    }
+}
+
+function familyRarityCount(attrId) {
+    const info = gemAttrTable[attrId];
+    if (!info) return 1;
+
+    // Hard-coded 4 for elem groups
+    if (info.attrType === 12 && ELEM_DMG_SUBTYPES.has(info.firstSubtype)) return 4;
+    if (info.attrType === 12 && ELEM_PEN_SUBTYPES.has(info.firstSubtype)) return 4;
+
+    // Potential tiers: each tier is its own "family" — always 1 rarity per tier
+    if (info.attrType === 99) return 1;
+
+    // Skill level-up: group by firstSubtype — find distinct levels seen in rolls
+    if (info.attrType === 7) {
+        const subtype = info.firstSubtype;
+        const cacheKey = 'skilllvl:' + subtype;
+        if (_familyRarityCache[cacheKey] !== undefined) return _familyRarityCache[cacheKey];
+        const levels = new Set();
+        for (const id of _seenAttrIds) {
+            const e = gemAttrTable[id];
+            if (e && e.attrType === 7 && e.firstSubtype === subtype) {
+                levels.add(e.level);
+            }
+        }
+        _familyRarityCache[cacheKey] = levels.size || 1;
+        return _familyRarityCache[cacheKey];
+    }
+
+    // Generic family: floor(attrId/10) — count distinct levels seen in rolls
+    const family = Math.floor(attrId / 10);
+    const cacheKey = 'family:' + family;
+    if (_familyRarityCache[cacheKey] !== undefined) return _familyRarityCache[cacheKey];
+    const levels = new Set();
+    for (const id of _seenAttrIds) {
+        if (Math.floor(id / 10) === family) {
+            const e = gemAttrTable[id];
+            if (e) levels.add(e.level);
+        }
+    }
+    _familyRarityCache[cacheKey] = levels.size || 1;
+    return _familyRarityCache[cacheKey];
+}
+
+function rarityCountKey(attrId) {
+    const n = familyRarityCount(attrId);
+    return { key: 'rarities:' + n, label: n + (n === 1 ? ' Rarity' : ' Rarities') };
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  Data store
 // ═══════════════════════════════════════════════════════════════════════════
@@ -391,6 +454,7 @@ async function fetchAttrData() {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json = await res.json();
         gemAttrTable = buildGemAttrTable(json);
+        buildRarityCache(); // rebuild with newly resolved attr data
         const count = Object.keys(gemAttrTable).length;
         el.textContent = `attr data: ${count} entries`;
         el.style.color = '#4a6a4a';
@@ -488,6 +552,7 @@ function parseLog(text, filename) {
     store.rolls = rolls;
     store.slotFilter = 0;
     store.charFilter = '';
+    buildRarityCache();
 
     const chars = [...new Set(rolls.map(r => r.charId).filter(Boolean))].sort((a,b)=>a-b);
     const sel = document.getElementById('charFilterSel');
@@ -650,6 +715,9 @@ function refreshAttrChart() {
                 const sg = statTypeKey(attrId);
                 key = `${i}:${sg.key}`;
                 label = `[${i}] ${sg.label}`;
+            } else if (granularity === 'rarity_count') {
+                const rg = rarityCountKey(attrId);
+                key = rg.key; label = rg.label;
             } else if (granularity === 'slot_attr') {
                 key = `${i}:${attrId}`;
                 const name = resolveAttrLabel(attrId, 0);
@@ -664,7 +732,7 @@ function refreshAttrChart() {
             if (!keyIds[key]) keyIds[key] = new Set();
             keyIds[key].add(attrId);
 
-            if (granularity === 'stat_type' || granularity === 'slot_stat_type') {
+            if (granularity === 'stat_type' || granularity === 'slot_stat_type' || granularity === 'rarity_count') {
                 if (!keyBreakdown[key]) keyBreakdown[key] = {};
                 keyBreakdown[key][attrId] = (keyBreakdown[key][attrId] || 0) + 1;
             }
@@ -728,11 +796,28 @@ function refreshAttrChart() {
                             return ` ${v} rolls (${pct}%)`;
                         },
                         afterLabel: ctx => {
-                            if (granularity !== 'stat_type' && granularity !== 'slot_stat_type') return [];
+                            if (granularity !== 'stat_type' && granularity !== 'slot_stat_type' && granularity !== 'rarity_count') return [];
                             const key = entryKeys[ctx.dataIndex];
                             const bd  = keyBreakdown[key];
                             if (!bd) return [];
                             const groupTotal = Object.values(bd).reduce((s, n) => s + n, 0);
+
+                            if (granularity === 'rarity_count') {
+                                // Aggregate by rarity level number
+                                const byLevel = {};
+                                for (const [attrId, cnt] of Object.entries(bd)) {
+                                    const info = gemAttrTable[Number(attrId)];
+                                    const lvl = info ? info.level : 0;
+                                    byLevel[lvl] = (byLevel[lvl] || 0) + cnt;
+                                }
+                                return Object.entries(byLevel)
+                                    .sort((a, b) => Number(a[0]) - Number(b[0]))
+                                    .map(([lvl, cnt]) => {
+                                        const p = groupTotal > 0 ? (cnt / groupTotal * 100).toFixed(2) : '0.00';
+                                        return `  Lv${lvl}  ·  ${cnt} (${p}%)`;
+                                    });
+                            }
+
                             const isHardGroup = (key === 'elem_dmg' || key === 'elem_pen');
                             if (isHardGroup) {
                                 // Re-aggregate by value level (ignore which element it is)
@@ -788,6 +873,10 @@ function refreshAttrChart() {
             idCell = ids.length > 4
                 ? ids.slice(0,4).join(', ') + '…'
                 : ids.join(', ');
+        } else if (granularity === 'rarity_count') {
+            // Show count of distinct stat types in this rarity bucket
+            const statTypes = new Set([...(keyIds[key] || [])].map(id => statTypeKey(id).key));
+            idCell = statTypes.size + ' stat type' + (statTypes.size !== 1 ? 's' : '');
         } else if (granularity === 'slot_attr') {
             const [pos, attrId] = key.split(':');
             idCell = `[${pos}] ${attrId}`;
