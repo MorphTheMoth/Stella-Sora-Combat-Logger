@@ -163,36 +163,25 @@ static int64_t __fastcall Hook_CalcNormalDamage(
     double* fromEE, double* erAmend, double* defAmend, double* rcdSlotDmgRatio, double* toEERCD, double* skillIntensityRatio,
     double* toughnessBrokenDmgRatio, double* critRatio, double* envAmendRatio, void* method)
 {
-    log("[CND] enter fromActor=%p toActor=%p hitCfg=%p", fromActor, toActor, hitDamageConfig);
 
     // ── Step 1: walk klass chain for static fields ───────────────────────────
     if (!fromActor)         { log("[CND] BAIL: fromActor is null");         return 0; }
     if (!fromActor->klass)  { log("[CND] BAIL: fromActor->klass is null");  return 0; }
-    log("[CND] klass=%p", fromActor->klass);
 
     Il2CppClass* parentKlass = fromActor->klass->_1.parent;
-    log("[CND] parentKlass=%p", parentKlass);
     if (!parentKlass) { log("[CND] BAIL: parentKlass is null"); return 0; }
 
     AdventureActor_c* actorClass = reinterpret_cast<AdventureActor_c*>(parentKlass);
-    log("[CND] actorClass->static_fields ptr=%p", actorClass->static_fields);
     if (!actorClass->static_fields) { log("[CND] BAIL: static_fields is null"); return 0; }
 
     AdventureActor_StaticFields* staticFields = actorClass->static_fields;
-    log("[CND] staticFields OK, fromAddInfo=%p toAddInfo=%p fromAttrDict=%p toAttrDict=%p",
-        staticFields->fromAdditionalAttrInfo,
-        staticFields->toAdditionalAttrInfo,
-        staticFields->fromAdditionalAttrDict,
-        staticFields->toAdditionalAttrDict);
 
     // ── Step 2: original call ────────────────────────────────────────────────
-    log("[CND] calling original");
     int64_t dmg = g_OrigCalcNormalDamage(
         fromActor, toActor, hitDamageConfig, skillLevel, isCrit, isDot, hudColorIndex,
         skillPercentAmend, talentGroupPercentAmend, skillAbsAmend, talentGroupAbsAmend,
         perkIntensityRatio, slotDmgRatio, fromEE, erAmend, defAmend, rcdSlotDmgRatio,
         toEERCD, skillIntensityRatio, toughnessBrokenDmgRatio, critRatio, envAmendRatio, method);
-    log("[CND] original returned dmg=%lld", (long long)dmg);
 
     // ── Step 3: GDC ─────────────────────────────────────────────────────────
     GameDataController_o* gdc = GetGDC();
@@ -202,17 +191,14 @@ static int64_t __fastcall Hook_CalcNormalDamage(
         GetOnceAttr      = reinterpret_cast<FnGetOnceAttr>     (g_base + RVA_GET_ONCE_ATTR);
         GetValueConfigId = reinterpret_cast<FnGetValueConfigId>(g_base + RVA_GET_VALUE_CONFIG_ID);
     }
-    log("[CND] gdc=%p GetOnceAttr=%p GetValueConfigId=%p", gdc, GetOnceAttr, GetValueConfigId);
 
     // ── Step 4: resolve raw attr lists  ──────────────────────────────────────
     AttributeList_o* attackerInfo = staticFields->fromAdditionalAttrInfo
         ? staticFields->fromAdditionalAttrInfo->fields._attributeList_k__BackingField : nullptr;
     AttributeList_o* defenderInfo = staticFields->toAdditionalAttrInfo
         ? staticFields->toAdditionalAttrInfo->fields._attributeList_k__BackingField   : nullptr;
-    log("[CND] attackerInfo=%p defenderInfo=%p", attackerInfo, defenderInfo);
 
     // ── Step 5: BuildHitJson ─────────────────────────────────────────────────
-    log("[CND] calling BuildHitJson");
     BuildHitJson(
         fromActor, toActor, hitDamageConfig, skillLevel, isCrit, isDot, hudColorIndex,
         skillPercentAmend, talentGroupPercentAmend, skillAbsAmend, talentGroupAbsAmend,
@@ -224,7 +210,6 @@ static int64_t __fastcall Hook_CalcNormalDamage(
         staticFields->fromAdditionalAttrDict,
         staticFields->toAdditionalAttrDict,
         gdc, GetOnceAttr, GetValueConfigId);
-    log("[CND] BuildHitJson done");
 
     return dmg;
 }
@@ -386,8 +371,8 @@ static DWORD WINAPI InitThread(LPVOID) {
     InitializeLogger();
     if (!g_Log) return 1;
 
-    AddVectoredExceptionHandler(1, CrashHandler);
-    SetUnhandledExceptionFilter(CrashHandler);
+    //AddVectoredExceptionHandler(1, CrashHandler);
+    //SetUnhandledExceptionFilter(CrashHandler);
 
     std::string logDir = GetLocalAppDataPath() + "\\Stella Sora Combat Logger";
     loadConfig(logDir);
