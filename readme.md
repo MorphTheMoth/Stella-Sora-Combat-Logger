@@ -61,5 +61,5 @@ x86_64-w64-mingw32-g++ -shared \
 x86_64-w64-mingw32-g++ log_viewer.cpp mongoose.c -o log_viewer.exe -std=c++17 -lws2_32 -ladvapi32 -lwininet -static-libgcc -static-libstdc++
 ```
 ```bash
-g++ log_viewer.cpp mongoose.c -o log_viewer -std=c++17 -lpthread -lcurl
+g++ log_viewer.cpp mongoose.c -o log_viewer_linux -std=c++17 -lpthread -lcurl
 ```

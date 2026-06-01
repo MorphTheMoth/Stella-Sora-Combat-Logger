@@ -351,7 +351,7 @@ function eiRenderTable() {
                 </td>
                 <td class="ei-td ei-td-num">
                     <div class="ei-cov-wrap">
-                        <span class="ei-cov-hits">(${affectedHits}/${hitCount})</span></span>
+                        <span class="ei-cov-hits">${affectedHits}/${hitCount}</span></span>
                         <div class="ei-cov-bar-bg"><div class="ei-cov-bar-fill" style="width:${covBar}%"></div></div>
                     </div>
                 </td>

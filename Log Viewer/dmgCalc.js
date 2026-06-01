@@ -522,7 +522,7 @@ function calcHitFields(ev, statOverrides) {
     const baseCritDmg = statValue(aStats, 8);
     const extraCdIdx = critDmgExtraIdx(dt);
     const extraCritDmg = extraCdIdx != null ? statValue(aStats, extraCdIdx) : 0;
-    const critDmg = dp.isCrit ? (baseCritDmg + extraCritDmg) : 1;
+    const critDmg = (baseCritDmg + extraCritDmg);
 
     // Pen/Res — raw values stored; penRes is computed in calcDamage so bonuses are applied correctly
     const penIdx = ELEM_PEN_STAT[el];
@@ -537,6 +537,10 @@ function calcHitFields(ev, statOverrides) {
     const defRaw       = statBase(dStats, 2);    // DEF = index 2
     const effectiveDef = defRaw * (1 - defIgnore) - defPenetrate;
     const defAmend     = 1 - (effectiveDef * 40) / (effectiveDef * 32 + 24000);
+    // Store raw components so calcDamage can recompute defAmend with effectiveDef bonus
+    const _defIgnore    = defIgnore;
+    const _defPenetrate = defPenetrate;
+    const _defRaw       = defRaw;
 
     // EnvAmend
     const envAmend = dp.envAmendRatio != null ? dp.envAmendRatio : 1;
@@ -557,6 +561,7 @@ function calcHitFields(ev, statOverrides) {
         critRate, critDmg,
         pen, res, penRes,
         effectiveDef, defAmend,
+        _defIgnore, _defPenetrate, _defRaw,
         envAmend, genDmg, intensity, finalDmg, genDmgRcd, toughnessBroken,
         isCrit: !!dp.isCrit,
         finalDamage: dp.finalDamage || 0,
@@ -567,16 +572,37 @@ function calcHitFields(ev, statOverrides) {
 function calcDamage(fields, bonuses, disabled) {
     let v = 1;
     fields.atkMulti = (fields.baseAtk+bonuses.baseAtk) * (fields.atkPct+bonuses.atkPct) + fields.atkAbs;
+
+    // Recompute defAmend live if an effectiveDef bonus is set
+    const effDefBonus = bonuses['effectiveDef'] || 0;
+    let liveDefAmend = fields.defAmend;
+    if (effDefBonus !== 0) {
+        const liveEffDef = fields.effectiveDef + effDefBonus;
+        liveDefAmend = 1 - (liveEffDef * 40) / (liveEffDef * 32 + 24000);
+    }
+
     for (const key of DC_FORMULA_KEYS) {
+        // critRate disabled: use expected-value multiplier 1 + critRate*(critDmg-1)
+        // instead of the binary isCrit-based critDmg
         if (disabled.has(key)) continue;
-        let val;
-        if (key === 'penRes') {
-            // Recompute with pen/res bonuses applied inside the formula
-            val = calcPenRes(fields._aStats, fields._dStats, fields._el, bonuses['pen'] || 0, bonuses['res'] || 0);
-        } else {
-            const raw = fields[key] != null ? fields[key] : 1;
-            val = raw + (bonuses[key] || 0);
+
+        if (key === 'critDmg') {
+            if (disabled.has('critRate')){
+                const cr = (fields.critRate + (bonuses['critRate'] || 0));
+                const cd = (fields.critDmg + (bonuses['critDmg'] || 0));
+                v *= 1 + cr * (cd - 1);
+                continue;
+            }
+            if (!fields.isCrit) continue;
         }
+        
+        let val;
+        if (key === 'penRes')
+            val = calcPenRes(fields._aStats, fields._dStats, fields._el, bonuses['pen'] || 0, bonuses['res'] || 0);
+        else if (key === 'defAmend')
+            val = liveDefAmend + (bonuses['defAmend'] || 0);
+        else
+            val = (fields[key] != null ? fields[key] : 1) + (bonuses[key] || 0);
         v *= val;
     }
     return Math.floor(v);
@@ -611,10 +637,10 @@ function renderFormulaBar() {
         { key: 'elemTakenPct' }, { sep: '×' },
         { key: 'dmgTypePct' }, { sep: '×' },
         { key: 'dmgTypeTakenPct' }, { sep: '×' },
-        { key: 'critRate', display_only: true }, { sep: '/' },
+        { key: 'critRate', critRateToggle: true }, { sep: '/' },
         { key: 'critDmg' }, { sep: '×' },
         { key: 'penRes', penResCompound: true }, { sep: '×' },
-        { key: 'effectiveDef', display_only: true }, { sep: '→' },
+        { key: 'effectiveDef', effDefDisplay: true }, { sep: '→' },
         { key: 'defAmend' }, { sep: '×' },
         { key: 'envAmend' }, { sep: '=' },
         { result: true },
@@ -648,23 +674,54 @@ function renderFormulaBar() {
                     title="${dis ? 'Click to re-enable' : 'Click to disable'}"
                 >${DC_FIELDS.find(f => f.key === "penRes").label}</span>
             </div>`;
+        } else if (item.critRateToggle) {
+            // CritRate: toggleable — when disabled uses critRate*(critDmg-1) expected multiplier
+            const dis = dcDisabled.has('critRate');
+            const bonus = dcBonus['critRate'] || 0;
+            const titleMsg = dis
+                ? 'Click to re-enable (reverts to per-hit isCrit check)\nCurrently: using CritRate×(CritDmg−1) as expected multiplier'
+                : 'Click to disable per-hit crit check\nWill use CritRate×(CritDmg−1) as expected multiplier instead';
+            html += `<div class="dc-field-wrap" data-key="critRate">
+                <input class="dc-bonus-input" type="number" step="any" placeholder="+0"
+                    value="${bonus !== 0 ? bonus : ''}"
+                    data-key="critRate"
+                    onchange="dcSetBonus('critRate', this.value)"
+                    onclick="event.stopPropagation()">
+                <span class="dc-field${dis ? ' dc-disabled' : ''}"
+                    data-key="critRate"
+                    onclick="dcToggleField('critRate')"
+                    title="${titleMsg}"
+                >CritRate</span>
+            </div>`;
+        } else if (item.effDefDisplay) {
+            // EffDEF: display-only label; bonus input feeds live into defAmend recalc
+            const bonus = dcBonus['effectiveDef'] || 0;
+            html += `<div class="dc-field-wrap" data-key="effectiveDef">
+                <input class="dc-bonus-input" type="number" step="any" placeholder="+0"
+                    value="${bonus !== 0 ? bonus : ''}"
+                    data-key="effectiveDef"
+                    onchange="dcSetBonus('effectiveDef', this.value)"
+                    onclick="event.stopPropagation()"
+                    title="Adjust EffDEF — DEF multiplier recalculates live">
+                <span class="dc-field dc-display-only"
+                    data-key="effectiveDef"
+                    title="Display only — adjust via bonus input to affect DEF multiplier"
+                >EffDEF</span>
+            </div>`;
         } else {
             const fd = DC_FIELDS.find(f => f.key === item.key);
             const dis = dcDisabled.has(item.key);
             const bonus = dcBonus[item.key] || 0;
-            const isDisplayOnly = item.display_only;
             html += `<div class="dc-field-wrap" data-key="${item.key}">
                 <input class="dc-bonus-input" type="number" step="any" placeholder="+0"
                     value="${bonus !== 0 ? bonus : ''}"
                     data-key="${item.key}"
                     onchange="dcSetBonus('${item.key}', this.value)"
-                    onclick="event.stopPropagation()"
-                    ${isDisplayOnly ? 'title="Display only – not multiplied"' : ''}
-                >
-                <span class="dc-field${dis ? ' dc-disabled' : ''}${isDisplayOnly ? ' dc-display-only' : ''}"
+                    onclick="event.stopPropagation()">
+                <span class="dc-field${dis ? ' dc-disabled' : ''}"
                     data-key="${item.key}"
-                    onclick="${isDisplayOnly ? '' : `dcToggleField('${item.key}')`}"
-                    title="${isDisplayOnly ? 'Display only' : (dis ? 'Click to re-enable' : 'Click to disable')}"
+                    onclick="dcToggleField('${item.key}')"
+                    title="${dis ? 'Click to re-enable' : 'Click to disable'}"
                 >${esc(fd ? fd.label : item.key)}</span>
             </div>`;
         }
@@ -688,8 +745,16 @@ window.dcSetBonus = function(key, val) {
 };
 
 // ─── Per-hit row fields ────────────────────────────────────────────────────────
-// Returns an array of { key, value } in same order as formula display
-function hitFieldValues(fields) {
+// Returns an array of { key, val } in same order as formula display.
+// Pass bonuses to get live-recomputed values (e.g. defAmend after effectiveDef bonus).
+function hitFieldValues(fields, bonuses) {
+    bonuses = bonuses || dcBonus;
+    // Live defAmend: recompute if effectiveDef bonus is set
+    const effDefBonus = bonuses['effectiveDef'] || 0;
+    const liveEffDef = fields.effectiveDef + effDefBonus;
+    const liveDefAmend = effDefBonus !== 0
+        ? 1 - (liveEffDef * 40) / (liveEffDef * 32 + 24000)
+        : fields.defAmend;
     return [
         { key: 'multiplier',      val: fields.multiplier },
         { key: 'baseAtk',         val: fields.baseAtk },
@@ -701,8 +766,8 @@ function hitFieldValues(fields) {
         { key: 'critRate',        val: fields.critRate },
         { key: 'critDmg',         val: fields.critDmg },
         { key: 'penRes',          val: fields.penRes },
-        { key: 'effectiveDef',    val: fields.effectiveDef },
-        { key: 'defAmend',        val: fields.defAmend },
+        { key: 'effectiveDef',    val: liveEffDef },
+        { key: 'defAmend',        val: liveDefAmend },
         { key: 'envAmend',        val: fields.envAmend },
     ];
 }
@@ -712,7 +777,7 @@ function hitFieldValues(fields) {
 const DC_PCT_FIELDS = new Set([
     'multiplier','atkPct','elemPct','elemTakenPct',
     'dmgTypePct','dmgTypeTakenPct','critRate','critDmg',
-    'penRes','envAmend'
+    'penRes','defAmend','envAmend'
 ]);
 
 function fmtVal(v, key) {
@@ -768,7 +833,7 @@ function dcCreateEventDiv(ev, fi) {
     const fvRow = document.createElement('div');
     fvRow.className = 'dc-fields-row';
 
-    const fvs = hitFieldValues(fields);
+    const fvs = hitFieldValues(fields, dcBonus);
     // We build the same alternating separators structure as the formula bar
     // to keep column alignment
     const DISPLAY_ORDER = [
@@ -780,13 +845,15 @@ function dcCreateEventDiv(ev, fi) {
     for (let i = 0; i < DISPLAY_ORDER.length; i++) {
         const key = DISPLAY_ORDER[i];
         const fvEntry = fvs.find(f => f.key === key);
+        // effectiveDef/defAmend have bonus already baked in via hitFieldValues — don't double-show
         const bonus = dcBonus[key] || 0;
         const rawVal = fvEntry ? fvEntry.val : null;
-        const dispVal = bonus !== 0
+        const skipBonusLabel = (key === 'effectiveDef' || key === 'defAmend');
+        const dispVal = (bonus !== 0 && !skipBonusLabel)
             ? `${fmtVal(rawVal, key)} <span class="dc-bonus-label">(+${fmtVal(bonus, key)})</span>`
             : fmtVal(rawVal, key);
         const dis = dcDisabled.has(key);
-        const isDisplayOnly = DC_FIELDS.find(f=>f.key===key)?.display_only;
+        const isDisplayOnly = key === 'effectiveDef' || DC_FIELDS.find(f=>f.key===key)?.display_only;
         const cell = document.createElement('div');
         cell.className = 'dc-field-cell' + (dis ? ' dc-disabled' : '') + (isDisplayOnly ? ' dc-display-only' : '');
         cell.dataset.key = key;
@@ -962,7 +1029,7 @@ function dcRender() {
                 const ev = allEvents[oi];
                 const fields = calcHitFields(ev);
                 const calcDmg = calcDamage(fields, dcBonus, dcDisabled);
-                const fvs = hitFieldValues(fields);
+                const fvs = hitFieldValues(fields, dcBonus);
                 const DISPLAY_ORDER = [
                     'multiplier','baseAtk','atkPct','elemPct','elemTakenPct',
                     'dmgTypePct','dmgTypeTakenPct','critRate','critDmg',
@@ -974,14 +1041,18 @@ function dcRender() {
                     const cell = cells[ci++];
                     if (!cell) continue;
                     const fv = fvs.find(f=>f.key===key);
-                    const bonus = dcBonus[key] || 0;
+                    // effectiveDef and defAmend already have bonus baked in via hitFieldValues
+                    const showBonus = dcBonus[key] || 0;
                     const rawVal = fv ? fv.val : null;
-                    cell.innerHTML = bonus !== 0
-                        ? `${fmtVal(rawVal, key)} <span class="dc-bonus-label">(+${fmtVal(bonus, key)})</span>`
+                    // For effectiveDef/defAmend the bonus is already folded into rawVal, don't double-show
+                    const skipBonusLabel = (key === 'effectiveDef' || key === 'defAmend');
+                    cell.innerHTML = (showBonus !== 0 && !skipBonusLabel)
+                        ? `${fmtVal(rawVal, key)} <span class="dc-bonus-label">(${fmtVal(showBonus, key) > 0 ? '+' : ''}${fmtVal(showBonus, key)})</span>`
                         : fmtVal(rawVal, key);
+                    const isDisplayOnly = key === 'effectiveDef' || DC_FIELDS.find(f=>f.key===key)?.display_only;
                     cell.className = 'dc-field-cell' +
                         (dcDisabled.has(key) ? ' dc-disabled' : '') +
-                        (DC_FIELDS.find(f=>f.key===key)?.display_only ? ' dc-display-only' : '');
+                        (isDisplayOnly ? ' dc-display-only' : '');
                 }
                 // calc, game, diff cells (inside .dc-result-stack, not direct fvRow children)
                 const calcCell = el.querySelector('.dc-result-cell');
