@@ -200,6 +200,42 @@ function dcCollectAttrFixEffects(dcFiltered) {
             }
         }
     }
+    // ── Potentials hits ───────────────────────────────────────────────────────
+    // Group hits whose .source contains "Potentials" by their skillTitle.
+    // Each group becomes one toggle entry (key: `potentials:<skillTitle>`).
+    const potentialsHitsGroups = new Map(); // skillTitle -> { count }
+    for (const ev of dcFiltered) {
+        const src = ev.source ?? ev.HitConfig?.source ?? '';
+        if (!src.includes('Potentials')) continue;
+        const skillTitle = ev.HitConfig?.skillTitle ?? 'Unknown';
+        if (!potentialsHitsGroups.has(skillTitle)) {
+            potentialsHitsGroups.set(skillTitle, { count: 0, multipliers: [], source: src });
+        }
+        potentialsHitsGroups.get(skillTitle).count++;
+        if (!potentialsHitsGroups.get(skillTitle).multipliers.includes(ev.DamageParams.skillPercentAmend/10000))
+            potentialsHitsGroups.get(skillTitle).multipliers.push(ev.DamageParams.skillPercentAmend/10000);
+        
+    }
+    for (const [skillTitle, { count, multipliers, source }] of potentialsHitsGroups) {
+        const key = `potentials:${skillTitle}`;
+        seen.set(key, {
+            key,
+            side: 'potentials',
+            configId: null,
+            valueConfigId: null,
+            name: skillTitle,
+            attrType: null,
+            subType: null,
+            value: multipliers,
+            count,
+            source,
+            fromAttrDict: false,
+            effectType: null,
+            isPotentialsGroup: true,
+            skillTitle,
+        });
+    }
+
     return [...seen.values()];
 }
 
@@ -210,6 +246,17 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled) {
     const origA = ev.AttackerStats?.attrs || [];
     const origD = ev.DefenderStats?.attrs || [];
     if (dcEffectsDisabled.size === 0) return { aStats: origA, dStats: origD };
+
+    // ── Potentials group disable ──────────────────────────────────────────────
+    // If this hit belongs to a disabled Potentials group, zero all its stats so
+    // calcDamage produces 0 for this hit.
+    const evSrc = ev.source ?? ev.HitConfig?.source ?? '';
+    if (evSrc.includes('Potentials')) {
+        const skillTitle = ev.HitConfig?.skillTitle ?? 'Unknown';
+        if (dcEffectsDisabled.has(`potentials:${skillTitle}`)) {
+            return { aStats: origA, dStats: origD, _potentialsDisabled: true };
+        }
+    }
 
     // Deep-clone only the stat entries we'll modify
     const aMap = new Map(origA.map(s => [s.id, Object.assign({}, s)]));
@@ -294,7 +341,26 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled) {
 function calcHitFields(ev, statOverrides, dcEffectsDisabled) {
     const hc  = ev.HitConfig   || {};
     const dp  = ev.DamageParams || {};
-    const { aStats, dStats } = statOverrides || dcApplyEffectOverrides(ev, dcEffectsDisabled);
+    const resolved = statOverrides || dcApplyEffectOverrides(ev, dcEffectsDisabled);
+
+    // Hit belongs to a disabled Potentials group — return zeroed fields so
+    // calcDamage produces 0 without touching the stat arrays.
+    if (resolved._potentialsDisabled) {
+        return {
+            multiplier: 0, baseAtk: 0, atkPct: 1, atkAbs: 0,
+            elemPct: 1, elemTakenPct: 1, dmgTypePct: 1, dmgTypeTakenPct: 1,
+            critRate: 0, critDmg: 1, pen: 0, res: 0, penRes: 1,
+            effectiveDef: 0, defAmend: 1,
+            _defIgnore: 0, _defPenetrate: 0, _defRaw: 0,
+            envAmend: 1, genDmg: 1, intensity: 1, finalDmg: 1,
+            genDmgRcd: 1, toughnessBroken: 1,
+            isCrit: false, finalDamage: dp.finalDamage || 0,
+            _aStats: resolved.aStats, _dStats: resolved.dStats, _el: hc.elementType,
+            _potentialsDisabled: true,
+        };
+    }
+
+    const { aStats, dStats } = resolved;
 
     const dt = hc.damageType;
     const el = hc.elementType;

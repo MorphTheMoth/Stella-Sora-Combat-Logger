@@ -83,8 +83,8 @@ function eiPatchStats(withOverrides, ef, ev, delta, coeff) {
     }
 
     return isAttacker
-        ? { aStats: newArr, dStats: otherArr }
-        : { aStats: otherArr, dStats: newArr };
+        ? { aStats: newArr, dStats: otherArr, _potentialsDisabled: withOverrides._potentialsDisabled }
+        : { aStats: otherArr, dStats: newArr, _potentialsDisabled: withOverrides._potentialsDisabled };
 }
 
 // ─── Baseline cache ───────────────────────────────────────────────────────────
@@ -102,7 +102,7 @@ function eiGetBaseline() {
     const cache = new Array(dcFiltered.length);
     for (let i = 0; i < dcFiltered.length; i++) {
         const ev = dcFiltered[i];
-        const withOverrides = dcApplyEffectOverrides(ev);
+        const withOverrides = dcApplyEffectOverrides(ev, dcEffectsDisabled);
         const withFields    = calcHitFields(ev, withOverrides);
         const withDmg       = calcDamage(withFields, dcBonus, dcDisabled);
         cache[i] = { ev, withOverrides, withDmg };
@@ -123,6 +123,34 @@ function eiComputeEffect(ef, baseline) {
     let maxStacks    = 1;
 
     const isAdded = dcEffectsDisabled.has(ef.key);
+
+    // ── Potentials hit-group: zero matching hits rather than patching a stat ──
+    if (ef.isPotentialsGroup) {
+        for (let i = 0; i < baseline.length; i++) {
+            const { ev, withOverrides, withDmg } = baseline[i];
+            totalWith += withDmg;
+            const evSrc   = ev.source ?? ev.HitConfig?.source ?? '';
+            const evSkill = ev.HitConfig?.skillTitle ?? 'Unknown';
+            if (evSrc.includes('Potentials') && evSkill === ef.skillTitle) {
+                affectedHits++;
+                if (isAdded) {
+                    // Group is currently disabled — baseline already has these hits
+                    // zeroed. Recompute with this group's key temporarily removed from
+                    // dcEffectsDisabled so all other disabled effects are still applied.
+                    const tempDisabled = new Set(dcEffectsDisabled);
+                    tempDisabled.delete(ef.key);
+                    const activeOverrides = dcApplyEffectOverrides(ev, tempDisabled);
+                    const fullFields = calcHitFields(ev, activeOverrides);
+                    totalWithout += calcDamage(fullFields, dcBonus, dcDisabled);
+                }
+                // else: group is active — "without" means exclude → contribute 0
+            } else {
+                totalWithout += withDmg;
+            }
+        }
+        return { totalWith, totalWithout, hitCount, affectedHits, maxStacks: 1, isAdded };
+    }
+
     // coeff: subtract the effect (-1) when it's normally present; add it (+1) when it's disabled
     const coeff = isAdded ? 1 : -1;
 
@@ -130,6 +158,12 @@ function eiComputeEffect(ef, baseline) {
         const { ev, withOverrides, withDmg } = baseline[i];
 
         totalWith += withDmg;
+
+        // Hit is from a disabled Potentials group — already 0 in totalWith,
+        // must also contribute 0 to totalWithout so it doesn't skew the delta.
+        if (withOverrides._potentialsDisabled) {
+            continue;
+        }
 
         const delta = eiResolveEffectDelta(ev, ef);
         if (!delta) {
@@ -154,7 +188,7 @@ function eiComputeEffect(ef, baseline) {
 function eiComputeAll() {
     const t0 = performance.now();
 
-    const effects = dcCollectAttrFixEffects();
+    const effects = dcCollectAttrFixEffects(dcFiltered);
 
     const t1 = performance.now();
     const baseline = eiGetBaseline();
@@ -312,15 +346,20 @@ function eiRenderTable() {
         for (let j = i; j < groupEnd; j++) {
             const { ef, totalWith, totalWithout, dmgDelta, pctImpact, hitCoverage, affectedHits, hitCount, maxStacks, isAdded } = rows[j];
 
-            const sideLabel = ef.side === 'attacker' ? 'ATK' : 'DEF';
-            const sideClass = ef.side === 'attacker' ? 'ei-side-atk' : 'ei-side-def';
+            const sideLabel = ef.side === 'attacker' ? 'ATK' : ef.side === 'defender' ? 'DEF' : 'POT';
+            const sideClass = ef.side === 'attacker' ? 'ei-side-atk' : ef.side === 'defender' ? 'ei-side-def' : 'ei-side-pot';
 
-            const subLabel = ef.subType === 1 ? 'base' : ef.subType === 2 ? 'pct' : ef.subType === 3 ? 'abs' : '?';
-            const attrLabel = ef.attrType != null ? attrName(ef.attrType) : '?';
-            const raw = ef.value;
-            const isSmall = raw != null && Math.abs(raw) < 15;
-            const valStr = raw != null ? (isSmall ? (raw * 100).toFixed(2) + '%' : String(raw)) : '?';
-            const maxStacksStr = maxStacks > 1 ? ` <span class="ei-stacks" title="Max stacks observed">×${maxStacks}</span>` : '';
+            const statCellContent = ef.isPotentialsGroup
+                ? `<span class="ei-attr">Hit Damage</span><span class="ei-val">${ef.value.map(num => `${num}%`).join(', ')}</span>`
+                : (() => {
+                    const subLabel = ef.subType === 1 ? 'base' : ef.subType === 2 ? 'pct' : ef.subType === 3 ? 'abs' : '?';
+                    const attrLabel = ef.attrType != null ? attrName(ef.attrType) : '?';
+                    const raw = ef.value;
+                    const isSmall = raw != null && Math.abs(raw) < 15;
+                    const valStr = raw != null ? (isSmall ? (raw * 100).toFixed(2) + '%' : String(raw)) : '?';
+                    const maxStacksStr = maxStacks > 1 ? ` <span class="ei-stacks" title="Max stacks observed">×${maxStacks}</span>` : '';
+                    return `<span class="ei-attr">${esc(attrLabel)}</span><span class="ei-val">+${valStr} [${subLabel}]${maxStacksStr}</span>`;
+                })();
 
             const pctStr  = isFinite(pctImpact) ? (pctImpact >= 0 ? '+' : '') + pctImpact.toFixed(2) + '%' : '+∞%';
             const pctClass = pctImpact > 0.5 ? 'ei-pos' : pctImpact < -0.5 ? 'ei-neg' : 'ei-neutral';
@@ -346,8 +385,7 @@ function eiRenderTable() {
                 <td class="ei-td ei-td-num"><span class="${pctClass} ei-bold">${pctStr}</span></td>
                 <td class="ei-td ei-td-name" title="configId=${ef.configId}">${esc(ef.name)}${addedBadge}</td>
                 <td class="ei-td ei-td-stat">
-                    <span class="ei-attr">${esc(attrLabel)}</span>
-                    <span class="ei-val">+${valStr} [${subLabel}]${maxStacksStr}</span>
+                    ${statCellContent}
                 </td>
                 <td class="ei-td ei-td-num">
                     <div class="ei-cov-wrap">

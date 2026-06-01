@@ -133,17 +133,26 @@ function renderEffectsPanel() {
                     g += `<div class="dc-effects-chips-wrap">`;
                     for (const ef of groupEffects) {
                         const disabled = dcEffectsDisabled.has(ef.key);
-                        const subLabel = ef.subType === 1 ? 'base' : ef.subType === 2 ? 'pct' : ef.subType === 3 ? 'abs' : '?';
-                        const attrLabel = ef.attrType != null ? attrName(ef.attrType) : '?';
-                        const raw = ef.value;
-                        const isSmall = raw != null && Math.abs(raw) < 15;
-                        const valStr = raw != null ? (isSmall ? (raw * 100).toFixed(2) + '%' : String(raw)) : '?';
-                        const countStr = ef.count > 1 ? ` ×${ef.count}` : '';
+                        let statLine;
+                        if (ef.isPotentialsGroup) {
+                            statLine = `${ef.count} hit${ef.count !== 1 ? 's' : ''} · zeroed when disabled`;
+                        } else {
+                            const subLabel = ef.subType === 1 ? 'base' : ef.subType === 2 ? 'pct' : ef.subType === 3 ? 'abs' : '?';
+                            const attrLabel = ef.attrType != null ? attrName(ef.attrType) : '?';
+                            const raw = ef.value;
+                            const isSmall = raw != null && Math.abs(raw) < 15;
+                            const valStr = raw != null ? (isSmall ? (raw * 100).toFixed(2) + '%' : String(raw)) : '?';
+                            const countStr = ef.count > 1 ? ` ×${ef.count}` : '';
+                            statLine = `${esc(attrLabel)} +${valStr}${countStr} [${subLabel}]`;
+                        }
+                        const titleExtra = ef.isPotentialsGroup
+                            ? `potentials · skillTitle=${ef.skillTitle}`
+                            : `${ef.side} · configId=${ef.configId}`;
                         g += `<div class="dc-effect-chip${disabled ? ' dc-effect-disabled' : ''}"
                             onclick="dcToggleEffect('${ef.key}')"
-                            title="${disabled ? 'Click to re-enable' : 'Click to disable'}\n${ef.side} · configId=${ef.configId}">
+                            title="${disabled ? 'Click to re-enable' : 'Click to disable'}\n${titleExtra}">
                             <span class="dc-effect-name">${esc(ef.name)}</span>
-                            <span class="dc-effect-stat">${esc(attrLabel)} +${valStr}${countStr} [${subLabel}]</span>
+                            <span class="dc-effect-stat">${statLine}</span>
                         </div>`;
                     }
                     g += `</div>`;
@@ -151,7 +160,7 @@ function renderEffectsPanel() {
                 return g;
             }
 
-            // Attacker groups first, then defender
+            // Attacker groups first, then defender, then Potentials
             for (const side of ['attacker', 'defender']) {
                 const sideEntries = [...groupMap.entries()].filter(([k]) => k.startsWith(side + '||'));
                 if (!sideEntries.length) continue;
@@ -159,6 +168,16 @@ function renderEffectsPanel() {
                 html += `<div class="dc-effects-side-header">${sideLabel}</div>`;
                 for (const [gkey, groupEffects] of sideEntries) {
                     const source = gkey.slice(side.length + 2);
+                    html += renderGroup(gkey, source, groupEffects);
+                }
+            }
+
+            // ── Potentials groups ────────────────────────────────────────────
+            const potentialsEntries = [...groupMap.entries()].filter(([k]) => k.startsWith('potentials||'));
+            if (potentialsEntries.length) {
+                html += `<div class="dc-effects-side-header">Potentials</div>`;
+                for (const [gkey, groupEffects] of potentialsEntries) {
+                    const source = gkey.slice('potentials||'.length);
                     html += renderGroup(gkey, source, groupEffects);
                 }
             }

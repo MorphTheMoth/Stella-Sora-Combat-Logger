@@ -64,23 +64,27 @@ const skillTable    = new Map();
 
 // Attribute index -> name string
 const ATTR_NAMES = [
-    'NONE','ATK','DEF','MAXHP','HITRATE','EVD','CRITRATE','CRITRESIST',
-    'CRITPOWER_P','PENETRATE','DEF_IGNORE','WER','FER','SER','AER','LER',
-    'DER','WEE','FEE','SEE','AEE','LEE','DEE','WEP','FEP','SEP','AEP',
-    'LEP','DEP','WEI','FEI','SEI','AEI','LEI','DEI','WEERCD','FEERCD',
-    'SEERCD','AEERCD','LEERCD','DEERCD','WEIGHT','TOUGHNESS_MAX',
-    'TOUGHNESS_DAMAGE_ADJUST','SHIELD_MAX','[45]','MOVESPEED','ATKSPD_P',
-    'INTENSITY','GENDMG','DMGPLUS','FINALDMG','FINALDMGPLUS','GENDMGRCD',
-    'DMGPLUSRCD','SUPPRESS','NORMALDMG','SKILLDMG','ULTRADMG','OTHERDMG',
-    'RCDNORMALDMG','RCDSKILLDMG','RCDULTRADMG','RCDOTHERDMG','MARKDMG',
-    'RCDMARKDMG','SUMMONDMG','RCDSUMMONDMG','PROJECTILEDMG','RCDPROJECTILEDMG',
-    'NORMALCRITRATE','SKILLCRITRATE','ULTRACRITRATE','MARKCRITRATE',
-    'SUMMONCRITRATE','PROJECTILECRITRATE','OTHERCRITRATE','NORMALCRITPOWER',
-    'SKILLCRITPOWER','ULTRACRITPOWER','MARKCRITPOWER','SUMMONCRITPOWER',
-    'PROJECTILECRITPOWER','OTHERCRITPOWER','ENERGY_MAX','SKILL_INTENSITY',
-    'TOUGHNESS_BROKEN_DMG','ADD_SHIELD_STRENGTHEN','BE_ADD_SHIELD_STRENGTHEN',
-    'NORMAL_SUPPRESS','SKILL_SUPPRESS','ULTRA_SUPPRESS','MARK_SUPPRESS',
-    'SUMMON_SUPPRESS','PROJECTILE_SUPPRESS','OTHER_SUPPRESS','ENV_AMEND','MAX',
+    "None", "Atk", "Def", "Max Hp", "Hit Rate", "Evd", "Crit Rate", "Crit Resist",
+    "Crit Damage", "Penetrate", "Def Ignore", "Wer", "Fer", "Ser",
+    "Aer", "Ler", "Der", "Aqua Dmg", "Ignis Dmg", "Terra Dmg", "Ventus Dmg", "Lux Dmg",
+    "Umbra Dmg", "Aqua Pen", "Ignis Pen", "Terra Pen", "Ventus Pen", "Lux Pen", "Umbra Pen", "Wei",
+    "Fei", "Sei", "Aei", "Lei", "Dei", "Rcd Aqua Dmg", "Rcd Ignis Dmg", 
+    "Rcd Terra Dmg", "Rcd Ventus Dmg", "Rcd Lux Dmg", "Rcd Umbra Dmg", "Weight",
+    "Toughness Max", "Toughness Damage Adjust", "Shield Max", "",
+    "Move Speed", "Atk Spd P", "Intensity", "Gen Dmg", "Dmg Plus",
+    "Final Dmg", "Final Dmg Plus", "Gen Dmg Rcd", "Dmg Plus Rcd",
+    "Suppress", "Normal Dmg", "Skill Dmg", "Ultra Dmg", "Other Dmg",
+    "Rcd Normal Dmg", "Rcd Skill Dmg", "Rcd Ultra Dmg", "Rcd Other Dmg",
+    "Mark Dmg", "Rcd Mark Dmg", "Minion Dmg", "Rcd Minion Dmg",
+    "Derivative Dmg", "Rcd Derivative Dmg", "Normal Crit Rate",
+    "Skill Crit Rate", "Ultra Crit Rate", "Mark Crit Rate", "Minion Crit Rate",
+    "Derivative Crit Rate", "Other Crit Rate", "Normal Crit Damage",
+    "Skill Crit Damage", "Ultra Crit Damage", "Mark Crit Damage",
+    "Minion Crit Damage", "Derivative Crit Damage", "Other Crit Damage",
+    "Energy Max", "Skill Intensity", "Toughness Broken Dmg",
+    "Add Shield Strengthen", "Be Add Shield Strengthen", "Normal Suppress",
+    "Skill Suppress", "Ultra Suppress", "Mark Suppress", "Minion Suppress",
+    "Derivative Suppress", "Other Suppress", "Env Amend",
 ];
 
 function attrName(i) {
@@ -135,6 +139,7 @@ function enrichHit(ev) {
             hc.charName   = h.charName;
             hc.skillTitle = h.skillTitle;
             hc.hitNum     = h.hitNum;
+            ev.source     = h.source;
         }
     }
 
