@@ -7,6 +7,8 @@
 #include <mutex>
 #include <vector>
 #include <algorithm>
+#include <set>
+#include <filesystem>
 
 #ifdef _WIN32
     #define WIN32_LEAN_AND_MEAN
@@ -82,6 +84,43 @@ static void ServerLog(const char* fmt, ...) {
     va_end(ap);
     printf("\n");
     fflush(stdout);
+}
+
+// =============================================================================
+//  Files Whitelist
+// =============================================================================
+
+static std::set<std::string> g_static_files;
+// Populate the set by scanning a directory once at startup.
+void ScanStaticFolder(const std::string& folder) {
+    namespace fs = std::filesystem;
+    g_static_files.clear();
+    try {
+        for (const auto& entry : fs::directory_iterator(folder)) {
+            if (entry.is_regular_file()) {
+                std::string name = entry.path().filename().string();
+                if (name.empty() || name[0] == '.') continue;
+                if (name.find('/') != std::string::npos ||
+                    name.find('\\') != std::string::npos) continue;
+                g_static_files.insert(name);
+            }
+        }
+        ServerLog("Static file whitelist: %zu files scanned from %s",
+                  g_static_files.size(), folder.c_str());
+    } catch (...) {
+        ServerLog("Could not scan static folder '%s'", folder.c_str());
+    }
+}
+
+std::string GetContentType(const std::string& filename) {
+    auto ext_pos = filename.rfind('.');
+    if (ext_pos == std::string::npos) return "application/octet-stream";
+    std::string ext = filename.substr(ext_pos);
+    if (ext == ".html" || ext == ".htm")  return "text/html";
+    if (ext == ".js")                     return "application/javascript";
+    if (ext == ".css")                    return "text/css";
+    if (ext == ".json")                   return "application/json";
+    return "application/octet-stream";
 }
 
 // =============================================================================
@@ -424,35 +463,34 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
         std::string query  = MgStrToStd(hm->query);
         std::string remote = RemoteAddr(c);
 
-        if (uri == "/" || uri == "/dataLoader.js" || uri == "/log.js"|| uri == "/effectImpact.js" ||
-            uri == "/analytics.js" || uri == "/tableResolver.js" || uri == "/dmgCalc.js") {
+        if (uri == "/" || g_static_files.count(uri.substr(1)) > 0) {
+            std::string filename = (uri == "/") ? "index.html" : uri.substr(1);
+
             if (!g_local_mode) {
-                // Proxy the file from GitHub so the browser gets the right Content-Type.
+                // Remote mode – proxy from GitHub
                 std::string url = std::string(REMOTE_BASE);
                 url += (uri == "/") ? "/index.html" : uri;
                 std::string body = FetchRemoteFile(url);
                 if (!body.empty()) {
-                    const char* ct = (uri == "/")
-                        ? "Content-Type: text/html\r\n"
-                        : "Content-Type: application/javascript\r\n";
-                    mg_http_reply(c, 200, ct, "%s", body.c_str());
+                    std::string ct_header = "Content-Type: " +
+                        GetContentType(filename) + "\r\n";
+                    mg_http_reply(c, 200, ct_header.c_str(), "%s", body.c_str());
                     HttpLog(200, method, uri, query, remote);
                 } else {
                     mg_http_reply(c, 502, "Content-Type: text/plain\r\n", "Failed to fetch remote file");
                     HttpLog(502, method, uri, query, remote);
                 }
             } else {
-                // Local mode: serve files from disk.
-                std::string filename = (uri == "/") ? "index.html" : uri.substr(1);
-                std::string content_type = (uri == "/")
-                    ? "Content-Type: text/html\r\n"
-                    : "Content-Type: application/javascript\r\n";
-                std::ifstream file(filename);
+                // Local mode – read from disk
+                std::string filepath = filename;
+                std::ifstream file(filepath);
                 if (file.good()) {
                     std::stringstream buffer;
                     buffer << file.rdbuf();
                     std::string body = buffer.str();
-                    mg_http_reply(c, 200, content_type.c_str(), "%s", body.c_str());
+                    std::string ct_header = "Content-Type: " +
+                        GetContentType(filename) + "\r\n";
+                    mg_http_reply(c, 200, ct_header.c_str(), "%s", body.c_str());
                     HttpLog(200, method, uri, query, remote);
                 } else {
                     mg_http_reply(c, 404, "Content-Type: text/plain\r\n", "File not found");
@@ -588,7 +626,7 @@ int main(int argc, char** argv) {
         LOG_FILE = GetDefaultLogPath();
     if (!g_local_mode)
         ServerLog("Fetching files automatically from github, run with \"-local\" to use local files.");
-
+    ScanStaticFolder(".");
     // Check if file or folder exists
 #ifdef _WIN32
     std::string folderPath = LOG_FILE;

@@ -1,33 +1,6 @@
-// ─── dmgCalc.js ───────────────────────────────────────────────────────────────
-// Damage Calculator tab: virtual-scroll list of Hit events with formula overlay.
-
-// ─── Formula field definitions ────────────────────────────────────────────────
-const DC_FIELDS = [
-    { key: 'multiplier',      label: 'MV' },
-    { key: 'baseAtk',         label: 'BaseAtk' },
-    { key: 'atkPct',          label: 'Atk%' },
-    { key: 'elemPct',         label: 'Elem%' },
-    { key: 'elemTakenPct',    label: 'ElemR%' },
-    { key: 'dmgTypePct',      label: 'Type%' },
-    { key: 'dmgTypeTakenPct', label: 'TypeR%' },
-    { key: 'critRate',        label: 'CritRate',   display_only: true },
-    { key: 'critDmg',         label: 'CritDmg' },
-    { key: 'pen',             label: 'Pen' },
-    { key: 'res',             label: 'Res' },
-    { key: 'penRes',          label: 'Pen' },
-    { key: 'effectiveDef',    label: 'EffDEF',     display_only: true },
-    { key: 'defAmend',        label: 'DEF' },
-    { key: 'envAmend',        label: 'EnvAmd' },
-];
-
-// Fields that are visually shown in formula bar (multiply them)
-// display_only fields are shown in the per-hit row for context but
-// not multiplied in the formula directly (CritRate, Pen, Res, EffDEF)
-const DC_FORMULA_KEYS = [
-    'multiplier','atkMulti','elemPct','elemTakenPct',
-    'dmgTypePct','dmgTypeTakenPct','critDmg','penRes','defAmend',
-    'envAmend', 'genDmg','intensity','finalDmg','genDmgRcd','toughnessBroken'
-];
+// ─── dmgCalc.ui.js ────────────────────────────────────────────────────────────
+// UI layer: virtual-scroll list, formula bar, effects panel, filters, DOM events.
+// Depends on dmgCalc.calc.js being loaded first.
 
 // ─── DC shared state ──────────────────────────────────────────────────────────
 let dcFiltered = [];
@@ -59,278 +32,15 @@ let dcEffectsPanelOpen = true;
 // Which source sections are open; default collapsed (keys added on first toggle)
 const dcSourceOpenStates = {};
 
- // effectType values
-const ATTR_FIX = 12;
-const PLAYER_ATTR_FIX = 37;
-const HITTED_ADDITIONAL_ATTR_FIX = 45;
-const ELEMENTTYPE_ATTR_FIX = 52;
-const ELEMENTTYPE_ATTR_PERCENT_FIX = 54;
-const allowedEffectTypes = [ATTR_FIX, PLAYER_ATTR_FIX, HITTED_ADDITIONAL_ATTR_FIX, ELEMENTTYPE_ATTR_FIX, ELEMENTTYPE_ATTR_PERCENT_FIX];
-
-// Collect unique effects across all filtered hits.
-// Returns an array of { key, side, configId, valueConfigId, name, attrType, subType, value, count, source, fromAttrDict }
-// where count = how many times this configId appears in the first matching hit that has it.
-function dcCollectAttrFixEffects() {
-    const seen = new Map(); // key -> entry
-    for (const ev of dcFiltered) {
-        const sides = [
-            { side: 'attacker', list: ev.AttackerEffects?.effects, attrDict: ev.AttackerAttrDict },
-            { side: 'defender', list: ev.DefenderEffects?.effects, attrDict: ev.DefenderAttrDict },
-        ];
-        for (const { side, list, attrDict } of sides) {
-            // ── effects list ──────────────────────────────────────────
-            if (list?.length) {
-                const countMap = new Map();
-                for (const e of list) {
-                    if (!allowedEffectTypes.includes(e.effectType)) continue;
-                    const id = e.configId;
-                    countMap.set(id, (countMap.get(id) || 0) + 1);
-                }
-                const seenInHit = new Set();
-                for (const e of list) {
-                    if (!allowedEffectTypes.includes(e.effectType)) continue;
-                    if (seenInHit.has(e.configId)) continue;
-                    seenInHit.add(e.configId);
-                    const key = `${side}:${e.configId}:${e.valueConfigId ?? ''}`;
-                    if (!seen.has(key)) {
-                        seen.set(key, {
-                            key, side,
-                            configId: e.configId,
-                            valueConfigId: e.valueConfigId,
-                            name: e.name || String(e.configId),
-                            attrType: e.attrType,
-                            subType: e.subType,
-                            value: e.value,
-                            count: countMap.get(e.configId) || 1,
-                            source: e.source ?? 'Unknown',
-                            fromAttrDict: false,
-                            effectType: e.effectType
-                        });
-                    }
-                }
-            }
-
-            // ── attrDict list ─────────────────────────────────────────
-            if (Array.isArray(attrDict)) {
-                const seenInHit = new Set();
-                for (const e of attrDict) {
-                    if (e.attrType == null || e.subType == null || e.value == null) continue;
-                    const cid = e.configId ?? e.attrId;
-                    if (cid == null) continue;
-                    const vcid = e.valueConfigId ?? '';
-                    // Use a distinct key namespace so attrDict entries don't collide with effects
-                    const key = `${side}:dict:${cid}:${vcid}`;
-                    if (seenInHit.has(key)) continue;
-                    seenInHit.add(key);
-                    if (!seen.has(key)) {
-                        seen.set(key, {
-                            key, side,
-                            configId: cid,
-                            valueConfigId: vcid || null,
-                            name: e.name || String(cid),
-                            attrType: e.attrType,
-                            subType: e.subType,
-                            value: e.value,
-                            count: 1,
-                            source: e.source ?? 'Unknown',
-                            fromAttrDict: true,
-                            effectType: e.effectType
-                        });
-                    }
-                }
-            }
-        }
-    }
-    return [...seen.values()];
-}
-
-// Apply disabled effects to a cloned copy of the stat arrays.
-// Returns { aStats, dStats } (clones with modifications applied).
-function dcApplyEffectOverrides(ev) {
-    const origA = ev.AttackerStats?.attrs || [];
-    const origD = ev.DefenderStats?.attrs || [];
-    if (dcEffectsDisabled.size === 0) return { aStats: origA, dStats: origD };
-
-    // Deep-clone only the stat entries we'll modify
-    const aMap = new Map(origA.map(s => [s.id, Object.assign({}, s)]));
-    const dMap = new Map(origD.map(s => [s.id, Object.assign({}, s)]));
-
-    const sides = [
-        { side: 'attacker', list: ev.AttackerEffects?.effects, attrDict: ev.AttackerAttrDict, statMap: aMap },
-        { side: 'defender', list: ev.DefenderEffects?.effects, attrDict: ev.DefenderAttrDict, statMap: dMap },
-    ];
-    for (const { side, list, attrDict, statMap } of sides) {
-        // ── effects list ───────────────────────────────────────────────
-        if (list?.length) {
-            const countMap = new Map();
-            for (const e of list) {
-                if (!allowedEffectTypes.includes(e.effectType)) continue;
-                countMap.set(e.configId, (countMap.get(e.configId) || 0) + 1);
-            }
-            const seenInHit = new Set();
-            for (const e of list) {
-                if (!allowedEffectTypes.includes(e.effectType)) continue;
-                if (seenInHit.has(e.configId)) continue;
-                seenInHit.add(e.configId);
-                const key = `${side}:${e.configId}:${e.valueConfigId ?? ''}`;
-                if (!dcEffectsDisabled.has(key)) continue;
-                const attrId = e.attrType;
-                if (attrId == null || e.value == null) continue;
-                const count = countMap.get(e.configId) || 1;
-                let stat = statMap.get(attrId);
-                if (!stat) {
-                    stat = { id: attrId, origin: 0, base: 0, pct: 0, abs: 0 };
-                    statMap.set(attrId, stat);
-                }
-                // subType: 1=Base, 2=Pct, 3=Abs
-                if ([ATTR_FIX, HITTED_ADDITIONAL_ATTR_FIX, PLAYER_ATTR_FIX].includes(e.effectType)) {
-                    if (e.subType === 1) stat.base = (stat.base || 0) - e.value * count;
-                    else if (e.subType === 2) stat.pct = (stat.pct || 0) - e.value * count;
-                    else if (e.subType === 3) stat.abs = (stat.abs || 0) - e.value * count;
-                } else if (e.effectType === ELEMENTTYPE_ATTR_FIX) {
-                    if (ev.HitConfig.elementType === e.subType) stat.base = (stat.base || 0) - e.value * count;
-                } else if (e.effectType === ELEMENTTYPE_ATTR_PERCENT_FIX) {
-                    if (ev.HitConfig.elementType === e.subType) stat.pct = (stat.pct || 0) - e.value * count;
-                }
-            }
-        }
-
-        // ── attrDict list ─────────────────────────────────────────────
-        if (Array.isArray(attrDict)) {
-            const seenInHit = new Set();
-            for (const e of attrDict) {
-                if (e.attrType == null || e.subType == null || e.value == null) continue;
-                const cid = e.configId ?? e.attrId;
-                if (cid == null) continue;
-                const vcid = e.valueConfigId ?? '';
-                const key = `${side}:dict:${cid}:${vcid}`;
-                if (seenInHit.has(key)) continue;
-                seenInHit.add(key);
-                if (!dcEffectsDisabled.has(key)) continue;
-                let stat = statMap.get(e.attrType);
-                if (!stat) {
-                    stat = { id: e.attrType, origin: 0, base: 0, pct: 0, abs: 0 };
-                    statMap.set(e.attrType, stat);
-                }
-                if ([ATTR_FIX, HITTED_ADDITIONAL_ATTR_FIX, PLAYER_ATTR_FIX].includes(e.effectType)) {
-                    if (e.subType === 1) stat.base = (stat.base || 0) - e.value;
-                    else if (e.subType === 2) stat.pct = (stat.pct || 0) - e.value;
-                    else if (e.subType === 3) stat.abs = (stat.abs || 0) - e.value;
-                } else if (e.effectType === ELEMENTTYPE_ATTR_FIX) {
-                    if (ev.HitConfig.elementType === e.subType) stat.base = (stat.base || 0) - e.value;
-                } else if (e.effectType === ELEMENTTYPE_ATTR_PERCENT_FIX) {
-                    if (ev.HitConfig.elementType === e.subType) stat.pct = (stat.pct || 0) - e.value;
-                }
-            }
-        }
-    }
-    return {
-        aStats: [...aMap.values()],
-        dStats: [...dMap.values()],
-    };
-}
-
-// ─── Effects panel render ─────────────────────────────────────────────────────
-function renderEffectsPanel() {
-    const panel = document.getElementById('dcEffectsPanel');
-    if (!panel) return;
-    const effects = dcCollectAttrFixEffects();
-
-    let html = `<div class="dc-effects-header" onclick="dcToggleEffectsPanel()">
-        <span class="dc-effects-arrow${dcEffectsPanelOpen ? ' open' : ''}">▶</span>
-        <span class="dc-effects-title">Stat Effects</span>
-        <span class="dc-effects-count">${effects.length} unique · click to disable</span>
-    </div>`;
-
-    if (dcEffectsPanelOpen) {
-        if (effects.length === 0) {
-            html += `<div class="dc-effects-body"><span class="dc-effects-empty">No effects found in current filter.</span></div>`;
-        } else {
-            html += `<div class="dc-effects-body"><div class="dc-effects-list">`;
-
-            // Group by side+source: collect all unique (side, source) combos in order
-            const groupMap = new Map(); // `${side}||${source}` -> [effects]
-            for (const ef of effects) {
-                const gkey = `${ef.side}||${ef.source ?? 'Unknown'}`;
-                if (!groupMap.has(gkey)) groupMap.set(gkey, []);
-                groupMap.get(gkey).push(ef);
-            }
-
-            function renderGroup(gkey, label, groupEffects) {
-                if (!groupEffects.length) return '';
-                // Default collapsed unless explicitly opened
-                const isOpen = dcSourceOpenStates[gkey] === true;
-                const escapedGkey = gkey.replace(/'/g, "\\'");
-                let g = `<div class="dc-effects-group-label dc-source-toggle${isOpen ? ' open' : ''}" onclick="dcToggleSourceSection('${escapedGkey}')">
-                    <span class="dc-source-arrow">${isOpen ? '▾' : '▸'}</span>${esc(label)}
-                    <span class="dc-source-count">${groupEffects.length}</span>
-                </div>`;
-                if (isOpen) {
-                    g += `<div class="dc-effects-chips-wrap">`;
-                    for (const ef of groupEffects) {
-                        const disabled = dcEffectsDisabled.has(ef.key);
-                        const subLabel = ef.subType === 1 ? 'base' : ef.subType === 2 ? 'pct' : ef.subType === 3 ? 'abs' : '?';
-                        const attrLabel = ef.attrType != null ? attrName(ef.attrType) : '?';
-                        const raw = ef.value;
-                        const isSmall = raw != null && Math.abs(raw) < 15;
-                        const valStr = raw != null ? (isSmall ? (raw * 100).toFixed(2) + '%' : String(raw)) : '?';
-                        const countStr = ef.count > 1 ? ` ×${ef.count}` : '';
-                        g += `<div class="dc-effect-chip${disabled ? ' dc-effect-disabled' : ''}"
-                            onclick="dcToggleEffect('${ef.key}')"
-                            title="${disabled ? 'Click to re-enable' : 'Click to disable'}\n${ef.side} · configId=${ef.configId}">
-                            <span class="dc-effect-name">${esc(ef.name)}</span>
-                            <span class="dc-effect-stat">${esc(attrLabel)} +${valStr}${countStr} [${subLabel}]</span>
-                        </div>`;
-                    }
-                    g += `</div>`;
-                }
-                return g;
-            }
-
-            // Render attacker groups first, then defender
-            for (const side of ['attacker', 'defender']) {
-                const sideEntries = [...groupMap.entries()].filter(([k]) => k.startsWith(side + '||'));
-                if (!sideEntries.length) continue;
-                const sideLabel = side === 'attacker' ? 'Attacker' : 'Defender';
-                html += `<div class="dc-effects-side-header">${sideLabel}</div>`;
-                for (const [gkey, groupEffects] of sideEntries) {
-                    const source = gkey.slice(side.length + 2);
-                    html += renderGroup(gkey, source, groupEffects);
-                }
-            }
-
-            html += `</div></div>`;
-        }
-    }
-    panel.innerHTML = html;
-}
-
-window.dcToggleEffectsPanel = function() {
-    dcEffectsPanelOpen = !dcEffectsPanelOpen;
-    renderEffectsPanel();
-};
-
-window.dcToggleSourceSection = function(gkey) {
-    dcSourceOpenStates[gkey] = !dcSourceOpenStates[gkey];
-    renderEffectsPanel();
-};
-
-window.dcToggleEffect = function(key) {
-    if (dcEffectsDisabled.has(key)) dcEffectsDisabled.delete(key);
-    else dcEffectsDisabled.add(key);
-    renderEffectsPanel();
-    renderFormulaBar();
-    dcRender();
-};
-
-const DC_EST = 60;
+// ─── Virtual scroll constants & DOM refs ─────────────────────────────────────
+const DC_EST    = 60;
 const DC_BUFFER = 20;
 
 const dcContainer = document.getElementById('dcScrollContainer');
 const dcContent   = document.getElementById('dcScrollContent');
 const dcSpacer    = document.getElementById('dcScrollSpacer');
 
-// ─── Fenwick (reuse same structure) ──────────────────────────────────────────
+// ─── Fenwick tree ─────────────────────────────────────────────────────────────
 class DcFenwick {
     constructor(size) { this.size = size; this.tree = new Array(size + 1).fill(0); }
     add(idx, delta) {
@@ -385,240 +95,108 @@ function dcFindIndex(target) {
     return ans;
 }
 
-// ─── Stat helpers ─────────────────────────────────────────────────────────────
-function statValue(attrs, id) {
-    // (origin+base)*(1+pct)+abs
-    return (attrs[id].origin + attrs[id].base) * (1 + attrs[id].pct) + attrs[id].abs;
-}
+// ─── Effects panel render ─────────────────────────────────────────────────────
+function renderEffectsPanel() {
+    const panel = document.getElementById('dcEffectsPanel');
+    if (!panel) return;
+    const effects = dcCollectAttrFixEffects(dcFiltered);
 
-function statBase(attrs, id) {
-    return (attrs[id].origin || 0) + (attrs[id].base || 0);
-}
+    let html = `<div class="dc-effects-header" onclick="dcToggleEffectsPanel()">
+        <span class="dc-effects-arrow${dcEffectsPanelOpen ? ' open' : ''}">▶</span>
+        <span class="dc-effects-title">Stat Effects</span>
+        <span class="dc-effects-count">${effects.length} unique · click to disable</span>
+    </div>`;
 
-function statAbs(attrs, id) {
-    return (attrs[id].abs || 0);
-}
-
-function statCritValue(attrs, id) {
-    // (origin+base)*pct+abs, raw value for crit fields
-    return statValue(attrs, id);
-}
-
-// Element type → attacker stat index (17-22 → indices 17-22 in 0-based array)
-const ELEM_ATK_STAT = { 1:17, 2:18, 3:19, 4:20, 5:21, 6:22 };
-// Element type → defender stat index (35-40)
-const ELEM_DEF_STAT = { 1:35, 2:36, 3:37, 4:38, 5:39, 6:40 };
-// Element type → pen attacker (23-28), res defender (11-16)
-const ELEM_PEN_STAT = { 1:23, 2:24, 3:25, 4:26, 5:27, 6:28 };
-const ELEM_RES_STAT = { 1:11, 2:12, 3:13, 4:14, 5:15, 6:16 };
-// Element type → ignore (resistance ignore) attacker stat — indices 29-34
-const ELEM_IGN_STAT = { 1:29, 2:30, 3:31, 4:32, 5:33, 6:34 };
-
-// DamageType → attacker dmgType stat index
-function dmgTypeAtkStat(dt) {
-    if (dt >= 1 && dt <= 4) return 55 + dt; // 56-59
-    if (dt === 5) return 64;
-    if (dt === 7) return 66;
-    return null;
-}
-function dmgTypeDefStat(dt) {
-    if (dt >= 1 && dt <= 4) return 59 + dt; // 60-63
-    if (dt === 5) return 65;
-    if (dt === 7) return 67;
-    return null;
-}
-
-// CritRate extra stat by damage type
-function critRateExtraIdx(dt) {
-    if (dt >= 1 && dt <= 3) return [70, 71, 72][dt - 1];
-    if (dt === 5) return 73;
-    if (dt === 7) return 74;
-    if (dt === 4) return 76;
-    return null;
-}
-function critDmgExtraIdx(dt) {
-    if (dt >= 1 && dt <= 3) return [77, 78, 79][dt - 1];
-    if (dt === 5) return 80;
-    if (dt === 7) return 81;
-    if (dt === 4) return 83;
-    return null;
-}
-
-function calcPenRes(aStats, dStats, el, penBonus, resBonus) {
-    const penIdx = ELEM_PEN_STAT[el];
-    const resIdx = ELEM_RES_STAT[el];
-    const ignIdx = ELEM_IGN_STAT[el];
-    const pen = (penIdx != null ? statValue(aStats, penIdx) : 0) + (penBonus || 0);
-    const res = (resIdx != null ? statValue(dStats, resIdx) : 0) + (resBonus || 0);
-    const ign = ignIdx != null ? statValue(aStats, ignIdx) : 0;
-    const vul = statValue(aStats, 55);
-
-    const effectiveRes = res * (1 - ign) - pen;
-
-    if (effectiveRes <= 0) {
-        const erAmend = (1 + vul * 0.1) + (vul * effectiveRes * -0.01 * 0.9);
-        return erAmend;
-    } else {
-        let valueLower, valueUpper, amendLower, amendUpper;
-        if (effectiveRes <= 250) {
-            valueLower = 0;   valueUpper = 250;
-            amendLower = 0;   amendUpper = 0.25;
-        } else if (effectiveRes <= 750) {
-            valueLower = 251; valueUpper = 750;
-            amendLower = 0.35; amendUpper = 0.6;
+    if (dcEffectsPanelOpen) {
+        if (effects.length === 0) {
+            html += `<div class="dc-effects-body"><span class="dc-effects-empty">No effects found in current filter.</span></div>`;
         } else {
-            valueLower = 751; valueUpper = 2000;
-            amendLower = 0.9; amendUpper = 0.99;
-        }
-        const ratio = (effectiveRes - valueLower) / (valueUpper - valueLower);
-        const erAmendQuad = amendLower + (amendUpper - amendLower) * (ratio * ratio);
-        return 1 - erAmendQuad;
-    }
-}
+            html += `<div class="dc-effects-body"><div class="dc-effects-list">`;
 
-// ─── Main calculation ─────────────────────────────────────────────────────────
-function calcHitFields(ev, statOverrides) {
-    const hc  = ev.HitConfig   || {};
-    const dp  = ev.DamageParams || {};
-    const { aStats, dStats } = statOverrides || dcApplyEffectOverrides(ev);
-
-    const dt = hc.damageType;
-    const el = hc.elementType;
-
-    // Multiplier
-    const multiplier = dp.skillPercentAmend != null ? dp.skillPercentAmend / 10000 / 100 : 0;
-
-    // BaseAtk
-    const baseAtk = statBase(aStats, 1);
-
-    // Atk% = (origin+base) * pct
-    const atkStat = aStats[1];
-    const atkPct  = atkStat ? (1 + (atkStat.pct || 0)) : 1;
-    const atkAbs  = statAbs(aStats, 1);
-
-    // Element%
-    const elemIdx = ELEM_ATK_STAT[el];
-    const elemPct = elemIdx != null ? statValue(aStats, elemIdx) : 1;
-
-    // ElementTaken%
-    const elemDefIdx = ELEM_DEF_STAT[el];
-    const elemTakenPct = elemDefIdx != null ? statValue(dStats, elemDefIdx) : 1;
-
-    // DamageType%
-    const dtAtkIdx = dmgTypeAtkStat(dt);
-    const dmgTypePct = dtAtkIdx != null ? statValue(aStats, dtAtkIdx) : 1;
-
-    // DamageTypeTaken%
-    const dtDefIdx = dmgTypeDefStat(dt);
-    const dmgTypeTakenPct = dtDefIdx != null ? statValue(dStats, dtDefIdx) : 1;
-
-    // CritRate
-    const baseCritRate = statValue(aStats, 6);
-    const extraCrIdx = critRateExtraIdx(dt);
-    const extraCritRate = extraCrIdx != null ? statValue(aStats, extraCrIdx) : 0;
-    const critRate = baseCritRate + extraCritRate;
-
-    // CritDmg
-    const baseCritDmg = statValue(aStats, 8);
-    const extraCdIdx = critDmgExtraIdx(dt);
-    const extraCritDmg = extraCdIdx != null ? statValue(aStats, extraCdIdx) : 0;
-    const critDmg = (baseCritDmg + extraCritDmg);
-
-    // Pen/Res — raw values stored; penRes is computed in calcDamage so bonuses are applied correctly
-    const penIdx = ELEM_PEN_STAT[el];
-    const resIdx = ELEM_RES_STAT[el];
-    const pen = penIdx != null ? statValue(aStats, penIdx) : 0;
-    const res = resIdx != null ? statValue(dStats, resIdx) : 0;
-    // penRes computed later via calcPenRes with bonuses
-
-    // DEF
-    const defIgnore    = statBase(aStats, 10);   // DEF_Ignore = index 10
-    const defPenetrate = statBase(aStats, 9);    // DEF_Penetrate = index 9
-    const defRaw       = statBase(dStats, 2);    // DEF = index 2
-    const effectiveDef = defRaw * (1 - defIgnore) - defPenetrate;
-    const defAmend     = 1 - (effectiveDef * 40) / (effectiveDef * 32 + 24000);
-    // Store raw components so calcDamage can recompute defAmend with effectiveDef bonus
-    const _defIgnore    = defIgnore;
-    const _defPenetrate = defPenetrate;
-    const _defRaw       = defRaw;
-
-    // EnvAmend
-    const envAmend = dp.envAmendRatio != null ? dp.envAmendRatio : 1;
-
-    // Compute penRes with zero bonus for display purposes
-    const penRes = calcPenRes(aStats, dStats, el, 0, 0);
-
-    // Hidden multipliers
-    const genDmg          = statValue(aStats, 49);
-    const intensity       = statValue(aStats, 48);
-    const finalDmg        = statValue(aStats, 51);
-    const genDmgRcd       = statValue(dStats, 53);
-    const toughnessBroken = statValue(dStats, 86);
-
-    return {
-        multiplier, baseAtk, atkPct, atkAbs, elemPct, elemTakenPct,
-        dmgTypePct, dmgTypeTakenPct,
-        critRate, critDmg,
-        pen, res, penRes,
-        effectiveDef, defAmend,
-        _defIgnore, _defPenetrate, _defRaw,
-        envAmend, genDmg, intensity, finalDmg, genDmgRcd, toughnessBroken,
-        isCrit: !!dp.isCrit,
-        finalDamage: dp.finalDamage || 0,
-        _aStats: aStats, _dStats: dStats, _el: el,
-    };
-}
-
-function calcDamage(fields, bonuses, disabled) {
-    let v = 1;
-    fields.atkMulti = (fields.baseAtk+bonuses.baseAtk) * (fields.atkPct+bonuses.atkPct) + fields.atkAbs;
-
-    // Recompute defAmend live if an effectiveDef bonus is set
-    const effDefBonus = bonuses['effectiveDef'] || 0;
-    let liveDefAmend = fields.defAmend;
-    if (effDefBonus !== 0) {
-        const liveEffDef = fields.effectiveDef + effDefBonus;
-        liveDefAmend = 1 - (liveEffDef * 40) / (liveEffDef * 32 + 24000);
-    }
-
-    for (const key of DC_FORMULA_KEYS) {
-        // critRate disabled: use expected-value multiplier 1 + critRate*(critDmg-1)
-        // instead of the binary isCrit-based critDmg
-        if (disabled.has(key)) continue;
-
-        if (key === 'critDmg') {
-            if (disabled.has('critRate')){
-                const cr = (fields.critRate + (bonuses['critRate'] || 0));
-                const cd = (fields.critDmg + (bonuses['critDmg'] || 0));
-                v *= 1 + cr * (cd - 1);
-                continue;
+            // Group by side+source
+            const groupMap = new Map(); // `${side}||${source}` -> [effects]
+            for (const ef of effects) {
+                const gkey = `${ef.side}||${ef.source ?? 'Unknown'}`;
+                if (!groupMap.has(gkey)) groupMap.set(gkey, []);
+                groupMap.get(gkey).push(ef);
             }
-            if (!fields.isCrit) continue;
+
+            function renderGroup(gkey, label, groupEffects) {
+                if (!groupEffects.length) return '';
+                const isOpen = dcSourceOpenStates[gkey] === true;
+                const escapedGkey = gkey.replace(/'/g, "\\'");
+                let g = `<div class="dc-effects-group-label dc-source-toggle${isOpen ? ' open' : ''}" onclick="dcToggleSourceSection('${escapedGkey}')">
+                    <span class="dc-source-arrow">${isOpen ? '▾' : '▸'}</span>${esc(label)}
+                    <span class="dc-source-count">${groupEffects.length}</span>
+                </div>`;
+                if (isOpen) {
+                    g += `<div class="dc-effects-chips-wrap">`;
+                    for (const ef of groupEffects) {
+                        const disabled = dcEffectsDisabled.has(ef.key);
+                        const subLabel = ef.subType === 1 ? 'base' : ef.subType === 2 ? 'pct' : ef.subType === 3 ? 'abs' : '?';
+                        const attrLabel = ef.attrType != null ? attrName(ef.attrType) : '?';
+                        const raw = ef.value;
+                        const isSmall = raw != null && Math.abs(raw) < 15;
+                        const valStr = raw != null ? (isSmall ? (raw * 100).toFixed(2) + '%' : String(raw)) : '?';
+                        const countStr = ef.count > 1 ? ` ×${ef.count}` : '';
+                        g += `<div class="dc-effect-chip${disabled ? ' dc-effect-disabled' : ''}"
+                            onclick="dcToggleEffect('${ef.key}')"
+                            title="${disabled ? 'Click to re-enable' : 'Click to disable'}\n${ef.side} · configId=${ef.configId}">
+                            <span class="dc-effect-name">${esc(ef.name)}</span>
+                            <span class="dc-effect-stat">${esc(attrLabel)} +${valStr}${countStr} [${subLabel}]</span>
+                        </div>`;
+                    }
+                    g += `</div>`;
+                }
+                return g;
+            }
+
+            // Attacker groups first, then defender
+            for (const side of ['attacker', 'defender']) {
+                const sideEntries = [...groupMap.entries()].filter(([k]) => k.startsWith(side + '||'));
+                if (!sideEntries.length) continue;
+                const sideLabel = side === 'attacker' ? 'Attacker' : 'Defender';
+                html += `<div class="dc-effects-side-header">${sideLabel}</div>`;
+                for (const [gkey, groupEffects] of sideEntries) {
+                    const source = gkey.slice(side.length + 2);
+                    html += renderGroup(gkey, source, groupEffects);
+                }
+            }
+
+            html += `</div></div>`;
         }
-        
-        let val;
-        if (key === 'penRes')
-            val = calcPenRes(fields._aStats, fields._dStats, fields._el, bonuses['pen'] || 0, bonuses['res'] || 0);
-        else if (key === 'defAmend')
-            val = liveDefAmend + (bonuses['defAmend'] || 0);
-        else
-            val = (fields[key] != null ? fields[key] : 1) + (bonuses[key] || 0);
-        v *= val;
     }
-    return Math.floor(v);
+    panel.innerHTML = html;
 }
+
+window.dcToggleEffectsPanel = function() {
+    dcEffectsPanelOpen = !dcEffectsPanelOpen;
+    renderEffectsPanel();
+};
+
+window.dcToggleSourceSection = function(gkey) {
+    dcSourceOpenStates[gkey] = !dcSourceOpenStates[gkey];
+    renderEffectsPanel();
+};
+
+window.dcToggleEffect = function(key) {
+    if (dcEffectsDisabled.has(key)) dcEffectsDisabled.delete(key);
+    else dcEffectsDisabled.add(key);
+    renderEffectsPanel();
+    renderFormulaBar();
+    dcRender();
+};
 
 // ─── Formula bar rendering ────────────────────────────────────────────────────
 function renderFormulaBar() {
     const bar = document.getElementById('dcFormulaBar');
     if (!bar) return;
 
-    // Compute total calculated damage across filtered hits
-    const hitEvs = dcFiltered;
+    // Compute total calculated vs in-game damage across filtered hits
     let totalCalc = 0;
     let totalGame = 0;
-    hitEvs.forEach(ev => {
-        const f = calcHitFields(ev);
+    dcFiltered.forEach(ev => {
+        const f = calcHitFields(ev, null, dcEffectsDisabled);
         totalCalc += calcDamage(f, dcBonus, dcDisabled);
         totalGame += f.finalDamage;
     });
@@ -675,7 +253,6 @@ function renderFormulaBar() {
                 >${DC_FIELDS.find(f => f.key === "penRes").label}</span>
             </div>`;
         } else if (item.critRateToggle) {
-            // CritRate: toggleable — when disabled uses critRate*(critDmg-1) expected multiplier
             const dis = dcDisabled.has('critRate');
             const bonus = dcBonus['critRate'] || 0;
             const titleMsg = dis
@@ -694,7 +271,6 @@ function renderFormulaBar() {
                 >CritRate</span>
             </div>`;
         } else if (item.effDefDisplay) {
-            // EffDEF: display-only label; bonus input feeds live into defAmend recalc
             const bonus = dcBonus['effectiveDef'] || 0;
             html += `<div class="dc-field-wrap" data-key="effectiveDef">
                 <input class="dc-bonus-input" type="number" step="any" placeholder="+0"
@@ -744,64 +320,21 @@ window.dcSetBonus = function(key, val) {
     dcRender();
 };
 
-// ─── Per-hit row fields ────────────────────────────────────────────────────────
-// Returns an array of { key, val } in same order as formula display.
-// Pass bonuses to get live-recomputed values (e.g. defAmend after effectiveDef bonus).
-function hitFieldValues(fields, bonuses) {
-    bonuses = bonuses || dcBonus;
-    // Live defAmend: recompute if effectiveDef bonus is set
-    const effDefBonus = bonuses['effectiveDef'] || 0;
-    const liveEffDef = fields.effectiveDef + effDefBonus;
-    const liveDefAmend = effDefBonus !== 0
-        ? 1 - (liveEffDef * 40) / (liveEffDef * 32 + 24000)
-        : fields.defAmend;
-    return [
-        { key: 'multiplier',      val: fields.multiplier },
-        { key: 'baseAtk',         val: fields.baseAtk },
-        { key: 'atkPct',          val: fields.atkPct },
-        { key: 'elemPct',         val: fields.elemPct },
-        { key: 'elemTakenPct',    val: fields.elemTakenPct },
-        { key: 'dmgTypePct',      val: fields.dmgTypePct },
-        { key: 'dmgTypeTakenPct', val: fields.dmgTypeTakenPct },
-        { key: 'critRate',        val: fields.critRate },
-        { key: 'critDmg',         val: fields.critDmg },
-        { key: 'penRes',          val: fields.penRes },
-        { key: 'effectiveDef',    val: liveEffDef },
-        { key: 'defAmend',        val: liveDefAmend },
-        { key: 'envAmend',        val: fields.envAmend },
-    ];
-}
-
-// Fields displayed as percentages (value * 100 + '%')
-// Excludes: baseAtk, pen, res, effectiveDef, defAmend
-const DC_PCT_FIELDS = new Set([
-    'multiplier','atkPct','elemPct','elemTakenPct',
+// ─── Per-hit event DOM ────────────────────────────────────────────────────────
+const DISPLAY_ORDER = [
+    'multiplier','baseAtk','atkPct','elemPct','elemTakenPct',
     'dmgTypePct','dmgTypeTakenPct','critRate','critDmg',
-    'penRes','defAmend','envAmend'
-]);
+    'penRes','effectiveDef','defAmend','envAmend'
+];
 
-function fmtVal(v, key) {
-    if (v == null || isNaN(v)) return '—';
-    if (key && DC_PCT_FIELDS.has(key)) {
-        const pct = v * 100;
-        const str = Number.isInteger(pct)
-            ? pct.toLocaleString()
-            : parseFloat(pct.toFixed(2)).toLocaleString();
-        return str + '%';
-    }
-    if (Number.isInteger(v)) return v.toLocaleString();
-    return v.toFixed(4).replace(/\.?0+$/, '');
-}
-
-// ─── DC event DOM ─────────────────────────────────────────────────────────────
 function dcCreateEventDiv(ev, fi) {
     const oi = ev._origIndex;
     const isOpen = dcOpenStates[oi] || false;
     const hc = ev.HitConfig   || {};
     const dp = ev.DamageParams || {};
 
-    const fields = calcHitFields(ev);
-    const calcDmg = calcDamage(fields, dcBonus, dcDisabled);
+    const fields   = calcHitFields(ev, null, dcEffectsDisabled);
+    const calcDmg  = calcDamage(fields, dcBonus, dcDisabled);
 
     const attName  = esc(ev.AttackerDisplay || ev.Attacker || '?');
     const skillPart = hc.skillTitle ? esc(hc.skillTitle) : '';
@@ -812,14 +345,13 @@ function dcCreateEventDiv(ev, fi) {
     const div = document.createElement('div');
     div.className = 'event dc-event' + (isOpen ? ' open' : '');
     div.style.top = dcFenwick.prefixSum(fi - 1) + 'px';
-    div.dataset.origIndex    = oi;
+    div.dataset.origIndex     = oi;
     div.dataset.filteredIndex = fi;
 
     // ── Header ──
     const header = document.createElement('div');
     header.className = 'event-header dc-event-header';
 
-    // Top row: attacker info + arrow
     const topRow = document.createElement('div');
     topRow.className = 'dc-header-top';
 
@@ -829,23 +361,14 @@ function dcCreateEventDiv(ev, fi) {
 
     topRow.appendChild(leftDiv);
 
-    // Field values row — full width below the top row
+    // Field values row
     const fvRow = document.createElement('div');
     fvRow.className = 'dc-fields-row';
 
     const fvs = hitFieldValues(fields, dcBonus);
-    // We build the same alternating separators structure as the formula bar
-    // to keep column alignment
-    const DISPLAY_ORDER = [
-        'multiplier','baseAtk','atkPct','elemPct','elemTakenPct',
-        'dmgTypePct','dmgTypeTakenPct','critRate','critDmg',
-        'penRes','effectiveDef','defAmend','envAmend'
-    ];
-
     for (let i = 0; i < DISPLAY_ORDER.length; i++) {
         const key = DISPLAY_ORDER[i];
         const fvEntry = fvs.find(f => f.key === key);
-        // effectiveDef/defAmend have bonus already baked in via hitFieldValues — don't double-show
         const bonus = dcBonus[key] || 0;
         const rawVal = fvEntry ? fvEntry.val : null;
         const skipBonusLabel = (key === 'effectiveDef' || key === 'defAmend');
@@ -853,7 +376,7 @@ function dcCreateEventDiv(ev, fi) {
             ? `${fmtVal(rawVal, key)} <span class="dc-bonus-label">(+${fmtVal(bonus, key)})</span>`
             : fmtVal(rawVal, key);
         const dis = dcDisabled.has(key);
-        const isDisplayOnly = key === 'effectiveDef' || DC_FIELDS.find(f=>f.key===key)?.display_only;
+        const isDisplayOnly = key === 'effectiveDef' || DC_FIELDS.find(f => f.key === key)?.display_only;
         const cell = document.createElement('div');
         cell.className = 'dc-field-cell' + (dis ? ' dc-disabled' : '') + (isDisplayOnly ? ' dc-display-only' : '');
         cell.dataset.key = key;
@@ -885,7 +408,6 @@ function dcCreateEventDiv(ev, fi) {
     resultStack.appendChild(calcCell);
     resultStack.appendChild(gameCell);
     resultStack.appendChild(diffCell);
-    // resultStack is appended to header (absolute positioned), not fvRow
 
     const arrow = document.createElement('span');
     arrow.className = 'arrow';
@@ -955,7 +477,7 @@ function dcShiftAfter(startFi, delta) {
     });
 }
 
-// Sub-section toggle inside dc event body (reuse existing collapsible logic)
+// Sub-section toggle inside dc event body
 dcContent.addEventListener('click', e => {
     const toggle = e.target.closest('.collapsible-toggle');
     if (!toggle) return;
@@ -1027,34 +549,26 @@ function dcRender() {
             const fvRow = el.querySelector('.dc-fields-row');
             if (fvRow) {
                 const ev = allEvents[oi];
-                const fields = calcHitFields(ev);
+                const fields  = calcHitFields(ev, null, dcEffectsDisabled);
                 const calcDmg = calcDamage(fields, dcBonus, dcDisabled);
-                const fvs = hitFieldValues(fields, dcBonus);
-                const DISPLAY_ORDER = [
-                    'multiplier','baseAtk','atkPct','elemPct','elemTakenPct',
-                    'dmgTypePct','dmgTypeTakenPct','critRate','critDmg',
-                    'penRes','effectiveDef','defAmend','envAmend'
-                ];
-                const cells = fvRow.querySelectorAll('.dc-field-cell');
+                const fvs     = hitFieldValues(fields, dcBonus);
+                const cells   = fvRow.querySelectorAll('.dc-field-cell');
                 let ci = 0;
                 for (const key of DISPLAY_ORDER) {
                     const cell = cells[ci++];
                     if (!cell) continue;
-                    const fv = fvs.find(f=>f.key===key);
-                    // effectiveDef and defAmend already have bonus baked in via hitFieldValues
+                    const fv = fvs.find(f => f.key === key);
                     const showBonus = dcBonus[key] || 0;
                     const rawVal = fv ? fv.val : null;
-                    // For effectiveDef/defAmend the bonus is already folded into rawVal, don't double-show
                     const skipBonusLabel = (key === 'effectiveDef' || key === 'defAmend');
                     cell.innerHTML = (showBonus !== 0 && !skipBonusLabel)
                         ? `${fmtVal(rawVal, key)} <span class="dc-bonus-label">(${fmtVal(showBonus, key) > 0 ? '+' : ''}${fmtVal(showBonus, key)})</span>`
                         : fmtVal(rawVal, key);
-                    const isDisplayOnly = key === 'effectiveDef' || DC_FIELDS.find(f=>f.key===key)?.display_only;
+                    const isDisplayOnly = key === 'effectiveDef' || DC_FIELDS.find(f => f.key === key)?.display_only;
                     cell.className = 'dc-field-cell' +
                         (dcDisabled.has(key) ? ' dc-disabled' : '') +
                         (isDisplayOnly ? ' dc-display-only' : '');
                 }
-                // calc, game, diff cells (inside .dc-result-stack, not direct fvRow children)
                 const calcCell = el.querySelector('.dc-result-cell');
                 const gameCell = el.querySelector('.dc-game-cell');
                 const diffCell = el.querySelector('.dc-diff-cell');
@@ -1089,7 +603,7 @@ dcContainer.addEventListener('scroll', () => {
     requestAnimationFrame(() => { dcRender(); dcScrollScheduled = false; });
 });
 
-// ─── DC filter helpers ────────────────────────────────────────────────────────
+// ─── Filter helpers ───────────────────────────────────────────────────────────
 function dcBuildCharFilter() {
     const all = new Set();
     allEvents.filter(e => e.Type === 'Hit').forEach(e => {
@@ -1187,7 +701,7 @@ window.dcOnDefenderFilterChange = function() {
     dcRefilterAndRender(true);
 };
 
-// ─── DC refilter / rebuild ────────────────────────────────────────────────────
+// ─── Refilter / rebuild ───────────────────────────────────────────────────────
 function dcRefilterAndRender(resetScroll = false) {
     dcBuildCharFilter();
     dcBuildDefenderFilter();
@@ -1207,7 +721,6 @@ function dcRefilterAndRender(resetScroll = false) {
 }
 
 // ─── Tab hook ─────────────────────────────────────────────────────────────────
-// Patch switchTab to handle dmgcalc tab
 const _origSwitchTab = window.switchTab;
 window.switchTab = function(tab) {
     document.getElementById('tabDmgCalc').classList.toggle('active', tab === 'dmgcalc');
@@ -1218,12 +731,7 @@ window.switchTab = function(tab) {
     _origSwitchTab(tab);
 };
 
-// Also trigger a rebuild when allEvents changes (patch fetchLog indirectly
-// via a MutationObserver on dcScrollSpacer height — simpler: just expose a hook)
-// We'll call dcRefilterAndRender from the polling path by monkey-patching refilterAndRender.
-const _origRefilterAndRender = window.refilterAndRender || refilterAndRender;
-// We can't easily override the local function, so we add a call at the end of fetchLog
-// Instead, expose dcRefresh globally and call it from dataLoader if needed.
+// Expose a hook so data loading can trigger a refresh when new events arrive
 window.dcRefreshIfVisible = function() {
     if (document.getElementById('dmgCalcPanel').classList.contains('visible')) {
         dcRefilterAndRender(false);

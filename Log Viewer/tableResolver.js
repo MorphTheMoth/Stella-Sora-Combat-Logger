@@ -440,7 +440,8 @@ function buildHitTable(jHit, jSkill, jLang, jChar, jPotential, jItemRoot) {
                 break;
             }
         }
-        hitTable.set(hitId, { charName, skillTitle, hitNum });
+        const src = charName && charName !== '?' ? `${charName} Skills` : 'Skills';
+        hitTable.set(hitId, { charName, skillTitle, hitNum, source: src  });
     }
 
     // Potential.json pass
@@ -464,17 +465,18 @@ function buildHitTable(jHit, jSkill, jLang, jChar, jPotential, jItemRoot) {
                     const mvId = extractPrefixedId(mv, HIT_DAMAGE_PREFIX);
                     if (mvId) { ++hitIdx; if (mvId === hitId) hitNum = hitIdx; }
                 });
-                hitTable.set(hitId, { charName, skillTitle: itemName, hitNum });
+                const src = charName && charName !== '?' ? `${charName} Potentials` : 'Potentials';
+                hitTable.set(hitId, { charName, skillTitle: itemName, hitNum, source: src });
             });
         }
     }
 
     // Hardcoded Hits
     const hardcoded = [
-        [155310101, 'Shia', 'Electro Music', 1],
+        [155310101, 'Shia', 'Electro Music', 1, 'Potentials'],
     ];
-    for (const [hitId, cname, skillTitle, hitNum] of hardcoded)
-        hitTable.set(hitId, { cname, skillTitle, hitNum });
+    for (const [hitId, charName, skillTitle, hitNum, src] of hardcoded)
+        hitTable.set(hitId, { charName, skillTitle, hitNum, source: `${charName} ${src}` });
 }
 
 // ─── buildEffectTable ─────────────────────────────────────────────────────────
