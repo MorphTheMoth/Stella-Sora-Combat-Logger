@@ -320,14 +320,15 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled) {
                     stat = { id: e.attrType, origin: 0, base: 0, pct: 0, abs: 0 };
                     statMap.set(e.attrType, stat);
                 }
-                if ([ATTR_FIX, HITTED_ADDITIONAL_ATTR_FIX, PLAYER_ATTR_FIX].includes(e.effectType)) {
-                    if (e.subType === 1) stat.base = (stat.base || 0) - e.value;
-                    else if (e.subType === 2) stat.pct = (stat.pct || 0) - e.value;
-                    else if (e.subType === 3) stat.abs = (stat.abs || 0) - e.value;
-                } else if (e.effectType === ELEMENTTYPE_ATTR_FIX) {
+                if (e.effectType === ELEMENTTYPE_ATTR_FIX) {
                     if (ev.HitConfig.elementType === e.subType) stat.base = (stat.base || 0) - e.value;
                 } else if (e.effectType === ELEMENTTYPE_ATTR_PERCENT_FIX) {
                     if (ev.HitConfig.elementType === e.subType) stat.pct = (stat.pct || 0) - e.value;
+                } else {
+                    // attrDict entries: apply by subType unconditionally (effectType may be null/undefined)
+                    if (e.subType === 1) stat.base = (stat.base || 0) - e.value;
+                    else if (e.subType === 2) stat.pct = (stat.pct || 0) - e.value;
+                    else if (e.subType === 3) stat.abs = (stat.abs || 0) - e.value;
                 }
             }
         }
@@ -430,7 +431,7 @@ function calcHitFields(ev, statOverrides, dcEffectsDisabled) {
     const finalDmg        = statValue(aStats, 51);
     const genDmgRcd       = statValue(dStats, 53);
     const toughnessBroken = statValue(dStats, 86);
-    const skillIntensity     = statValue(aStats, 85) + 1;
+    const skillIntensity  = statValue(aStats, 85) + 1;
 
     return {
         multiplier, baseAtk, atkPct, atkAbs, elemPct, elemTakenPct,
