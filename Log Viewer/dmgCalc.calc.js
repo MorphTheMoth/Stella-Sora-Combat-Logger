@@ -26,7 +26,8 @@ const DC_FIELDS = [
 const DC_FORMULA_KEYS = [
     'multiplier','atkMulti','elemPct','elemTakenPct',
     'dmgTypePct','dmgTypeTakenPct','critDmg','penRes','defAmend',
-    'envAmend', 'genDmg','intensity','finalDmg','genDmgRcd','toughnessBroken'
+    'envAmend', 'genDmg','intensity','finalDmg','genDmgRcd','toughnessBroken',
+    'skillIntensity'
 ];
 
 // ─── effectType constants ─────────────────────────────────────────────────────
@@ -429,6 +430,7 @@ function calcHitFields(ev, statOverrides, dcEffectsDisabled) {
     const finalDmg        = statValue(aStats, 51);
     const genDmgRcd       = statValue(dStats, 53);
     const toughnessBroken = statValue(dStats, 86);
+    const skillIntensity     = statValue(aStats, 85) + 1;
 
     return {
         multiplier, baseAtk, atkPct, atkAbs, elemPct, elemTakenPct,
@@ -437,7 +439,7 @@ function calcHitFields(ev, statOverrides, dcEffectsDisabled) {
         pen, res, penRes,
         effectiveDef, defAmend,
         _defIgnore: defIgnore, _defPenetrate: defPenetrate, _defRaw: defRaw,
-        envAmend, genDmg, intensity, finalDmg, genDmgRcd, toughnessBroken,
+        envAmend, genDmg, intensity, finalDmg, genDmgRcd, toughnessBroken, skillIntensity,
         isCrit: !!dp.isCrit,
         finalDamage: dp.finalDamage || 0,
         _aStats: aStats, _dStats: dStats, _el: el,
@@ -527,5 +529,6 @@ function hitFieldValues(fields, bonuses) {
         { key: 'effectiveDef',    val: liveEffDef },
         { key: 'defAmend',        val: liveDefAmend },
         { key: 'envAmend',        val: fields.envAmend },
+        { key: 'skillIntensity',     val: fields.skillIntensity },
     ];
 }
