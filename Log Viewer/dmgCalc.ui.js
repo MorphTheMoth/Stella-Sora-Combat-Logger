@@ -143,7 +143,7 @@ function renderEffectsPanel() {
                             const isSmall = raw != null && Math.abs(raw) < 15;
                             const valStr = raw != null ? (isSmall ? (raw * 100).toFixed(2) + '%' : String(raw)) : '?';
                             const countStr = ef.count > 1 ? ` ×${ef.count}` : '';
-                            statLine = `${esc(attrLabel)} +${valStr}${countStr} [${subLabel}]`;
+                            statLine = `${esc(attrLabel)} ${valStr>=0 ? '+' : ''}${valStr}${countStr} [${subLabel}]`;
                         }
                         const titleExtra = ef.isPotentialsGroup
                             ? `potentials · skillTitle=${ef.skillTitle}`
@@ -220,11 +220,27 @@ function renderFormulaBar() {
         totalGame += f.finalDamage;
     });
 
+    const overallDiff = totalGame > 0 ? ((totalCalc / totalGame) - 1) * 100 : null;
+    let diffHtml = '';
+    if (overallDiff != null) {
+        const cls = Math.abs(overallDiff) < 0.05 ? 'dc-diff-close' : overallDiff < 0 ? 'dc-diff-neg' : 'dc-diff-pos';
+        diffHtml = ` <span class="${cls}" style="margin-left:4px">(${overallDiff >= 0 ? '+' : ''}${overallDiff.toFixed(1)}%)</span>`;
+    }
+
+    // Percentage relative to Calc (swapped numbers)
+    const overallDiff2 = totalCalc > 0 ? ((totalGame / totalCalc) - 1) * 100 : null;
+    let diffHtml2 = '';
+    if (overallDiff2 != null) {
+        const cls2 = Math.abs(overallDiff2) < 0.05 ? 'dc-diff-close' : overallDiff2 < 0 ? 'dc-diff-neg' : 'dc-diff-pos';
+        diffHtml2 = ` <span class="${cls2}" style="margin-left:4px">(${overallDiff2 >= 0 ? '+' : ''}${overallDiff2.toFixed(1)}%)</span>`;
+    }
+
     let html = `<div class="dc-formula-totals">
-        <span>Total Calc: <strong>${Math.round(totalCalc).toLocaleString()}</strong></span>
-        <span style="margin-left:16px">Total In-Game: <strong>${Math.round(totalGame).toLocaleString()}</strong></span>
+        <span>Total Calc: <strong>${Math.round(totalCalc).toLocaleString()}</strong>${diffHtml}</span>
+        <span style="margin-left:16px">Total In-Game: <strong>${Math.round(totalGame).toLocaleString()}</strong>${diffHtml2}</span>
     </div>
     <div class="dc-formula-row">`;
+
 
     const FORMULA_DISPLAY = [
         { key: 'multiplier' }, { sep: '×' },
@@ -581,7 +597,7 @@ function dcRender() {
                     const rawVal = fv ? fv.val : null;
                     const skipBonusLabel = (key === 'effectiveDef' || key === 'defAmend');
                     cell.innerHTML = (showBonus !== 0 && !skipBonusLabel)
-                        ? `${fmtVal(rawVal, key)} <span class="dc-bonus-label">(${fmtVal(showBonus, key) > 0 ? '+' : ''}${fmtVal(showBonus, key)})</span>`
+                        ? `${fmtVal(rawVal, key)} <span class="dc-bonus-label">(${fmtVal(showBonus, key) >= 0 ? '+' : ''}${fmtVal(showBonus, key)})</span>`
                         : fmtVal(rawVal, key);
                     const isDisplayOnly = key === 'effectiveDef' || DC_FIELDS.find(f => f.key === key)?.display_only;
                     cell.className = 'dc-field-cell' +

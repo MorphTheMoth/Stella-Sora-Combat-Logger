@@ -334,9 +334,9 @@ async function loadJson(path, tag) {
 
 const BUFF_PREFIXES = [
     'Buff,LevelUp,',
+    'BuffValue,NoLevel,',
     'Effect,LevelUp,',
     'EffectValue,NoLevel,',
-    'BuffValue,NoLevel,',
 ];
 const ATTR_DICT_PREFIXES = [
     'OnceAdditionalAttributeValue,NoLevel,',
@@ -364,6 +364,15 @@ function forEachParam(obj, visitor) {
 function forEachBuffParam(obj, onMatch) {
     forEachParam(obj, param => {
         for (const prefix of BUFF_PREFIXES) {
+            const id = extractPrefixedId(param, prefix);
+            if (id) { onMatch(prefix, id); break; }
+        }
+    });
+}
+
+function forEachOnceAdditionalParam(obj, onMatch) {
+    forEachParam(obj, param => {
+        for (const prefix of ATTR_DICT_PREFIXES) {
             const id = extractPrefixedId(param, prefix);
             if (id) { onMatch(prefix, id); break; }
         }
@@ -486,16 +495,17 @@ function buildHitTable(jHit, jSkill, jLang, jChar, jPotential, jItemRoot) {
 
 // ─── buildEffectTable ─────────────────────────────────────────────────────────
 
-function buildEffectTable(dataFiles, jChar, jSkill, jSkillLang, jPotential) {
+function buildEffectTable(dataFiles) {
     effectTable.clear();
 
     const {
         jEffect, jItem, jItemLang, jMainSkill, jMainSkillLang,
         jFloorBuff, jSubNote, jAffinityLevel, jEffectValue,
-        jAffix, jAffixLang, jGem, jBuffVal, jMonster,
-        jBuff, jBuffValue, jWord, jWordLang, jTalent, jTalentLang,
-        jSecSkill, jDisc, jScoreBoss, jScoreBossLang, jItemLangRoot,
-        jOnceAttr, jSecSkillLang, jSubNoteLang,
+        jAffix, jAffixLang, jGem, jBuffVal, jBuff, jBuffValue, 
+        jWord, jWordLang, jTalent, jTalentLang, jSecSkill, 
+        jDisc, jScoreBoss, jScoreBossLang, jItemLangRoot,
+        jOnceAttr, jSecSkillLang, jSubNoteLang, jChar, jSkill, 
+        jSkillLang, jPotential, jBlitz
     } = dataFiles;
 
     const charMap = {};
@@ -684,11 +694,13 @@ function buildEffectTable(dataFiles, jChar, jSkill, jSkillLang, jPotential) {
             if (talentTitle === '?') continue;
             const charId = Math.trunc(parseInt(tkey, 10) / 10000);
             const cname  = charName(charId);
-            forEachBuffParam(tval, (_prefix, effId) => {
+            const addTalentTable = (_prefix, effId) => {
                 if (!effId || effectTable.has(effId)) return;
                 const src = cname && cname !== '?' ? `${cname} Talents` : 'Talents';
                 effectTable.set(effId, { charName: cname, label: 'Talent: ' + talentTitle, levelTypeData: 0, source: src });
-            });
+            };
+            forEachBuffParam(tval, addTalentTable);
+            forEachOnceAdditionalParam(tval, addTalentTable);
         }
     }
 
@@ -730,6 +742,23 @@ function buildEffectTable(dataFiles, jChar, jSkill, jSkillLang, jPotential) {
                         effectTable.set(buffId, { charName: '?', label, levelTypeData: 0, source: 'Unknown' });
                 }
             }
+        }
+    }
+
+    // BossBlitz: effects from Effect.json starting with "63" → map to blitz.json names
+    if (jBlitz && jEffect) {
+        const blitzNameMap = new Map();
+        for (const [, blitzEntry] of Object.entries(jBlitz)) {
+            const id = parseInt(blitzEntry.id, 10);
+            if (id) blitzNameMap.set(id, blitzEntry.name || '?');
+        }
+        for (const key of Object.keys(jEffect)) {
+            if (!key.startsWith('63')) continue;
+            const configId = parseInt(key, 10);
+            const prefixStr = key.slice(0, 7);
+            const prefix = parseInt(prefixStr, 10);
+            const name = blitzNameMap.get(prefix);
+            effectTable.set(configId, { label: `Boss Blitz \\ ${name}`, source: 'Boss Blitz' });
         }
     }
 
@@ -819,8 +848,6 @@ function buildEffectTable(dataFiles, jChar, jSkill, jSkillLang, jPotential) {
         [990050010, 'Enemy', 'Defense Broken'],
         [990050011, 'Enemy', 'Defense Broken'],
         [990050012, 'Enemy', 'Defense Broken'],
-        [631014002, 'Enemy', 'Forbidden Beauty / Meticulously Crafted'],
-        [631014022, 'Enemy', 'Forbidden Beauty / Meticulously Crafted'],
         [13295011,  'Minova', 'Astral Hex'],
         [15503011,  'Shia', 'Moongaze Stacks'],
     ];
@@ -913,10 +940,10 @@ async function initTables(dataRoot) {
         jChar, jHit, jSkill, jSkillLang, jItemRoot,
         jEffect, jItem, jItemLang, jMainSkill, jMainSkillLang,
         jFloorBuff, jSubNote, jSubNoteLang, jAffinityLevel, jEffectValue,
-        jAffix, jAffixLang, jGem, jBuffVal, jMonster,
+        jAffix, jAffixLang, jGem, jBuffVal,
         jBuff, jBuffValue, jWord, jWordLang, jTalent, jTalentLang,
         jSecSkill, jOnceAttr, jOnceAttrValue, jDisc, jScoreBoss, jScoreBossLang,
-        jPotential, jMonsterSkin, jItemLangRoot, jSecSkillLang,
+        jPotential, jMonsterSkin, jItemLangRoot, jSecSkillLang, jBlitz,
     ] = await Promise.all([
         loadJson(`${_dataRoot}character.json`,               'char'),
         loadJson(`${bin}HitDamage.json`,                     'hit'),
@@ -937,7 +964,6 @@ async function initTables(dataRoot) {
         loadJson(`${lang}TravelerDuelChallengeAffix.json`,   'affixLang'),
         loadJson(`${bin}CharGemAttrValue.json`,              'gem'),
         loadJson(`${bin}BuffValue.json`,                     'buffVal'),
-        loadJson(`${bin}Monster.json`,                       'monster'),
         loadJson(`${bin}Buff.json`,                          'buff'),
         loadJson(`${bin}BuffValue.json`,                     'buffValue'),
         loadJson(`${bin}Word.json`,                          'word'),
@@ -946,14 +972,15 @@ async function initTables(dataRoot) {
         loadJson(`${lang}Talent.json`,                       'talentLang'),
         loadJson(`${bin}SecondarySkill.json`,                'secSkill'),
         loadJson(`${bin}OnceAdditionalAttribute.json`,       'onceAttr'),
-        loadJson(`${bin}OnceAdditionalAttributeValue.json`, 'onceAttrValue'),
+        loadJson(`${bin}OnceAdditionalAttributeValue.json`,  'onceAttrValue'),
         loadJson(`${_dataRoot}disc.json`,                    'disc'),
         loadJson(`${bin}ScoreBossAbility.json`,              'scoreBoss'),
         loadJson(`${lang}ScoreBossAbility.json`,             'scoreBossLang'),
         loadJson(`${bin}Potential.json`,                     'potential'),
         loadJson(`${bin}MonsterSkin.json`,                   'monsterSkin'),
         loadJson(`${lang}Item.json`,                         'itemLangRoot'),
-        loadJson(`${lang}SecondarySkill.json`,                'secSkillLang'),
+        loadJson(`${lang}SecondarySkill.json`,               'secSkillLang'),
+        loadJson(`${_dataRoot}blitz.json`,                   'blitz'),
     ]);
 
     if (!jChar || !jSkill || !jSkillLang) {
@@ -973,11 +1000,12 @@ async function initTables(dataRoot) {
     buildEffectTable({
         jEffect, jItem, jItemLang, jMainSkill, jMainSkillLang,
         jFloorBuff, jSubNote, jSubNoteLang, jAffinityLevel, jEffectValue,
-        jAffix, jAffixLang, jGem, jBuffVal, jMonster,
+        jAffix, jAffixLang, jGem, jBuffVal,
         jBuff, jBuffValue, jWord, jWordLang, jTalent, jTalentLang,
         jSecSkill, jOnceAttr, jDisc, jScoreBoss, jScoreBossLang,
         jItemRoot, jItemLangRoot, jSecSkillLang,
-    }, jChar, jSkill, jSkillLang, jPotential);
+        jChar, jSkill, jSkillLang, jPotential, jBlitz
+    });
 
     buildSkillTable(jChar, jSkill, jSkillLang);
 

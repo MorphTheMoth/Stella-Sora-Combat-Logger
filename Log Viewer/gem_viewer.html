@@ -238,32 +238,32 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 // effectAttributeType enum → name  (from kEffectAttrNames in http_hooks.cpp)
-const EFFECT_ATTR_NAMES = {
-    1: "Atk", 2: "Def", 3: "Max Hp", 4: "Hit Rate", 5: "Evd", 6: "Crit Rate", 7: "Crit Resist",
-    8: "Crit Damage", 9: "Penetrate", 10: "Def Ignore", 11: "Wer", 12: "Fer", 13: "Ser",
-    14: "Aer", 15: "Ler", 16: "Der", 17: "Aqua Dmg", 18: "Ignis Dmg", 19: "Terra Dmg", 20: "Ventus Dmg", 21: "Lux Dmg",
-    22: "Umbra Dmg", 23: "Aqua Pen", 24: "Ignis Pen", 25: "Terra Pen", 26: "Ventus Pen", 27: "Lux Pen", 28: "Umbra Pen", 29: "Wei",
-    30: "Fei", 31: "Sei", 32: "Aei", 33: "Lei", 34: "Dei", 35: "Weercd", 36: "Feercd",
-    37: "Seercd", 38: "Aeercd", 39: "Leercd", 40: "Deercd", 41: "Weight",
-    42: "Toughness Max", 43: "Toughness Damage Adjust", 44: "Shield Max",
-    46: "Move Speed", 47: "Atk Spd P", 48: "Intensity", 49: "Gen Dmg", 50: "Dmg Plus",
-    51: "Final Dmg", 52: "Final Dmg Plus", 53: "Gen Dmg Rcd", 54: "Dmg Plus Rcd",
-    55: "Suppress", 56: "Normal Dmg", 57: "Skill Dmg", 58: "Ultra Dmg", 59: "Other Dmg",
-    60: "Rcd Normal Dmg", 61: "Rcd Skill Dmg", 62: "Rcd Ultra Dmg", 63: "Rcd Other Dmg",
-    64: "Mark Dmg", 65: "Rcd Mark Dmg", 66: "Minion Dmg", 67: "Rcd Minion Dmg",
-    68: "Derivative Dmg", 69: "Rcd Derivative Dmg", 70: "Normal Crit Rate",
-    71: "Skill Crit Rate", 72: "Ultra Crit Rate", 73: "Mark Crit Rate", 74: "Minion Crit Rate",
-    75: "Derivative Crit Rate", 76: "Other Crit Rate", 77: "Normal Crit Damage",
-    78: "Skill Crit Damage", 79: "Ultra Crit Damage", 80: "Mark Crit Damage",
-    81: "Minion Crit Damage", 82: "Derivative Crit Damage", 83: "Other Crit Damage",
-    84: "Energy Max", 85: "Skill Intensity", 86: "Toughness Broken Dmg",
-    87: "Add Shield Strengthen", 88: "Be Add Shield Strengthen", 89: "Normal Suppress",
-    90: "Skill Suppress", 91: "Ultra Suppress", 92: "Mark Suppress", 93: "Minion Suppress",
-    94: "Derivative Suppress", 95: "Other Suppress", 96: "Env Amend",
-};
+const ATTR_NAMES = [
+    "None", "Atk", "Def", "Max Hp", "Hit Rate", "Evd", "Crit Rate", "Crit Resist",
+    "Crit Damage", "Penetrate", "Def Ignore", "Wer", "Fer", "Ser",
+    "Aer", "Ler", "Der", "Aqua Dmg", "Ignis Dmg", "Terra Dmg", "Ventus Dmg", "Lux Dmg",
+    "Umbra Dmg", "Aqua Pen", "Ignis Pen", "Terra Pen", "Ventus Pen", "Lux Pen", "Umbra Pen", "Wei",
+    "Fei", "Sei", "Aei", "Lei", "Dei", "Rcd Aqua Dmg", "Rcd Ignis Dmg", 
+    "Rcd Terra Dmg", "Rcd Ventus Dmg", "Rcd Lux Dmg", "Rcd Umbra Dmg", "Weight",
+    "Toughness Max", "Toughness Damage Adjust", "Shield Max", "",
+    "Move Speed", "Atk Spd P", "Intensity", "Gen Dmg", "Dmg Plus",
+    "Final Dmg", "Final Dmg Plus", "Gen Dmg Rcd", "Dmg Plus Rcd",
+    "Suppress", "Normal Dmg", "Skill Dmg", "Ultra Dmg", "Other Dmg",
+    "Rcd Normal Dmg", "Rcd Skill Dmg", "Rcd Ultra Dmg", "Rcd Other Dmg",
+    "Mark Dmg", "Rcd Mark Dmg", "Minion Dmg", "Rcd Minion Dmg",
+    "Derivative Dmg", "Rcd Derivative Dmg", "Normal Crit Rate",
+    "Skill Crit Rate", "Ultra Crit Rate", "Mark Crit Rate", "Minion Crit Rate",
+    "Derivative Crit Rate", "Other Crit Rate", "Normal Crit Damage",
+    "Skill Crit Damage", "Ultra Crit Damage", "Mark Crit Damage",
+    "Minion Crit Damage", "Derivative Crit Damage", "Other Crit Damage",
+    "Energy Max", "Skill Intensity", "Toughness Broken Dmg",
+    "Add Shield Strengthen", "Be Add Shield Strengthen", "Normal Suppress",
+    "Skill Suppress", "Ultra Suppress", "Mark Suppress", "Minion Suppress",
+    "Derivative Suppress", "Other Suppress", "Env Amend",
+];
 
 function effectAttrName(subtype) {
-    return EFFECT_ATTR_NAMES[subtype] || ('ATTR' + subtype);
+    return ATTR_NAMES[subtype] || ('ATTR' + subtype);
 }
 
 // FormatValue: < 1 → percentage, else integer
