@@ -86,7 +86,6 @@ void loadConfig(const std::string& dir) {
         if (f) {
             fprintf(f,
                 "{\n"
-                "  \"suppress_useless_info\":          true,\n"
                 "  \"buffs\":                          true,\n"
                 "  \"effects\":                        true,\n"
                 "  \"damage\":                         true,\n"
@@ -129,7 +128,6 @@ void loadConfig(const std::string& dir) {
         auto get = [&](const char* key, bool def) -> bool {
             return j.contains(key) ? j[key].get<bool>() : def;
         };
-        g_Cfg.suppress_useless_info          = get("suppress_useless_info",          true);
         g_Cfg.buffs                          = get("buffs",                          true);
         g_Cfg.effects                        = get("effects",                        true);
         g_Cfg.damage                         = get("damage",                         true);
@@ -688,6 +686,7 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
                   System_Collections_Generic_Dictionary_int__int__o* toAttrDict,
                   GameDataController_o* gdc,
                   FnGetOnceAttr GetOnceAttr, FnGetValueConfigId GetValueConfigId) {
+    if (!g_Cfg.damage) return;
     // Build element/dmg dict overlays once — read-only, no game memory mutation
     std::vector<ElemDictEntry> fromOverlay = ReadElemDict(fromAdditionalAttrInfo);
     std::vector<ElemDictEntry> toOverlay   = ReadElemDict(toAdditionalAttrInfo);

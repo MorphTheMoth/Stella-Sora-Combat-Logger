@@ -27,7 +27,6 @@ using FnGetOnceAttr      = Nova_Client_OnceAdditionalAttribute_o* (__fastcall*)(
 using FnGetValueConfigId = int32_t                                (__fastcall*)(AdventureActor_o*, int32_t, int32_t, int32_t, void*);
 
 struct LogConfig {
-    bool suppress_useless_info;
     bool buffs;
     bool effects;
     bool damage;

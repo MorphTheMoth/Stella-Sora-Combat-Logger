@@ -441,7 +441,9 @@ function buildHitTable(jHit, jSkill, jLang, jChar, jPotential, jItemRoot) {
         const needle = HIT_DAMAGE_PREFIX + hitId;
         for (const [, sval] of Object.entries(jSkill)) {
             let found = false;
-            forEachParam(sval, val => { if (val === needle) { found = true; return true; } });
+            forEachParam(sval, val => {
+                if (extractPrefixedId(val, HIT_DAMAGE_PREFIX) === hitId) { found = true; return true; }
+            });
             if (found) {
                 skillTitle = resolveLocKey(sval, 'Title', jLang);
                 let idx = 0;
@@ -488,6 +490,7 @@ function buildHitTable(jHit, jSkill, jLang, jChar, jPotential, jItemRoot) {
     // Hardcoded Hits
     const hardcoded = [
         [155310101, 'Shia', 'Electro Music', 1, 'Potentials'],
+        [159322101, 'Springseek Coronis', 'Rose Rapid Bloom', 1, 'Potentials'],
     ];
     for (const [hitId, charName, skillTitle, hitNum, src] of hardcoded)
         hitTable.set(hitId, { charName, skillTitle, hitNum, source: `${charName} ${src}` });
@@ -925,7 +928,8 @@ function buildSkillTable(jChar, jSkill, jSkillLang) {
         const fcPath    = sval.FCPath ?? '';
         let   briefDesc = resolveLocKey(sval, 'BriefDesc', jSkillLang);
         if (briefDesc === '?') briefDesc = '';
-        skillTable.set(skillId, { ownerName: '', skillType: '', skillName: briefDesc, fcPath });
+        const ownerId = parseInt(skillId.toString().slice(0,3));
+        skillTable.set(skillId, { ownerName: actorNameMap.get(ownerId) ?? String(ownerId), skillType: '', skillName: briefDesc, fcPath });
     }
 }
 
