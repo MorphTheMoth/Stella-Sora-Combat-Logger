@@ -444,9 +444,31 @@ const Analytics = (() => {
         });
         charSel.value = [...charSel.options].some(o => o.value === curChar) ? curChar : '';
 
-        const hits = charSel.value
-            ? allHits.filter(ev => getCharName(ev) === charSel.value)
-            : allHits;
+        // Populate defender filter, default to defender with most hits
+        const defSel = document.getElementById('bpFilterDefender');
+        const curDef = defSel.value;
+        const defHits = {};
+        allHits.forEach(ev => {
+            const d = getDefenderName(ev);
+            defHits[d] = (defHits[d] || 0) + 1;
+        });
+        const allDefs = Object.keys(defHits).sort();
+        defSel.innerHTML = '<option value="">All</option>';
+        allDefs.forEach(d => {
+            const o = document.createElement('option');
+            o.value = d; o.textContent = d; defSel.appendChild(o);
+        });
+        if (!curDef && allDefs.length > 0) {
+            const topDef = Object.entries(defHits).sort((a, b) => b[1] - a[1])[0]?.[0] || '';
+            defSel.value = topDef;
+        } else if ([...defSel.options].some(o => o.value === curDef)) {
+            defSel.value = curDef;
+        }
+
+        const defFilterVal = defSel.value;
+        const hits = allHits
+            .filter(ev => !charSel.value || getCharName(ev) === charSel.value)
+            .filter(ev => !defFilterVal || getDefenderName(ev) === defFilterVal);
 
         const sel = document.getElementById('bpPick');
         const cur = sel.value;
@@ -506,12 +528,15 @@ const Analytics = (() => {
         const viewBy        = document.getElementById('bpViewBy').value;
         const pick          = document.getElementById('bpPick').value;
         const charFilterVal = document.getElementById('bpFilterChar').value;
+        const defFilterVal  = document.getElementById('bpFilterDefender').value;
         const activeSrcs    = getActiveSrcs();
 
         if (!pick) return;
 
         const allHits = getPlayerHits();
-        const hits = charFilterVal ? allHits.filter(ev => getCharName(ev) === charFilterVal) : allHits;
+        const hits = allHits
+            .filter(ev => !charFilterVal || getCharName(ev) === charFilterVal)
+            .filter(ev => !defFilterVal  || getDefenderName(ev) === defFilterVal);
 
         const stackingSet  = buildStackingSet(allHits, ['attackerBuffs','attackerEffects','defenderBuffs','defenderEffects','attackerAttrDict','defenderAttrDict']);
         const maxStacksMap = buildMaxStacksMap(allHits);
