@@ -3,8 +3,37 @@
 
 Injects a dll into the game that logs informations about the combat, using it on the live servers is risky, i suggest using the nebula private server https://github.com/Melledy/Nebula.
 
-<img width="1188" height="990" alt="image" src="https://github.com/user-attachments/assets/30f325fa-bda3-4058-a9e3-061029a92fbb" />
+<table>
+  <tr>
+    <td width="50%" valign="top">
 
+### Log with Hits, Skill Casts, Buff Applications
+<img src="https://github.com/user-attachments/assets/0650373a-0631-4806-9174-11a66e600d4d" width="100%"/>
+
+</td>
+    <td width="50%" valign="top">
+
+### Charts for dmg share and buff uptimes
+<img src="https://github.com/user-attachments/assets/cb5349ab-5f8e-4de0-a21d-9565d5ed459a" width="100%"/>
+<img src="https://github.com/user-attachments/assets/afb4e2e7-6a26-4d5c-a2fa-b1f30066d967" width="100%"/>
+
+</td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+
+### Recalculate every hit's damage removing any combination of effects
+<img src="https://github.com/user-attachments/assets/9e2ceb64-dc7d-4208-916d-da1b83d2f5ae" width="100%"/>
+
+</td>
+    <td width="50%" valign="top">
+
+### Automatically recalculate the total contribution of each effect
+<img src="https://github.com/user-attachments/assets/3694c0f9-e562-4784-8dc3-963b9721bce4" width="100%"/>
+
+</td>
+  </tr>
+</table>
 
 ## Installation
 
