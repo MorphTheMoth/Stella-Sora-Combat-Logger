@@ -108,7 +108,8 @@ void loadConfig(const std::string& dir) {
                 "  \"input_and_vision_gizmo\":         false,\n"
                 "  \"monster_path_gizmo\":             false,\n"
                 "  \"player_path_gizmo\":              false,\n"
-                "  \"camera_gizmo\":                   false\n"
+                "  \"camera_gizmo\":                   false,\n"
+                "  \"monster_dummy_mode\":             false\n"
                 "}\n");
             fclose(f);
             log("[config] log_config.json not found — wrote defaults to %s", path.c_str());
@@ -151,6 +152,7 @@ void loadConfig(const std::string& dir) {
         g_Cfg.monster_path_gizmo             = get("monster_path_gizmo",             false);
         g_Cfg.player_path_gizmo              = get("player_path_gizmo",              false);
         g_Cfg.camera_gizmo                   = get("camera_gizmo",                   false);
+        g_Cfg.monster_dummy_mode             = get("monster_dummy_mode",             false);
 
         // Check if config is missing new fields and update it
         if (!j.contains("player_gizmo") || !j.contains("monster_gizmo") ||
@@ -159,7 +161,8 @@ void loadConfig(const std::string& dir) {
             !j.contains("vision_gizmo_for_player") || !j.contains("vision_gizmo_for_monster") ||
             !j.contains("input_and_vision_gizmo") || !j.contains("monster_path_gizmo") ||
             !j.contains("player_path_gizmo") || !j.contains("camera_gizmo") ||
-            !j.contains("on_hit_attacker_attr_dict") || !j.contains("on_hit_defender_attr_dict")) {
+            !j.contains("on_hit_attacker_attr_dict") || !j.contains("on_hit_defender_attr_dict") ||
+            !j.contains("monster_dummy_mode")) {
             j["player_gizmo"] = false;
             j["monster_gizmo"] = false;
             j["bullet_gizmo"] = false;
@@ -174,11 +177,12 @@ void loadConfig(const std::string& dir) {
             j["camera_gizmo"] = false;
             j["on_hit_attacker_attr_dict"] = true;
             j["on_hit_defender_attr_dict"] = true;
+            j["monster_dummy_mode"] = false;
             FILE* f = fopen(path.c_str(), "w");
             if (f) {
                 fprintf(f, "%s", j.dump(2).c_str());
                 fclose(f);
-                log("[config] Updated log_config.json with new debug gizmo options");
+                log("[config] Updated log_config.json with new options");
             }
         }
         log("[config] Loaded log_config.json");

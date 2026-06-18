@@ -50,6 +50,7 @@ struct LogConfig {
     bool monster_path_gizmo;
     bool player_path_gizmo;
     bool camera_gizmo;
+    bool monster_dummy_mode;
 };
 
 extern FILE*                g_Log;

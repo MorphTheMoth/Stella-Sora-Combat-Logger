@@ -81,18 +81,19 @@ static LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep) {
 // =============================================================================
 //  RVAs
 // =============================================================================
-static constexpr uintptr_t RVA_DAMAGE               = 0x121D860;
-static constexpr uintptr_t RVA_EFFECT_ON_INIT       = 0x11281A0;
-static constexpr uintptr_t RVA_EFFECT_ON_CLEAR      = 0x1123C90;
-static constexpr uintptr_t RVA_UPDATE_LOGIC         = 0x1179570;
-static constexpr uintptr_t RVA_BATTLE_FINISH        = 0x102FF60;
-static constexpr uintptr_t RVA_SPAWN_SKILL          = 0x11780D0;
-static constexpr uintptr_t RVA_BUFF_EFFECT_ON_INIT  = 0x16C4BD0;
-static constexpr uintptr_t RVA_BUFF_ENTITY_INIT     = 0x16C9500;
-static constexpr uintptr_t RVA_BUFF_ENTITY_EXCUTE   = 0x16C81C0;
-static constexpr uintptr_t RVA_CALC_NORMAL_DAMAGE   = 0x110C100;
-static constexpr uintptr_t RVA_GET_ONCE_ATTR        = 0x12840E0;
-static constexpr uintptr_t RVA_GET_VALUE_CONFIG_ID  = 0x1111080;
+static constexpr uintptr_t RVA_DAMAGE                        = 0x121D860;
+static constexpr uintptr_t RVA_EFFECT_ON_INIT                = 0x11281A0;
+static constexpr uintptr_t RVA_EFFECT_ON_CLEAR               = 0x1123C90;
+static constexpr uintptr_t RVA_UPDATE_LOGIC                  = 0x1179570;
+static constexpr uintptr_t RVA_BATTLE_FINISH                 = 0x102FF60;
+static constexpr uintptr_t RVA_SPAWN_SKILL                   = 0x11780D0;
+static constexpr uintptr_t RVA_BUFF_EFFECT_ON_INIT           = 0x16C4BD0;
+static constexpr uintptr_t RVA_BUFF_ENTITY_INIT              = 0x16C9500;
+static constexpr uintptr_t RVA_BUFF_ENTITY_EXCUTE            = 0x16C81C0;
+static constexpr uintptr_t RVA_CALC_NORMAL_DAMAGE            = 0x110C100;
+static constexpr uintptr_t RVA_GET_ONCE_ATTR                 = 0x12840E0;
+static constexpr uintptr_t RVA_GET_VALUE_CONFIG_ID           = 0x1111080;
+static constexpr uintptr_t RVA_MONSTER_ACTION_STATE_ON_ENTER = 0x1104CD0;
 
 //  Cached module base
 static uintptr_t g_base = 0;
@@ -121,6 +122,18 @@ static DamageTuple* __fastcall Hook_Damage( DamageTuple* sret, AdventureActor_o*
 }
 
 
+
+// =============================================================================
+//  Monster dummy-mode hooks
+// =============================================================================
+using FnMonsterActionStateOnEnter = void(__fastcall*)(void*, void*, void*, void*, void*);
+static FnMonsterActionStateOnEnter g_OrigMonsterActionStateOnEnter = nullptr;
+
+static void __fastcall Hook_MonsterActionStateOnEnter(void* self, void* preStatus, void* onComplete, void* onLeave, void* method) {
+    if (!g_Cfg.monster_dummy_mode) {
+        g_OrigMonsterActionStateOnEnter(self, preStatus, onComplete, onLeave, method);
+    }
+}
 
 // =============================================================================
 //  CalculateNormalDamage hook
@@ -400,7 +413,7 @@ static DWORD WINAPI InitThread(LPVOID) {
     InstallHook(g_base + RVA_BUFF_ENTITY_INIT,       reinterpret_cast<void*>(&Hook_BuffEntityInit),     (void**)&g_OrigBuffEntityInit,     "BuffEntity$$InitBuff");
     InstallHook(g_base + RVA_BUFF_ENTITY_EXCUTE,     reinterpret_cast<void*>(&Hook_BuffEntityExcute),   (void**)&g_OrigBuffEntityExcute,   "BuffEntity$$BuffExcute");
     InstallHook(g_base + RVA_CALC_NORMAL_DAMAGE,     reinterpret_cast<void*>(&Hook_CalcNormalDamage),   (void**)&g_OrigCalcNormalDamage,   "CommonHelper$$CalculateNormalDamage");
-
+    InstallHook(g_base + RVA_MONSTER_ACTION_STATE_ON_ENTER,   reinterpret_cast<void*>(&Hook_MonsterActionStateOnEnter),         (void**)&g_OrigMonsterActionStateOnEnter,           "MonsterActionState$$OnEnter");
     InstallHttpHooks(g_base);
     
     log("[init] Ready.");
