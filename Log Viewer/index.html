@@ -34,6 +34,20 @@
         .filters button.active {
             background: #303030; color: #ddd; border-color: #555;
         }
+        #autoClearBtn {
+            padding: 5px 12px; border: 1px solid #3a3a3a; border-radius: 4px;
+            background: #1a1a1a; color: #555; cursor: pointer;
+            font-size: 12px; user-select: none;
+            transition: background 0.12s, color 0.12s, border-color 0.12s;
+            text-decoration: line-through;
+        }
+        #autoClearBtn:hover {
+            background: #222; color: #777; border-color: #4a4a4a;
+        }
+        #autoClearBtn.active {
+            background: #2a1515; color: #c06060; border-color: #5a2020;
+            text-decoration: none;
+        }
         .filters button.clear-btn {
             color: #b07070; border-color: #4a3030;
         }
@@ -201,6 +215,11 @@
         #logPanel { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
         #logPanel.hidden { display: none; }
     
+        .event.event-reset .event-header { background: #1a1010; border-left: 3px solid #5a2020; }
+        .event.event-reset .event-header h3 .type { color: #8a4040; }
+        .event.event-reset .event-header h3 .desc { color: #6a3030; }
+        .event.event-reset .event-header:hover { background: #221515; }
+        .event.event-reset.open .event-header { background: #1e1212; }
         .event.search-match .event-header { background: #2a2a1a !important; border-left: 3px solid #a08020; }
         .event.search-match .event-header:hover { background: #333322 !important; }
         .event.search-current .event-header { background: #3a3010 !important; border-left: 3px solid #e0b030; }
@@ -574,6 +593,7 @@
     <div style="display:flex; justify-content:space-between; align-items:center; padding:14px 16px; border-bottom:1px solid #2c2c2c; background:#1f1f1f; flex-shrink:0;">
         <h1 style="margin:0; font-size:16px; color:#aaa; font-weight:500; letter-spacing:0.04em;">Stella Sora Combat Log Viewer</h1>
         <div style="display:flex; gap:6px; align-items:center;">
+            <button id="autoClearBtn" onclick="toggleAutoClear()">Auto Clear</button>
             <select id="savedLogFilter" onchange="onSavedLogChange()" style="padding:5px 12px; border:1px solid #333; border-radius:4px; background:#242424; color:#888; font-size:12px; cursor:pointer; appearance:none; width: 200px;">
                 <option value="">Live</option>
             </select>

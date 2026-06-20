@@ -16,6 +16,13 @@ let filtered = [];
 const EST = 40;
 const BUFFER = 20;
 const POLL_MS = 50;
+let autoClearOnRestart = localStorage.getItem('autoClearOnRestart') === 'true';
+document.getElementById('autoClearBtn')?.classList.toggle('active', autoClearOnRestart);
+window.toggleAutoClear = function() {
+    autoClearOnRestart = !autoClearOnRestart;
+    localStorage.setItem('autoClearOnRestart', autoClearOnRestart);
+    document.getElementById('autoClearBtn').classList.toggle('active', autoClearOnRestart);
+};
 
 let openStates = {};
 let measuredHeights = {};
@@ -167,8 +174,8 @@ window.saveLog = async function() {
     }
 };
 
-window.clearLog = async function() {
-    if (!confirm('Are you sure you want to clear the log?')) return;
+window.clearLog = async function(skipConfirm) {
+    if (!skipConfirm && !confirm('Are you sure you want to clear the log?')) return;
     try {
         let url = '/clear';
         if (currentSavedLog)
@@ -227,6 +234,10 @@ async function fetchLog(incremental = false) {
                 allEvents.push(ev);
             });
             lastFetchCount += newEvents.length;
+            if (autoClearOnRestart && !currentSavedLog && newEvents.some(e => e.Type === 'Reset')) {
+                window.clearLog(true);
+                return;
+            }
             refilterAndRender(false, false);
         } else {
             allEvents = newEvents;

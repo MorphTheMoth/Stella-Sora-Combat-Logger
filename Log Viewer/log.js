@@ -82,17 +82,19 @@ function buildDefenderFilter() {
 
 function applyFilters() {
     let evs = allEvents.slice();
+    // Reset events are always shown regardless of filters
+    const resets = evs.filter(e => e.Type === 'Reset');
     if (typeFilter.size > 0) {
         evs = evs.filter(ev => {
-            // Effect is stored as Type='Buff', SubType='Effect'
+            if (ev.Type === 'Reset') return true;
             const effectiveType = (ev.Type === 'Buff' && ev.SubType === 'Effect') ? 'Effect' : ev.Type;
             return typeFilter.has(effectiveType);
         });
     }
-    if (charFilter) evs = evs.filter(e => getChars(e).has(charFilter));
+    if (charFilter) evs = evs.filter(e => e.Type === 'Reset' || getChars(e).has(charFilter));
     buildSkillFilter(evs);
-    if (skillFilter) evs = evs.filter(e => getSkillName(e) === skillFilter);
-    if (defenderFilter) evs = evs.filter(e => (getDefender(e).has(defenderFilter) || getDefender(e).size === 0));
+    if (skillFilter) evs = evs.filter(e => e.Type === 'Reset' || getSkillName(e) === skillFilter);
+    if (defenderFilter) evs = evs.filter(e => e.Type === 'Reset' || (getDefender(e).has(defenderFilter) || getDefender(e).size === 0));
     return evs;
 }
 
@@ -134,6 +136,7 @@ function buildEventBody(ev) {
     if (ev.Type === 'Hit') return hitBody(ev, oi);
     if (ev.Type === 'Buff') return buffBody(ev);
     if (ev.Type === 'Skill Cast') return skillBody(ev);
+    if (ev.Type === 'Reset') return '<div class="section" style="text-align:center;color:#5a3030;padding:10px 0;">battle restarted</div>';
     return `<pre>${esc(JSON.stringify(ev,null,2))}</pre>`;
 }
 
@@ -250,7 +253,7 @@ function createEventDiv(ev, filteredIdx) {
     const oi = ev._origIndex;
     const isOpen = openStates[oi] || false;
     const div = document.createElement('div');
-    div.className = 'event' + (isOpen ? ' open' : '');
+    div.className = 'event' + (isOpen ? ' open' : '') + (ev.Type === 'Reset' ? ' event-reset' : '');
     div.style.top = fenwick.prefixSum(filteredIdx - 1) + 'px';
     div.dataset.origIndex = oi;
     div.dataset.filteredIndex = filteredIdx;
@@ -279,6 +282,8 @@ function createEventDiv(ev, filteredIdx) {
         desc = `${owner} - ${name}${stacks}`;
     } else if (ev.Type === 'Skill Cast') {
         desc = `${esc(ev.Owner||'')} / ${esc(ev.Name||ev.SkillId)}`;
+    } else if (ev.Type === 'Reset') {
+        desc = 'battle restarted';
     }
     h3.innerHTML += `<span class="desc">${desc}</span>`;
     header.appendChild(h3);
