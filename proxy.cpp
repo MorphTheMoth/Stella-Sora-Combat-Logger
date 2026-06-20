@@ -34,54 +34,8 @@ __attribute__((constructor)) void init_forwards() {
 #endif
 
 // =============================================================================
-//  CRASH HANDLER
-// =============================================================================
-static LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep) {
-    EXCEPTION_RECORD* er  = ep->ExceptionRecord;
-    CONTEXT*          ctx = ep->ContextRecord;
-
-    // Identify which module owns the faulting address
-    char modName[MAX_PATH] = "<unknown>";
-    uintptr_t modBase = 0;
-    HMODULE hMod = nullptr;
-    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                           (LPCSTR)er->ExceptionAddress, &hMod) && hMod) {
-        GetModuleFileNameA(hMod, modName, MAX_PATH);
-        modBase = (uintptr_t)hMod;
-    }
-
-    log("[CRASH] Exception 0x%08lX at 0x%p  (module: %s  RVA: 0x%llX)",
-        er->ExceptionCode, er->ExceptionAddress,
-        modName, (unsigned long long)((uintptr_t)er->ExceptionAddress - modBase));
-
-    if (er->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && er->NumberParameters >= 2)
-        log("[CRASH] %s on address 0x%p",
-            er->ExceptionInformation[0] == 1 ? "WRITE fault" : "READ fault",
-            (void*)er->ExceptionInformation[1]);
-
-#ifdef _WIN64
-    log("[CRASH] RIP=0x%016llX  RSP=0x%016llX  RAX=0x%016llX  RCX=0x%016llX",
-        (unsigned long long)ctx->Rip, (unsigned long long)ctx->Rsp,
-        (unsigned long long)ctx->Rax, (unsigned long long)ctx->Rcx);
-#else
-    log("[CRASH] EIP=0x%08lX  ESP=0x%08lX", ctx->Eip, ctx->Esp);
-#endif
-
-    if (g_Log) fflush(g_Log);
-    if (er->ExceptionCode == EXCEPTION_ACCESS_VIOLATION ||
-        er->ExceptionCode == EXCEPTION_ILLEGAL_INSTRUCTION ||
-        er->ExceptionCode == EXCEPTION_STACK_OVERFLOW)
-    {
-        if (g_Log) fflush(g_Log);
-        return EXCEPTION_CONTINUE_SEARCH;   // let it propagate / crash normally
-    }
-    return EXCEPTION_CONTINUE_SEARCH;
-}
-
-// =============================================================================
 //  RVAs
 // =============================================================================
-static constexpr uintptr_t RVA_DAMAGE                        = 0x121D860;
 static constexpr uintptr_t RVA_EFFECT_ON_INIT                = 0x11281A0;
 static constexpr uintptr_t RVA_EFFECT_ON_CLEAR               = 0x1123C90;
 static constexpr uintptr_t RVA_UPDATE_LOGIC                  = 0x1179570;
@@ -98,31 +52,6 @@ static constexpr uintptr_t RVA_MODULE_CLEAR_DATA = 0x15C78A0;  // AdventureModul
 
 //  Cached module base
 static uintptr_t g_base = 0;
-
-// =============================================================================
-//  Damage hook
-// =============================================================================
-struct DamageTuple {
-    bool    Item1;
-    uint8_t _pad[7];
-    int64_t Item2;
-    bool    Item3;
-};
-static_assert(offsetof(DamageTuple, Item2) == 8,  "Item2 offset wrong");
-static_assert(offsetof(DamageTuple, Item3) == 16, "Item3 offset wrong");
-
-using FnDamage = DamageTuple*(__fastcall*)( DamageTuple*, AdventureActor_o*, LogicEntity_o*, int32_t, int32_t, int32_t, void*, HitBox_o*, bool, bool, bool, void*);
-static FnDamage             g_OrigDamage = nullptr;
-
-static DamageTuple* __fastcall Hook_Damage( DamageTuple* sret, AdventureActor_o* self, LogicEntity_o* from, int32_t uniqueAttackId, int32_t onceAttackTargetCount, int32_t hitDamageId,
-    void* hurtEffectPrefab, HitBox_o* hitbox, bool isHittedEffectScale, bool showHud, bool effectIgnoreTimeScale, void* method)
-{
-    DamageTuple* result = g_OrigDamage(sret, self, from, uniqueAttackId, onceAttackTargetCount, hitDamageId,
-                                       hurtEffectPrefab, hitbox, isHittedEffectScale, showHud, effectIgnoreTimeScale, method);
-    return result;
-}
-
-
 
 // =============================================================================
 //  Monster dummy-mode hooks
@@ -416,9 +345,6 @@ static DWORD WINAPI InitThread(LPVOID) {
     InitializeLogger();
     if (!g_Log) return 1;
 
-    //AddVectoredExceptionHandler(1, CrashHandler);
-    //SetUnhandledExceptionFilter(CrashHandler);
-
     std::string logDir = GetLocalAppDataPath() + "\\Stella Sora Combat Logger";
     loadConfig(logDir);
     BuildGemAttrTable(GetLocalAppDataPath() + "\\StellaSoraData");
@@ -435,7 +361,6 @@ static DWORD WINAPI InitThread(LPVOID) {
 
     if (MH_Initialize() != MH_OK) { log("[ERROR] MH_Initialize failed."); return 1; }
 
-    InstallHook(g_base + RVA_DAMAGE,                 reinterpret_cast<void*>(&Hook_Damage),             (void**)&g_OrigDamage,             "AdventureActor$$Damage");
     InstallHook(g_base + RVA_EFFECT_ON_INIT,         reinterpret_cast<void*>(&Hook_EffectOnInit),       (void**)&g_OrigEffectOnInit,       "AdventureEffect$$OnInit");
     InstallHook(g_base + RVA_EFFECT_ON_CLEAR,        reinterpret_cast<void*>(&Hook_EffectOnClear),      (void**)&g_OrigEffectOnClear,      "AdventureEffectBase$$OnClear");
     InstallHook(g_base + RVA_UPDATE_LOGIC,           reinterpret_cast<void*>(&Hook_UpdateLogic),        (void**)&g_OrigUpdateLogic,        "AdventureLevelController$$UpdateLogic");

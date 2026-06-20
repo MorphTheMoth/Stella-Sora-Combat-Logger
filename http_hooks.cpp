@@ -286,17 +286,6 @@ void BuildGemAttrTable(const std::string& dataRoot) {
     log("[gem] Built gem attr table: %d entries", built);
 }
 
-// Format one attribute ID for display, given the request's charId (needed for type 99)
-static std::string FormatGemAttr(uint32_t attrId, int32_t charId) {
-    auto it = g_GemAttrTable.find((int32_t)attrId);
-    if (it == g_GemAttrTable.end())
-        return "?" + std::to_string(attrId);
-    const GemAttrInfo& info = it->second;
-    if (info.attrType == 99)
-        return ResolvePotentialLabel(info, charId);
-    return info.label.empty() ? ("?" + std::to_string(attrId)) : info.label;
-}
-
 // =============================================================================
 //  Proto helpers
 // =============================================================================

@@ -76,7 +76,6 @@ std::string adventureActorDisplay(AdventureActor_o* actor);
 struct ElemDictEntry { int32_t attributeType; int32_t mode; double value; };
 json logAdventureActorAttrsJson(AttributeList_o* attrList, const std::vector<ElemDictEntry>* overlay = nullptr);
 json logAdventureActorSpecialAttrsJson(AdventureActor_o* actor);
-std::string buffIdToName(int32_t configId);
 
 // JSON builders for different event types
 void BuildBuffJson(const char* type, int32_t configId, AdventureActor_o* owner, AdventureActor_o* fromActor, int isAdd, int32_t buffNum = 0);
