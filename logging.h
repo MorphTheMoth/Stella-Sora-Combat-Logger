@@ -106,6 +106,7 @@ void BuildHitJson(
     GameDataController_o* gdc,
     FnGetOnceAttr GetOnceAttr, FnGetValueConfigId GetValueConfigId);
 void BuildSkillCastJson(int32_t skillId);
+void BuildResetJson();
 
 // Utility
 std::string GetLocalAppDataPath();

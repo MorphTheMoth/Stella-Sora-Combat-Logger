@@ -94,6 +94,7 @@ static constexpr uintptr_t RVA_CALC_NORMAL_DAMAGE            = 0x110C100;
 static constexpr uintptr_t RVA_GET_ONCE_ATTR                 = 0x12840E0;
 static constexpr uintptr_t RVA_GET_VALUE_CONFIG_ID           = 0x1111080;
 static constexpr uintptr_t RVA_MONSTER_ACTION_STATE_ON_ENTER = 0x1104CD0;
+static constexpr uintptr_t RVA_MODULE_CLEAR_DATA = 0x15C78A0;  // AdventureModuleController$$ClearData
 
 //  Cached module base
 static uintptr_t g_base = 0;
@@ -133,6 +134,18 @@ static void __fastcall Hook_MonsterActionStateOnEnter(void* self, void* preStatu
     if (!g_Cfg.monster_dummy_mode) {
         g_OrigMonsterActionStateOnEnter(self, preStatus, onComplete, onLeave, method);
     }
+}
+
+// =============================================================================
+//  Reset-button hook
+// =============================================================================
+using FnVoidVoid = void(__fastcall*)(void*, void*);
+static FnVoidVoid g_OrigModuleClearData = nullptr;
+
+static void __fastcall Hook_ModuleClearData(void* self, void* method) {
+    BuildResetJson();
+    g_BattleTimeFP.store(0, std::memory_order_relaxed);
+    g_OrigModuleClearData(self, method);
 }
 
 // =============================================================================
@@ -413,7 +426,8 @@ static DWORD WINAPI InitThread(LPVOID) {
     InstallHook(g_base + RVA_BUFF_ENTITY_INIT,       reinterpret_cast<void*>(&Hook_BuffEntityInit),     (void**)&g_OrigBuffEntityInit,     "BuffEntity$$InitBuff");
     InstallHook(g_base + RVA_BUFF_ENTITY_EXCUTE,     reinterpret_cast<void*>(&Hook_BuffEntityExcute),   (void**)&g_OrigBuffEntityExcute,   "BuffEntity$$BuffExcute");
     InstallHook(g_base + RVA_CALC_NORMAL_DAMAGE,     reinterpret_cast<void*>(&Hook_CalcNormalDamage),   (void**)&g_OrigCalcNormalDamage,   "CommonHelper$$CalculateNormalDamage");
-    InstallHook(g_base + RVA_MONSTER_ACTION_STATE_ON_ENTER,   reinterpret_cast<void*>(&Hook_MonsterActionStateOnEnter),         (void**)&g_OrigMonsterActionStateOnEnter,           "MonsterActionState$$OnEnter");
+    InstallHook(g_base + RVA_MONSTER_ACTION_STATE_ON_ENTER, reinterpret_cast<void*>(&Hook_MonsterActionStateOnEnter), (void**)&g_OrigMonsterActionStateOnEnter, "MonsterActionState$$OnEnter");
+    InstallHook(g_base + RVA_MODULE_CLEAR_DATA, reinterpret_cast<void*>(&Hook_ModuleClearData), (void**)&g_OrigModuleClearData, "AdventureModuleController$$ClearData");
     InstallHttpHooks(g_base);
     
     log("[init] Ready.");

@@ -817,6 +817,15 @@ void BuildSkillCastJson(int32_t skillId) {
     logJson(j);
 }
 
+void BuildResetJson() {
+    json j;
+    j["Type"] = "Reset";
+    j["Time"] = gameTime();
+    
+    logJson(j);
+    log("[Reset] %s", gameTime().c_str());
+}
+
 // =============================================================================
 //  Utility
 // =============================================================================
