@@ -85,7 +85,7 @@ static constexpr uintptr_t RVA_DAMAGE                        = 0x121D860;
 static constexpr uintptr_t RVA_EFFECT_ON_INIT                = 0x11281A0;
 static constexpr uintptr_t RVA_EFFECT_ON_CLEAR               = 0x1123C90;
 static constexpr uintptr_t RVA_UPDATE_LOGIC                  = 0x1179570;
-static constexpr uintptr_t RVA_BATTLE_FINISH                 = 0x102FF60;
+static constexpr uintptr_t RVA_BATTLE_START                  = 0x102FFE0;
 static constexpr uintptr_t RVA_SPAWN_SKILL                   = 0x11780D0;
 static constexpr uintptr_t RVA_BUFF_EFFECT_ON_INIT           = 0x16C4BD0;
 static constexpr uintptr_t RVA_BUFF_ENTITY_INIT              = 0x16C9500;
@@ -144,7 +144,7 @@ static FnVoidVoid g_OrigModuleClearData = nullptr;
 
 static void __fastcall Hook_ModuleClearData(void* self, void* method) {
     BuildResetJson();
-    g_BattleTimeFP.store(0, std::memory_order_relaxed);
+    g_CombatStartTimeFP.store(0, std::memory_order_relaxed);
     g_OrigModuleClearData(self, method);
 }
 
@@ -347,24 +347,43 @@ static void __fastcall Hook_EffectOnClear(AdventureEffectBase_o* effectBase, Met
 
 
 // =============================================================================
-//  Battle finish / timer / spawn
+//  Battle start / timer / spawn
 // =============================================================================
 using FnUpdateLogic = void(__fastcall*)( void*, TrueSync_FP_o, void*);
 static FnUpdateLogic g_OrigUpdateLogic = nullptr;
 
 static void __fastcall Hook_UpdateLogic(void* self, TrueSync_FP_o logicDeltaTime, void* method) {
-    EnableAllDebugGizmos(g_base);    //tried doing it on Hook_BattleFinish (which runs on battle start) but it didnt work
+    EnableAllDebugGizmos(g_base);
+
+    // Lazy init: resolve LockStepManager._time pointer for gameTime()
+    if (!g_LockStepTimePtr) {
+        auto* lsTypeInfo = *reinterpret_cast<Il2CppClass**>(g_base + 0x70F2D78);
+        if (lsTypeInfo && lsTypeInfo->static_fields) {
+            g_LockStepTimePtr = reinterpret_cast<int64_t*>(
+                reinterpret_cast<uint8_t*>(lsTypeInfo->static_fields) + 0x08);
+            log("[init] LockStep._time resolved at %p", (void*)g_LockStepTimePtr);
+        } else {
+            log("[init] LockStep static fields still not ready after game loaded");
+        }
+    }
+
     g_OrigUpdateLogic(self, logicDeltaTime, method);
-    g_BattleTimeFP.fetch_add(logicDeltaTime.fields._serializedValue, std::memory_order_relaxed);
 }
 
-using FnBattleFinish = void(__fastcall*)( ActorEffectManage_o*, void*, void*);
-static FnBattleFinish g_OrigBattleFinish = nullptr;
+using FnBattleStart = void(__fastcall*)( void*, void*, void*);
+static FnBattleStart g_OrigBattleStart = nullptr;
 
-static void __fastcall Hook_BattleFinish(ActorEffectManage_o* self, void* evt, void* method) {
-    g_OrigBattleFinish(self, evt, method);
-    g_BattleTimeFP.store(0, std::memory_order_relaxed);
-    //Log("[timer] Battle started — timer reset");
+static void __fastcall Hook_BattleStart(void* self, void* evt, void* method) {
+    auto* lsTypeInfo = *reinterpret_cast<Il2CppClass**>(g_base + 0x70F2D78);
+    if (lsTypeInfo && lsTypeInfo->static_fields) {
+        int64_t t = *reinterpret_cast<int64_t*>(
+            reinterpret_cast<uint8_t*>(lsTypeInfo->static_fields) + 0x08);
+        g_CombatStartTimeFP.store(t, std::memory_order_relaxed);
+        log("[BattleStart] Combat started! LockStep._time = %lld", (long long)t);
+    } else {
+        log("[BattleStart] Combat started! (could not read time)");
+    }
+    g_OrigBattleStart(self, evt, method);
 }
 
 using FnSpawnSkill = void*(__fastcall*)( void*, int32_t, void*);
@@ -420,7 +439,7 @@ static DWORD WINAPI InitThread(LPVOID) {
     InstallHook(g_base + RVA_EFFECT_ON_INIT,         reinterpret_cast<void*>(&Hook_EffectOnInit),       (void**)&g_OrigEffectOnInit,       "AdventureEffect$$OnInit");
     InstallHook(g_base + RVA_EFFECT_ON_CLEAR,        reinterpret_cast<void*>(&Hook_EffectOnClear),      (void**)&g_OrigEffectOnClear,      "AdventureEffectBase$$OnClear");
     InstallHook(g_base + RVA_UPDATE_LOGIC,           reinterpret_cast<void*>(&Hook_UpdateLogic),        (void**)&g_OrigUpdateLogic,        "AdventureLevelController$$UpdateLogic");
-    InstallHook(g_base + RVA_BATTLE_FINISH,          reinterpret_cast<void*>(&Hook_BattleFinish),       (void**)&g_OrigBattleFinish,       "ActorEffectManage$$OnBattleFinish");
+    InstallHook(g_base + RVA_BATTLE_START,           reinterpret_cast<void*>(&Hook_BattleStart),        (void**)&g_OrigBattleStart,        "ActorEffectManage$$OnBattleStart");
     InstallHook(g_base + RVA_SPAWN_SKILL,            reinterpret_cast<void*>(&Hook_SpawnSkill),         (void**)&g_OrigSpawnSkill,         "AdventureLevelController$$SpawnSkill");
     InstallHook(g_base + RVA_BUFF_EFFECT_ON_INIT,    reinterpret_cast<void*>(&Hook_BuffEffectOnInit),   (void**)&g_OrigBuffEffectOnInit,   "BuffEffectBase$$OnInit");
     InstallHook(g_base + RVA_BUFF_ENTITY_INIT,       reinterpret_cast<void*>(&Hook_BuffEntityInit),     (void**)&g_OrigBuffEntityInit,     "BuffEntity$$InitBuff");

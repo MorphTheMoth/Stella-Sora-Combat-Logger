@@ -19,7 +19,8 @@ FILE*               g_Log     = nullptr;
 FILE*               g_JsonLog = nullptr;
 std::mutex          g_Mutex;
 LogConfig           g_Cfg;
-std::atomic<int64_t> g_BattleTimeFP{0};
+std::atomic<int64_t> g_CombatStartTimeFP{0};
+int64_t*            g_LockStepTimePtr = nullptr;
 
 // =============================================================================
 //  GAME TIME
@@ -27,21 +28,19 @@ std::atomic<int64_t> g_BattleTimeFP{0};
 static constexpr int64_t FP_ONE = 4294967296LL;
 
 std::string gameTime() {
-    int64_t raw = g_BattleTimeFP.load(std::memory_order_relaxed);
-    if (raw > 0) {
-        int64_t totalMs  = (raw * 1000LL) / FP_ONE;
-        int     ms       = (int)(totalMs % 1000);
-        int64_t totalSec = totalMs / 1000;
-        int     sec      = (int)(totalSec % 60);
-        int     min      = (int)(totalSec / 60);
-        char buf[32];
-        snprintf(buf, sizeof(buf), "%02d:%02d.%03d", min, sec, ms);
-        return buf;
+    int64_t elapsedFP = 0;
+    if (g_LockStepTimePtr) {
+        int64_t lockstepTime = *g_LockStepTimePtr;
+        int64_t combatStart = g_CombatStartTimeFP.load(std::memory_order_relaxed);
+        elapsedFP = combatStart != 0 ? lockstepTime - combatStart : 0;
     }
-    SYSTEMTIME t{};
-    GetLocalTime(&t);
+    int64_t totalMs  = (elapsedFP * 1000LL) / FP_ONE;
+    int     ms       = (int)(totalMs % 1000);
+    int64_t totalSec = totalMs / 1000;
+    int     sec      = (int)(totalSec % 60);
+    int     min      = (int)(totalSec / 60);
     char buf[32];
-    snprintf(buf, sizeof(buf), "%02d:%02d:%02d.%03d", t.wHour, t.wMinute, t.wSecond, t.wMilliseconds);
+    snprintf(buf, sizeof(buf), "%02d:%02d.%03d", min, sec, ms);
     return buf;
 }
 
