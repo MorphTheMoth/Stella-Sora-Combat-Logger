@@ -32,6 +32,7 @@ let fenwick = null;
 let totalHeightCached = 0;
 let lastFetchCount = 0;
 let currentSavedLog = null;
+let pendingAutoClear = false;
 
 // ─── Fenwick tree ─────────────────
 class Fenwick {
@@ -235,6 +236,9 @@ async function fetchLog(incremental = false) {
             });
             lastFetchCount += newEvents.length;
             if (autoClearOnRestart && !currentSavedLog && newEvents.some(e => e.Type === 'Reset')) {
+                pendingAutoClear = true;
+            } else if (pendingAutoClear && newEvents.length > 0) {
+                pendingAutoClear = false;
                 window.clearLog(true);
                 return;
             }
