@@ -287,7 +287,7 @@ static void InvalidateIndex() {
     g_index.eof_offset = 0;
 }
 
-// Returns { "events": [...], "totalLines": N }.
+// Returns { "events": [...], "totalLines": N, "nextAfter": N }.
 // After the first full scan the index is only extended by new bytes,
 // and each poll jumps straight to `after` via seekg - no full-file scan.
 std::string ReadJsonLog(size_t after = 0) {
@@ -304,21 +304,29 @@ std::string ReadJsonLog(size_t after = 0) {
     size_t totalLines = g_index.offsets.size();
 
     json arr = json::array();
+    size_t nextAfter = after;
     if (after < totalLines) {
         file.clear();
         file.seekg(g_index.offsets[after]);
-        std::string line;
-        int maxLines = 250, read = 0;
-        while (read < maxLines && std::getline(file, line)) {
-            if (line.empty() || line[0] == '=') continue;
-            try { arr.push_back(json::parse(line)); } catch (...) {}
-            ++read;
+        if (file.fail()) {
+            // Index is stale (file was truncated externally). Rebuild next time.
+            InvalidateIndex();
+        } else {
+            std::string line;
+            int maxLines = 250, read = 0;
+            while (read < maxLines && std::getline(file, line)) {
+                if (line.empty() || line[0] == '=') continue;
+                try { arr.push_back(json::parse(line)); } catch (...) {}
+                ++read;
+            }
+            nextAfter = after + read;
         }
     }
 
     json result;
     result["events"]     = arr;
     result["totalLines"] = totalLines;
+    result["nextAfter"]  = nextAfter;
     return result.dump();
 }
 
@@ -433,6 +441,7 @@ std::string ReadJsonLogFrom(const std::string& path, size_t after = 0) {
 
     size_t totalLines = offsets.size();
     json arr = json::array();
+    size_t nextAfter = after;
 
     if (after < totalLines) {
         file.clear();
@@ -443,11 +452,13 @@ std::string ReadJsonLogFrom(const std::string& path, size_t after = 0) {
             try { arr.push_back(json::parse(line)); } catch (...) {}
             ++read;
         }
+        nextAfter = after + read;
     }
 
     json result;
     result["events"]     = arr;
     result["totalLines"] = totalLines;
+    result["nextAfter"]  = nextAfter;
     return result.dump();
 }
 
