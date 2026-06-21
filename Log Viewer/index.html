@@ -584,8 +584,60 @@
         .ei-cov-bar-fill { height: 100%; background: #4a7a5a; border-radius: 2px; }
         .ei-empty-row { text-align: center; color: #555; padding: 20px; font-style: italic; }
 
-
-
+        /* ── Crit Distribution card ── */
+        .cd-summary {
+            display: flex; gap: 20px; padding: 8px 4px 10px;
+            border-bottom: 1px solid #2c2c2c; margin-bottom: 8px;
+            font-size: 12px; color: #aaa; flex-wrap: wrap;
+        }
+        .cd-summary-item strong { font-weight: 600; }
+        .cd-table {
+            width: 100%; border-collapse: collapse; font-size: 12px;
+        }
+        .cd-th {
+            padding: 5px 8px; text-align: left; color: #777;
+            font-weight: normal; border-bottom: 1px solid #333;
+            font-size: 11px;
+        }
+        .cd-th-pct { width: 90px; }
+        .cd-th-dmg { text-align: right; }
+        .cd-th-vs  { text-align: right; width: 90px; }
+        .cd-td {
+            padding: 4px 8px; border-bottom: 1px solid #252525;
+            color: #bbb;
+        }
+        .cd-td-dmg { text-align: right; font-variant-numeric: tabular-nums; }
+        .cd-td-vs  { text-align: right; font-size: 11px; }
+        .cd-td-expected { color: #ddd; font-weight: 600; }
+        .cd-row-expected td { color: #ddd; background: #222; }
+        .cd-bar-wrap {
+            display: flex; align-items: center; gap: 6px;
+            padding: 10px 4px 4px; margin-top: 6px;
+        }
+        .cd-bar-label { font-size: 9px; color: #555; white-space: nowrap; }
+        .cd-bar-track {
+            flex: 1; height: 6px; position: relative;
+            background: #2a2a2a; border-radius: 3px; overflow: visible;
+        }
+        .cd-bar-fill {
+            height: 100%; border-radius: 3px;
+            transition: width 0.2s;
+        }
+        .cd-bar-marker {
+            position: absolute; top: -3px; width: 2px; height: 12px;
+            background: #fff; border-radius: 1px;
+            transform: translateX(-1px);
+        }
+        .cd-bar-label-marker {
+            position: absolute; top: -16px;
+            transform: translateX(-50%);
+            font-size: 9px; font-weight: 600; white-space: nowrap;
+        }
+        .cd-row-actual td { border-bottom: 1px solid #3a3a3a; background: #1e1e1e; }
+        .cd-bar-tick {
+            position: absolute; top: -1px; width: 1px; height: 8px;
+            background: #444; transform: translateX(-0.5px);
+        }
     </style>
 </head>
 <body>
@@ -736,6 +788,20 @@
                 </div>
                 <div class="chart-canvas-wrap" style="height:320px; overflow-y:auto;">
                     <canvas id="chartBuff"></canvas>
+                </div>
+            </div>
+
+            <!-- ── Chart 3: Crit Distribution ── -->
+            <div class="chart-card">
+                <h3>Crit Distribution</h3>
+                <div class="chart-controls" style="flex-wrap:wrap; row-gap:6px;">
+                    <label>Character:</label>
+                    <select id="cdFilterChar" onchange="Analytics.refreshCritDist()">
+                        <option value="">All</option>
+                    </select>
+                </div>
+                <div id="critDistTable" style="font-size:12px;min-height:100px;">
+                    <div class="chart-empty">No player hit data</div>
                 </div>
             </div>
 

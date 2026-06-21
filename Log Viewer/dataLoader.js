@@ -129,6 +129,7 @@ async function loadSavedLogsList() {
 }
 
 window.onSavedLogChange = async function() {
+    pendingAutoClear = false;
     const val = document.getElementById('savedLogFilter').value;
     currentSavedLog = val || null;
     allEvents = [];
@@ -146,6 +147,7 @@ window.onSavedLogChange = async function() {
 
 // ─── Save / Clear / Fetch ─────────────────
 window.saveLog = async function() {
+    pendingAutoClear = false;
     const name = prompt("Enter a name for this saved log:");
     if (!name || !name.trim()) return;
 

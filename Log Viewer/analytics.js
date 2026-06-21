@@ -810,6 +810,168 @@ const Analytics = (() => {
         updateBuffPickDropdown();
         refreshDmgShareChart();
         refreshBuffChart();
+        updateCritDistFilters();
+        refreshCritDist();
+    }
+
+    // ── Chart 3: Crit Distribution ─────────────────────────────────
+    function updateCritDistFilters() {
+        const sel = document.getElementById('cdFilterChar');
+        const cur = sel.value;
+        const chars = new Set(getPlayerHits().map(ev => getCharName(ev)));
+        sel.innerHTML = '<option value="">All</option>';
+        [...chars].sort().forEach(c => {
+            const o = document.createElement('option');
+            o.value = c; o.textContent = c; sel.appendChild(o);
+        });
+        if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
+    }
+
+    function refreshCritDist() {
+        const charFilter = document.getElementById('cdFilterChar').value;
+        const hits = getPlayerHits().filter(ev => !charFilter || getCharName(ev) === charFilter);
+        const container = document.getElementById('critDistTable');
+        if (!container) return;
+
+        if (!hits.length) {
+            container.innerHTML = '<div class="chart-empty">No player hit data</div>';
+            return;
+        }
+
+        // Accumulate crit distribution stats
+        let totalBaseDmg = 0;
+        let expectedExtra = 0;
+        let actualExtra = 0;
+        let varianceSum = 0;
+        let varianceSqSum = 0;
+        let critHits = 0;
+        const emptySet = new Set();
+        const emptyBonus = { baseAtk:0, atkPct:0 };
+        // Ensure all dcBonus keys exist
+        DC_FIELDS.forEach(f => { emptyBonus[f.key] = 0; });
+        ['genDmg','intensity','finalDmg','genDmgRcd','toughnessBroken','pen','res','effectiveDef','critRate','critDmg','defAmend','baseAtk','atkPct'].forEach(k => { emptyBonus[k] = 0; });
+
+        for (const ev of hits) {
+            const fields = calcHitFields(ev, null, emptySet);
+
+            // Base multiplier (same as dcCalcCritLuck without dcBonus/dcDisabled)
+            let bm = (fields.baseAtk + (emptyBonus.baseAtk || 0)) * (fields.atkPct + (emptyBonus.atkPct || 0)) + fields.atkAbs;
+            for (const key of DC_FORMULA_KEYS) {
+                if (key === 'atkMulti' || key === 'critDmg') continue;
+                let val;
+                if (key === 'penRes')
+                    val = calcPenRes(fields._aStats, fields._dStats, fields._el, 0, 0);
+                else if (key === 'defAmend') {
+                    val = fields.defAmend;
+                } else
+                    val = fields[key] != null ? fields[key] : 1;
+                bm *= val;
+            }
+
+            totalBaseDmg += bm;
+
+            const cr = fields.critRate;
+            const cd = fields.critDmg;
+            const extra = bm * (cd - 1);
+
+            expectedExtra += extra * cr;
+            if (fields.isCrit) { actualExtra += extra; critHits++; }
+            const p = cr, s = extra;
+            const varI = p * (1 - p) * s * s;
+            varianceSum += varI;
+            varianceSqSum += varI * varI;
+        }
+
+        if (expectedExtra === 0) {
+            container.innerHTML = '<div class="chart-empty">No crit-variable hits (crit rate is 0)</div>';
+            return;
+        }
+
+        const stddev = Math.sqrt(Math.max(0, varianceSum));
+        const nEff = varianceSum > 0 && varianceSqSum > 0 ? varianceSum * varianceSum / varianceSqSum : 0;
+        const zScore = stddev > 0 ? (actualExtra - expectedExtra) / stddev : 0;
+        const myPct = _normalCdf(zScore) * 100;
+
+        // Practical error estimate: ~95% coverage for weighted-Bernoulli distributions
+        const pracErr = nEff > 0 ? 0.15 / Math.sqrt(nEff) / (1 + zScore * zScore / 6) : 0;
+        const pracErrPct = Math.min(pracErr * 100, 10);
+        const pctLower = Math.max(0, myPct - pracErrPct);
+        const pctUpper = Math.min(100, myPct + pracErrPct);
+
+        const expectedTotal = totalBaseDmg + expectedExtra;
+        const actualTotal = totalBaseDmg + actualExtra;
+
+        // Build table
+        const PCTS = [99, 95, 90, 75, 50, 25, 10, 5, 1];
+        const myCls = myPct >= 50 ? 'ei-pos' : 'ei-neg';
+        const actualVsExp = actualTotal / expectedTotal * 100;
+
+        // Build all rows (PCTS + user) into an array, sorted by percentile descending
+        const rows = [];
+        for (const p of PCTS) {
+            const z = _normalQuantile(p / 100);
+            const totalAtP = expectedTotal + z * stddev;
+            const vsExp = totalAtP / expectedTotal * 100;
+            rows.push({
+                sortKey: p, label: p + 'th', dmg: totalAtP,
+                vs: p === 50 ? '—' : (vsExp >= 100 ? '+' : '') + (vsExp - 100).toFixed(1) + '%',
+                cls: p === 50 ? '' : vsExp > 100 ? 'ei-pos' : 'ei-neg',
+                isExpected: p === 50,
+            });
+        }
+        rows.push({
+            sortKey: myPct, label: 'You (' + myPct.toFixed(1) + 'th)', dmg: actualTotal,
+            vs: (actualVsExp >= 100 ? '+' : '') + (actualVsExp - 100).toFixed(1) + '%',
+            cls: myCls, isActual: true,
+        });
+        rows.sort((a, b) => b.sortKey - a.sortKey);
+
+        const nEffInt = Math.round(nEff);
+        const pctRange = pracErrPct > 0.1
+            ? `<span style="color:#888"> (${pctLower.toFixed(1)}th – ${pctUpper >= 99.95 ? '99.9+' : pctUpper.toFixed(1)}th)</span>`
+            : '';
+        let rowsHtml = `<div class="cd-summary">
+            <span class="cd-summary-item">Your total: <strong class="${myCls}">${Math.round(actualTotal).toLocaleString()}</strong></span>
+            <span class="cd-summary-item">Expected (50th): <strong>${Math.round(expectedTotal).toLocaleString()}</strong></span>
+            <span class="cd-summary-item">Your percentile: <strong class="${myCls}">${myPct.toFixed(1)}th</strong>${pctRange}</span>
+            <span class="cd-summary-item">Eff. crit rolls: <strong title="Effective number of independent crit events (n_eff). Lower = wider Berry-Esseen range.">${nEffInt.toLocaleString()}</strong></span>
+        </div>`;
+
+        rowsHtml += `<table class="cd-table"><thead><tr>
+            <th class="cd-th cd-th-pct">Percentile</th>
+            <th class="cd-th cd-th-dmg">Total Damage</th>
+            <th class="cd-th cd-th-vs">vs Expected</th>
+        </tr></thead><tbody>`;
+
+        for (const r of rows) {
+            const extraCls = r.isExpected ? ' cd-row-expected' : r.isActual ? ' cd-row-actual' : '';
+            const dmgCls = r.isExpected ? ' cd-td-expected' : '';
+            rowsHtml += `<tr class="cd-row${extraCls}">
+                <td class="cd-td cd-td-pct">${r.isActual ? '<strong class="' + myCls + '">' : ''}${r.label}${r.isActual ? '</strong>' : ''}</td>
+                <td class="cd-td cd-td-dmg${dmgCls}">${r.isActual ? '<strong class="' + myCls + '">' : ''}${Math.round(r.dmg).toLocaleString()}${r.isActual ? '</strong>' : ''}</td>
+                <td class="cd-td cd-td-vs ${r.cls}">${r.vs}</td>
+            </tr>`;
+        }
+
+        rowsHtml += `</tbody></table>`;
+
+        // Bar: visual indicator of your position
+        const barPct = Math.max(2, Math.min(98, myPct));
+        const barColor = myPct >= 50 ? '#4a7a55' : '#7a3838';
+        rowsHtml += `<div class="cd-bar-wrap">
+            <div class="cd-bar-label">0th</div>
+            <div class="cd-bar-track">
+                <div class="cd-bar-fill" style="width:${barPct}%;background:${barColor}"></div>
+                <div class="cd-bar-marker" style="left:${barPct}%"></div>
+                <div class="cd-bar-label cd-bar-label-marker" style="left:${barPct}%">${myPct.toFixed(1)}th</div>
+                <div class="cd-bar-tick" style="left:25%"></div>
+                <div class="cd-bar-tick" style="left:50%"></div>
+                <div class="cd-bar-tick" style="left:75%"></div>
+            </div>
+            <div class="cd-bar-label">100th</div>
+        </div>`;
+
+        container.innerHTML = rowsHtml;
     }
 
     // Initialize toggle button active states (AE + DE on by default)
@@ -826,6 +988,7 @@ const Analytics = (() => {
         refresh,
         refreshDmgShareChart,
         refreshBuffChart,
+        refreshCritDist,
         onGroupByChange: refreshDmgShareChart,
         onBpViewByChange,
         onBpSrcToggle,

@@ -494,6 +494,118 @@ const DC_PCT_FIELDS = new Set([
     'penRes','defAmend','envAmend'
 ]);
 
+// ─── Crit Luck Computation ────────────────────────────────────────────────────
+// Returns { ratio, actualExtraSum, expectedExtraSum, stddev, zScore, percentile,
+//           quantiles: {<pct>: value}, totalHitCount, critHitCount } or null.
+function dcCalcCritLuck(dcFiltered, dcEffectsDisabled, dcBonus, dcDisabled) {
+    let actualExtraSum = 0;
+    let expectedExtraSum = 0;
+    let varianceSum = 0;
+    let varianceSqSum = 0;
+    let critHitCount = 0;
+    let totalBaseDmg = 0;
+
+    for (const ev of dcFiltered) {
+        const fields = calcHitFields(ev, null, dcEffectsDisabled);
+
+        // base multiplier = product of all formula keys except critDmg
+        let bm = (fields.baseAtk + (dcBonus.baseAtk || 0)) * (fields.atkPct + (dcBonus.atkPct || 0)) + fields.atkAbs;
+
+        for (const key of DC_FORMULA_KEYS) {
+            if (key === 'atkMulti' || key === 'critDmg') continue;
+            if (dcDisabled.has(key)) continue;
+            let val;
+            if (key === 'penRes')
+                val = calcPenRes(fields._aStats, fields._dStats, fields._el, dcBonus.pen || 0, dcBonus.res || 0);
+            else if (key === 'defAmend') {
+                const efb = dcBonus.effectiveDef || 0;
+                val = efb !== 0 ? 1 - ((fields.effectiveDef + efb) * 40) / ((fields.effectiveDef + efb) * 32 + 24000) : fields.defAmend;
+                val += (dcBonus.defAmend || 0);
+            } else
+                val = (fields[key] != null ? fields[key] : 1) + (dcBonus[key] || 0);
+            bm *= val;
+        }
+
+        const cr = fields.critRate + (dcBonus.critRate || 0);
+        const cd = fields.critDmg + (dcBonus.critDmg || 0);
+        const extra = bm * (cd - 1);
+
+        totalBaseDmg += bm;
+        expectedExtraSum += extra * cr;
+        if (fields.isCrit) { actualExtraSum += extra; critHitCount++; }
+        const p = cr, s = extra;
+        const varI = p * (1 - p) * s * s;
+        varianceSum += varI;
+        varianceSqSum += varI * varI;
+    }
+
+    const n = dcFiltered.length;
+    if (n === 0 || expectedExtraSum === 0) return null;
+
+    const stddev = Math.sqrt(Math.max(0, varianceSum));
+    const nEff = varianceSum > 0 && varianceSqSum > 0 ? varianceSum * varianceSum / varianceSqSum : 0;
+    const zScore = stddev > 0 ? (actualExtraSum - expectedExtraSum) / stddev : 0;
+    const pct = _normalCdf(zScore) * 100;
+
+    // Practical error estimate: ~95% coverage for weighted-Bernoulli distributions
+    // Uses effective sample size with tail tightening factor
+    const pracErr = nEff > 0 ? 0.15 / Math.sqrt(nEff) / (1 + zScore * zScore / 6) : 0;
+    const pracErrPct = Math.min(pracErr * 100, 10);
+
+    // Quantile values at key percentiles
+    const PCTS = [1, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 99];
+    const quantiles = {};
+    for (const p of PCTS) quantiles[p] = expectedExtraSum + _normalQuantile(p / 100) * stddev;
+
+    return {
+        ratio: actualExtraSum / expectedExtraSum,
+        actualExtraSum, expectedExtraSum, stddev, zScore,
+        percentile: pct, quantiles,
+        totalHitCount: n, critHitCount,
+        totalBaseDmg, nEff, pracErrPct,
+    };
+}
+
+// Normal PDF
+function _normalPdf(x, mean, stddev) {
+    const z = (x - mean) / stddev;
+    return Math.exp(-0.5 * z * z) / (stddev * 2.5066282746310002);
+}
+
+// Normal CDF (Abramowitz & Stegun approximation)
+function _normalCdf(z) {
+    const a1 = 0.254829592, a2 = -0.284496736, a3 = 1.421413741;
+    const a4 = -1.453152027, a5 = 1.061405429, p = 0.3275911;
+    const sign = z < 0 ? -1 : 1;
+    const x = Math.abs(z) / 1.4142135623730951;
+    const t = 1 / (1 + p * x);
+    const y = 1 - (((((a5 * t + a4) * t + a3) * t + a2) * t + a1) * t) * Math.exp(-x * x);
+    return 0.5 * (1 + sign * y);
+}
+
+// Inverse normal CDF / quantile function (Acklam approximation)
+function _normalQuantile(p) {
+    if (p <= 0) return -Infinity;
+    if (p >= 1) return Infinity;
+    const a = [-39.69683028665376, 220.9460984245205, -275.9285104469687, 138.357751867269, -30.66479806614716, 2.506628277459239];
+    const b = [-54.47609879822406, 161.5858368580409, -155.6989798598866, 66.80131188771972, -13.28068155288572];
+    const c = [-0.007784894002430293, -0.3223964580412405, -2.400758277161838, -2.549732539343734, 4.374664141464968, 2.938163982698783];
+    const d = [0.007784695709041462, 0.3224671290700398, 2.445134137142996, 3.754408661907416];
+    const pLow = 0.02425, pHigh = 1 - pLow;
+    let z;
+    if (p < pLow) {
+        const q = Math.sqrt(-2 * Math.log(p));
+        z = (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1);
+    } else if (p <= pHigh) {
+        const q = p - 0.5, r = q * q;
+        z = (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q / (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1);
+    } else {
+        const q = Math.sqrt(-2 * Math.log(1 - p));
+        z = -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1);
+    }
+    return z;
+}
+
 function fmtVal(v, key) {
     if (v == null || isNaN(v)) return '—';
     if (key && DC_PCT_FIELDS.has(key)) {
