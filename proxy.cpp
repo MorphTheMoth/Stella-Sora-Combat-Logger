@@ -45,8 +45,10 @@ static constexpr uintptr_t RVA_BUFF_EFFECT_ON_INIT           = 0x16C4BD0;
 static constexpr uintptr_t RVA_BUFF_ENTITY_INIT              = 0x16C9500;
 static constexpr uintptr_t RVA_BUFF_ENTITY_EXCUTE            = 0x16C81C0;
 static constexpr uintptr_t RVA_CALC_NORMAL_DAMAGE            = 0x110C100;
-static constexpr uintptr_t RVA_GET_ONCE_ATTR                 = 0x12840E0;
-static constexpr uintptr_t RVA_GET_VALUE_CONFIG_ID           = 0x1111080;
+static constexpr uintptr_t RVA_GET_ONCE_ATTR                      = 0x12840E0;
+static constexpr uintptr_t RVA_GET_VALUE_CONFIG_ID                = 0x1111080;
+static constexpr uintptr_t RVA_GET_EFFECT_VALUE                   = 0x1282100;
+static constexpr uintptr_t RVA_GET_ONCE_ADDITIONAL_ATTRIBUTE_VALUE = 0x1283F30;
 static constexpr uintptr_t RVA_MONSTER_ACTION_STATE_ON_ENTER = 0x1104CD0;
 static constexpr uintptr_t RVA_MODULE_CLEAR_DATA = 0x15C78A0;  // AdventureModuleController$$ClearData
 
@@ -140,11 +142,15 @@ static int64_t __fastcall Hook_CalcNormalDamage(
 
     // ── Step 3: GDC ─────────────────────────────────────────────────────────
     GameDataController_o* gdc = GetGDC();
-    FnGetOnceAttr      GetOnceAttr      = nullptr;
-    FnGetValueConfigId GetValueConfigId = nullptr;
+    FnGetOnceAttr                     GetOnceAttr   = nullptr;
+    FnGetValueConfigId                GetValueConfigId = nullptr;
+    FnGetEffectValue                  GetEffectValue    = nullptr;
+    FnGetOnceAdditionalAttributeValue GetAttrValue      = nullptr;
     if (gdc && g_base) {
-        GetOnceAttr      = reinterpret_cast<FnGetOnceAttr>     (g_base + RVA_GET_ONCE_ATTR);
-        GetValueConfigId = reinterpret_cast<FnGetValueConfigId>(g_base + RVA_GET_VALUE_CONFIG_ID);
+        GetOnceAttr   = reinterpret_cast<FnGetOnceAttr>                    (g_base + RVA_GET_ONCE_ATTR);
+        GetValueConfigId = reinterpret_cast<FnGetValueConfigId>            (g_base + RVA_GET_VALUE_CONFIG_ID);
+        GetEffectValue    = reinterpret_cast<FnGetEffectValue>             (g_base + RVA_GET_EFFECT_VALUE);
+        GetAttrValue      = reinterpret_cast<FnGetOnceAdditionalAttributeValue>(g_base + RVA_GET_ONCE_ADDITIONAL_ATTRIBUTE_VALUE);
     }
 
     // ── Step 4: resolve raw attr lists  ──────────────────────────────────────
@@ -164,7 +170,8 @@ static int64_t __fastcall Hook_CalcNormalDamage(
         staticFields->toAdditionalAttrInfo,
         staticFields->fromAdditionalAttrDict,
         staticFields->toAdditionalAttrDict,
-        gdc, GetOnceAttr, GetValueConfigId);
+        gdc, GetOnceAttr, GetValueConfigId,
+        GetEffectValue, GetAttrValue);
 
     return dmg;
 }
@@ -308,9 +315,9 @@ static void __fastcall Hook_BattleStart(void* self, void* evt, void* method) {
         int64_t t = *reinterpret_cast<int64_t*>(
             reinterpret_cast<uint8_t*>(lsTypeInfo->static_fields) + 0x08);
         g_CombatStartTimeFP.store(t, std::memory_order_relaxed);
-        log("[BattleStart] Combat started! LockStep._time = %lld", (long long)t);
+        //log("[BattleStart] Combat started! LockStep._time = %lld", (long long)t);
     } else {
-        log("[BattleStart] Combat started! (could not read time)");
+        //log("[BattleStart] Combat started! (could not read time)");
     }
     g_OrigBattleStart(self, evt, method);
 }

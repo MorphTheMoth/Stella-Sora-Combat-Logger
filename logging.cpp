@@ -536,14 +536,51 @@ json BuildBuffListJson(AdventureActor_o* fromActor) {
     return j;
 }
 
+// Helper: collect all keys from a Dictionary<int, T*> by raw slot iteration.
+// dictPtr points to the Dictionary Il2CppObject (not pointer-to-pointer).
+// NOTE: IL2CPP Dictionary layout: klass(8)+monitor(8)+_syncRoot(8)+_entries(8)
+//       _entries at +0x18, _count at +0x20, _freeList at +0x24, _freeCount at +0x28
+static std::unordered_set<int32_t> CollectDictKeys(void* dictPtr) {
+    std::unordered_set<int32_t> keys;
+    if (!dictPtr) return keys;
+
+    uintptr_t base = reinterpret_cast<uintptr_t>(dictPtr);
+    auto* entriesArr = *reinterpret_cast<void**>(base + 0x18);  // fields._entries
+    int32_t count    = *reinterpret_cast<int32_t*>(base + 0x20); // fields._count
+
+    if (!entriesArr || count <= 0 || count > 65536) return keys;
+
+    constexpr size_t entrySize   = 0x18;  // hashCode(4)+next(4)+key(4)+value(8)
+    constexpr size_t keyOffset   = 0x08;
+    constexpr size_t arrayHeader = 0x20;  // klass(8)+monitor(8)+bounds(8)+max_length(8)
+    uintptr_t items = reinterpret_cast<uintptr_t>(entriesArr) + arrayHeader;
+
+    for (int i = 0; i < count; ++i) {
+        uintptr_t slot = items + i * entrySize;
+        int32_t hashCode = *reinterpret_cast<int32_t*>(slot);
+        if (hashCode < 0) continue;
+        int32_t key = *reinterpret_cast<int32_t*>(slot + keyOffset);
+        if (key > 0) keys.insert(key);
+    }
+    return keys;
+}
+
 // Build a JSON object listing all active AdventureEffects on an actor.
-json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails) {
+json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
+                          GameDataController_o* gdc,
+                          FnGetEffectValue GetEffectValue) {
     //ActorEffectManage has a list of Effects, each effect has a list of its derivative effects that are actually active
     json j;
     if (!effectManage) return j;
 
     auto* effectsDict = effectManage->fields.effectsDict;
     if (!effectsDict) return j;
+
+    // Pre-build key set from GDC's EffectValue_Map for fast level-enumeration lookups
+    std::unordered_set<int32_t> effectValueKeys;
+    if (gdc && gdc->fields.EffectValue_Map) {
+        effectValueKeys = CollectDictKeys(gdc->fields.EffectValue_Map);
+    }
 
     auto* entriesArr = effectsDict->fields._entries;
     int   slotCount  = effectsDict->fields._count;
@@ -568,6 +605,30 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails)
             AdventureEffect_o* effect = *reinterpret_cast<AdventureEffect_o**>(entry + valOffset);
             if (!effect) continue;
 
+            // Pre-compute level config data for this effect (shared by all stack items)
+            auto* effectCfg = effect->fields._effectConfig_k__BackingField;
+            int32_t baseConfigId = effectCfg ? effectCfg->fields.id_ : 0;
+            int32_t levelTypeData = effectCfg ? effectCfg->fields.levelTypeData_ : 0;
+            int32_t levelData = effectCfg ? effectCfg->fields.levelData_ : 0;
+
+            // Enumerate all possible value config IDs for this effect at different levels
+            json allValueOptions = json::array();
+            if (!effectValueKeys.empty() && baseConfigId > 0) {
+                bool anyFound = false;
+                for (int lvl = 0; lvl <= 50; ++lvl) {
+                    int32_t vid = baseConfigId + lvl * 10;
+                    if (effectValueKeys.count(vid)) {
+                        anyFound = true;
+                        json ve;
+                        ve["level"] = lvl;
+                        ve["valueConfigId"] = vid;
+                        allValueOptions.push_back(ve);
+                    } else if (anyFound) {
+                        break;
+                    }
+                }
+            }
+
             auto* stack = effect->fields._effectStack; // System_Collections_Generic_Stack_AdventureEffectBase__o*
             if (stack && stack->fields._array) {
                 auto* array = stack->fields._array;     // AdventureEffectBase_array*
@@ -583,10 +644,12 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails)
                     if (!base) continue;
 
                     AdventureEffect_o* parentEffect = base->fields._effect; 
-                    auto* cfgPtr = parentEffect->fields._effectConfig_k__BackingField;
                     auto* ValueCfgPtr = parentEffect->fields._effectValueConfig_k__BackingField;
-                    je["configId"] = cfgPtr ? cfgPtr->fields.id_ : 0;
+                    je["configId"] = baseConfigId;
+                    je["levelTypeData"] = levelTypeData;
+                    je["levelData"] = levelData;
                     je["valueConfigId"] = ValueCfgPtr ? ValueCfgPtr->fields.id_ : 0;
+                    je["allValueConfigIds"] = allValueOptions;
                     je["sourceType"] = parentEffect->fields.sourceType;
                     je["damage"]     = static_cast<int64_t>(parentEffect->fields.Damage);
 
@@ -637,7 +700,8 @@ json BuildAdditionalAttrDictJson(
     AdventureActor_o*                    fromActor,
     GameDataController_o*                gdc,
     FnGetOnceAttr                        GetOnceAttr,
-    FnGetValueConfigId                   GetValueConfigId)
+    FnGetValueConfigId                   GetValueConfigId,
+    FnGetOnceAdditionalAttributeValue    GetAttrValue)
 {
     json arr = json::array();
     if (!dict || !dict->klass || !dict->fields._entries) return arr;
@@ -645,6 +709,12 @@ json BuildAdditionalAttrDictJson(
     auto* entryArr = reinterpret_cast<DictEntryArray_Int_Int_L*>(dict->fields._entries);
     int32_t capacity = static_cast<int32_t>(entryArr->max_length);
     if (capacity <= 0 || capacity > 4096) return arr;
+
+    // Pre-build key set from GDC's OnceAdditionalAttributeValue_Map
+    std::unordered_set<int32_t> attrValueKeys;
+    if (gdc && gdc->fields.OnceAdditionalAttributeValue_Map) {
+        attrValueKeys = CollectDictKeys(gdc->fields.OnceAdditionalAttributeValue_Map);
+    }
 
     for (int32_t i = 0; i < capacity; ++i) {
         const DictEntry_Int_Int_L& e = entryArr->m_Items[i];
@@ -658,9 +728,33 @@ json BuildAdditionalAttrDictJson(
         if (gdc && fromActor && GetOnceAttr && GetValueConfigId) {
             Nova_Client_OnceAdditionalAttribute_o* def = GetOnceAttr(gdc, e.key, nullptr);
             if (def && def->klass) {
-                int32_t valueConfigId = GetValueConfigId(
-                    fromActor, def->fields.id_, def->fields.levelTypeData_, def->fields.levelData_, nullptr);
-                entry["valueConfigId"] = valueConfigId;
+                int32_t baseId = def->fields.id_;
+                int32_t lt = def->fields.levelTypeData_;
+                int32_t ld = def->fields.levelData_;
+                int32_t currentValueConfigId = GetValueConfigId(
+                    fromActor, baseId, lt, ld, nullptr);
+                entry["valueConfigId"] = currentValueConfigId;
+                entry["levelTypeData"] = lt;
+                entry["levelData"] = ld;
+
+                // Enumerate all possible value config IDs for this attribute at different levels
+                json allValueOptions = json::array();
+                if (!attrValueKeys.empty() && baseId > 0) {
+                    bool anyFound = false;
+                    for (int lvl = 0; lvl <= 50; ++lvl) {
+                        int32_t vid = baseId + lvl * 10;
+                        if (attrValueKeys.count(vid)) {
+                            anyFound = true;
+                            json ve;
+                            ve["level"] = lvl;
+                            ve["valueConfigId"] = vid;
+                            allValueOptions.push_back(ve);
+                        } else if (anyFound) {
+                            break;
+                        }
+                    }
+                }
+                entry["allValueConfigIds"] = allValueOptions;
             }
         }
 
@@ -688,7 +782,9 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
                   System_Collections_Generic_Dictionary_int__int__o* fromAttrDict,
                   System_Collections_Generic_Dictionary_int__int__o* toAttrDict,
                   GameDataController_o* gdc,
-                  FnGetOnceAttr GetOnceAttr, FnGetValueConfigId GetValueConfigId) {
+                  FnGetOnceAttr GetOnceAttr, FnGetValueConfigId GetValueConfigId,
+                  FnGetEffectValue GetEffectValue,
+                  FnGetOnceAdditionalAttributeValue GetAttrValue) {
     if (!g_Cfg.damage) return;
     // Build element/dmg dict overlays once — read-only, no game memory mutation
     std::vector<ElemDictEntry> fromOverlay = ReadElemDict(fromAdditionalAttrInfo);
@@ -780,26 +876,26 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
     
     if (fromActor && g_Cfg.on_hit_effect_list) {
         ActorEffectManage_o* effectManage = fromActor->fields.effectManage;
-        json effects = BuildEffectListJson(effectManage, g_Cfg.on_hit_effect_list_information);
+        json effects = BuildEffectListJson(effectManage, g_Cfg.on_hit_effect_list_information, gdc, GetEffectValue);
         if (!effects.empty())
             j["AttackerEffects"] = effects;
     }    
 
     if (toActor && g_Cfg.on_hit_effect_list) {
         ActorEffectManage_o* effectManage = toActor->fields.effectManage;
-        json effects = BuildEffectListJson(effectManage, g_Cfg.on_hit_effect_list_information);
+        json effects = BuildEffectListJson(effectManage, g_Cfg.on_hit_effect_list_information, gdc, GetEffectValue);
         if (!effects.empty())
             j["DefenderEffects"] = effects;
     }
 
     if (g_Cfg.on_hit_attacker_attr_dict) {
-        json attrDict = BuildAdditionalAttrDictJson(fromAttrDict, fromActor, gdc, GetOnceAttr, GetValueConfigId);
+        json attrDict = BuildAdditionalAttrDictJson(fromAttrDict, fromActor, gdc, GetOnceAttr, GetValueConfigId, GetAttrValue);
         if (!attrDict.empty())
             j["AttackerAttrDict"] = attrDict;
     }
 
     if (g_Cfg.on_hit_defender_attr_dict) {
-        json attrDict = BuildAdditionalAttrDictJson(toAttrDict, fromActor, gdc, GetOnceAttr, GetValueConfigId);
+        json attrDict = BuildAdditionalAttrDictJson(toAttrDict, fromActor, gdc, GetOnceAttr, GetValueConfigId, GetAttrValue);
         if (!attrDict.empty())
             j["DefenderAttrDict"] = attrDict;
     }
@@ -822,7 +918,7 @@ void BuildResetJson() {
     j["Time"] = gameTime();
     
     logJson(j);
-    log("[Reset] %s", gameTime().c_str());
+    //log("[Reset] %s", gameTime().c_str());
 }
 
 // =============================================================================

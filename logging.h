@@ -16,6 +16,8 @@ using json = nlohmann::json;
 struct AdventureActor_o;
 struct ActorEffectManage_o;
 struct Nova_Client_HitDamage_o;
+struct Nova_Client_EffectValue_o;
+struct Nova_Client_OnceAdditionalAttributeValue_o;
 struct AttributeList_o;
 struct GameDataController_o;
 struct Nova_Client_OnceAdditionalAttribute_o;
@@ -23,8 +25,10 @@ struct System_Collections_Generic_Dictionary_int__int__o;
 struct ActorAdditionalAttrInfo_o;
 
 // Function pointer types shared between proxy.cpp and logging.cpp
-using FnGetOnceAttr      = Nova_Client_OnceAdditionalAttribute_o* (__fastcall*)(GameDataController_o*, int32_t, void*);
-using FnGetValueConfigId = int32_t                                (__fastcall*)(AdventureActor_o*, int32_t, int32_t, int32_t, void*);
+using FnGetOnceAttr                      = Nova_Client_OnceAdditionalAttribute_o* (__fastcall*)(GameDataController_o*, int32_t, void*);
+using FnGetValueConfigId                 = int32_t                                (__fastcall*)(AdventureActor_o*, int32_t, int32_t, int32_t, void*);
+using FnGetEffectValue                   = Nova_Client_EffectValue_o*             (__fastcall*)(GameDataController_o*, int32_t, void*);
+using FnGetOnceAdditionalAttributeValue  = Nova_Client_OnceAdditionalAttributeValue_o* (__fastcall*)(GameDataController_o*, int32_t, void*);
 
 struct LogConfig {
     bool buffs;
@@ -80,13 +84,16 @@ json logAdventureActorSpecialAttrsJson(AdventureActor_o* actor);
 // JSON builders for different event types
 void BuildBuffJson(const char* type, int32_t configId, AdventureActor_o* owner, AdventureActor_o* fromActor, int isAdd, int32_t buffNum = 0);
 json BuildBuffListJson(AdventureActor_o* fromActor);
-json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails);
+json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
+                          GameDataController_o* gdc = nullptr,
+                          FnGetEffectValue GetEffectValue = nullptr);
 json BuildAdditionalAttrDictJson(
     System_Collections_Generic_Dictionary_int__int__o* dict,
     AdventureActor_o*     fromActor,
     GameDataController_o* gdc,
     FnGetOnceAttr         GetOnceAttr,
-    FnGetValueConfigId    GetValueConfigId);
+    FnGetValueConfigId    GetValueConfigId,
+    FnGetOnceAdditionalAttributeValue GetAttrValue = nullptr);
 void BuildHitJson(
     AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_Client_HitDamage_o* hitDamageConfig,
     int32_t skillLevel, bool isCrit, bool isDot,
@@ -104,7 +111,9 @@ void BuildHitJson(
     System_Collections_Generic_Dictionary_int__int__o* fromAttrDict,
     System_Collections_Generic_Dictionary_int__int__o* toAttrDict,
     GameDataController_o* gdc,
-    FnGetOnceAttr GetOnceAttr, FnGetValueConfigId GetValueConfigId);
+    FnGetOnceAttr GetOnceAttr, FnGetValueConfigId GetValueConfigId,
+    FnGetEffectValue GetEffectValue = nullptr,
+    FnGetOnceAdditionalAttributeValue GetAttrValue = nullptr);
 void BuildSkillCastJson(int32_t skillId);
 void BuildResetJson();
 
