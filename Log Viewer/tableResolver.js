@@ -223,28 +223,27 @@ function enrichAttrList(attrs) {
 
 function enrichAttrDictList(attrDictList) {
     if (!Array.isArray(attrDictList)) return;
-    // We may splice in extra entries for slots 2 & 3, so iterate by index carefully.
     let i = 0;
     while (i < attrDictList.length) {
         const entry = attrDictList[i];
+        if (entry._dictEnriched) { i++; continue; }
+
         if (entry.attrId != null) {
             entry.configId = entry.attrId;
             entry.name = buffIdToName(entry.attrId);
             const ei = effectTable.get(entry.attrId);
             if (ei) entry.source = ei.source ?? 'Unknown';
         }
-        // Attach onceAttrValue data if we have a valueConfigId
         const vcId = entry.valueConfigId != null ? parseInt(entry.valueConfigId, 10) : null;
         if (vcId) {
             const slots = onceAttrValueTable.get(vcId);
             if (slots && slots.length > 0) {
-                // Apply slot 1 data to this entry
                 const s1 = slots[0];
                 entry.attrType = s1.attrType;
                 entry.subType  = s1.subType;
                 entry.value    = s1.value;
+                entry._dictEnriched = true;
 
-                // Splice in copies for slots 2 & 3
                 for (let sn = 1; sn < slots.length; sn++) {
                     const sx = slots[sn];
                     const extra = Object.assign({}, entry);
@@ -252,13 +251,14 @@ function enrichAttrDictList(attrDictList) {
                     extra.subType  = sx.subType;
                     extra.value    = sx.value;
                     extra.name     = (entry.name || String(entry.attrId || '')) + ' #' + (sn + 1);
+                    extra._dictEnriched = true;
                     attrDictList.splice(i + sn, 0, extra);
                 }
-                // Skip past the newly inserted entries
                 i += slots.length;
                 continue;
             }
         }
+        entry._dictEnriched = true;
         i++;
     }
 }

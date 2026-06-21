@@ -27,6 +27,8 @@ DC_FIELDS.forEach(f => { dcBonus[f.key] = 0; });
 // ─── DC effects panel state ───────────────────────────────────────────────────
 // Set of "side:configId:valueConfigId" keys for effects the user disabled
 const dcEffectsDisabled = new Set();
+// Map<key, {newValueConfigId,newValue,newAttrType,newSubType}> for level-overridden effects
+const dcEffectLevelOverrides = new Map();
 // Whether the effects panel is open
 let dcEffectsPanelOpen = true;
 // Which source sections are open; default collapsed (keys added on first toggle)
@@ -137,21 +139,53 @@ function renderEffectsPanel() {
                         if (ef.isPotentialsGroup) {
                             statLine = `${ef.count} hit${ef.count !== 1 ? 's' : ''} · zeroed when disabled`;
                         } else {
+                            const override = dcEffectLevelOverrides.get(ef.key);
                             const subLabel = ef.subType === 1 ? 'base' : ef.subType === 2 ? 'pct' : ef.subType === 3 ? 'abs' : '?';
                             const attrLabel = ef.attrType != null ? attrName(ef.attrType) : '?';
-                            const raw = ef.value;
+                            const raw = override ? override.newValue : ef.value;
+                            const overrideSubType = override ? override.newSubType : ef.subType;
+                            const overrideAttrType = override ? override.newAttrType : ef.attrType;
+                            const displaySubLabel = overrideSubType === 1 ? 'base' : overrideSubType === 2 ? 'pct' : overrideSubType === 3 ? 'abs' : '?';
+                            const displayAttrLabel = overrideAttrType != null ? attrName(overrideAttrType) : '?';
                             const isSmall = raw != null && Math.abs(raw) < 15;
                             const valStr = raw != null ? (isSmall ? (raw * 100).toFixed(2) + '%' : String(raw)) : '?';
                             const countStr = ef.count > 1 ? ` ×${ef.count}` : '';
-                            statLine = `${esc(attrLabel)} ${valStr>=0 ? '+' : ''}${valStr}${countStr} [${subLabel}]`;
+                            const overrideMarker = override ? ' *' : '';
+                            statLine = `${esc(displayAttrLabel)} ${valStr>=0 ? '+' : ''}${valStr}${countStr} [${displaySubLabel}]${overrideMarker}`;
                         }
                         const titleExtra = ef.isPotentialsGroup
                             ? `potentials · skillTitle=${ef.skillTitle}`
                             : `${ef.side} · configId=${ef.configId}`;
+
+                        // Level buttons for multi-level effects — compute effective level from override
+                        const hasLevels = !ef.isPotentialsGroup && ef.allValueConfigIds && ef.allValueConfigIds.length > 1 && ef.currentLevelIdx >= 0;
+                        const escKey = ef.key.replace(/'/g, "\\'");
+                        let effectiveLevelIdx = ef.currentLevelIdx;
+                        if (hasLevels) {
+                            const existingOverride = dcEffectLevelOverrides.get(ef.key);
+                            if (existingOverride) {
+                                const overriddenIdx = ef.allValueConfigIds.findIndex(v => v.valueConfigId === existingOverride.newValueConfigId);
+                                if (overriddenIdx >= 0) effectiveLevelIdx = overriddenIdx;
+                            }
+                        }
+                        const maxLvl = hasLevels ? ef.allValueConfigIds.length - 1 : 0;
+
+                        let levelBtns = '';
+                        if (hasLevels) {
+                            levelBtns = `
+                                <button class="dc-lvl-btn dc-lvl-minus${effectiveLevelIdx <= 0 ? ' dc-lvl-disabled' : ''}"
+                                    onclick="event.stopPropagation();dcChangeEffectLevel('${escKey}',-1)"
+                                    title="Decrease level">−</button>
+                                <span class="dc-lvl-indicator">Lv.${effectiveLevelIdx + 1}/${maxLvl + 1}</span>
+                                <button class="dc-lvl-btn dc-lvl-plus${effectiveLevelIdx >= maxLvl ? ' dc-lvl-disabled' : ''}"
+                                    onclick="event.stopPropagation();dcChangeEffectLevel('${escKey}',1)"
+                                    title="Increase level">+</button>`;
+                        }
+
                         g += `<div class="dc-effect-chip${disabled ? ' dc-effect-disabled' : ''}"
                             onclick="dcToggleEffect('${ef.key}')"
                             title="${disabled ? 'Click to re-enable' : 'Click to disable'}\n${titleExtra}">
-                            <span class="dc-effect-name">${esc(ef.name)}</span>
+                            <span class="dc-effect-name">${levelBtns}${esc(ef.name)}</span>
                             <span class="dc-effect-stat">${statLine}</span>
                         </div>`;
                     }
@@ -206,6 +240,64 @@ window.dcToggleEffect = function(key) {
     dcRender();
 };
 
+window.dcChangeEffectLevel = function(key, direction) {
+    const effects = dcCollectAttrFixEffects(dcFiltered);
+    const ef = effects.find(e => e.key === key);
+    if (!ef || !ef.allValueConfigIds || ef.allValueConfigIds.length < 2) return;
+
+    // Determine current level index: use override's valueConfigId if present,
+    // otherwise use the original currentLevelIdx from the raw data
+    const existingOverride = dcEffectLevelOverrides.get(key);
+    const curVcId = existingOverride ? existingOverride.newValueConfigId : ef.valueConfigId;
+    let curIdx = ef.allValueConfigIds.findIndex(v => v.valueConfigId === curVcId);
+    if (curIdx < 0) curIdx = ef.currentLevelIdx;
+    if (curIdx < 0) return;
+
+    const newIdx = curIdx + direction;
+    if (newIdx < 0 || newIdx >= ef.allValueConfigIds.length) return;
+    const newEntry = ef.allValueConfigIds[newIdx];
+    const newVcId = newEntry.valueConfigId;
+
+    let newValue, newAttrType, newSubType;
+    if (ef.fromAttrDict) {
+        const slots = onceAttrValueTable.get(newVcId);
+        if (slots && slots.length > 0) {
+            newAttrType = slots[0].attrType;
+            newSubType  = slots[0].subType;
+            newValue    = slots[0].value;
+        } else {
+            return;
+        }
+    } else {
+        const ev = effectValueTable.get(newVcId);
+        if (ev && ev.value != null) {
+            newAttrType = ev.attrType != null ? ev.attrType : ef.attrType;
+            newSubType  = ev.subType  != null ? ev.subType  : ef.subType;
+            newValue    = ev.value;
+        } else {
+            return;
+        }
+    }
+
+    if (newValue == null) return;
+
+    // If overriding back to the original valueConfigId, remove the override
+    if (newVcId === ef.valueConfigId) {
+        dcEffectLevelOverrides.delete(key);
+    } else {
+        dcEffectLevelOverrides.set(key, {
+            newValueConfigId: newVcId,
+            newValue,
+            newAttrType: newAttrType != null ? newAttrType : ef.attrType,
+            newSubType: newSubType  != null ? newSubType  : ef.subType,
+        });
+    }
+
+    renderEffectsPanel();
+    renderFormulaBar();
+    dcRender();
+};
+
 // ─── Formula bar rendering ────────────────────────────────────────────────────
 function renderFormulaBar() {
     const bar = document.getElementById('dcFormulaBar');
@@ -215,7 +307,7 @@ function renderFormulaBar() {
     let totalCalc = 0;
     let totalGame = 0;
     dcFiltered.forEach(ev => {
-        const f = calcHitFields(ev, null, dcEffectsDisabled);
+        const f = calcHitFields(ev, null, dcEffectsDisabled, dcEffectLevelOverrides);
         totalCalc += calcDamage(f, dcBonus, dcDisabled);
         totalGame += f.finalDamage;
     });
@@ -368,7 +460,7 @@ function dcCreateEventDiv(ev, fi) {
     const hc = ev.HitConfig   || {};
     const dp = ev.DamageParams || {};
 
-    const fields   = calcHitFields(ev, null, dcEffectsDisabled);
+    const fields   = calcHitFields(ev, null, dcEffectsDisabled, dcEffectLevelOverrides);
     const calcDmg  = calcDamage(fields, dcBonus, dcDisabled);
 
     const attName  = esc(ev.AttackerDisplay || ev.Attacker || '?');
@@ -584,7 +676,7 @@ function dcRender() {
             const fvRow = el.querySelector('.dc-fields-row');
             if (fvRow) {
                 const ev = allEvents[oi];
-                const fields  = calcHitFields(ev, null, dcEffectsDisabled);
+                const fields  = calcHitFields(ev, null, dcEffectsDisabled, dcEffectLevelOverrides);
                 const calcDmg = calcDamage(fields, dcBonus, dcDisabled);
                 const fvs     = hitFieldValues(fields, dcBonus);
                 const cells   = fvRow.querySelectorAll('.dc-field-cell');

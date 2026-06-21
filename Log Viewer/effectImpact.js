@@ -22,7 +22,12 @@ function eiResolveEffectDelta(ev, ef) {
             const vcid = e.valueConfigId ?? '';
             if (cid === ef.configId && String(vcid) === String(ef.valueConfigId ?? '')) {
                 if (e.attrType == null || e.value == null) return null;
-                return { attrType: e.attrType, subType: e.subType, amount: e.value * (e.stacks || 1), stacks: e.stacks || 1 };
+                const stacks = e.stacks || 1;
+                const override = dcEffectLevelOverrides?.get(ef.key);
+                const attrType = override?.newAttrType ?? e.attrType;
+                const subType  = override?.newSubType  ?? e.subType;
+                const amount   = override ? override.newValue * stacks : e.value * stacks;
+                return { attrType, subType, amount, stacks };
             }
         }
         return null;
@@ -38,7 +43,11 @@ function eiResolveEffectDelta(ev, ef) {
             }
         }
         if (!first || first.attrType == null || first.value == null) return null;
-        return { attrType: first.attrType, subType: first.subType, amount: first.value * count, stacks: count };
+        const override = dcEffectLevelOverrides?.get(ef.key);
+        const attrType = override?.newAttrType ?? first.attrType;
+        const subType  = override?.newSubType  ?? first.subType;
+        const amount   = override ? override.newValue * count : first.value * count;
+        return { attrType, subType, amount, stacks: count };
     }
 }
 
@@ -102,8 +111,8 @@ function eiGetBaseline() {
     const cache = new Array(dcFiltered.length);
     for (let i = 0; i < dcFiltered.length; i++) {
         const ev = dcFiltered[i];
-        const withOverrides = dcApplyEffectOverrides(ev, dcEffectsDisabled);
-        const withFields    = calcHitFields(ev, withOverrides);
+        const withOverrides = dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides);
+        const withFields    = calcHitFields(ev, withOverrides, null, dcEffectLevelOverrides);
         const withDmg       = calcDamage(withFields, dcBonus, dcDisabled);
         cache[i] = { ev, withOverrides, withDmg };
     }
@@ -139,8 +148,8 @@ function eiComputeEffect(ef, baseline) {
                     // dcEffectsDisabled so all other disabled effects are still applied.
                     const tempDisabled = new Set(dcEffectsDisabled);
                     tempDisabled.delete(ef.key);
-                    const activeOverrides = dcApplyEffectOverrides(ev, tempDisabled);
-                    const fullFields = calcHitFields(ev, activeOverrides);
+                    const activeOverrides = dcApplyEffectOverrides(ev, tempDisabled, dcEffectLevelOverrides);
+                    const fullFields = calcHitFields(ev, activeOverrides, tempDisabled, dcEffectLevelOverrides);
                     totalWithout += calcDamage(fullFields, dcBonus, dcDisabled);
                 }
                 // else: group is active — "without" means exclude → contribute 0
@@ -249,6 +258,18 @@ function eiRenderTable() {
 
     const rows = [...eiLastData];
 
+    const efLvlBadge = (ef) => {
+        if (ef.isPotentialsGroup || !ef.allValueConfigIds || ef.currentLevelIdx < 0) return '';
+        const override = dcEffectLevelOverrides?.get(ef.key);
+        if (!override) return '';
+        const overriddenIdx = ef.allValueConfigIds.findIndex(v => v.valueConfigId === override.newValueConfigId);
+        if (overriddenIdx < 0) return '';
+        const diff = overriddenIdx - ef.currentLevelIdx;
+        if (diff === 0) return '';
+        const cls = diff > 0 ? 'ei-lvl-up' : 'ei-lvl-down';
+        return ` <span class="ei-lvl-badge ${cls}" title="Level overridden: original Lv.${ef.currentLevelIdx + 1} → Lv.${overriddenIdx + 1}">lvl ${diff > 0 ? '+' : ''}${diff}</span>`;
+    };
+
     // Collect all unique source keys (source name only — groups attacker+defender together)
     const allSourceKeys = [];
     const seenKeys = new Set();
@@ -352,13 +373,19 @@ function eiRenderTable() {
             const statCellContent = ef.isPotentialsGroup
                 ? `<span class="ei-attr">Hit Damage</span><span class="ei-val">${ef.value.map(num => `${num}%`).join(', ')}</span>`
                 : (() => {
+                    const override = dcEffectLevelOverrides?.get(ef.key);
                     const subLabel = ef.subType === 1 ? 'base' : ef.subType === 2 ? 'pct' : ef.subType === 3 ? 'abs' : '?';
                     const attrLabel = ef.attrType != null ? attrName(ef.attrType) : '?';
-                    const raw = ef.value;
+                    const raw = override ? override.newValue : ef.value;
+                    const overrideSubType = override ? override.newSubType : ef.subType;
+                    const overrideAttrType = override ? override.newAttrType : ef.attrType;
+                    const displaySubLabel = overrideSubType === 1 ? 'base' : overrideSubType === 2 ? 'pct' : overrideSubType === 3 ? 'abs' : '?';
+                    const displayAttrLabel = overrideAttrType != null ? attrName(overrideAttrType) : '?';
                     const isSmall = raw != null && Math.abs(raw) < 15;
                     const valStr = raw != null ? (isSmall ? (raw * 100).toFixed(2) + '%' : String(raw)) : '?';
                     const maxStacksStr = maxStacks > 1 ? ` <span class="ei-stacks" title="Max stacks observed">×${maxStacks}</span>` : '';
-                    return `<span class="ei-attr">${esc(attrLabel)}</span><span class="ei-val">+${valStr} [${subLabel}]${maxStacksStr}</span>`;
+                    const overrideMarker = override ? ' *' : '';
+                    return `<span class="ei-attr">${esc(displayAttrLabel)}</span><span class="ei-val">+${valStr} [${displaySubLabel}]${maxStacksStr}${overrideMarker}</span>`;
                 })();
 
             const pctStr  = isFinite(pctImpact) ? (pctImpact >= 0 ? '+' : '') + pctImpact.toFixed(2) + '%' : '+∞%';
@@ -383,7 +410,7 @@ function eiRenderTable() {
                 ${sourceCellHtml}
                 <td class="ei-td ei-td-side"><span class="ei-side-badge ${sideClass}">${sideLabel}</span></td>
                 <td class="ei-td ei-td-num"><span class="${pctClass} ei-bold">${pctStr}</span></td>
-                <td class="ei-td ei-td-name" title="configId=${ef.configId}">${esc(ef.name)}${addedBadge}</td>
+                <td class="ei-td ei-td-name" title="configId=${ef.configId}">${esc(ef.name)}${addedBadge}${efLvlBadge(ef)}</td>
                 <td class="ei-td ei-td-stat">
                     ${statCellContent}
                 </td>

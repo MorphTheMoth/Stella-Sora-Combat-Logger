@@ -154,6 +154,8 @@ function dcCollectAttrFixEffects(dcFiltered) {
                     seenInHit.add(e.configId);
                     const key = `${side}:${e.configId}:${e.valueConfigId ?? ''}`;
                     if (!seen.has(key)) {
+                        const allVcIds = e.allValueConfigIds || [];
+                        const curIdx = allVcIds.findIndex(v => v.valueConfigId === e.valueConfigId);
                         seen.set(key, {
                             key, side,
                             configId: e.configId,
@@ -165,7 +167,11 @@ function dcCollectAttrFixEffects(dcFiltered) {
                             count: countMap.get(e.configId) || 1,
                             source: e.source ?? 'Unknown',
                             fromAttrDict: false,
-                            effectType: e.effectType
+                            effectType: e.effectType,
+                            allValueConfigIds: allVcIds,
+                            levelTypeData: e.levelTypeData,
+                            levelData: e.levelData,
+                            currentLevelIdx: curIdx >= 0 ? curIdx : -1
                         });
                     }
                 }
@@ -183,6 +189,8 @@ function dcCollectAttrFixEffects(dcFiltered) {
                     if (seenInHit.has(key)) continue;
                     seenInHit.add(key);
                     if (!seen.has(key)) {
+                        const allVcIds = e.allValueConfigIds || [];
+                        const curIdx = allVcIds.findIndex(v => v.valueConfigId === e.valueConfigId);
                         seen.set(key, {
                             key, side,
                             configId: cid,
@@ -194,7 +202,11 @@ function dcCollectAttrFixEffects(dcFiltered) {
                             count: 1,
                             source: e.source ?? 'Unknown',
                             fromAttrDict: true,
-                            effectType: e.effectType
+                            effectType: e.effectType,
+                            allValueConfigIds: allVcIds,
+                            levelTypeData: e.levelTypeData,
+                            levelData: e.levelData,
+                            currentLevelIdx: curIdx >= 0 ? curIdx : -1
                         });
                     }
                 }
@@ -242,11 +254,12 @@ function dcCollectAttrFixEffects(dcFiltered) {
 
 // ─── Effect overrides ─────────────────────────────────────────────────────────
 // Apply disabled effects to a cloned copy of the stat arrays.
+// dcEffectLevelOverrides: Map<key, {newValueConfigId,newValue,newAttrType,newSubType}>
 // Returns { aStats, dStats } (clones with modifications applied).
-function dcApplyEffectOverrides(ev, dcEffectsDisabled) {
+function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides) {
     const origA = ev.AttackerStats?.attrs || [];
     const origD = ev.DefenderStats?.attrs || [];
-    if (dcEffectsDisabled.size === 0) return { aStats: origA, dStats: origD };
+    if (dcEffectsDisabled.size === 0 && !(dcEffectLevelOverrides?.size)) return { aStats: origA, dStats: origD };
 
     // ── Potentials group disable ──────────────────────────────────────────────
     // If this hit belongs to a disabled Potentials group, zero all its stats so
@@ -333,6 +346,98 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled) {
             }
         }
     }
+    // ── Level overrides ──────────────────────────────────────────────
+    // For effects with a level override (and not disabled), remove old
+    // contribution and add the new level's contribution.
+    if (dcEffectLevelOverrides && dcEffectLevelOverrides.size > 0) {
+        for (const { side, list, attrDict, statMap } of sides) {
+            // effects
+            if (list?.length) {
+                const countMap = new Map();
+                for (const e of list) {
+                    if (!allowedEffectTypes.includes(e.effectType)) continue;
+                    countMap.set(e.configId, (countMap.get(e.configId) || 0) + 1);
+                }
+                const seenInHit = new Set();
+                for (const e of list) {
+                    if (!allowedEffectTypes.includes(e.effectType)) continue;
+                    if (seenInHit.has(e.configId)) continue;
+                    seenInHit.add(e.configId);
+                    const key = `${side}:${e.configId}:${e.valueConfigId ?? ''}`;
+                    if (dcEffectsDisabled.has(key)) continue;
+                    const override = dcEffectLevelOverrides.get(key);
+                    if (!override) continue;
+                    const attrId = e.attrType;
+                    if (attrId == null || e.value == null) continue;
+                    const count = countMap.get(e.configId) || 1;
+
+                    // Remove old contribution
+                    let stat = statMap.get(attrId);
+                    if (!stat) { stat = { id: attrId, origin: 0, base: 0, pct: 0, abs: 0 }; statMap.set(attrId, stat); }
+                    if ([ATTR_FIX, HITTED_ADDITIONAL_ATTR_FIX, PLAYER_ATTR_FIX].includes(e.effectType)) {
+                        if (e.subType === 1) stat.base = (stat.base || 0) - e.value * count;
+                        else if (e.subType === 2) stat.pct = (stat.pct || 0) - e.value * count;
+                        else if (e.subType === 3) stat.abs = (stat.abs || 0) - e.value * count;
+                    } else if (e.effectType === ELEMENTTYPE_ATTR_FIX) {
+                        if (ev.HitConfig.elementType === e.subType) stat.base = (stat.base || 0) - e.value * count;
+                    } else if (e.effectType === ELEMENTTYPE_ATTR_PERCENT_FIX) {
+                        if (ev.HitConfig.elementType === e.subType) stat.pct = (stat.pct || 0) - e.value * count;
+                    }
+
+                    // Add new contribution
+                    const newAttrId = override.newAttrType != null ? override.newAttrType : attrId;
+                    let newStat = statMap.get(newAttrId);
+                    if (!newStat) { newStat = { id: newAttrId, origin: 0, base: 0, pct: 0, abs: 0 }; statMap.set(newAttrId, newStat); }
+                    const ns = override.newSubType != null ? override.newSubType : e.subType;
+                    const nv = override.newValue;
+                    if ([ATTR_FIX, HITTED_ADDITIONAL_ATTR_FIX, PLAYER_ATTR_FIX].includes(e.effectType)) {
+                        if (ns === 1) newStat.base = (newStat.base || 0) + nv * count;
+                        else if (ns === 2) newStat.pct = (newStat.pct || 0) + nv * count;
+                        else if (ns === 3) newStat.abs = (newStat.abs || 0) + nv * count;
+                    } else if (e.effectType === ELEMENTTYPE_ATTR_FIX) {
+                        if (ev.HitConfig.elementType === ns) newStat.base = (newStat.base || 0) + nv * count;
+                    } else if (e.effectType === ELEMENTTYPE_ATTR_PERCENT_FIX) {
+                        if (ev.HitConfig.elementType === ns) newStat.pct = (newStat.pct || 0) + nv * count;
+                    }
+                }
+            }
+
+            // attrDict
+            if (Array.isArray(attrDict)) {
+                const seenInHit = new Set();
+                for (const e of attrDict) {
+                    if (e.attrType == null || e.subType == null || e.value == null) continue;
+                    const cid = e.configId ?? e.attrId;
+                    if (cid == null) continue;
+                    const vcid = e.valueConfigId ?? '';
+                    const key = `${side}:dict:${cid}:${vcid}`;
+                    if (seenInHit.has(key)) continue;
+                    seenInHit.add(key);
+                    if (dcEffectsDisabled.has(key)) continue;
+                    const override = dcEffectLevelOverrides.get(key);
+                    if (!override) continue;
+
+                    // Remove old
+                    let stat = statMap.get(e.attrType);
+                    if (!stat) { stat = { id: e.attrType, origin: 0, base: 0, pct: 0, abs: 0 }; statMap.set(e.attrType, stat); }
+                    if (e.subType === 1) stat.base = (stat.base || 0) - e.value;
+                    else if (e.subType === 2) stat.pct = (stat.pct || 0) - e.value;
+                    else if (e.subType === 3) stat.abs = (stat.abs || 0) - e.value;
+
+                    // Add new
+                    const newAttrId = override.newAttrType != null ? override.newAttrType : e.attrType;
+                    let newStat = statMap.get(newAttrId);
+                    if (!newStat) { newStat = { id: newAttrId, origin: 0, base: 0, pct: 0, abs: 0 }; statMap.set(newAttrId, newStat); }
+                    const ns = override.newSubType != null ? override.newSubType : e.subType;
+                    const nv = override.newValue;
+                    if (ns === 1) newStat.base = (newStat.base || 0) + nv;
+                    else if (ns === 2) newStat.pct = (newStat.pct || 0) + nv;
+                    else if (ns === 3) newStat.abs = (newStat.abs || 0) + nv;
+                }
+            }
+        }
+    }
+
     return {
         aStats: [...aMap.values()],
         dStats: [...dMap.values()],
@@ -340,10 +445,10 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled) {
 }
 
 // ─── Main hit field extraction ────────────────────────────────────────────────
-function calcHitFields(ev, statOverrides, dcEffectsDisabled) {
+function calcHitFields(ev, statOverrides, dcEffectsDisabled, dcEffectLevelOverrides) {
     const hc  = ev.HitConfig   || {};
     const dp  = ev.DamageParams || {};
-    const resolved = statOverrides || dcApplyEffectOverrides(ev, dcEffectsDisabled);
+    const resolved = statOverrides || dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides);
 
     // Hit belongs to a disabled Potentials group — return zeroed fields so
     // calcDamage produces 0 without touching the stat arrays.
@@ -493,84 +598,6 @@ const DC_PCT_FIELDS = new Set([
     'dmgTypePct','dmgTypeTakenPct','critRate','critDmg',
     'penRes','defAmend','envAmend'
 ]);
-
-// ─── Crit Luck Computation ────────────────────────────────────────────────────
-// Returns { ratio, actualExtraSum, expectedExtraSum, stddev, zScore, percentile,
-//           quantiles: {<pct>: value}, totalHitCount, critHitCount } or null.
-function dcCalcCritLuck(dcFiltered, dcEffectsDisabled, dcBonus, dcDisabled) {
-    let actualExtraSum = 0;
-    let expectedExtraSum = 0;
-    let varianceSum = 0;
-    let varianceSqSum = 0;
-    let critHitCount = 0;
-    let totalBaseDmg = 0;
-
-    for (const ev of dcFiltered) {
-        const fields = calcHitFields(ev, null, dcEffectsDisabled);
-
-        // base multiplier = product of all formula keys except critDmg
-        let bm = (fields.baseAtk + (dcBonus.baseAtk || 0)) * (fields.atkPct + (dcBonus.atkPct || 0)) + fields.atkAbs;
-
-        for (const key of DC_FORMULA_KEYS) {
-            if (key === 'atkMulti' || key === 'critDmg') continue;
-            if (dcDisabled.has(key)) continue;
-            let val;
-            if (key === 'penRes')
-                val = calcPenRes(fields._aStats, fields._dStats, fields._el, dcBonus.pen || 0, dcBonus.res || 0);
-            else if (key === 'defAmend') {
-                const efb = dcBonus.effectiveDef || 0;
-                val = efb !== 0 ? 1 - ((fields.effectiveDef + efb) * 40) / ((fields.effectiveDef + efb) * 32 + 24000) : fields.defAmend;
-                val += (dcBonus.defAmend || 0);
-            } else
-                val = (fields[key] != null ? fields[key] : 1) + (dcBonus[key] || 0);
-            bm *= val;
-        }
-
-        const cr = fields.critRate + (dcBonus.critRate || 0);
-        const cd = fields.critDmg + (dcBonus.critDmg || 0);
-        const extra = bm * (cd - 1);
-
-        totalBaseDmg += bm;
-        expectedExtraSum += extra * cr;
-        if (fields.isCrit) { actualExtraSum += extra; critHitCount++; }
-        const p = cr, s = extra;
-        const varI = p * (1 - p) * s * s;
-        varianceSum += varI;
-        varianceSqSum += varI * varI;
-    }
-
-    const n = dcFiltered.length;
-    if (n === 0 || expectedExtraSum === 0) return null;
-
-    const stddev = Math.sqrt(Math.max(0, varianceSum));
-    const nEff = varianceSum > 0 && varianceSqSum > 0 ? varianceSum * varianceSum / varianceSqSum : 0;
-    const zScore = stddev > 0 ? (actualExtraSum - expectedExtraSum) / stddev : 0;
-    const pct = _normalCdf(zScore) * 100;
-
-    // Practical error estimate: ~95% coverage for weighted-Bernoulli distributions
-    // Uses effective sample size with tail tightening factor
-    const pracErr = nEff > 0 ? 0.15 / Math.sqrt(nEff) / (1 + zScore * zScore / 6) : 0;
-    const pracErrPct = Math.min(pracErr * 100, 10);
-
-    // Quantile values at key percentiles
-    const PCTS = [1, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 99];
-    const quantiles = {};
-    for (const p of PCTS) quantiles[p] = expectedExtraSum + _normalQuantile(p / 100) * stddev;
-
-    return {
-        ratio: actualExtraSum / expectedExtraSum,
-        actualExtraSum, expectedExtraSum, stddev, zScore,
-        percentile: pct, quantiles,
-        totalHitCount: n, critHitCount,
-        totalBaseDmg, nEff, pracErrPct,
-    };
-}
-
-// Normal PDF
-function _normalPdf(x, mean, stddev) {
-    const z = (x - mean) / stddev;
-    return Math.exp(-0.5 * z * z) / (stddev * 2.5066282746310002);
-}
 
 // Normal CDF (Abramowitz & Stegun approximation)
 function _normalCdf(z) {

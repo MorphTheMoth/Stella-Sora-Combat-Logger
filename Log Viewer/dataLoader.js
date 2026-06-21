@@ -1,11 +1,9 @@
 // ─── Enum maps ────────────────────
 const damageSourceNames = { 1:'Player',2:'Monster',3:'Trap',4:'Perk',5:'Fatecard' };
 const damageTypeNames = { 0:'None',1:'Auto Attack',2:'Skill',3:'Ultimate',4:'Other',5:'Mark',6:'Projectile',7:'Minion' };
-const damageEffectNames = { 1:'Physics',2:'Magic',4:'Real',5:'No Damage',6:'No Damage Apply Feather No Ani',7:'No Damage Apply Feather',8:'None' };
 const elementTypeNames = { 1:'Aqua',2:'Ignis',3:'Terra',4:'Ventus',5:'Lux',6:'Umbra' };
 function dsName(v){ return v!=null ? (damageSourceNames[v]||v+' (?)') : ''; }
 function dtName(v){ return v!=null ? (damageTypeNames[v]||v+' (?)') : ''; }
-function deName(v){ return v!=null ? (damageEffectNames[v]||v+' (?)') : ''; }
 function elName(v){ return v!=null ? (elementTypeNames[v]||v+' (?)') : ''; }
 function cleanOwner(s){ return s ? s.replace(/^\[|\]$/g,'') : '?'; }
 
@@ -135,7 +133,6 @@ window.onSavedLogChange = async function() {
     allEvents = [];
     filtered = [];
     lastFetchCount = 0;
-    lastEventCount = -1;
     openStates = {};
     measuredHeights = {};
     subOpenStates = {};
@@ -208,7 +205,10 @@ window.clearLog = async function(skipConfirm) {
     }
 };
 
+let _fetching = false;
 async function fetchLog(incremental = false) {
+    if (_fetching) return;
+    _fetching = true;
     try {
         let url = '/api/log';
         const params = [];
@@ -228,44 +228,41 @@ async function fetchLog(incremental = false) {
         }
 
         const newEvents = data.events || [];
-        if (newEvents.length == 0) return;
+        const nextAfter = data.nextAfter != null ? data.nextAfter : (incremental ? lastFetchCount + newEvents.length : newEvents.length);
         if (incremental && lastFetchCount > 0) {
-            const startIdx = allEvents.length;
-            newEvents.forEach((ev, i) => {
-                ev._origIndex = startIdx + i;
-                enrichEvent(ev);
-                allEvents.push(ev);
-            });
-            lastFetchCount += newEvents.length;
-            if (autoClearOnRestart && !currentSavedLog && newEvents.some(e => e.Type === 'Reset')) {
-                pendingAutoClear = true;
-            } else if (pendingAutoClear && newEvents.length > 0) {
-                pendingAutoClear = false;
-                window.clearLog(true);
-                return;
+            if (newEvents.length > 0) {
+                const startIdx = allEvents.length;
+                newEvents.forEach((ev, i) => {
+                    ev._origIndex = startIdx + i;
+                    enrichEvent(ev);
+                    allEvents.push(ev);
+                });
+                if (autoClearOnRestart && !currentSavedLog && newEvents.some(e => e.Type === 'Reset')) {
+                    pendingAutoClear = true;
+                } else if (pendingAutoClear && newEvents.length > 0) {
+                    pendingAutoClear = false;
+                    window.clearLog(true);
+                    return;
+                }
+                refilterAndRender(false, false);
             }
-            refilterAndRender(false, false);
+            lastFetchCount = nextAfter;
         } else {
             allEvents = newEvents;
             allEvents.forEach((ev, i) => { ev._origIndex = i; enrichEvent(ev); });
-            lastFetchCount = allEvents.length;
+            lastFetchCount = nextAfter;
             refilterAndRender(true, true);
         }
-        if (window.dcRefreshIfVisible) window.dcRefreshIfVisible();
         buildCharFilter();
         buildDefenderFilter();
     } catch (err) {
         console.error('fetch error', err);
+    } finally {
+        _fetching = false;
     }
 }
 
-let lastEventCount = -1;
 function poll() {
-    if (currentSavedLog && lastEventCount == allEvents.length) {
-        setTimeout(poll, POLL_MS);
-        return;
-    }
-    lastEventCount = allEvents.length;
     fetchLog(true).finally(() => {
         setTimeout(poll, POLL_MS);
     });
