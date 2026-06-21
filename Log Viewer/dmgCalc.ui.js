@@ -676,7 +676,7 @@ function dcBuildSkillFilter(evs) {
     dcSkillFilter = sel.value;
 }
 
-function dcBuildDefenderFilter() {
+function dcBuildDefenderFilter(autoSelect = false) {
     const dmgTotals = {};
     allEvents.filter(e => e.Type === 'Hit').forEach(e => {
         const name = e.DefenderDisplay || e.Defender;
@@ -697,10 +697,12 @@ function dcBuildDefenderFilter() {
         o.title = c;
         sel.appendChild(o);
     });
-    if (cur && [...sel.options].some(o => o.value === cur)) {
+    if (autoSelect) {
+        const top = all.sort((a, b) => dmgTotals[b] - dmgTotals[a])[0] || '';
+        sel.value = top;
+    } else if ([...sel.options].some(o => o.value === cur)) {
         sel.value = cur;
     } else {
-        // Default to the defender with highest total damage taken
         const top = all.sort((a, b) => dmgTotals[b] - dmgTotals[a])[0] || '';
         sel.value = top;
     }
@@ -725,21 +727,21 @@ function dcApplyFilters() {
 
 window.dcOnCharFilterChange = function() {
     dcCharFilter = document.getElementById('dcCharFilter').value;
-    dcRefilterAndRender(true);
+    dcRefilterAndRender(true, false);
 };
 window.dcOnSkillFilterChange = function() {
     dcSkillFilter = document.getElementById('dcSkillFilter').value;
-    dcRefilterAndRender(true);
+    dcRefilterAndRender(true, false);
 };
 window.dcOnDefenderFilterChange = function() {
     dcDefenderFilter = document.getElementById('dcDefenderFilter').value;
-    dcRefilterAndRender(true);
+    dcRefilterAndRender(true, false);
 };
 
 // ─── Refilter / rebuild ───────────────────────────────────────────────────────
-function dcRefilterAndRender(resetScroll = false) {
+function dcRefilterAndRender(resetScroll = false, autoSelectDefender = true) {
     dcBuildCharFilter();
-    dcBuildDefenderFilter();
+    dcBuildDefenderFilter(autoSelectDefender);
     dcFiltered = dcApplyFilters();
     if (resetScroll) {
         dcOpenStates = {};
