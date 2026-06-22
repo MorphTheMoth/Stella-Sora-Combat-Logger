@@ -253,6 +253,7 @@ async function fetchLog(incremental = false) {
             lastFetchCount = nextAfter;
             refilterAndRender(true, true);
         }
+        if (window.dcRefreshIfVisible) window.dcRefreshIfVisible();
         buildCharFilter();
         buildDefenderFilter();
     } catch (err) {

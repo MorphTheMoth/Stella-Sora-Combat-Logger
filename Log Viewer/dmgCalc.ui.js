@@ -860,9 +860,50 @@ window.switchTab = function(tab) {
     _origSwitchTab(tab);
 };
 
-// Expose a hook so data loading can trigger a refresh when new events arrive
+let _dcLastEffectKeys = null;
+// Expose a hook so data loading can trigger a refresh when new events arrive.
+// Updates hit list, formula-bar totals, and the effects panel only when
+// the set of unique effects actually changes (no DOM thrashing on every poll).
 window.dcRefreshIfVisible = function() {
     if (document.getElementById('dmgCalcPanel').classList.contains('visible')) {
-        dcRefilterAndRender(false);
+        dcFiltered = dcApplyFilters();
+        dcBuildFenwick();
+
+        // Update totals in the formula bar without rebuilding the whole thing
+        let totalCalc = 0, totalGame = 0;
+        dcFiltered.forEach(ev => {
+            const f = calcHitFields(ev, null, dcEffectsDisabled, dcEffectLevelOverrides);
+            totalCalc += calcDamage(f, dcBonus, dcDisabled);
+            totalGame += f.finalDamage;
+        });
+        const overallDiff = totalGame > 0 ? ((totalCalc / totalGame) - 1) * 100 : null;
+        const overallDiff2 = totalCalc > 0 ? ((totalGame / totalCalc) - 1) * 100 : null;
+        const bar = document.getElementById('dcFormulaBar');
+        if (bar) {
+            const totalsEl = bar.querySelector('.dc-formula-totals');
+            if (totalsEl) {
+                const d1 = overallDiff != null
+                    ? `<span class="${Math.abs(overallDiff) < 0.05 ? 'dc-diff-close' : overallDiff < 0 ? 'dc-diff-neg' : 'dc-diff-pos'}" style="margin-left:4px">(${overallDiff >= 0 ? '+' : ''}${overallDiff.toFixed(1)}%)</span>`
+                    : '';
+                const d2 = overallDiff2 != null
+                    ? `<span class="${Math.abs(overallDiff2) < 0.05 ? 'dc-diff-close' : overallDiff2 < 0 ? 'dc-diff-neg' : 'dc-diff-pos'}" style="margin-left:4px">(${overallDiff2 >= 0 ? '+' : ''}${overallDiff2.toFixed(1)}%)</span>`
+                    : '';
+                totalsEl.innerHTML = `
+                    <span>Total Calc: <strong>${Math.round(totalCalc).toLocaleString()}</strong>${d1}</span>
+                    <span style="margin-left:16px">Total In-Game: <strong>${Math.round(totalGame).toLocaleString()}</strong>${d2}</span>
+                `;
+            }
+        }
+
+        // Only re-render effects panel when new unique effects actually appear
+        const newEffects = dcCollectAttrFixEffects(dcFiltered);
+        const newKeys = new Set(newEffects.map(e => e.key));
+        if (!_dcLastEffectKeys || _dcLastEffectKeys.size !== newKeys.size || ![...newKeys].every(k => _dcLastEffectKeys.has(k))) {
+            _dcLastEffectKeys = newKeys;
+            renderEffectsPanel();
+        }
+
+        document.getElementById('dcStats').textContent = `${dcFiltered.length} hits`;
+        dcRender();
     }
 };
