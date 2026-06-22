@@ -133,6 +133,7 @@ window.onSavedLogChange = async function() {
     allEvents = [];
     filtered = [];
     lastFetchCount = 0;
+    _emptyPollCount = 0;
     openStates = {};
     measuredHeights = {};
     subOpenStates = {};
@@ -140,6 +141,7 @@ window.onSavedLogChange = async function() {
     document.getElementById('scrollContent').innerHTML = '';
     closeSearch();
     refilterAndRender(true, true);
+    fetchLog(false).then(() => { setTimeout(poll, POLL_MS); });
 };
 
 // ─── Save / Clear / Fetch ─────────────────
@@ -206,6 +208,8 @@ window.clearLog = async function(skipConfirm) {
 };
 
 let _fetching = false;
+let _emptyPollCount = 0;
+const MAX_EMPTY_POLLS = 10;
 async function fetchLog(incremental = false) {
     if (_fetching) return;
     _fetching = true;
@@ -231,6 +235,7 @@ async function fetchLog(incremental = false) {
         const nextAfter = data.nextAfter != null ? data.nextAfter : (incremental ? lastFetchCount + newEvents.length : newEvents.length);
         if (incremental && lastFetchCount > 0) {
             if (newEvents.length > 0) {
+                _emptyPollCount = 0;
                 const startIdx = allEvents.length;
                 newEvents.forEach((ev, i) => {
                     ev._origIndex = startIdx + i;
@@ -245,9 +250,12 @@ async function fetchLog(incremental = false) {
                     return;
                 }
                 refilterAndRender(false, false);
+            } else {
+                _emptyPollCount++;
             }
             lastFetchCount = nextAfter;
         } else {
+            _emptyPollCount = 0;
             allEvents = newEvents;
             allEvents.forEach((ev, i) => { ev._origIndex = i; enrichEvent(ev); });
             lastFetchCount = nextAfter;
@@ -264,6 +272,10 @@ async function fetchLog(incremental = false) {
 }
 
 function poll() {
+    if (currentSavedLog && _emptyPollCount >= MAX_EMPTY_POLLS) {
+        console.log('Poll stopped — saved log fully loaded');
+        return;
+    }
     fetchLog(true).finally(() => {
         setTimeout(poll, POLL_MS);
     });
