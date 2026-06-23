@@ -207,6 +207,59 @@ window.clearLog = async function(skipConfirm) {
     }
 };
 
+window.lastRun = async function() {
+    const resetIndices = [];
+    for (let i = 0; i < allEvents.length; i++) {
+        if (allEvents[i].Type === 'Reset') {
+            resetIndices.push(i);
+        }
+    }
+
+    if (resetIndices.length === 0) {
+        alert('No reset event found');
+        return;
+    }
+
+    const lastReset = resetIndices[resetIndices.length - 1];
+    let cutIdx;
+
+    if (lastReset < allEvents.length - 1) {
+        cutIdx = lastReset;
+    } else {
+        if (resetIndices.length < 2) {
+            alert('No previous reset event to cut at');
+            return;
+        }
+        cutIdx = resetIndices[resetIndices.length - 2];
+    }
+
+    const origIndex = allEvents[cutIdx]._origIndex;
+
+    try {
+        const res = await fetch('/cutlog?offset=' + origIndex, { method: 'POST' });
+        const data = await res.json();
+        if (data.ok) {
+            allEvents = [];
+            filtered = [];
+            lastFetchCount = 0;
+            _emptyPollCount = 0;
+            openStates = {};
+            measuredHeights = {};
+            subOpenStates = {};
+            spacerByOrig.clear();
+            document.getElementById('scrollContent').innerHTML = '';
+            closeSearch();
+            refilterAndRender(true, true);
+            fetchLog(false).then(() => { setTimeout(poll, POLL_MS); });
+        } else {
+            alert('Cut failed: ' + (data.error || 'Unknown error'));
+        }
+    } catch (e) {
+        console.error(e);
+        alert('Error cutting log');
+    }
+};
+
 let _fetching = false;
 let _emptyPollCount = 0;
 const MAX_EMPTY_POLLS = 10;

@@ -54,6 +54,13 @@
         .filters button.clear-btn:hover {
             background: #2e2020; color: #cc8888; border-color: #5a3535;
         }
+        #lastRunBtn {
+            padding:5px 12px; border:1px solid #334a30; border-radius:4px;
+            background:#242424; color:#70b070; font-size:12px; cursor:pointer;
+        }
+        #lastRunBtn:hover {
+            background: #203020; color: #88cc88; border-color: #355a35;
+        }
         .stats { font-size: 11px; color: #888; margin: 5px; flex-shrink: 0; align-self: flex-end; align-content: center; }
         .scroll-container {
             flex: 1; overflow-y: auto; position: relative;
@@ -678,6 +685,7 @@
             </select>
             <button id="saveLogBtn" onclick="saveLog()" style="padding:5px 12px; border:1px solid #333; border-radius:4px; background:#242424; color:#888; font-size:12px; cursor:pointer;">Save Log</button>
             <button class="clear-btn" id="clearLogBtn" onclick="clearLog()" style="padding:5px 12px; border:1px solid #4a3030; border-radius:4px; background:#242424; color:#b07070; font-size:12px; cursor:pointer;">Clear Log</button>
+            <button id="lastRunBtn" onclick="lastRun()">Last Run</button>
         </div>
     </div>
 

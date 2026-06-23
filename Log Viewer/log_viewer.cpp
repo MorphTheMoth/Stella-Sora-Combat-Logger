@@ -614,6 +614,51 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                 mg_http_reply(c, 200, "Content-Type: application/json\r\n", "{\"ok\":true}");
             }
             HttpLog(200, method, uri, query, remote);
+        } else if (uri == "/cutlog") {
+            struct mg_str q = hm->query;
+            char offset_buf[32] = {0};
+            size_t cutOffset = 0;
+            if (mg_http_get_var(&q, "offset", offset_buf, sizeof(offset_buf)) > 0) {
+                cutOffset = static_cast<size_t>(std::stoull(offset_buf));
+            }
+
+            std::lock_guard<std::mutex> lock(file_mutex);
+
+            std::ifstream file(LOG_FILE);
+            if (!file.is_open()) {
+                mg_http_reply(c, 500, "Content-Type: application/json\r\n",
+                    "{\"error\":\"cannot open log file\"}");
+                HttpLog(500, method, uri, query, remote);
+            } else {
+                if (!g_index.valid) RebuildIndex(file);
+
+                if (cutOffset >= g_index.offsets.size()) {
+                    mg_http_reply(c, 400, "Content-Type: application/json\r\n",
+                        "{\"error\":\"offset out of range\"}");
+                    HttpLog(400, method, uri, query, remote);
+                } else {
+                    std::streampos byteOffset = g_index.offsets[cutOffset];
+                    file.clear();
+                    file.seekg(byteOffset);
+
+                    std::stringstream buffer;
+                    buffer << file.rdbuf();
+                    std::string rest = buffer.str();
+                    file.close();
+
+                    std::ofstream out(LOG_FILE, std::ios::trunc);
+                    out << rest;
+                    out.close();
+
+                    g_index.valid = false;
+                    g_index.offsets.clear();
+                    g_index.eof_offset = 0;
+
+                    mg_http_reply(c, 200, "Content-Type: application/json\r\n",
+                        "{\"ok\":true}");
+                    HttpLog(200, method, uri, query, remote);
+                }
+            }
         } else {
             mg_http_reply(c, 404, "", "Not Found");
             HttpLog(404, method, uri, query, remote);
