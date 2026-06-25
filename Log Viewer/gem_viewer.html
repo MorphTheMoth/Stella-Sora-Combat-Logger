@@ -113,7 +113,7 @@
             padding: 4px 10px; border: 1px solid #383838; border-radius: 4px;
             background: #282828; color: #bbb; font-size: 12px; cursor: pointer; appearance: none;
         }
-        .chart-canvas-wrap { position: relative; height: 280px; }
+        .chart-canvas-wrap { position: relative; height: 280px; overflow: visible; }
 
         .slot-tabs { display: flex; gap: 6px; }
         .slot-tab {
@@ -668,6 +668,76 @@ const PALETTE = [
     '#c4a06a','#6ac4d4','#d46ab4','#a0d46a','#6a6ad4','#d4a06a',
 ];
 
+function makeExternalTooltip(entryKeys, keyBreakdown, granularity, total) {
+    let tooltipEl = document.getElementById('chartTooltip');
+    if (!tooltipEl) {
+        tooltipEl = document.createElement('div');
+        tooltipEl.id = 'chartTooltip';
+        tooltipEl.style.cssText = 'position:fixed;pointer-events:none;background:#1a1a1a;border:1px solid #444;border-radius:6px;padding:8px 14px;font-size:12px;color:#bbb;z-index:9999;opacity:0;transition:opacity 0.1s;max-width:420px;white-space:nowrap;line-height:1.5;';
+        document.body.appendChild(tooltipEl);
+    }
+    return function(context) {
+        const {chart, tooltip} = context;
+        if (tooltip.opacity === 0) {
+            tooltipEl.style.opacity = 0;
+            return;
+        }
+        const dataIndex = tooltip.dataPoints[0].dataIndex;
+        const v = tooltip.dataPoints[0].parsed.y;
+        const pct = total > 0 ? (v / total * 100).toFixed(2) : '0.00';
+        const lines = [`${v} rolls (${pct}%)`];
+        if (granularity === 'stat_type' || granularity === 'slot_stat_type' || granularity === 'rarity_count') {
+            const key = entryKeys[dataIndex];
+            const bd = keyBreakdown[key];
+            if (bd) {
+                const groupTotal = Object.values(bd).reduce((s, n) => s + n, 0);
+                if (granularity === 'rarity_count') {
+                    const byLevel = {};
+                    for (const [attrId, cnt] of Object.entries(bd)) {
+                        const info = gemAttrTable[Number(attrId)];
+                        const lvl = info ? info.level : 0;
+                        byLevel[lvl] = (byLevel[lvl] || 0) + cnt;
+                    }
+                    Object.entries(byLevel).sort((a, b) => Number(a[0]) - Number(b[0])).forEach(([lvl, cnt]) => {
+                        const p = groupTotal > 0 ? (cnt / groupTotal * 100).toFixed(2) : '0.00';
+                        lines.push(`Lv${lvl}  ·  ${cnt} (${p}%)`);
+                    });
+                } else {
+                    const isHardGroup = (key === 'elem_dmg' || key === 'elem_pen');
+                    if (isHardGroup) {
+                        const byLevel = {};
+                        for (const [attrId, cnt] of Object.entries(bd)) {
+                            const info = gemAttrTable[Number(attrId)];
+                            const lvl = info ? formatValue(info.value) : String(attrId);
+                            byLevel[lvl] = (byLevel[lvl] || 0) + cnt;
+                        }
+                        Object.entries(byLevel).sort((a, b) => parseFloat(a[0]) - parseFloat(b[0])).forEach(([lvl, cnt]) => {
+                            const p = groupTotal > 0 ? (cnt / groupTotal * 100).toFixed(2) : '0.00';
+                            lines.push(`${lvl}  ·  ${cnt} (${p}%)`);
+                        });
+                    } else {
+                        Object.entries(bd).sort((a, b) => Number(a[0]) - Number(b[0])).forEach(([attrId, cnt]) => {
+                            const name = resolveAttrLabel(Number(attrId), 0) || attrId;
+                            const p = groupTotal > 0 ? (cnt / groupTotal * 100).toFixed(2) : '0.00';
+                            lines.push(`${attrId}  ${name}  ·  ${cnt} (${p}%)`);
+                        });
+                    }
+                }
+            }
+        }
+        tooltipEl.innerHTML = lines.join('<br>');
+        const canvasRect = chart.canvas.getBoundingClientRect();
+        let left = canvasRect.left + tooltip.caretX + 10;
+        let top = canvasRect.top + tooltip.caretY + 10;
+        const tr = tooltipEl.getBoundingClientRect();
+        if (left + tr.width > window.innerWidth - 10) left = canvasRect.left + tooltip.caretX - tr.width - 10;
+        if (top + tr.height > window.innerHeight - 10) top = canvasRect.top + tooltip.caretY - tr.height - 10;
+        tooltipEl.style.left = left + 'px';
+        tooltipEl.style.top = top + 'px';
+        tooltipEl.style.opacity = 1;
+    };
+}
+
 function selectSlotChart(n) {
     activeSlotChart = n;
     [1,2,3].forEach(i => {
@@ -789,61 +859,8 @@ function refreshAttrChart() {
             plugins: {
                 legend: { display: false },
                 tooltip: {
-                    callbacks: {
-                        label: ctx => {
-                            const v = ctx.parsed.y;
-                            const pct = total > 0 ? (v / total * 100).toFixed(2) : '0.00';
-                            return ` ${v} rolls (${pct}%)`;
-                        },
-                        afterLabel: ctx => {
-                            if (granularity !== 'stat_type' && granularity !== 'slot_stat_type' && granularity !== 'rarity_count') return [];
-                            const key = entryKeys[ctx.dataIndex];
-                            const bd  = keyBreakdown[key];
-                            if (!bd) return [];
-                            const groupTotal = Object.values(bd).reduce((s, n) => s + n, 0);
-
-                            if (granularity === 'rarity_count') {
-                                // Aggregate by rarity level number
-                                const byLevel = {};
-                                for (const [attrId, cnt] of Object.entries(bd)) {
-                                    const info = gemAttrTable[Number(attrId)];
-                                    const lvl = info ? info.level : 0;
-                                    byLevel[lvl] = (byLevel[lvl] || 0) + cnt;
-                                }
-                                return Object.entries(byLevel)
-                                    .sort((a, b) => Number(a[0]) - Number(b[0]))
-                                    .map(([lvl, cnt]) => {
-                                        const p = groupTotal > 0 ? (cnt / groupTotal * 100).toFixed(2) : '0.00';
-                                        return `  Lv${lvl}  ·  ${cnt} (${p}%)`;
-                                    });
-                            }
-
-                            const isHardGroup = (key === 'elem_dmg' || key === 'elem_pen');
-                            if (isHardGroup) {
-                                // Re-aggregate by value level (ignore which element it is)
-                                const byLevel = {};
-                                for (const [attrId, cnt] of Object.entries(bd)) {
-                                    const info = gemAttrTable[Number(attrId)];
-                                    const lvl = info ? formatValue(info.value) : String(attrId);
-                                    byLevel[lvl] = (byLevel[lvl] || 0) + cnt;
-                                }
-                                // Sort numerically by stripping % and parsing
-                                return Object.entries(byLevel)
-                                    .sort((a, b) => parseFloat(a[0]) - parseFloat(b[0]))
-                                    .map(([lvl, cnt]) => {
-                                        const p = groupTotal > 0 ? (cnt / groupTotal * 100).toFixed(2) : '0.00';
-                                        return `  ${lvl}  ·  ${cnt} (${p}%)`;
-                                    });
-                            }
-                            return Object.entries(bd)
-                                .sort((a, b) => Number(a[0]) - Number(b[0]))
-                                .map(([attrId, cnt]) => {
-                                    const name = resolveAttrLabel(Number(attrId), 0) || attrId;
-                                    const p = groupTotal > 0 ? (cnt / groupTotal * 100).toFixed(2) : '0.00';
-                                    return `  ${attrId}  ${name}  ·  ${cnt} (${p}%)`;
-                                });
-                        }
-                    }
+                    enabled: false,
+                    external: makeExternalTooltip(entryKeys, keyBreakdown, granularity, total)
                 }
             },
             scales: {
