@@ -947,7 +947,11 @@ void InitializeLogger() {
         fflush(g_Log);
     }
 
-    std::string jsonPath = logDir + "\\ss_jsonlog.txt";
+    HMODULE ntdll = GetModuleHandleA("ntdll.dll");
+    bool wine = ntdll && GetProcAddress(ntdll, "wine_get_version") != nullptr;
+    std::string jsonDir = wine ? "Z:\\dev\\shm\\StellaSoraLogger" : logDir;
+    if (wine) CreateDirectoryA("Z:\\dev\\shm\\StellaSoraLogger", nullptr);
+    std::string jsonPath = jsonDir + "\\ss_jsonlog.txt";
     g_JsonLog = fopen(jsonPath.c_str(), "a");
     if (g_JsonLog) {
         SYSTEMTIME t{};
