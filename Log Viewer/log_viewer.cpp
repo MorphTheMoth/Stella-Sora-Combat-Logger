@@ -127,6 +127,7 @@ std::string GetContentType(const std::string& filename) {
 //  Global log file path
 // =============================================================================
 std::string LOG_FILE;
+static std::string g_saved_logs_dir;  // non-empty overrides SavedLogsDir()
 static bool g_local_mode = false;
 
 static const char* REMOTE_BASE =
@@ -358,8 +359,11 @@ static std::string RemoteAddr(struct mg_connection* c) {
 //  Saved logs helpers
 // =============================================================================
 
-// Returns the "saved logs" folder path, always sibling to LOG_FILE.
+// Returns the "saved logs" folder path, always sibling to LOG_FILE,
+// unless g_saved_logs_dir was set explicitly (when a directory was passed).
 static std::string SavedLogsDir() {
+    if (!g_saved_logs_dir.empty())
+        return g_saved_logs_dir;
 #ifdef _WIN32
     size_t sep = LOG_FILE.find_last_of("\\/");
 #else
@@ -677,6 +681,16 @@ int main(int argc, char** argv) {
         else
             LOG_FILE = argv[i];
     }
+
+    // If a directory was passed, use it for saved logs and read live log from the default path.
+    if (!LOG_FILE.empty()) {
+        struct stat st;
+        if (stat(LOG_FILE.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
+            g_saved_logs_dir = LOG_FILE + "/saved logs";
+            LOG_FILE = GetDefaultLogPath();
+        }
+    }
+
     if (LOG_FILE.empty())
         LOG_FILE = GetDefaultLogPath();
     if (!g_local_mode)
