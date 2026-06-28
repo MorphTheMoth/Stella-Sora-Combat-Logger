@@ -600,17 +600,32 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
             char savedlog_buf[256] = {0};
             struct mg_str q = hm->query;
             if (mg_http_get_var(&q, "savedlog", savedlog_buf, sizeof(savedlog_buf)) > 0) {
-                // Delete a specific saved log file.
+                // Move saved log to cleared_log.txt instead of deleting.
                 std::string safe_name = SanitiseName(std::string(savedlog_buf));
                 std::string saved_path = SavedLogPath(safe_name);
-                if (std::remove(saved_path.c_str()) == 0) {
-                    ServerLog("Deleted saved log: %s", saved_path.c_str());
+                std::ifstream check(saved_path);
+                if (check.good()) {
+                    check.close();
+                    EnsureSavedLogsDir();
+                    std::string cleared_path = SavedLogsDir() + "/cleared_log.txt";
+                    std::rename(saved_path.c_str(), cleared_path.c_str());
+                    ServerLog("Saved log moved to cleared_log.txt: %s", cleared_path.c_str());
                     mg_http_reply(c, 200, "Content-Type: application/json\r\n", "{\"ok\":true}");
                 } else {
                     mg_http_reply(c, 404, "Content-Type: application/json\r\n", "{\"error\":\"file not found\"}");
                 }
             } else {
-                // Clear the live log file.
+                // Copy live log to cleared_log.txt (may be on a different fs), then truncate.
+                EnsureSavedLogsDir();
+                std::string cleared_path = SavedLogsDir() + "/cleared_log.txt";
+                {
+                    std::ifstream src(LOG_FILE, std::ios::binary);
+                    if (src.good()) {
+                        std::ofstream dst(cleared_path, std::ios::binary | std::ios::trunc);
+                        dst << src.rdbuf();
+                        ServerLog("Live log copied to cleared_log.txt: %s", cleared_path.c_str());
+                    }
+                }
                 std::ofstream clear(LOG_FILE, std::ios::trunc);
                 clear.close();
                 InvalidateIndex();
