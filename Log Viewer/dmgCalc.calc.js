@@ -188,6 +188,7 @@ function dcCollectAttrFixEffects(dcFiltered) {
                     const key = `${side}:dict:${cid}:${vcid}`;
                     if (seenInHit.has(key)) continue;
                     seenInHit.add(key);
+                    const stacks = e.stacks != null ? e.stacks : 1;
                     if (!seen.has(key)) {
                         const allVcIds = e.allValueConfigIds || [];
                         const curIdx = allVcIds.findIndex(v => v.valueConfigId === e.valueConfigId);
@@ -199,7 +200,7 @@ function dcCollectAttrFixEffects(dcFiltered) {
                             attrType: e.attrType,
                             subType: e.subType,
                             value: e.value,
-                            count: 1,
+                            count: stacks,
                             source: e.source ?? 'Unknown',
                             fromAttrDict: true,
                             effectType: e.effectType,
@@ -208,6 +209,8 @@ function dcCollectAttrFixEffects(dcFiltered) {
                             levelData: e.levelData,
                             currentLevelIdx: curIdx >= 0 ? curIdx : -1
                         });
+                    } else if (stacks > seen.get(key).count) {
+                        seen.get(key).count = stacks;
                     }
                 }
             }
@@ -333,15 +336,16 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides) {
                     stat = { id: e.attrType, origin: 0, base: 0, pct: 0, abs: 0 };
                     statMap.set(e.attrType, stat);
                 }
+                const stacks = e.stacks != null ? e.stacks : 1;
                 if (e.effectType === ELEMENTTYPE_ATTR_FIX) {
-                    if (ev.HitConfig.elementType === e.subType) stat.base = (stat.base || 0) - e.value;
+                    if (ev.HitConfig.elementType === e.subType) stat.base = (stat.base || 0) - e.value * stacks;
                 } else if (e.effectType === ELEMENTTYPE_ATTR_PERCENT_FIX) {
-                    if (ev.HitConfig.elementType === e.subType) stat.pct = (stat.pct || 0) - e.value;
+                    if (ev.HitConfig.elementType === e.subType) stat.pct = (stat.pct || 0) - e.value * stacks;
                 } else {
                     // attrDict entries: apply by subType unconditionally (effectType may be null/undefined)
-                    if (e.subType === 1) stat.base = (stat.base || 0) - e.value;
-                    else if (e.subType === 2) stat.pct = (stat.pct || 0) - e.value;
-                    else if (e.subType === 3) stat.abs = (stat.abs || 0) - e.value;
+                    if (e.subType === 1) stat.base = (stat.base || 0) - e.value * stacks;
+                    else if (e.subType === 2) stat.pct = (stat.pct || 0) - e.value * stacks;
+                    else if (e.subType === 3) stat.abs = (stat.abs || 0) - e.value * stacks;
                 }
             }
         }
@@ -417,12 +421,14 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides) {
                     const override = dcEffectLevelOverrides.get(key);
                     if (!override) continue;
 
+                    const stacks = e.stacks != null ? e.stacks : 1;
+
                     // Remove old
                     let stat = statMap.get(e.attrType);
                     if (!stat) { stat = { id: e.attrType, origin: 0, base: 0, pct: 0, abs: 0 }; statMap.set(e.attrType, stat); }
-                    if (e.subType === 1) stat.base = (stat.base || 0) - e.value;
-                    else if (e.subType === 2) stat.pct = (stat.pct || 0) - e.value;
-                    else if (e.subType === 3) stat.abs = (stat.abs || 0) - e.value;
+                    if (e.subType === 1) stat.base = (stat.base || 0) - e.value * stacks;
+                    else if (e.subType === 2) stat.pct = (stat.pct || 0) - e.value * stacks;
+                    else if (e.subType === 3) stat.abs = (stat.abs || 0) - e.value * stacks;
 
                     // Add new
                     const newAttrId = override.newAttrType != null ? override.newAttrType : e.attrType;
@@ -430,9 +436,9 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides) {
                     if (!newStat) { newStat = { id: newAttrId, origin: 0, base: 0, pct: 0, abs: 0 }; statMap.set(newAttrId, newStat); }
                     const ns = override.newSubType != null ? override.newSubType : e.subType;
                     const nv = override.newValue;
-                    if (ns === 1) newStat.base = (newStat.base || 0) + nv;
-                    else if (ns === 2) newStat.pct = (newStat.pct || 0) + nv;
-                    else if (ns === 3) newStat.abs = (newStat.abs || 0) + nv;
+                    if (ns === 1) newStat.base = (newStat.base || 0) + nv * stacks;
+                    else if (ns === 2) newStat.pct = (newStat.pct || 0) + nv * stacks;
+                    else if (ns === 3) newStat.abs = (newStat.abs || 0) + nv * stacks;
                 }
             }
         }
