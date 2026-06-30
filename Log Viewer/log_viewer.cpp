@@ -264,7 +264,14 @@ static void ExtendIndex(std::ifstream& file) {
     file.clear();
     file.seekg(0, std::ios::end);
     std::streampos current_eof = file.tellg();
-    if (current_eof <= g_index.eof_offset) return;
+    if (current_eof < g_index.eof_offset) {
+        // File was truncated/recreated — rebuild from scratch.
+        g_index.valid = false;
+        g_index.offsets.clear();
+        g_index.eof_offset = 0;
+        return;
+    }
+    if (current_eof == g_index.eof_offset) return;
     file.clear();
     file.seekg(g_index.eof_offset);
     std::string line;
@@ -301,6 +308,9 @@ std::string ReadJsonLog(size_t after = 0) {
     else
         ExtendIndex(file);
 
+    // ExtendIndex may have invalidated the index on truncation — rebuild if so.
+    if (!g_index.valid) RebuildIndex(file);
+
     size_t totalLines = g_index.offsets.size();
 
     json arr = json::array();
@@ -310,7 +320,9 @@ std::string ReadJsonLog(size_t after = 0) {
         file.seekg(g_index.offsets[after]);
         if (file.fail()) {
             // Index is stale (file was truncated externally). Rebuild next time.
-            InvalidateIndex();
+            g_index.valid = false;
+            g_index.offsets.clear();
+            g_index.eof_offset = 0;
         } else {
             std::string line;
             int maxLines = 250, read = 0;
@@ -321,6 +333,8 @@ std::string ReadJsonLog(size_t after = 0) {
             }
             nextAfter = after + read;
         }
+    } else {
+        nextAfter = totalLines;
     }
 
     json result;
@@ -456,6 +470,8 @@ std::string ReadJsonLogFrom(const std::string& path, size_t after = 0) {
             ++read;
         }
         nextAfter = after + read;
+    } else {
+        nextAfter = totalLines;
     }
 
     json result;
@@ -528,16 +544,16 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                 std::ifstream check(saved_path);
                 if (check.good()) {
                     body = ReadJsonLogFrom(saved_path, after);
-                    mg_http_reply(c, 200, "Content-Type: application/json\r\n", "%s", body.c_str());
+                    mg_http_reply(c, 200, "Content-Type: application/json\r\nCache-Control: no-cache\r\n", "%s", body.c_str());
                     HttpLog(200, method, uri, query, remote);
                 } else {
-                    mg_http_reply(c, 404, "Content-Type: application/json\r\n",
+                    mg_http_reply(c, 404, "Content-Type: application/json\r\nCache-Control: no-cache\r\n",
                         "{\"error\":\"saved log not found\"}");
                     HttpLog(404, method, uri, query, remote);
                 }
             } else {
                 body = ReadJsonLog(after);
-                mg_http_reply(c, 200, "Content-Type: application/json\r\n", "%s", body.c_str());
+                mg_http_reply(c, 200, "Content-Type: application/json\r\nCache-Control: no-cache\r\n", "%s", body.c_str());
                 HttpLog(200, method, uri, query, remote);
             }
         } else if (uri == "/savelog" && method == "POST") {
@@ -550,7 +566,7 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
             } catch (...) {}
 
             if (save_name.empty()) {
-                mg_http_reply(c, 400, "Content-Type: application/json\r\n",
+                mg_http_reply(c, 400, "Content-Type: application/json\r\nCache-Control: no-cache\r\n",
                     "{\"error\":\"missing or invalid name\"}");
                 HttpLog(400, method, uri, query, remote);
             } else {
@@ -558,11 +574,11 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                 if (SaveCurrentLog(save_name, errMsg)) {
                     ServerLog("Saved log as: %s", SavedLogPath(save_name).c_str());
                     std::string ok = "{\"ok\":true,\"file\":\"" + SavedLogPath(save_name) + "\"}";
-                    mg_http_reply(c, 200, "Content-Type: application/json\r\n", "%s", ok.c_str());
+                    mg_http_reply(c, 200, "Content-Type: application/json\r\nCache-Control: no-cache\r\n", "%s", ok.c_str());
                     HttpLog(200, method, uri, query, remote);
                 } else {
                     std::string err = "{\"error\":\"" + errMsg + "\"}";
-                    mg_http_reply(c, 500, "Content-Type: application/json\r\n", "%s", err.c_str());
+                    mg_http_reply(c, 500, "Content-Type: application/json\r\nCache-Control: no-cache\r\n", "%s", err.c_str());
                     HttpLog(500, method, uri, query, remote);
                 }
             }
@@ -594,7 +610,7 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
             }
 #endif
             std::string body = json{{"logs", names}}.dump();
-            mg_http_reply(c, 200, "Content-Type: application/json\r\n", "%s", body.c_str());
+            mg_http_reply(c, 200, "Content-Type: application/json\r\nCache-Control: no-cache\r\n", "%s", body.c_str());
             HttpLog(200, method, uri, query, remote);
         } else if (uri == "/clear") {
             char savedlog_buf[256] = {0};
@@ -610,9 +626,9 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                     std::string cleared_path = SavedLogsDir() + "/cleared_log.txt";
                     std::rename(saved_path.c_str(), cleared_path.c_str());
                     ServerLog("Saved log moved to cleared_log.txt: %s", cleared_path.c_str());
-                    mg_http_reply(c, 200, "Content-Type: application/json\r\n", "{\"ok\":true}");
+                    mg_http_reply(c, 200, "Content-Type: application/json\r\nCache-Control: no-cache\r\n", "{\"ok\":true}");
                 } else {
-                    mg_http_reply(c, 404, "Content-Type: application/json\r\n", "{\"error\":\"file not found\"}");
+                    mg_http_reply(c, 404, "Content-Type: application/json\r\nCache-Control: no-cache\r\n", "{\"error\":\"file not found\"}");
                 }
             } else {
                 // Copy live log to cleared_log.txt (may be on a different fs), then truncate.
@@ -629,7 +645,7 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                 std::ofstream clear(LOG_FILE, std::ios::trunc);
                 clear.close();
                 InvalidateIndex();
-                mg_http_reply(c, 200, "Content-Type: application/json\r\n", "{\"ok\":true}");
+                mg_http_reply(c, 200, "Content-Type: application/json\r\nCache-Control: no-cache\r\n", "{\"ok\":true}");
             }
             HttpLog(200, method, uri, query, remote);
         } else if (uri == "/cutlog") {
@@ -644,14 +660,14 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
 
             std::ifstream file(LOG_FILE);
             if (!file.is_open()) {
-                mg_http_reply(c, 500, "Content-Type: application/json\r\n",
+                mg_http_reply(c, 500, "Content-Type: application/json\r\nCache-Control: no-cache\r\n",
                     "{\"error\":\"cannot open log file\"}");
                 HttpLog(500, method, uri, query, remote);
             } else {
                 if (!g_index.valid) RebuildIndex(file);
 
                 if (cutOffset >= g_index.offsets.size()) {
-                    mg_http_reply(c, 400, "Content-Type: application/json\r\n",
+                    mg_http_reply(c, 400, "Content-Type: application/json\r\nCache-Control: no-cache\r\n",
                         "{\"error\":\"offset out of range\"}");
                     HttpLog(400, method, uri, query, remote);
                 } else {
@@ -672,7 +688,7 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                     g_index.offsets.clear();
                     g_index.eof_offset = 0;
 
-                    mg_http_reply(c, 200, "Content-Type: application/json\r\n",
+                    mg_http_reply(c, 200, "Content-Type: application/json\r\nCache-Control: no-cache\r\n",
                         "{\"ok\":true}");
                     HttpLog(200, method, uri, query, remote);
                 }

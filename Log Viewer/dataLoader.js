@@ -273,11 +273,12 @@ async function fetchLog(incremental = false) {
             params.push('savedlog=' + encodeURIComponent(currentSavedLog));
         if (incremental && lastFetchCount > 0)
             params.push('after=' + lastFetchCount);
+        params.push('_=' + Date.now());
 
-        if (params.length) url += '?' + params.join('&');
+        url += '?' + params.join('&');
 
         const t = allEvents.length;
-        const res = await fetch(url);
+        const res = await fetch(url, { cache: 'no-cache' });
         const data = await res.json();
         if (allEvents.length != t) {
             console.log("Event count mismatch after fetching, dropping new events");

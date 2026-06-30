@@ -491,6 +491,10 @@ function buildHitTable(jHit, jSkill, jLang, jChar, jPotential, jItemRoot) {
     const hardcoded = [
         [155310101, 'Shia', 'Electro Music', 1, 'Potentials'],
         [159322101, 'Springseek Coronis', 'Rose Rapid Bloom', 1, 'Potentials'],
+        [114310002, 'Chaton', 'Dark Mark', 1, 'Skills'],
+        [114504001, 'Chaton', 'Dark Mark', 2, 'Skills'],
+        [114504002, 'Chaton', 'Dark Mark', 3, 'Skills'],
+        [114504003, 'Chaton', 'Dark Mark', 4, 'Skills'],
     ];
     for (const [hitId, charName, skillTitle, hitNum, src] of hardcoded)
         hitTable.set(hitId, { charName, skillTitle, hitNum, source: `${charName} ${src}` });
