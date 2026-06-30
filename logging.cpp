@@ -277,7 +277,6 @@ json logAdventureActorAttrsJson(AttributeList_o* attrList, const std::vector<Ele
         double abs_   = e.absAmend;
         double limPct = e.limitedPercentAmend;
 
-        // Apply element/dmg dict amendments on top without touching game memory
         if (overlay) {
             for (const auto& ov : *overlay) {
                 if (ov.attributeType != i) continue;
@@ -433,7 +432,7 @@ struct ElementOrDmgAttrKey {
     int32_t attributeType;        // bits [23:16]
     int32_t elementOrDamageType;  // bits [15:8]
     bool    isElementType;        // bits [31:24]
-    int32_t mode;                 // bits [7:0]: 0=base, 1=assign, 2=percentAmend
+    int32_t mode;                 // bits [1:0]: 0=base, 1=assign, 2=percentAmend
 };
 
 static ElementOrDmgAttrKey DecodeElemKey(int32_t key) {
@@ -441,7 +440,7 @@ static ElementOrDmgAttrKey DecodeElemKey(int32_t key) {
     k.isElementType       = (key >> 24) & 0xFF;
     k.attributeType       = (key >> 16) & 0xFF;
     k.elementOrDamageType = (key >>  8) & 0xFF;
-    k.mode                = key & 0xFF;
+    k.mode                = key & 3;
     return k;
 }
 
@@ -469,7 +468,28 @@ static std::vector<ElemDictEntry> ReadElemDict(ActorAdditionalAttrInfo_o* info) 
         const Entry& e = arr->m_Items[i];
         if (e.hashCode <= 0) continue;
         ElementOrDmgAttrKey k = DecodeElemKey(e.key);
-        out.push_back({ k.attributeType, k.mode, (double)e.value });
+        out.push_back({ k.attributeType, k.elementOrDamageType, k.isElementType, k.mode, (double)e.value });
+    }
+    return out;
+}
+
+
+// Filter element/damage-type overlay entries: only keep entries matching the
+// hit's element type (for isElementType=true) or damage type (for isElementType=false).
+static std::vector<ElemDictEntry> FilterElemDictForHit(
+    const std::vector<ElemDictEntry>& entries,
+    int32_t hitElementType, int32_t hitDamageType) {
+    if (entries.empty()) return entries;
+    std::vector<ElemDictEntry> out;
+    out.reserve(entries.size());
+    for (const auto& e : entries) {
+        if (e.isElementType) {
+            if (e.elementOrDamageType == hitElementType)
+                out.push_back(e);
+        } else {
+            if (e.elementOrDamageType == hitDamageType)
+                out.push_back(e);
+        }
     }
     return out;
 }
@@ -787,8 +807,17 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
                   FnGetOnceAdditionalAttributeValue GetAttrValue) {
     if (!g_Cfg.damage) return;
     // Build element/dmg dict overlays once — read-only, no game memory mutation
-    std::vector<ElemDictEntry> fromOverlay = ReadElemDict(fromAdditionalAttrInfo);
-    std::vector<ElemDictEntry> toOverlay   = ReadElemDict(toAdditionalAttrInfo);
+    std::vector<ElemDictEntry> fromRawOverlay = ReadElemDict(fromAdditionalAttrInfo);
+    std::vector<ElemDictEntry> toRawOverlay   = ReadElemDict(toAdditionalAttrInfo);
+    // Filter to only include entries matching this hit's element/damage type
+    std::vector<ElemDictEntry> fromOverlay, toOverlay;
+    if (hitDamageConfig) {
+        fromOverlay = FilterElemDictForHit(fromRawOverlay, hitDamageConfig->fields.elementType_, hitDamageConfig->fields.damageType_);
+        toOverlay   = FilterElemDictForHit(toRawOverlay,   hitDamageConfig->fields.elementType_, hitDamageConfig->fields.damageType_);
+    } else {
+        fromOverlay = std::move(fromRawOverlay);
+        toOverlay   = std::move(toRawOverlay);
+    }
     json j;
     j["Type"] = "Hit";
     j["Time"] = gameTime();

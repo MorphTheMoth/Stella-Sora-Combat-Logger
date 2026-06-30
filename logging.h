@@ -77,7 +77,7 @@ const char* AttrName(int i);
 // Actor logging
 std::string adventureActorId(AdventureActor_o* actor);
 std::string adventureActorDisplay(AdventureActor_o* actor);
-struct ElemDictEntry { int32_t attributeType; int32_t mode; double value; };
+struct ElemDictEntry { int32_t attributeType; int32_t elementOrDamageType; bool isElementType; int32_t mode; double value; };
 json logAdventureActorAttrsJson(AttributeList_o* attrList, const std::vector<ElemDictEntry>* overlay = nullptr);
 json logAdventureActorSpecialAttrsJson(AdventureActor_o* actor);
 
