@@ -65,11 +65,14 @@ static bool g_HaveHitSnapshot = false;
 
 //  Per-area effect snapshot (set by CopyBattleData hook, used for damageTypeTemp=5)
 static std::mutex g_AreaSnapshotMutex;
-static std::unordered_map<uintptr_t, EffectSnapshot> g_AreaSnapshots;
+static std::unordered_map<uintptr_t, SnapshotEntry> g_AreaSnapshots;
 
 //  Per-weapon effect snapshot (set by AdventureWeapon::Setup, used for damageTypeTemp=2)
 static std::mutex g_WeaponSnapshotMutex;
-static std::unordered_map<uintptr_t, EffectSnapshot> g_WeaponSnapshots;
+static std::unordered_map<uintptr_t, SnapshotEntry> g_WeaponSnapshots;
+
+//  Snapshot time for GetBothAllInfo (actor hits)
+static std::string g_SnapshotTime;
 
 // =============================================================================
 //  Monster dummy-mode hooks
@@ -93,6 +96,7 @@ static void __fastcall Hook_ModuleClearData(void* self, void* method) {
     BuildResetJson();
     g_CombatStartTimeFP.store(0, std::memory_order_relaxed);
     g_HaveHitSnapshot = false;
+    g_SnapshotTime.clear();
     g_OrigModuleClearData(self, method);
 }
 
@@ -166,7 +170,9 @@ static int64_t __fastcall Hook_CalcNormalDamage(
 
     // ── Step 2: choose the right effect snapshot for this hit ──────────────────
     EffectSnapshot hitSnapshot;
+    std::string snapshotTime;
     const EffectSnapshot* hitEffectSnapshot = nullptr;
+    const std::string* pHitSnapshotTime = nullptr;
 
     if (damageTypeTemp == 2 && staticFields->fromWeaponTemp) {
         auto weaponPtr = reinterpret_cast<uintptr_t>(staticFields->fromWeaponTemp);
@@ -174,8 +180,10 @@ static int64_t __fastcall Hook_CalcNormalDamage(
             std::lock_guard<std::mutex> lk(g_WeaponSnapshotMutex);
             auto it = g_WeaponSnapshots.find(weaponPtr);
             if (it != g_WeaponSnapshots.end()) {
-                hitSnapshot = it->second;
+                hitSnapshot = it->second.ids;
+                snapshotTime = it->second.gameTime;
                 hitEffectSnapshot = &hitSnapshot;
+                pHitSnapshotTime = &snapshotTime;
             }
         }
     }
@@ -185,14 +193,18 @@ static int64_t __fastcall Hook_CalcNormalDamage(
             std::lock_guard<std::mutex> lk(g_AreaSnapshotMutex);
             auto it = g_AreaSnapshots.find(areaPtr);
             if (it != g_AreaSnapshots.end()) {
-                hitSnapshot = it->second;
+                hitSnapshot = it->second.ids;
+                snapshotTime = it->second.gameTime;
                 hitEffectSnapshot = &hitSnapshot;
+                pHitSnapshotTime = &snapshotTime;
             }
         }
     }
     if (!hitEffectSnapshot && g_HaveHitSnapshot) {
         hitSnapshot = g_GetBothAllInfoSnapshot;
+        snapshotTime = g_SnapshotTime;
         hitEffectSnapshot = &hitSnapshot;
+        pHitSnapshotTime = &snapshotTime;
     }
 
     // ── Step 3: original call ────────────────────────────────────────────────
@@ -233,7 +245,7 @@ static int64_t __fastcall Hook_CalcNormalDamage(
         staticFields->fromAdditionalAttrDict,
         staticFields->toAdditionalAttrDict,
         gdc, GetOnceAttr, GetValueConfigId,
-        GetEffectValue, GetAttrValue, hitEffectSnapshot);
+        GetEffectValue, GetAttrValue, hitEffectSnapshot, pHitSnapshotTime);
 
     return dmg;
 }
@@ -276,7 +288,7 @@ static void __fastcall Hook_CopyBattleData(void* areaEntity, bool force, void* m
 
     {
         std::lock_guard<std::mutex> lk(g_AreaSnapshotMutex);
-        g_AreaSnapshots[reinterpret_cast<uintptr_t>(areaEntity)] = std::move(snap);
+        g_AreaSnapshots[reinterpret_cast<uintptr_t>(areaEntity)] = { std::move(snap), gameTime() };
     }
 }
 
@@ -319,7 +331,7 @@ static void __fastcall Hook_WeaponSetup(AdventureWeapon_o* weapon, LogicEntity_o
 
     {
         std::lock_guard<std::mutex> lk(g_WeaponSnapshotMutex);
-        g_WeaponSnapshots[reinterpret_cast<uintptr_t>(weapon)] = std::move(snap);
+        g_WeaponSnapshots[reinterpret_cast<uintptr_t>(weapon)] = { std::move(snap), gameTime() };
     }
 }
 
@@ -364,6 +376,7 @@ static void __fastcall Hook_GetBothAllInfo(AdventureActor_o* actor, void* method
         }
     }
     g_GetBothAllInfoSnapshot = snap;
+    g_SnapshotTime = gameTime();
     g_HaveHitSnapshot = true;
 }
 

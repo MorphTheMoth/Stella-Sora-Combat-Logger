@@ -468,6 +468,7 @@ function dcCreateEventDiv(ev, fi) {
     const hitPart   = hc.hitNum != null ? ` (#${hc.hitNum})` : '';
     const skillStr  = (skillPart || hitPart) ? ` - ${skillPart}${hitPart}` : '';
     const baseMult  = dp.skillPercentAmend != null ? ` [${(dp.skillPercentAmend/10000).toFixed(2)}%]` : '';
+    const snapAge = ev.SnapshotAt ? ` [${((parseTimeToMs(ev.Time)-parseTimeToMs(ev.SnapshotAt))/1000).toFixed(3)}s ago]` : '';
 
     const div = document.createElement('div');
     div.className = 'event dc-event' + (isOpen ? ' open' : '');
@@ -484,7 +485,7 @@ function dcCreateEventDiv(ev, fi) {
 
     const leftDiv = document.createElement('div');
     leftDiv.className = 'dc-header-left';
-    leftDiv.innerHTML = `<span class="dc-att-name">${attName}${skillStr}${baseMult}</span>`;
+    leftDiv.innerHTML = `<span class="dc-att-name">${attName}${skillStr}${baseMult}${snapAge}</span>`;
 
     topRow.appendChild(leftDiv);
 

@@ -86,6 +86,12 @@ json logAdventureActorSpecialAttrsJson(AdventureActor_o* actor);
 // Effect snapshot: a set of effect instance IDs captured at snapshot time
 using EffectSnapshot = std::unordered_set<int32_t>;
 
+// Timed snapshot stored for weapon/area hits
+struct SnapshotEntry {
+    EffectSnapshot ids;
+    std::string gameTime;
+};
+
 // Per-effect snapshot data stored at effect init / execute time
 struct InstanceSnapInfo {
     int32_t configId;
@@ -140,7 +146,8 @@ void BuildHitJson(
     FnGetOnceAttr GetOnceAttr, FnGetValueConfigId GetValueConfigId,
     FnGetEffectValue GetEffectValue = nullptr,
     FnGetOnceAdditionalAttributeValue GetAttrValue = nullptr,
-    const EffectSnapshot* effectSnapshot = nullptr);
+    const EffectSnapshot* effectSnapshot = nullptr,
+    const std::string* snapshotTime = nullptr);
 void BuildSkillCastJson(int32_t skillId);
 void BuildResetJson();
 

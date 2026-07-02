@@ -7,6 +7,12 @@ function dtName(v){ return v!=null ? (damageTypeNames[v]||v+' (?)') : ''; }
 function elName(v){ return v!=null ? (elementTypeNames[v]||v+' (?)') : ''; }
 function htName(v){ return v==1?'Actor':v==2?'Weapon':v==5?'Area':'Unknown'; }
 function cleanOwner(s){ return s ? s.replace(/^\[|\]$/g,'') : '?'; }
+function parseTimeToMs(t) {
+    if (!t) return 0;
+    const m = t.match(/(\d+):(\d+)\.(\d+)/);
+    if (!m) return 0;
+    return parseInt(m[1]) * 60000 + parseInt(m[2]) * 1000 + parseInt(m[3]);
+}
 
 // ─── Shared state ─────────────────
 let allEvents = [];

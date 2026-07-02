@@ -152,6 +152,7 @@ function hitBody(ev, oi) {
         <tr><th>Damage Type</th><td>${dtName(hc.damageType)}</td></tr>
         <tr><th>Element Type</th><td>${elName(hc.elementType)}</td></tr>
         <tr><th>Hit Type</th><td>${htName(ev.HitType)}</td></tr>
+        ${ev.SnapshotAt ? `<tr><th>Snapshot Age</th><td>${((parseTimeToMs(ev.Time)-parseTimeToMs(ev.SnapshotAt))/1000).toFixed(3)}s ago</td></tr>` : ''}
     </table></div>`;
 
     h+=`<div class="section"><div class="collapsible-toggle${subOpenStates[`${oi}_dmg-${oi}`] ? ' open' : ''}" data-target="dmg-${oi}">Damage Calculation</div>
@@ -275,7 +276,8 @@ function createEventDiv(ev, filteredIdx) {
         const hitPart = hc.hitNum!=null ? ` (#${hc.hitNum})` : '';
         const skillStr = (skillPart||hitPart) ? ` - ${skillPart}${hitPart}` : '';
         const baseMult = dp.skillPercentAmend!=null ? ` [${(dp.skillPercentAmend/10000).toFixed(2)}%]` : '';
-        desc = `${attName}${skillStr}${baseMult} - Dmg: ${Number(dp.finalDamage).toLocaleString()}`;
+        const snapAge = ev.SnapshotAt ? ` [${((parseTimeToMs(ev.Time)-parseTimeToMs(ev.SnapshotAt))/1000).toFixed(3)}s ago]` : '';
+        desc = `${attName}${skillStr}${baseMult}${snapAge} - Dmg: ${Number(dp.finalDamage).toLocaleString()}`;
     } else if (ev.Type === 'Buff') {
         const owner = cleanOwner(ev.OwnerDisplay||ev.Owner||'?');
         const name = esc(ev.Name||ev.ConfigId);

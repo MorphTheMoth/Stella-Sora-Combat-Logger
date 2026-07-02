@@ -924,7 +924,8 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
                   FnGetOnceAttr GetOnceAttr, FnGetValueConfigId GetValueConfigId,
                   FnGetEffectValue GetEffectValue,
                   FnGetOnceAdditionalAttributeValue GetAttrValue,
-                  const EffectSnapshot* effectSnapshot) {
+                  const EffectSnapshot* effectSnapshot,
+                  const std::string* snapshotTime) {
     if (!g_Cfg.damage) return;
     // Build element/dmg dict overlays once — read-only, no game memory mutation
     std::vector<ElemDictEntry> fromRawOverlay = ReadElemDict(fromAdditionalAttrInfo);
@@ -941,6 +942,8 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
     json j;
     j["Type"] = "Hit";
     j["Time"] = gameTime();
+    if (snapshotTime && !snapshotTime->empty())
+        j["SnapshotAt"] = *snapshotTime;
     
     if (fromActor) {
         j["Attacker"] = adventureActorId(fromActor);
