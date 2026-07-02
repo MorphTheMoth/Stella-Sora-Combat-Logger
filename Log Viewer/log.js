@@ -151,6 +151,7 @@ function hitBody(ev, oi) {
         <tr><th>Source Type</th><td>${dsName(hc.sourceType)}</td></tr>
         <tr><th>Damage Type</th><td>${dtName(hc.damageType)}</td></tr>
         <tr><th>Element Type</th><td>${elName(hc.elementType)}</td></tr>
+        <tr><th>Hit Type</th><td>${htName(ev.HitType)}</td></tr>
     </table></div>`;
 
     h+=`<div class="section"><div class="collapsible-toggle${subOpenStates[`${oi}_dmg-${oi}`] ? ' open' : ''}" data-target="dmg-${oi}">Damage Calculation</div>

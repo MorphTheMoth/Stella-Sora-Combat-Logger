@@ -54,7 +54,7 @@ const EFFECT_SUBTYPE_NAMES = { 1:'Base', 2:'Pct', 3:'Abs' };
 function effectTypeName(v) { return v != null ? (EFFECT_TYPE_NAMES[v] || v + ' (?)') : ''; }
 function effectSubTypeName(v, mainType = 12) {
 
-  if (effectTypeName(mainType).include("ATTR") && [12, 52, 54].include(effectTypeName(mainType)))
+  if (effectTypeName(mainType).includes("ATTR") && [12, 52, 54].includes(effectTypeName(mainType)))
     console.log(`Weird effect type: ${effectTypeName(mainType)}, subType: ${v}`)
   if (mainType == 52) return 'Base';
   if (mainType == 54) return 'Pct';

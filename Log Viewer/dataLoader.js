@@ -5,6 +5,7 @@ const elementTypeNames = { 1:'Aqua',2:'Ignis',3:'Terra',4:'Ventus',5:'Lux',6:'Um
 function dsName(v){ return v!=null ? (damageSourceNames[v]||v+' (?)') : ''; }
 function dtName(v){ return v!=null ? (damageTypeNames[v]||v+' (?)') : ''; }
 function elName(v){ return v!=null ? (elementTypeNames[v]||v+' (?)') : ''; }
+function htName(v){ return v==1?'Actor':v==2?'Weapon':v==5?'Area':'Unknown'; }
 function cleanOwner(s){ return s ? s.replace(/^\[|\]$/g,'') : '?'; }
 
 // ─── Shared state ─────────────────

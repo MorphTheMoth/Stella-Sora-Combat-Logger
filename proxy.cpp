@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <string>
+#include <unordered_map>
 #include "MinHook.h"
 #include "logging.h"
 #include "http_hooks.h"
@@ -50,10 +51,25 @@ static constexpr uintptr_t RVA_GET_VALUE_CONFIG_ID                = 0x1111080;
 static constexpr uintptr_t RVA_GET_EFFECT_VALUE                   = 0x1282100;
 static constexpr uintptr_t RVA_GET_ONCE_ADDITIONAL_ATTRIBUTE_VALUE = 0x1283F30;
 static constexpr uintptr_t RVA_MONSTER_ACTION_STATE_ON_ENTER = 0x1104CD0;
-static constexpr uintptr_t RVA_MODULE_CLEAR_DATA = 0x15C78A0;  // AdventureModuleController$$ClearData
+static constexpr uintptr_t RVA_MODULE_CLEAR_DATA     = 0x15C78A0;  // AdventureModuleController$$ClearData
+static constexpr uintptr_t RVA_GET_BOTH_ALL_INFO     = 0x12263F0;  // AdventureActor$$GetBothAllInfo
+static constexpr uintptr_t RVA_AREA_COPY_BATTLE      = 0x169C610;  // AreaEffectEntity$$CopyBattleData
+static constexpr uintptr_t RVA_WEAPON_SETUP          = 0x16F57E0;  // AdventureWeapon$$Setup
 
 //  Cached module base
 static uintptr_t g_base = 0;
+
+//  Per-hit effect snapshot (set by GetBothAllInfo hook, used by CalculateNormalDamage)
+static EffectSnapshot g_GetBothAllInfoSnapshot;
+static bool g_HaveHitSnapshot = false;
+
+//  Per-area effect snapshot (set by CopyBattleData hook, used for damageTypeTemp=5)
+static std::mutex g_AreaSnapshotMutex;
+static std::unordered_map<uintptr_t, EffectSnapshot> g_AreaSnapshots;
+
+//  Per-weapon effect snapshot (set by AdventureWeapon::Setup, used for damageTypeTemp=2)
+static std::mutex g_WeaponSnapshotMutex;
+static std::unordered_map<uintptr_t, EffectSnapshot> g_WeaponSnapshots;
 
 // =============================================================================
 //  Monster dummy-mode hooks
@@ -76,6 +92,7 @@ static FnVoidVoid g_OrigModuleClearData = nullptr;
 static void __fastcall Hook_ModuleClearData(void* self, void* method) {
     BuildResetJson();
     g_CombatStartTimeFP.store(0, std::memory_order_relaxed);
+    g_HaveHitSnapshot = false;
     g_OrigModuleClearData(self, method);
 }
 
@@ -133,14 +150,59 @@ static int64_t __fastcall Hook_CalcNormalDamage(
 
     AdventureActor_StaticFields* staticFields = actorClass->static_fields;
 
-    // ── Step 2: original call ────────────────────────────────────────────────
+    int32_t hitElem = hitDamageConfig ? hitDamageConfig->fields.elementType_ : -1;
+    int32_t hitDmgType = hitDamageConfig ? hitDamageConfig->fields.damageType_ : -1;
+    int32_t hitDmgId = hitDamageConfig ? hitDamageConfig->fields.id_ : -1;
+    int32_t hitEffectType = hitDamageConfig ? hitDamageConfig->fields.effectType_ : -1;
+
+    int32_t damageTypeTemp = staticFields->damageTypeTemp;
+    g_CurrentDamageTypeTemp = damageTypeTemp;
+
+    const char* hitTypeStr = "unknown";
+    if (damageTypeTemp == 1) hitTypeStr = "actor";
+    else if (damageTypeTemp == 2) hitTypeStr = "weapon";
+    else if (damageTypeTemp == 5) hitTypeStr = "area";
+    log("[HIT] id=%d type=%s(%d)", hitDmgId, hitTypeStr, damageTypeTemp);
+
+    // ── Step 2: choose the right effect snapshot for this hit ──────────────────
+    EffectSnapshot hitSnapshot;
+    const EffectSnapshot* hitEffectSnapshot = nullptr;
+
+    if (damageTypeTemp == 2 && staticFields->fromWeaponTemp) {
+        auto weaponPtr = reinterpret_cast<uintptr_t>(staticFields->fromWeaponTemp);
+        {
+            std::lock_guard<std::mutex> lk(g_WeaponSnapshotMutex);
+            auto it = g_WeaponSnapshots.find(weaponPtr);
+            if (it != g_WeaponSnapshots.end()) {
+                hitSnapshot = it->second;
+                hitEffectSnapshot = &hitSnapshot;
+            }
+        }
+    }
+    if (!hitEffectSnapshot && damageTypeTemp == 5 && staticFields->fromAreaTemp) {
+        auto areaPtr = reinterpret_cast<uintptr_t>(staticFields->fromAreaTemp);
+        {
+            std::lock_guard<std::mutex> lk(g_AreaSnapshotMutex);
+            auto it = g_AreaSnapshots.find(areaPtr);
+            if (it != g_AreaSnapshots.end()) {
+                hitSnapshot = it->second;
+                hitEffectSnapshot = &hitSnapshot;
+            }
+        }
+    }
+    if (!hitEffectSnapshot && g_HaveHitSnapshot) {
+        hitSnapshot = g_GetBothAllInfoSnapshot;
+        hitEffectSnapshot = &hitSnapshot;
+    }
+
+    // ── Step 3: original call ────────────────────────────────────────────────
     int64_t dmg = g_OrigCalcNormalDamage(
         fromActor, toActor, hitDamageConfig, skillLevel, isCrit, isDot, hudColorIndex,
         skillPercentAmend, talentGroupPercentAmend, skillAbsAmend, talentGroupAbsAmend,
         perkIntensityRatio, slotDmgRatio, fromEE, erAmend, defAmend, rcdSlotDmgRatio,
         toEERCD, skillIntensityRatio, toughnessBrokenDmgRatio, critRatio, envAmendRatio, method);
 
-    // ── Step 3: GDC ─────────────────────────────────────────────────────────
+    // ── Step 4: GDC ─────────────────────────────────────────────────────────
     GameDataController_o* gdc = GetGDC();
     FnGetOnceAttr                     GetOnceAttr   = nullptr;
     FnGetValueConfigId                GetValueConfigId = nullptr;
@@ -153,13 +215,13 @@ static int64_t __fastcall Hook_CalcNormalDamage(
         GetAttrValue      = reinterpret_cast<FnGetOnceAdditionalAttributeValue>(g_base + RVA_GET_ONCE_ADDITIONAL_ATTRIBUTE_VALUE);
     }
 
-    // ── Step 4: resolve raw attr lists  ──────────────────────────────────────
+    // ── Step 5: resolve raw attr lists  ──────────────────────────────────────
     AttributeList_o* attackerInfo = staticFields->fromAdditionalAttrInfo
         ? staticFields->fromAdditionalAttrInfo->fields._attributeList_k__BackingField : nullptr;
     AttributeList_o* defenderInfo = staticFields->toAdditionalAttrInfo
         ? staticFields->toAdditionalAttrInfo->fields._attributeList_k__BackingField   : nullptr;
 
-    // ── Step 5: BuildHitJson ─────────────────────────────────────────────────
+    // ── Step 6: BuildHitJson ─────────────────────────────────────────────────
     BuildHitJson(
         fromActor, toActor, hitDamageConfig, skillLevel, isCrit, isDot, hudColorIndex,
         skillPercentAmend, talentGroupPercentAmend, skillAbsAmend, talentGroupAbsAmend,
@@ -171,9 +233,138 @@ static int64_t __fastcall Hook_CalcNormalDamage(
         staticFields->fromAdditionalAttrDict,
         staticFields->toAdditionalAttrDict,
         gdc, GetOnceAttr, GetValueConfigId,
-        GetEffectValue, GetAttrValue);
+        GetEffectValue, GetAttrValue, hitEffectSnapshot);
 
     return dmg;
+}
+
+// =============================================================================
+//  AreaEffectEntity::CopyBattleData — snapshot effects when area snapshots stats
+// =============================================================================
+using FnCopyBattleData = void(__fastcall*)(void*, bool, void*);
+static FnCopyBattleData g_OrigCopyBattleData = nullptr;
+
+static void __fastcall Hook_CopyBattleData(void* areaEntity, bool force, void* method)
+{
+    g_OrigCopyBattleData(areaEntity, force, method);
+
+    EffectSnapshot snap;
+    auto* area = reinterpret_cast<AreaEffectEntity_o*>(areaEntity);
+    AdventureActor_o* owner = area->fields._owner_k__BackingField;
+    if (owner && owner->fields.effectManage) {
+        auto* effectsDict = owner->fields.effectManage->fields.effectsDict;
+        if (effectsDict) {
+            auto* entriesArr = effectsDict->fields._entries;
+            int slotCount = effectsDict->fields._count;
+            if (entriesArr && slotCount > 0) {
+                constexpr size_t entrySize = 0x18;
+                constexpr size_t valOffset  = 0x10;
+                uintptr_t entries = reinterpret_cast<uintptr_t>(entriesArr)
+                                  + offsetof(System_Collections_Generic_Dictionary_Entry_TKey__TValue__array, m_Items);
+                for (int i = 0; i < slotCount; ++i) {
+                    uintptr_t entry = entries + i * entrySize;
+                    int32_t hashCode = *reinterpret_cast<int32_t*>(entry);
+                    if (hashCode < 0) continue;
+                    AdventureEffect_o* effect = *reinterpret_cast<AdventureEffect_o**>(entry + valOffset);
+                    if (!effect) continue;
+                    if (effect->fields.removed) continue;
+                    snap.insert(effect->fields.id);
+                }
+            }
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(g_AreaSnapshotMutex);
+        g_AreaSnapshots[reinterpret_cast<uintptr_t>(areaEntity)] = std::move(snap);
+    }
+}
+
+// =============================================================================
+//  AdventureWeapon::Setup — snapshot effects when weapon copies owner stats
+// =============================================================================
+using FnWeaponSetup = void(__fastcall*)(AdventureWeapon_o*, LogicEntity_o*, void*, void*, void*, void*, void*, void*, int32_t, void*);
+static FnWeaponSetup g_OrigWeaponSetup = nullptr;
+
+static void __fastcall Hook_WeaponSetup(AdventureWeapon_o* weapon, LogicEntity_o* owner,
+                                         void* pos, void* posY, void* dir, void* target,
+                                         void* targetPos, void* targetPosY, int32_t aimType, void* method)
+{
+    g_OrigWeaponSetup(weapon, owner, pos, posY, dir, target, targetPos, targetPosY, aimType, method);
+
+    EffectSnapshot snap;
+    auto* actor = reinterpret_cast<AdventureActor_o*>(owner);
+    if (actor && actor->fields.effectManage) {
+        auto* effectsDict = actor->fields.effectManage->fields.effectsDict;
+        if (effectsDict) {
+            auto* entriesArr = effectsDict->fields._entries;
+            int slotCount = effectsDict->fields._count;
+            if (entriesArr && slotCount > 0) {
+                constexpr size_t entrySize = 0x18;
+                constexpr size_t valOffset  = 0x10;
+                uintptr_t entries = reinterpret_cast<uintptr_t>(entriesArr)
+                                  + offsetof(System_Collections_Generic_Dictionary_Entry_TKey__TValue__array, m_Items);
+                for (int i = 0; i < slotCount; ++i) {
+                    uintptr_t entry = entries + i * entrySize;
+                    int32_t hashCode = *reinterpret_cast<int32_t*>(entry);
+                    if (hashCode < 0) continue;
+                    AdventureEffect_o* effect = *reinterpret_cast<AdventureEffect_o**>(entry + valOffset);
+                    if (!effect) continue;
+                    if (effect->fields.removed) continue;
+                    snap.insert(effect->fields.id);
+                }
+            }
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(g_WeaponSnapshotMutex);
+        g_WeaponSnapshots[reinterpret_cast<uintptr_t>(weapon)] = std::move(snap);
+    }
+}
+
+using FnGetBothAllInfo = void(__fastcall*)(AdventureActor_o*, void*);
+static FnGetBothAllInfo g_OrigGetBothAllInfo = nullptr;
+
+static void __fastcall Hook_GetBothAllInfo(AdventureActor_o* actor, void* method)
+{
+    g_OrigGetBothAllInfo(actor, method);
+
+    EffectSnapshot snap;
+    auto* parentKlass = actor ? actor->klass->_1.parent : nullptr;
+    if (parentKlass) {
+        auto* actorClass = reinterpret_cast<AdventureActor_c*>(parentKlass);
+        auto* sf = actorClass->static_fields;
+        if (sf) {
+            AdventureActor_o* fromActor = sf->fromActorTemp;
+            if (fromActor && fromActor->fields.effectManage) {
+                auto* effectsDict = fromActor->fields.effectManage->fields.effectsDict;
+                if (effectsDict) {
+                    auto* entriesArr = effectsDict->fields._entries;
+                    int slotCount = effectsDict->fields._count;
+                    if (entriesArr && slotCount > 0) {
+                        constexpr size_t entrySize = 0x18;
+                        constexpr size_t valOffset = 0x10;
+                        uintptr_t entries = reinterpret_cast<uintptr_t>(entriesArr)
+                                          + offsetof(System_Collections_Generic_Dictionary_Entry_TKey__TValue__array, m_Items);
+                        for (int i = 0; i < slotCount; ++i) {
+                            uintptr_t entry = entries + i * entrySize;
+                            int32_t hashCode = *reinterpret_cast<int32_t*>(entry);
+                            if (hashCode < 0) continue;
+                            AdventureEffect_o* effect = *reinterpret_cast<AdventureEffect_o**>(entry + valOffset);
+                            if (!effect) continue;
+                            if (effect->fields.removed) continue;
+                            auto* stack = effect->fields._effectStack;
+                            if (stack && stack->fields._array && stack->fields._size > 0)
+                                snap.insert(effect->fields.id);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    g_GetBothAllInfoSnapshot = snap;
+    g_HaveHitSnapshot = true;
 }
 
 // =============================================================================
@@ -196,6 +387,21 @@ static void __fastcall Hook_EffectOnInit(void* self, int32_t effType, int32_t so
     int32_t configId = 0;
     if (effectConfig)
         configId = effectConfig->fields.id_;
+    
+    if (configId > 0) {
+        int32_t instanceId = reinterpret_cast<AdventureEffect_o*>(self)->fields.id;
+        TrackInstanceConfig(instanceId, configId);
+        InstanceSnapInfo info = {};
+        info.configId = configId;
+        info.levelTypeData = effectConfig ? effectConfig->fields.levelTypeData_ : 0;
+        info.levelData = effectConfig ? effectConfig->fields.levelData_ : 0;
+        info.sourceType = sourceType;
+        info.valueConfigId = effectValueConfig ? effectValueConfig->fields.id_ : 0;
+        info.damage = 0;
+        info.ownerId = adventureActorId(owner);
+        info.fromActorId = adventureActorId(fromActor);
+        StoreInstanceSnapInfo(instanceId, info);
+    }
     
     if (g_Cfg.effects) {
         BuildBuffJson("Effect", configId, owner, fromActor, 1);
@@ -226,6 +432,13 @@ static void __fastcall Hook_BuffEntityInit(BuffEntity_o* self, Nova_Client_Buff_
                                            BuffCom_o* bfC, AdventureActor_o* fromActor, void* method)
 {
     g_OrigBuffEntityInit(self, buffConfig, buffValueConfig, bfC, fromActor, method);
+
+    int32_t buffCfgId = 0;
+    AdventureActor_o* owner = nullptr;
+    if (buffConfig) buffCfgId = buffConfig->fields.id_;
+    if (bfC) owner = bfC->fields._owner;
+    log("[BUFF_INIT] configId=%d time=%s owner=%s", buffCfgId, gameTime().c_str(),
+        owner ? adventureActorId(owner).c_str() : "null");
 }
 
 using FnBuffEntityExcute = void(__fastcall*)( BuffEntity_o*, int32_t, AdventureActor_o*, void*);
@@ -249,6 +462,9 @@ static void __fastcall Hook_BuffEntityExcute(BuffEntity_o* self, int32_t addType
     if (!owner)
         owner = fromActor;
     
+    log("[BUFF_EXCUTE] configId=%d addType=%d buffNum=%d owner=%s time=%s",
+        configId, addType, buffNum, owner ? adventureActorId(owner).c_str() : "null", gameTime().c_str());
+
     if (g_Cfg.buffs) {
         BuildBuffJson("Buff", configId, owner, fromActor, addType==3 ? -1 : 1, buffNum);
     }
@@ -259,20 +475,19 @@ static FnEffectOnClear g_OrigEffectOnClear = nullptr;
 
 static void __fastcall Hook_EffectOnClear(AdventureEffectBase_o* effectBase, MethodInfo* method)
 {
-    if (g_Cfg.effects)
+
+    if (effectBase)
     {
-        if (effectBase && effectBase)
+        AdventureEffect_o* effect = effectBase->fields._effect;
+        if (effect)
         {
-            AdventureEffect_o* effect = effectBase->fields._effect;
-            if (effect && effect)
+            if (g_Cfg.effects)
             {
-                Nova_Client_Effect_o* cfgCandidate = effect->fields._effectConfig_k__BackingField;
+                auto* clearCfg = effect->fields._effectConfig_k__BackingField;
                 AdventureActor_o* owner = effect->fields._owner;
                 AdventureActor_o* fromActor = effect->fields._fromActor;
 
-                int32_t configId = 0;
-                if (cfgCandidate && cfgCandidate)
-                    configId = cfgCandidate->fields.id_;
+                int32_t configId = clearCfg ? clearCfg->fields.id_ : 0;
 
                 BuildBuffJson("Effect", configId, owner, fromActor, -1);
             }
@@ -379,6 +594,9 @@ static DWORD WINAPI InitThread(LPVOID) {
     InstallHook(g_base + RVA_CALC_NORMAL_DAMAGE,     reinterpret_cast<void*>(&Hook_CalcNormalDamage),   (void**)&g_OrigCalcNormalDamage,   "CommonHelper$$CalculateNormalDamage");
     InstallHook(g_base + RVA_MONSTER_ACTION_STATE_ON_ENTER, reinterpret_cast<void*>(&Hook_MonsterActionStateOnEnter), (void**)&g_OrigMonsterActionStateOnEnter, "MonsterActionState$$OnEnter");
     InstallHook(g_base + RVA_MODULE_CLEAR_DATA, reinterpret_cast<void*>(&Hook_ModuleClearData), (void**)&g_OrigModuleClearData, "AdventureModuleController$$ClearData");
+    InstallHook(g_base + RVA_GET_BOTH_ALL_INFO, reinterpret_cast<void*>(&Hook_GetBothAllInfo), (void**)&g_OrigGetBothAllInfo, "AdventureActor$$GetBothAllInfo");
+    InstallHook(g_base + RVA_AREA_COPY_BATTLE, reinterpret_cast<void*>(&Hook_CopyBattleData), (void**)&g_OrigCopyBattleData, "AreaEffectEntity$$CopyBattleData");
+    InstallHook(g_base + RVA_WEAPON_SETUP, reinterpret_cast<void*>(&Hook_WeaponSetup), (void**)&g_OrigWeaponSetup, "AdventureWeapon$$Setup");
     InstallHttpHooks(g_base);
     
     log("[init] Ready.");

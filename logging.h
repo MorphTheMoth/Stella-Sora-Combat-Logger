@@ -6,7 +6,9 @@
 #include <atomic>
 #include <string>
 #include <unordered_set>
+#include <unordered_map>
 #include <vector>
+
 #include "json.hpp"
 #include "game_structs.h"
 
@@ -71,7 +73,7 @@ std::string gameTime();
 void loadConfig(const std::string& dir);
 
 // String helpers
-std::string Il2CppStringToStd(void* strObj);
+std::string Il2CppStringToStd(System_String_o* strObj);
 const char* AttrName(int i);
 
 // Actor logging
@@ -81,12 +83,36 @@ struct ElemDictEntry { int32_t attributeType; int32_t elementOrDamageType; bool 
 json logAdventureActorAttrsJson(AttributeList_o* attrList, const std::vector<ElemDictEntry>* overlay = nullptr);
 json logAdventureActorSpecialAttrsJson(AdventureActor_o* actor);
 
+// Effect snapshot: a set of effect instance IDs captured at snapshot time
+using EffectSnapshot = std::unordered_set<int32_t>;
+
+// Per-effect snapshot data stored at effect init / execute time
+struct InstanceSnapInfo {
+    int32_t configId;
+    int32_t levelTypeData;
+    int32_t levelData;
+    int32_t sourceType;
+    int32_t valueConfigId;
+    int64_t damage;
+    std::string ownerId;
+    std::string fromActorId;
+};
+void StoreInstanceSnapInfo(int32_t instanceId, const InstanceSnapInfo& info);
+bool GetInstanceSnapInfo(int32_t instanceId, const std::string& actorId, InstanceSnapInfo& out);
+void TrackInstanceConfig(int32_t instanceId, int32_t configId);
+int32_t GetConfigForInstance(int32_t instanceId);
+extern int32_t g_CurrentDamageTypeTemp;  // set before BuildHitJson
 // JSON builders for different event types
 void BuildBuffJson(const char* type, int32_t configId, AdventureActor_o* owner, AdventureActor_o* fromActor, int isAdd, int32_t buffNum = 0);
 json BuildBuffListJson(AdventureActor_o* fromActor);
 json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
                           GameDataController_o* gdc = nullptr,
-                          FnGetEffectValue GetEffectValue = nullptr);
+                          FnGetEffectValue GetEffectValue = nullptr,
+                          FnGetOnceAttr GetOnceAttr = nullptr,
+                          FnGetValueConfigId GetValueConfigId = nullptr,
+                          FnGetOnceAdditionalAttributeValue GetAttrValue = nullptr,
+                          AdventureActor_o* resolveActor = nullptr,
+                          const EffectSnapshot* effectSnapshot = nullptr);
 json BuildAdditionalAttrDictJson(
     System_Collections_Generic_Dictionary_int__int__o* dict,
     AdventureActor_o*     fromActor,
@@ -113,7 +139,8 @@ void BuildHitJson(
     GameDataController_o* gdc,
     FnGetOnceAttr GetOnceAttr, FnGetValueConfigId GetValueConfigId,
     FnGetEffectValue GetEffectValue = nullptr,
-    FnGetOnceAdditionalAttributeValue GetAttrValue = nullptr);
+    FnGetOnceAdditionalAttributeValue GetAttrValue = nullptr,
+    const EffectSnapshot* effectSnapshot = nullptr);
 void BuildSkillCastJson(int32_t skillId);
 void BuildResetJson();
 

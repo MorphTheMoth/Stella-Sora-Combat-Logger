@@ -10,6 +10,8 @@
 #include <knownfolders.h>
 #include <combaseapi.h>
 #include <cmath>
+#include <unordered_map>
+
 
 
 // =============================================================================
@@ -588,7 +590,12 @@ static std::unordered_set<int32_t> CollectDictKeys(void* dictPtr) {
 // Build a JSON object listing all active AdventureEffects on an actor.
 json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
                           GameDataController_o* gdc,
-                          FnGetEffectValue GetEffectValue) {
+                          FnGetEffectValue GetEffectValue,
+                          FnGetOnceAttr GetOnceAttr,
+                          FnGetValueConfigId GetValueConfigId,
+                          FnGetOnceAdditionalAttributeValue GetAttrValue,
+                          AdventureActor_o* resolveActor,
+                          const EffectSnapshot* effectSnapshot) {
     //ActorEffectManage has a list of Effects, each effect has a list of its derivative effects that are actually active
     json j;
     if (!effectManage) return j;
@@ -610,6 +617,114 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
     j["liveCount"] = liveCount;
     json effects = json::array();
 
+    if (effectSnapshot) {
+        AdventureActor_o* actor = effectManage->fields._actor;
+        std::string actorId = actor ? adventureActorId(actor) : "";
+        // Build a quick lookup by effect ID: find live effects still in the dict
+        std::unordered_set<int32_t> dictIds;
+        if (entriesArr && slotCount > 0) {
+            constexpr size_t entrySize = 0x18;
+            constexpr size_t valOffset  = 0x10;
+            uintptr_t entries = reinterpret_cast<uintptr_t>(entriesArr)
+                              + offsetof(System_Collections_Generic_Dictionary_Entry_TKey__TValue__array, m_Items);
+            for (int i = 0; i < slotCount; ++i) {
+                uintptr_t entry = entries + i * entrySize;
+                if (*reinterpret_cast<int32_t*>(entry) < 0) continue;
+                AdventureEffect_o* effect = *reinterpret_cast<AdventureEffect_o**>(entry + valOffset);
+                if (!effect || effect->fields.removed) continue;
+                dictIds.insert(effect->fields.id);
+            }
+        }
+        for (auto instId : *effectSnapshot) {
+            json je;
+            // Try live effect first
+            bool usedLive = false;
+            if (dictIds.count(instId) && entriesArr && slotCount > 0) {
+                constexpr size_t entrySize = 0x18;
+                constexpr size_t valOffset  = 0x10;
+                uintptr_t entries = reinterpret_cast<uintptr_t>(entriesArr)
+                                  + offsetof(System_Collections_Generic_Dictionary_Entry_TKey__TValue__array, m_Items);
+                for (int i = 0; i < slotCount; ++i) {
+                    uintptr_t entry = entries + i * entrySize;
+                    if (*reinterpret_cast<int32_t*>(entry) < 0) continue;
+                    AdventureEffect_o* effect = *reinterpret_cast<AdventureEffect_o**>(entry + valOffset);
+                    if (!effect || effect->fields.removed) continue;
+                    if (effect->fields.id != instId) continue;
+                    auto* effectCfg = effect->fields._effectConfig_k__BackingField;
+                    int32_t baseConfigId = effectCfg ? effectCfg->fields.id_ : 0;
+                    int32_t ltd = effectCfg ? effectCfg->fields.levelTypeData_ : 0;
+                    int32_t ld = effectCfg ? effectCfg->fields.levelData_ : 0;
+                    json allValueOptions = json::array();
+                    if (!effectValueKeys.empty() && baseConfigId > 0) {
+                        bool anyFound = false;
+                        for (int lvl = 0; lvl <= 50; ++lvl) {
+                            int32_t vid = baseConfigId + lvl * 10;
+                            if (effectValueKeys.count(vid)) { anyFound = true;
+                                json ve; ve["level"] = lvl; ve["valueConfigId"] = vid;
+                                allValueOptions.push_back(ve);
+                            } else if (anyFound) break;
+                        }
+                    }
+                    auto* stack = effect->fields._effectStack;
+                    if (stack && stack->fields._array) {
+                        auto* array = stack->fields._array;
+                        int size = stack->fields._size;
+                        constexpr size_t arrayHeaderSize = 0x20;
+                        uintptr_t itemsStart = reinterpret_cast<uintptr_t>(array) + arrayHeaderSize;
+                        for (int s = 0; s < size; ++s) {
+                            AdventureEffectBase_o* base = *reinterpret_cast<AdventureEffectBase_o**>(itemsStart + s * sizeof(void*));
+                            if (!base) continue;
+                            AdventureEffect_o* parentEffect = base->fields._effect;
+                            auto* ValueCfgPtr = parentEffect->fields._effectValueConfig_k__BackingField;
+                            je["configId"] = baseConfigId;
+                            je["levelTypeData"] = ltd;
+                            je["levelData"] = ld;
+                            je["valueConfigId"] = ValueCfgPtr ? ValueCfgPtr->fields.id_ : 0;
+                            je["allValueConfigIds"] = allValueOptions;
+                            je["sourceType"] = parentEffect->fields.sourceType;
+                            je["damage"] = static_cast<int64_t>(parentEffect->fields.Damage);
+                            if (parentEffect->fields._owner)
+                                je["owner"] = adventureActorId(parentEffect->fields._owner);
+                            effects.push_back(je);
+                            usedLive = true;
+                        }
+                    }
+                    break;
+                }
+            }
+            if (!usedLive) {
+                InstanceSnapInfo info;
+                if (!GetInstanceSnapInfo(instId, actorId, info)) {
+                    int32_t cfgId = GetConfigForInstance(instId);
+                    if (cfgId <= 0) continue;
+                    info.configId = cfgId;
+                }
+                je["configId"] = info.configId;
+                je["levelTypeData"] = info.levelTypeData;
+                je["levelData"] = info.levelData;
+                je["valueConfigId"] = info.valueConfigId;
+                je["sourceType"] = info.sourceType;
+                je["damage"] = info.damage;
+                if (!info.ownerId.empty()) je["owner"] = info.ownerId;
+                json allValueOptions = json::array();
+                if (!effectValueKeys.empty() && info.configId > 0) {
+                    bool anyFound = false;
+                    for (int lvl = 0; lvl <= 50; ++lvl) {
+                        int32_t vid = info.configId + lvl * 10;
+                        if (effectValueKeys.count(vid)) { anyFound = true;
+                            json ve; ve["level"] = lvl; ve["valueConfigId"] = vid;
+                            allValueOptions.push_back(ve);
+                        } else if (anyFound) break;
+                    }
+                }
+                je["allValueConfigIds"] = allValueOptions;
+                effects.push_back(je);
+            }
+        }
+        j["effects"] = effects;
+        return j;
+    }
+
     if (entriesArr && slotCount > 0) {
         constexpr size_t entrySize = 0x18;
         constexpr size_t valOffset  = 0x10;
@@ -624,6 +739,7 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
 
             AdventureEffect_o* effect = *reinterpret_cast<AdventureEffect_o**>(entry + valOffset);
             if (!effect) continue;
+            if (effect->fields.removed) continue;
 
             // Pre-compute level config data for this effect (shared by all stack items)
             auto* effectCfg = effect->fields._effectConfig_k__BackingField;
@@ -696,6 +812,9 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
             for (int i = 0; i < size; ++i) {
                 AdventureEffect_o* effect = itemsArr->m_Items[i];
                 if (!effect) continue;
+                auto* trigCfg = effect->fields._effectConfig_k__BackingField;
+                if (trigCfg && (trigCfg->fields.trigger_ == 3 || trigCfg->fields.trigger_ == 5)) continue;
+                if (effectSnapshot && !effectSnapshot->count(effect->fields.id)) continue;
                 json te;
                 te["id"]         = effect->fields.id;   // unique effect id (key in effectsDict)
                 auto* cfgPtr = effect->fields._effectConfig_k__BackingField;
@@ -804,7 +923,8 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
                   GameDataController_o* gdc,
                   FnGetOnceAttr GetOnceAttr, FnGetValueConfigId GetValueConfigId,
                   FnGetEffectValue GetEffectValue,
-                  FnGetOnceAdditionalAttributeValue GetAttrValue) {
+                  FnGetOnceAdditionalAttributeValue GetAttrValue,
+                  const EffectSnapshot* effectSnapshot) {
     if (!g_Cfg.damage) return;
     // Build element/dmg dict overlays once — read-only, no game memory mutation
     std::vector<ElemDictEntry> fromRawOverlay = ReadElemDict(fromAdditionalAttrInfo);
@@ -851,6 +971,7 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
         
         j["HitConfig"] = hitCfg;
     }
+    j["HitType"] = g_CurrentDamageTypeTemp;
     json dmgParams;
     dmgParams["skillLevel"]              = skillLevel + 1;
     dmgParams["isCrit"]                  = isCrit;
@@ -905,14 +1026,14 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
     
     if (fromActor && g_Cfg.on_hit_effect_list) {
         ActorEffectManage_o* effectManage = fromActor->fields.effectManage;
-        json effects = BuildEffectListJson(effectManage, g_Cfg.on_hit_effect_list_information, gdc, GetEffectValue);
+        json effects = BuildEffectListJson(effectManage, g_Cfg.on_hit_effect_list_information, gdc, GetEffectValue, GetOnceAttr, GetValueConfigId, GetAttrValue, fromActor, effectSnapshot);
         if (!effects.empty())
             j["AttackerEffects"] = effects;
     }    
 
     if (toActor && g_Cfg.on_hit_effect_list) {
         ActorEffectManage_o* effectManage = toActor->fields.effectManage;
-        json effects = BuildEffectListJson(effectManage, g_Cfg.on_hit_effect_list_information, gdc, GetEffectValue);
+        json effects = BuildEffectListJson(effectManage, g_Cfg.on_hit_effect_list_information, gdc, GetEffectValue, GetOnceAttr, GetValueConfigId, GetAttrValue, toActor, nullptr);
         if (!effects.empty())
             j["DefenderEffects"] = effects;
     }
@@ -948,6 +1069,50 @@ void BuildResetJson() {
     
     logJson(j);
     //log("[Reset] %s", gameTime().c_str());
+}
+
+int32_t g_CurrentDamageTypeTemp = 1;
+
+// =============================================================================
+//  Effect instance tracking (used by area hit path in BuildEffectListJson)
+// =============================================================================
+static std::mutex g_EffectTrackMutex;
+static std::unordered_map<int32_t, int32_t> g_InstanceConfigMap;             // instanceId → configId
+static std::unordered_map<std::string, InstanceSnapInfo> g_ScopedSnapInfoMap;  // "actorId:instanceId" → full info
+
+void TrackInstanceConfig(int32_t instanceId, int32_t configId) {
+    if (instanceId <= 0 || configId <= 0) return;
+    std::lock_guard<std::mutex> lk(g_EffectTrackMutex);
+    g_InstanceConfigMap[instanceId] = configId;
+}
+
+int32_t GetConfigForInstance(int32_t instanceId) {
+    std::lock_guard<std::mutex> lk(g_EffectTrackMutex);
+    auto it = g_InstanceConfigMap.find(instanceId);
+    return (it != g_InstanceConfigMap.end()) ? it->second : 0;
+}
+
+void StoreInstanceSnapInfo(int32_t instanceId, const InstanceSnapInfo& info) {
+    if (instanceId <= 0 || info.ownerId.empty() || info.ownerId == "null") return;
+    std::string key = info.ownerId + ":" + std::to_string(instanceId);
+    std::lock_guard<std::mutex> lk(g_EffectTrackMutex);
+    g_ScopedSnapInfoMap[key] = info;
+}
+
+bool GetInstanceSnapInfo(int32_t instanceId, const std::string& actorId, InstanceSnapInfo& out) {
+    std::string key = actorId + ":" + std::to_string(instanceId);
+    std::lock_guard<std::mutex> lk(g_EffectTrackMutex);
+    auto it = g_ScopedSnapInfoMap.find(key);
+    if (it == g_ScopedSnapInfoMap.end()) {
+        auto oldIt = g_InstanceConfigMap.find(instanceId);
+        if (oldIt != g_InstanceConfigMap.end()) {
+            out.configId = oldIt->second;
+            return true;
+        }
+        return false;
+    }
+    out = it->second;
+    return true;
 }
 
 // =============================================================================
