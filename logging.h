@@ -108,6 +108,34 @@ bool GetInstanceSnapInfo(int32_t instanceId, const std::string& actorId, Instanc
 void TrackInstanceConfig(int32_t instanceId, int32_t configId);
 int32_t GetConfigForInstance(int32_t instanceId);
 extern int32_t g_CurrentDamageTypeTemp;  // set before BuildHitJson
+
+// Player effect snapshot for minion inherited effects
+struct PlayerEffectEntry {
+    int32_t instanceId;
+    int32_t configId;
+    int32_t valueConfigId;
+    int32_t sourceType;
+    int64_t damage;
+    int32_t attributeType;
+    int32_t parameterType;
+    double baseStatOnSnapshot;
+    double pctStatOnSnapshot;
+    std::string ownerId;
+};
+struct PlayerEffectSnapshot {
+    std::vector<PlayerEffectEntry> entries;
+    std::vector<double> pctValues;
+    std::vector<double> baseValues;
+    std::string time;
+};
+struct MinionLink {
+    std::string playerId;
+    int32_t summonAttrType;
+};
+extern std::mutex g_PlayerSnapshotMutex;
+extern std::unordered_map<std::string, PlayerEffectSnapshot> g_PlayerSnapshots;
+extern std::mutex g_MinionLinkMutex;
+extern std::unordered_map<std::string, MinionLink> g_MinionToPlayer;
 // JSON builders for different event types
 void BuildBuffJson(const char* type, int32_t configId, AdventureActor_o* owner, AdventureActor_o* fromActor, int isAdd, int32_t buffNum = 0);
 json BuildBuffListJson(AdventureActor_o* fromActor);

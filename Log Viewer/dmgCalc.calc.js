@@ -168,6 +168,9 @@ function dcCollectAttrFixEffects(dcFiltered) {
                             source: e.source ?? 'Unknown',
                             fromAttrDict: false,
                             effectType: e.effectType,
+                            fromOwnerSnapshot: !!e.fromOwnerSnapshot,
+                            baseStatOnSnapshot: e.baseStatOnSnapshot,
+                            pctStatOnSnapshot: e.pctStatOnSnapshot,
                             allValueConfigIds: allVcIds,
                             levelTypeData: e.levelTypeData,
                             levelData: e.levelData,
@@ -286,14 +289,53 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides) {
     for (const { side, list, attrDict, statMap } of sides) {
         // ── effects list ───────────────────────────────────────────────
         if (list?.length) {
+            // ── Aggregate inherited snapshot effects ──────────────────
+            // Inherited effects interact non-linearly: removing one pct effect
+            // changes the base for the other effects. We must sum them first,
+            // then apply a single delta per (attrType, B, P) group.
+            const inheritedGroups = new Map(); // key -> { attrId, B, P, e_base, e_pct }
+            const inheritedKeys = new Set();   // keys to skip in per-effect loop
+            for (const e of list) {
+                if (!allowedEffectTypes.includes(e.effectType)) continue;
+                if (!e.fromOwnerSnapshot || e.baseStatOnSnapshot == null) continue;
+                const key = `${side}:${e.configId}:${e.valueConfigId ?? ''}`;
+                if (!dcEffectsDisabled.has(key)) continue;
+                const attrId = e.attrType;
+                if (attrId == null || e.value == null) continue;
+                inheritedKeys.add(key);
+                const groupKey = `${attrId}:${e.baseStatOnSnapshot}:${e.pctStatOnSnapshot ?? 0}`;
+                let group = inheritedGroups.get(groupKey);
+                if (!group) {
+                    group = { attrId, B: e.baseStatOnSnapshot, P: e.pctStatOnSnapshot || 0, e_base: 0, e_pct: 0 };
+                    inheritedGroups.set(groupKey, group);
+                }
+                // Use e.subType from tableResolver: 1=Base, 2=Pct
+                if (e.subType === 1) group.e_base += e.value;
+                else if (e.subType === 2) group.e_pct += e.value;
+            }
+            // Apply per-group delta: -(B * e_pct + e_base * (1 + P - e_pct))
+            for (const [, group] of inheritedGroups) {
+                const { attrId, B, P, e_base, e_pct } = group;
+                const delta = -(B * e_pct + e_base * (1 + P - e_pct));
+                let stat = statMap.get(attrId);
+                if (!stat) { stat = { id: attrId, origin: 0, base: 0, pct: 0, abs: 0 }; statMap.set(attrId, stat); }
+                stat.base = (stat.base || 0) + delta;
+            }
+
+            // ── Count non-inherited effects ────────────────────────────
             const countMap = new Map();
             for (const e of list) {
                 if (!allowedEffectTypes.includes(e.effectType)) continue;
+                if (e.fromOwnerSnapshot) continue;
+                const key = `${side}:${e.configId}:${e.valueConfigId ?? ''}`;
+                if (!dcEffectsDisabled.has(key)) continue;
                 countMap.set(e.configId, (countMap.get(e.configId) || 0) + 1);
             }
+            // ── Per-effect loop (non-inherited only) ───────────────────
             const seenInHit = new Set();
             for (const e of list) {
                 if (!allowedEffectTypes.includes(e.effectType)) continue;
+                if (e.fromOwnerSnapshot) continue;
                 if (seenInHit.has(e.configId)) continue;
                 seenInHit.add(e.configId);
                 const key = `${side}:${e.configId}:${e.valueConfigId ?? ''}`;
@@ -365,6 +407,7 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides) {
                 const seenInHit = new Set();
                 for (const e of list) {
                     if (!allowedEffectTypes.includes(e.effectType)) continue;
+                    if (e.fromOwnerSnapshot) continue;
                     if (seenInHit.has(e.configId)) continue;
                     seenInHit.add(e.configId);
                     const key = `${side}:${e.configId}:${e.valueConfigId ?? ''}`;

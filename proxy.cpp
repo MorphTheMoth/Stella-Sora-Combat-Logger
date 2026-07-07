@@ -55,6 +55,12 @@ static constexpr uintptr_t RVA_MODULE_CLEAR_DATA     = 0x15C78A0;  // AdventureM
 static constexpr uintptr_t RVA_GET_BOTH_ALL_INFO     = 0x12263F0;  // AdventureActor$$GetBothAllInfo
 static constexpr uintptr_t RVA_AREA_COPY_BATTLE      = 0x169C610;  // AreaEffectEntity$$CopyBattleData
 static constexpr uintptr_t RVA_WEAPON_SETUP          = 0x16F57E0;  // AdventureWeapon$$Setup
+static constexpr uintptr_t RVA_FAKE_SET_ATTR_INFO     = 0x1360730;  // FakeAdventureActor$$SetAttrInfo
+static constexpr uintptr_t RVA_SET_PLAYER_SUMMON_ATTR = 0x1368980;  // MonsterAdventureActor$$SetPlayerSummonAttrInfo
+static constexpr uintptr_t RVA_SET_PLAYER_SUMMON_SNAP = 0x1368560;  // MonsterAdventureActor$$SetPlayerSummonAttrInfoBySnapshot
+static constexpr uintptr_t RVA_CLONE_SET_ATTR         = 0x14A2890;  // MonsterCloneAdventureActor$$SetAttr
+static constexpr uintptr_t RVA_PARSE_SUMMON_CFG       = 0x14A34A0;  // MonsterSummonInfo$$ParseSummonCfg
+static constexpr uintptr_t RVA_SAVE_PLAYER_SNAPSHOT  = 0x14AC8D0;  // PlayerAdventureActor$$SavePlayerAttributeSnapshot
 
 //  Cached module base
 static uintptr_t g_base = 0;
@@ -166,7 +172,6 @@ static int64_t __fastcall Hook_CalcNormalDamage(
     if (damageTypeTemp == 1) hitTypeStr = "actor";
     else if (damageTypeTemp == 2) hitTypeStr = "weapon";
     else if (damageTypeTemp == 5) hitTypeStr = "area";
-    log("[HIT] id=%d type=%s(%d)", hitDmgId, hitTypeStr, damageTypeTemp);
 
     // ── Step 2: choose the right effect snapshot for this hit ──────────────────
     EffectSnapshot hitSnapshot;
@@ -335,6 +340,220 @@ static void __fastcall Hook_WeaponSetup(AdventureWeapon_o* weapon, LogicEntity_o
     }
 }
 
+// =============================================================================
+//  Minion/Summon stat initialization hooks
+// =============================================================================
+
+using FnFakeSetAttrInfo = void(__fastcall*)(AdventureActor_o*, int32_t, int64_t, int32_t, void*);
+static FnFakeSetAttrInfo g_OrigFakeSetAttrInfo = nullptr;
+
+static void __fastcall Hook_FakeSetAttrInfo(AdventureActor_o* self, int32_t templeteId,
+                                            int64_t attributeId, int32_t factionID, void* method)
+{
+    g_OrigFakeSetAttrInfo(self, templeteId, attributeId, factionID, method);
+    log("[MINION] FakeAdventureActor$$SetAttrInfo id=%d attrId=%lld faction=%d time=%s",
+        templeteId, (long long)attributeId, factionID, gameTime().c_str());
+}
+
+using FnSetPlayerSummonAttr = void(__fastcall*)(AdventureActor_o*, AdventureActor_o*, int32_t, void*);
+static FnSetPlayerSummonAttr g_OrigSetPlayerSummonAttr = nullptr;
+
+static void __fastcall Hook_SetPlayerSummonAttr(AdventureActor_o* self, AdventureActor_o* player,
+                                                int32_t percent, void* method)
+{
+    g_OrigSetPlayerSummonAttr(self, player, percent, method);
+    log("[MINION] MonsterAdventureActor$$SetPlayerSummonAttrInfo percent=%d player=%s time=%s",
+        percent, player ? adventureActorId(player).c_str() : "null", gameTime().c_str());
+}
+
+using FnSetPlayerSummonSnap = void(__fastcall*)(AdventureActor_o*, AdventureActor_o*, int32_t, void*);
+static FnSetPlayerSummonSnap g_OrigSetPlayerSummonSnap = nullptr;
+
+static void __fastcall Hook_SetPlayerSummonSnap(AdventureActor_o* self, AdventureActor_o* player,
+                                                int32_t percent, void* method)
+{
+    g_OrigSetPlayerSummonSnap(self, player, percent, method);
+
+    // Store minion→player mapping for inherited effect tracking
+    if (self && player) {
+        MinionLink link;
+        link.playerId = adventureActorId(player);
+        link.summonAttrType = 2;
+        {
+            std::lock_guard<std::mutex> lk(g_MinionLinkMutex);
+            g_MinionToPlayer[adventureActorId(self)] = link;
+        }
+    }
+
+    //log("[MINION] MonsterAdventureActor$$SetPlayerSummonAttrInfoBySnapshot percent=%d player=%s time=%s",
+    //    percent, player ? adventureActorId(player).c_str() : "null", gameTime().c_str());
+}
+
+// =============================================================================
+//  Player snapshot stat save hook — capture player's effects for minions
+// =============================================================================
+using FnSaveSnapshot = void(__fastcall*)(AdventureActor_o*, void*);
+static FnSaveSnapshot g_OrigSaveSnapshot = nullptr;
+
+static void __fastcall Hook_SavePlayerSnapshot(AdventureActor_o* player, void* method)
+{
+    g_OrigSaveSnapshot(player, method);
+
+    if (!player) { log("[SNAP] SavePlayerSnapshot: player is null"); return; }
+
+    PlayerEffectSnapshot snap;
+    snap.time = gameTime();
+
+    // Read origin + baseAmend (total base) AND percentAmend from player's attributeList
+    if (auto* sl = player->fields.attributeList) {
+        if (auto* entriesArr = sl->fields.entries) {
+            snap.baseValues.resize(0x61, 0.0);
+            snap.pctValues.resize(0x61, 0.0);
+            for (int t = 1; t < 0x61; t++) {
+                double* origin = reinterpret_cast<double*>(
+                    reinterpret_cast<uint8_t*>(entriesArr) + 0x20 + t * 0x28 + 0x00);
+                double* baseAmend = reinterpret_cast<double*>(
+                    reinterpret_cast<uint8_t*>(entriesArr) + 0x20 + t * 0x28 + 0x08);
+                double* pctAmend = reinterpret_cast<double*>(
+                    reinterpret_cast<uint8_t*>(entriesArr) + 0x20 + t * 0x28 + 0x10);
+                snap.baseValues[t] = *origin + *baseAmend;
+                snap.pctValues[t] = *pctAmend;
+            }
+        } else {
+            log("[SNAP] SavePlayerSnapshot: attributeList entries is null");
+        }
+    } else {
+        log("[SNAP] SavePlayerSnapshot: attributeList is null for player=%s", adventureActorId(player).c_str());
+    }
+
+    // Collect active effects from player's effectsDict
+    int effectCount = 0;
+    int stackCount = 0;
+    if (auto* em = player->fields.effectManage) {
+        if (auto* dict = em->fields.effectsDict) {
+            auto* entriesArr = dict->fields._entries;
+            int slotCount = dict->fields._count;
+            if (entriesArr && slotCount > 0) {
+                constexpr size_t entrySize = 0x18;
+                constexpr size_t valOffset = 0x10;
+                uintptr_t entries = reinterpret_cast<uintptr_t>(entriesArr)
+                    + offsetof(System_Collections_Generic_Dictionary_Entry_TKey__TValue__array, m_Items);
+
+                for (int i = 0; i < slotCount; ++i) {
+                    uintptr_t entry = entries + i * entrySize;
+                    int32_t hashCode = *reinterpret_cast<int32_t*>(entry);
+                    if (hashCode < 0) continue;
+                    AdventureEffect_o* effect = *reinterpret_cast<AdventureEffect_o**>(entry + valOffset);
+                    if (!effect) continue;
+                    if (effect->fields.removed) continue;
+                    effectCount++;
+
+                    auto* stack = effect->fields._effectStack;
+                    if (!stack || !stack->fields._array || stack->fields._size <= 0) continue;
+
+                    auto* array = stack->fields._array;
+                    int size = stack->fields._size;
+                    constexpr size_t arrayHeaderSize = 0x20;
+                    uintptr_t itemsStart = reinterpret_cast<uintptr_t>(array) + arrayHeaderSize;
+
+                    for (int s = 0; s < size; ++s) {
+                        AdventureEffectBase_o* base = *reinterpret_cast<AdventureEffectBase_o**>(itemsStart + s * sizeof(void*));
+                        if (!base) continue;
+
+                        AdventureEffect_o* parentEffect = base->fields._effect;
+                        auto* effectCfg = parentEffect->fields._effectConfig_k__BackingField;
+                        auto* valueCfg = parentEffect->fields._effectValueConfig_k__BackingField;
+
+                        int32_t configId = effectCfg ? effectCfg->fields.id_ : 0;
+                        int32_t valueConfigId = valueCfg ? valueCfg->fields.id_ : 0;
+                        int32_t attrType = valueCfg ? valueCfg->fields.effectTypeFirstSubtype_ : 0;
+                        int32_t paramType = valueCfg ? valueCfg->fields.effectTypeSecondSubtype_ : 0;
+
+                        if (configId == 0) continue;
+                        stackCount++;
+
+                        PlayerEffectEntry pe;
+                        pe.instanceId = parentEffect->fields.id;
+                        pe.configId = configId;
+                        pe.valueConfigId = valueConfigId;
+                        pe.sourceType = parentEffect->fields.sourceType;
+                        pe.damage = static_cast<int64_t>(parentEffect->fields.Damage);
+                        pe.attributeType = attrType;
+                        pe.parameterType = paramType;
+
+                        if (attrType > 0 && attrType < 0x61) {
+                            pe.baseStatOnSnapshot = snap.baseValues[attrType];
+                            pe.pctStatOnSnapshot = snap.pctValues[attrType];
+                        } else {
+                            pe.baseStatOnSnapshot = 0.0;
+                            pe.pctStatOnSnapshot = 0.0;
+                        }
+
+                        if (parentEffect->fields._owner)
+                            pe.ownerId = adventureActorId(parentEffect->fields._owner);
+
+                        snap.entries.push_back(pe);
+                    }
+                }
+            }
+        }
+    }
+    log("[SNAP] SavePlayerSnapshot player=%s effects=%d stacks=%d entries=%d time=%s",
+        adventureActorId(player).c_str(), effectCount, stackCount, (int)snap.entries.size(), gameTime().c_str());
+    //for (auto& e : snap.entries) {
+    //    log("[SNAP]   configId=%d attrType=%d paramType=%d baseStat=%.1f damage=%lld",
+    //        e.configId, e.attributeType, e.parameterType, e.baseStatOnSnapshot, (long long)e.damage);
+    //}
+
+    {
+        std::lock_guard<std::mutex> lk(g_PlayerSnapshotMutex);
+        g_PlayerSnapshots[adventureActorId(player)] = std::move(snap);
+        log("[SNAP] Stored snapshot for player=%s mapSize=%zu",
+            adventureActorId(player).c_str(), g_PlayerSnapshots.size());
+    }
+}
+
+using FnCloneSetAttr = void(__fastcall*)(AdventureActor_o*, AdventureActor_o*, void*);
+static FnCloneSetAttr g_OrigCloneSetAttr = nullptr;
+
+static void __fastcall Hook_CloneSetAttr(AdventureActor_o* self, AdventureActor_o* master, void* method)
+{
+    g_OrigCloneSetAttr(self, master, method);
+    log("[MINION] MonsterCloneAdventureActor$$SetAttr master=%s self=%s time=%s",
+        master ? adventureActorId(master).c_str() : "null",
+        self ? adventureActorId(self).c_str() : "null",
+        gameTime().c_str());
+}
+
+using FnParseSummonCfg = void(__fastcall*)(void*, void*, void*, void*);
+static FnParseSummonCfg g_OrigParseSummonCfg = nullptr;
+
+// Minimal struct to read SummonCfg fields by offset
+struct SummonCfgFields {
+    int32_t summonType;
+    int32_t summonFollowType;
+    int32_t summonAttrType;
+    int32_t summonRelation;
+    int32_t attrPercent;
+    int64_t leftTime;
+    int32_t maxCount;
+    bool retainWhenCrossLevel;
+    bool useSummonHit;
+};
+
+static void __fastcall Hook_ParseSummonCfg(void* summonInfo, void* cfgData, void* spawnInfo, void* method)
+{
+    g_OrigParseSummonCfg(summonInfo, cfgData, spawnInfo, method);
+    int32_t attrType = -1;
+    int32_t perc = 0;
+    if (cfgData) {
+        auto* f = reinterpret_cast<SummonCfgFields*>(reinterpret_cast<uint8_t*>(cfgData) + 0x10); // skip klass+monitor
+        attrType = f->summonAttrType;
+        perc = f->attrPercent;
+    }
+    log("[MINION] MonsterSummonInfo$$ParseSummonCfg summonAttrType=%d percent=%d time=%s", attrType, perc, gameTime().c_str());
+}
+
 using FnGetBothAllInfo = void(__fastcall*)(AdventureActor_o*, void*);
 static FnGetBothAllInfo g_OrigGetBothAllInfo = nullptr;
 
@@ -445,13 +664,6 @@ static void __fastcall Hook_BuffEntityInit(BuffEntity_o* self, Nova_Client_Buff_
                                            BuffCom_o* bfC, AdventureActor_o* fromActor, void* method)
 {
     g_OrigBuffEntityInit(self, buffConfig, buffValueConfig, bfC, fromActor, method);
-
-    int32_t buffCfgId = 0;
-    AdventureActor_o* owner = nullptr;
-    if (buffConfig) buffCfgId = buffConfig->fields.id_;
-    if (bfC) owner = bfC->fields._owner;
-    log("[BUFF_INIT] configId=%d time=%s owner=%s", buffCfgId, gameTime().c_str(),
-        owner ? adventureActorId(owner).c_str() : "null");
 }
 
 using FnBuffEntityExcute = void(__fastcall*)( BuffEntity_o*, int32_t, AdventureActor_o*, void*);
@@ -474,9 +686,6 @@ static void __fastcall Hook_BuffEntityExcute(BuffEntity_o* self, int32_t addType
         owner = bc->fields._owner;
     if (!owner)
         owner = fromActor;
-    
-    log("[BUFF_EXCUTE] configId=%d addType=%d buffNum=%d owner=%s time=%s",
-        configId, addType, buffNum, owner ? adventureActorId(owner).c_str() : "null", gameTime().c_str());
 
     if (g_Cfg.buffs) {
         BuildBuffJson("Buff", configId, owner, fromActor, addType==3 ? -1 : 1, buffNum);
@@ -606,10 +815,16 @@ static DWORD WINAPI InitThread(LPVOID) {
     InstallHook(g_base + RVA_BUFF_ENTITY_EXCUTE,     reinterpret_cast<void*>(&Hook_BuffEntityExcute),   (void**)&g_OrigBuffEntityExcute,   "BuffEntity$$BuffExcute");
     InstallHook(g_base + RVA_CALC_NORMAL_DAMAGE,     reinterpret_cast<void*>(&Hook_CalcNormalDamage),   (void**)&g_OrigCalcNormalDamage,   "CommonHelper$$CalculateNormalDamage");
     InstallHook(g_base + RVA_MONSTER_ACTION_STATE_ON_ENTER, reinterpret_cast<void*>(&Hook_MonsterActionStateOnEnter), (void**)&g_OrigMonsterActionStateOnEnter, "MonsterActionState$$OnEnter");
-    InstallHook(g_base + RVA_MODULE_CLEAR_DATA, reinterpret_cast<void*>(&Hook_ModuleClearData), (void**)&g_OrigModuleClearData, "AdventureModuleController$$ClearData");
-    InstallHook(g_base + RVA_GET_BOTH_ALL_INFO, reinterpret_cast<void*>(&Hook_GetBothAllInfo), (void**)&g_OrigGetBothAllInfo, "AdventureActor$$GetBothAllInfo");
-    InstallHook(g_base + RVA_AREA_COPY_BATTLE, reinterpret_cast<void*>(&Hook_CopyBattleData), (void**)&g_OrigCopyBattleData, "AreaEffectEntity$$CopyBattleData");
-    InstallHook(g_base + RVA_WEAPON_SETUP, reinterpret_cast<void*>(&Hook_WeaponSetup), (void**)&g_OrigWeaponSetup, "AdventureWeapon$$Setup");
+    InstallHook(g_base + RVA_MODULE_CLEAR_DATA,      reinterpret_cast<void*>(&Hook_ModuleClearData),    (void**)&g_OrigModuleClearData,    "AdventureModuleController$$ClearData");
+    InstallHook(g_base + RVA_GET_BOTH_ALL_INFO,      reinterpret_cast<void*>(&Hook_GetBothAllInfo),     (void**)&g_OrigGetBothAllInfo,     "AdventureActor$$GetBothAllInfo");
+    InstallHook(g_base + RVA_AREA_COPY_BATTLE,       reinterpret_cast<void*>(&Hook_CopyBattleData),     (void**)&g_OrigCopyBattleData,     "AreaEffectEntity$$CopyBattleData");
+    InstallHook(g_base + RVA_WEAPON_SETUP,           reinterpret_cast<void*>(&Hook_WeaponSetup),        (void**)&g_OrigWeaponSetup,        "AdventureWeapon$$Setup");
+    InstallHook(g_base + RVA_FAKE_SET_ATTR_INFO,     reinterpret_cast<void*>(&Hook_FakeSetAttrInfo),    (void**)&g_OrigFakeSetAttrInfo,    "FakeAdventureActor$$SetAttrInfo");
+    InstallHook(g_base + RVA_SET_PLAYER_SUMMON_ATTR, reinterpret_cast<void*>(&Hook_SetPlayerSummonAttr),(void**)&g_OrigSetPlayerSummonAttr,"MonsterAdventureActor$$SetPlayerSummonAttrInfo");
+    InstallHook(g_base + RVA_SET_PLAYER_SUMMON_SNAP, reinterpret_cast<void*>(&Hook_SetPlayerSummonSnap),(void**)&g_OrigSetPlayerSummonSnap,"MonsterAdventureActor$$SetPlayerSummonAttrInfoBySnapshot");
+    InstallHook(g_base + RVA_CLONE_SET_ATTR,         reinterpret_cast<void*>(&Hook_CloneSetAttr),       (void**)&g_OrigCloneSetAttr,       "MonsterCloneAdventureActor$$SetAttr");
+    InstallHook(g_base + RVA_PARSE_SUMMON_CFG,       reinterpret_cast<void*>(&Hook_ParseSummonCfg),     (void**)&g_OrigParseSummonCfg,     "MonsterSummonInfo$$ParseSummonCfg");
+    InstallHook(g_base + RVA_SAVE_PLAYER_SNAPSHOT,   reinterpret_cast<void*>(&Hook_SavePlayerSnapshot), (void**)&g_OrigSaveSnapshot,       "PlayerAdventureActor$$SavePlayerAttributeSnapshot");
     InstallHttpHooks(g_base);
     
     log("[init] Ready.");

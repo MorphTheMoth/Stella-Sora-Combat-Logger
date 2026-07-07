@@ -45,8 +45,23 @@ function eiResolveEffectDelta(ev, ef) {
         if (!first || first.attrType == null || first.value == null) return null;
         const override = dcEffectLevelOverrides?.get(ef.key);
         const attrType = override?.newAttrType ?? first.attrType;
-        const subType  = override?.newSubType  ?? first.subType;
-        const amount   = override ? override.newValue * count : first.value * count;
+        let subType  = override?.newSubType  ?? first.subType;
+        let amount   = override ? override.newValue * count : first.value * count;
+        // Inherited snapshot effects: the stats are collapsed into base,
+        // so compute the effective base contribution
+        if (first.fromOwnerSnapshot && first.baseStatOnSnapshot != null) {
+            const B = first.baseStatOnSnapshot;
+            const P = first.pctStatOnSnapshot || 0;
+            const v = first.value;
+            if (first.subType === 1) {
+                // Base effect: contribution = v * (1 + P)
+                amount = v * (1 + P) * count;
+            } else {
+                // Pct effect: contribution = B * v
+                amount = B * v * count;
+            }
+            subType = 1; // apply to stat.base
+        }
         return { attrType, subType, amount, stacks: count };
     }
 }
@@ -156,6 +171,25 @@ function eiComputeEffect(ef, baseline) {
             } else {
                 totalWithout += withDmg;
             }
+        }
+        return { totalWith, totalWithout, hitCount, affectedHits, maxStacks: 1, isAdded };
+    }
+
+    // ── Inherited snapshot effects: recompute full aggregation instead of patching ──
+    // Per-effect deltas don't work because inherited effects interact non-linearly
+    // through the aggregation formula: -(B*e_pct + e_base*(1+P-e_pct)).
+    if (ef.fromOwnerSnapshot) {
+        for (let i = 0; i < baseline.length; i++) {
+            const { ev, withOverrides, withDmg } = baseline[i];
+            totalWith += withDmg;
+            if (withOverrides._potentialsDisabled) continue;
+            affectedHits++;
+            const tempDisabled = new Set(dcEffectsDisabled);
+            if (isAdded) tempDisabled.delete(ef.key);
+            else          tempDisabled.add(ef.key);
+            const altOverrides = dcApplyEffectOverrides(ev, tempDisabled, dcEffectLevelOverrides);
+            const altFields    = calcHitFields(ev, altOverrides);
+            totalWithout += calcDamage(altFields, dcBonus, dcDisabled);
         }
         return { totalWith, totalWithout, hitCount, affectedHits, maxStacks: 1, isAdded };
     }

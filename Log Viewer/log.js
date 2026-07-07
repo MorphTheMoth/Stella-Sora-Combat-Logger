@@ -153,6 +153,7 @@ function hitBody(ev, oi) {
         <tr><th>Element Type</th><td>${elName(hc.elementType)}</td></tr>
         <tr><th>Hit Type</th><td>${htName(ev.HitType)}</td></tr>
         ${ev.SnapshotAt ? `<tr><th>Snapshot Age</th><td>${((parseTimeToMs(ev.Time)-parseTimeToMs(ev.SnapshotAt))/1000).toFixed(3)}s ago</td></tr>` : ''}
+        ${ev.SummonAttrType !== undefined ? `<tr><th>Summon Attr Type</th><td>${ev.SummonAttrType}</td></tr>` : ''}
     </table></div>`;
 
     h+=`<div class="section"><div class="collapsible-toggle${subOpenStates[`${oi}_dmg-${oi}`] ? ' open' : ''}" data-target="dmg-${oi}">Damage Calculation</div>
@@ -181,7 +182,7 @@ function hitBody(ev, oi) {
         h+=`<div class="collapsible-toggle${subOpenStates[`${oi}_aeffects-${oi}`] ? ' open' : ''}" data-target="aeffects-${oi}">Attacker Effects (${ev.AttackerEffects.effects.length})</div>
         <div class="collapsible-content" id="aeffects-${oi}" style="${subOpenStates[`${oi}_aeffects-${oi}`] ? 'display:block' : ''}"><table class="wide-name"><tr><th>Name</th><th>Count</th><th>Type</th><th>Attr</th><th>SubType</th><th>Value</th><th>ID</th></tr>`;
         const m=new Map(); ev.AttackerEffects.effects.forEach(e=>{ const id=e.configId; if(!m.has(id)) m.set(id,{e,count:0}); m.get(id).count++; });
-        m.forEach((v,id)=>{ const e=v.e; const etName=e.effectType!=null?effectTypeName(e.effectType):''; const atName=e.attrType!=null?attrName(e.attrType):''; const stName=e.subType!=null?effectSubTypeName(e.subType, e.effectType):''; const raw=e.value; const val=raw!=null?(Math.abs(raw)<15?(raw*100).toFixed(2)+'%':raw):''; h+=`<tr><td>${esc(e.name)}</td><td>${v.count}</td><td>${esc(etName)}</td><td>${esc(atName)}</td><td>${esc(stName)}</td><td>${val}</td><td>${id}</td></tr>`; });
+        m.forEach((v,id)=>{ const e=v.e; const etName=e.effectType!=null?effectTypeName(e.effectType):''; const atName=e.attrType!=null?attrName(e.attrType):''; const stName=e.subType!=null?effectSubTypeName(e.subType, e.effectType):''; const raw=e.value; const val=raw!=null?(Math.abs(raw)<15?(raw*100).toFixed(2)+'%':raw):''; const inherited=e.fromOwnerSnapshot?' style="background:#2a2a2a"':''; h+=`<tr${inherited}><td>${esc(e.name)}</td><td>${v.count}</td><td>${esc(etName)}</td><td>${esc(atName)}</td><td>${esc(stName)}</td><td>${val}</td><td>${id}</td></tr>`; });
         h+=`</table></div>`;
     }
     if(ev.AttackerAttrDict?.length) {
@@ -209,7 +210,7 @@ function hitBody(ev, oi) {
         h+=`<div class="collapsible-toggle${subOpenStates[`${oi}_deffects-${oi}`] ? ' open' : ''}" data-target="deffects-${oi}">Defender Effects (${ev.DefenderEffects.effects.length})</div>
         <div class="collapsible-content" id="deffects-${oi}" style="${subOpenStates[`${oi}_deffects-${oi}`] ? 'display:block' : ''}"><table class="wide-name"><tr><th>Name</th><th>Count</th><th>Type</th><th>Attr</th><th>SubType</th><th>Value</th><th>ID</th></tr>`;
         const m=new Map(); ev.DefenderEffects.effects.forEach(e=>{ const id=e.configId; if(!m.has(id)) m.set(id,{e,count:0}); m.get(id).count++; });
-        m.forEach((v,id)=>{ const e=v.e; const etName=e.effectType!=null?effectTypeName(e.effectType):''; const atName=e.attrType!=null?attrName(e.attrType):''; const stName=e.subType!=null?effectSubTypeName(e.subType, e.effectType):''; const raw=e.value; const val=raw!=null?(Math.abs(raw)<15?(raw*100).toFixed(2)+'%':raw):''; h+=`<tr><td>${esc(e.name)}</td><td>${v.count}</td><td>${esc(etName)}</td><td>${esc(atName)}</td><td>${esc(stName)}</td><td>${val}</td><td>${id}</td></tr>`; });
+        m.forEach((v,id)=>{ const e=v.e; const etName=e.effectType!=null?effectTypeName(e.effectType):''; const atName=e.attrType!=null?attrName(e.attrType):''; const stName=e.subType!=null?effectSubTypeName(e.subType, e.effectType):''; const raw=e.value; const val=raw!=null?(Math.abs(raw)<15?(raw*100).toFixed(2)+'%':raw):''; const inherited=e.fromOwnerSnapshot?' style="background:#2a2a2a"':''; h+=`<tr${inherited}><td>${esc(e.name)}</td><td>${v.count}</td><td>${esc(etName)}</td><td>${esc(atName)}</td><td>${esc(stName)}</td><td>${val}</td><td>${id}</td></tr>`; });
         h+=`</table></div>`;
     }
     if(ev.DefenderAttrDict?.length) {

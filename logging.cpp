@@ -605,9 +605,8 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
 
     // Pre-build key set from GDC's EffectValue_Map for fast level-enumeration lookups
     std::unordered_set<int32_t> effectValueKeys;
-    if (gdc && gdc->fields.EffectValue_Map) {
+    if (gdc && gdc->fields.EffectValue_Map)
         effectValueKeys = CollectDictKeys(gdc->fields.EffectValue_Map);
-    }
 
     auto* entriesArr = effectsDict->fields._entries;
     int   slotCount  = effectsDict->fields._count;
@@ -616,6 +615,57 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
 
     j["liveCount"] = liveCount;
     json effects = json::array();
+
+    // ── Inherited effects from player snapshot (minions) ──────────────
+    if (resolveActor) {
+        std::string actorId = adventureActorId(resolveActor);
+        std::lock_guard<std::mutex> mlk(g_MinionLinkMutex);
+        auto mIt = g_MinionToPlayer.find(actorId);
+        if (mIt != g_MinionToPlayer.end()) 
+            std::lock_guard<std::mutex> plk(g_PlayerSnapshotMutex);
+            auto pIt = g_PlayerSnapshots.find(mIt->second.playerId);
+            if (pIt != g_PlayerSnapshots.end()) {
+                for (auto& e : pIt->second.entries) {
+                    json je;
+                    je["configId"] = e.configId;
+                    je["valueConfigId"] = e.valueConfigId;
+                    je["sourceType"] = e.sourceType;
+                    je["damage"] = e.damage;
+                    je["effectType"] = 12;  // ATTR_FIX
+                    je["attrType"] = e.attributeType;
+                    je["baseStatOnSnapshot"] = e.baseStatOnSnapshot;
+                    je["pctStatOnSnapshot"] = e.pctStatOnSnapshot;
+                    je["attributeType"] = e.attributeType;
+                    je["parameterType"] = e.parameterType;
+                    je["fromOwnerSnapshot"] = true;
+                    if (!e.ownerId.empty())
+                        je["owner"] = e.ownerId;
+                    json allValueOptions = json::array();
+                    if (!effectValueKeys.empty() && e.configId > 0) {
+                        bool anyFound = false;
+                        for (int lvl = 0; lvl <= 50; ++lvl) {
+                            int32_t vid = e.configId + lvl * 10;
+                            if (effectValueKeys.count(vid)) {
+                                anyFound = true;
+                                json ve;
+                                ve["level"] = lvl;
+                                ve["valueConfigId"] = vid;
+                                allValueOptions.push_back(ve);
+                            } else if (anyFound) break;
+                        }
+                    }
+                    je["allValueConfigIds"] = allValueOptions;
+                    effects.push_back(je);
+                }
+            } else {
+                log("[INHERIT] No player snapshot found for playerId=%s! mapSize=%zu", mIt->second.playerId.c_str(), g_PlayerSnapshots.size());
+            }
+        } else {
+            log("[INHERIT] Actor %s NOT found in g_MinionToPlayer (size=%zu)", actorId.c_str(), g_MinionToPlayer.size());
+        }
+    }
+    // ── End inherited effects ─────────────────────────────────────────
+
 
     if (effectSnapshot) {
         AdventureActor_o* actor = effectManage->fields._actor;
@@ -827,6 +877,7 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
     }
     j["timeTriggerEffects"] = timeTrig;
 
+    
     return j;
 }
 
@@ -975,6 +1026,14 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
         j["HitConfig"] = hitCfg;
     }
     j["HitType"] = g_CurrentDamageTypeTemp;
+
+    // Add summonAttrType if the attacker is a minion
+    if (fromActor) {
+        std::lock_guard<std::mutex> mlk(g_MinionLinkMutex);
+        auto mIt = g_MinionToPlayer.find(adventureActorId(fromActor));
+        if (mIt != g_MinionToPlayer.end())
+            j["SummonAttrType"] = mIt->second.summonAttrType;
+    }
     json dmgParams;
     dmgParams["skillLevel"]              = skillLevel + 1;
     dmgParams["isCrit"]                  = isCrit;
@@ -1073,6 +1132,11 @@ void BuildResetJson() {
     logJson(j);
     //log("[Reset] %s", gameTime().c_str());
 }
+
+std::mutex g_PlayerSnapshotMutex;
+std::unordered_map<std::string, PlayerEffectSnapshot> g_PlayerSnapshots;
+std::mutex g_MinionLinkMutex;
+std::unordered_map<std::string, MinionLink> g_MinionToPlayer;
 
 int32_t g_CurrentDamageTypeTemp = 1;
 
