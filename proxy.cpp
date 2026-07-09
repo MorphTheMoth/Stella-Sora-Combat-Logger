@@ -61,6 +61,7 @@ static constexpr uintptr_t RVA_SET_PLAYER_SUMMON_SNAP = 0x1368560;  // MonsterAd
 static constexpr uintptr_t RVA_CLONE_SET_ATTR         = 0x14A2890;  // MonsterCloneAdventureActor$$SetAttr
 static constexpr uintptr_t RVA_PARSE_SUMMON_CFG       = 0x14A34A0;  // MonsterSummonInfo$$ParseSummonCfg
 static constexpr uintptr_t RVA_SAVE_PLAYER_SNAPSHOT  = 0x14AC8D0;  // PlayerAdventureActor$$SavePlayerAttributeSnapshot
+static constexpr uintptr_t RVA_IS_USE_HIT_FROM_SUMMON  = 0x10F83B0;  // ActorHelper$$IsUseHitFromSummon
 
 //  Cached module base
 static uintptr_t g_base = 0;
@@ -261,15 +262,54 @@ static int64_t __fastcall Hook_CalcNormalDamage(
 using FnCopyBattleData = void(__fastcall*)(void*, bool, void*);
 static FnCopyBattleData g_OrigCopyBattleData = nullptr;
 
+using FnIsUseHitFromSummon = bool(__fastcall*)(LogicEntity_o*, PlayerAdventureActor_o**, void*);
+static FnIsUseHitFromSummon g_IsUseHitFromSummon = nullptr;
+
 static void __fastcall Hook_CopyBattleData(void* areaEntity, bool force, void* method)
 {
     g_OrigCopyBattleData(areaEntity, force, method);
 
-    EffectSnapshot snap;
+    // Lazy-init the IsUseHitFromSummon function pointer
+    if (!g_IsUseHitFromSummon && g_base)
+        g_IsUseHitFromSummon = reinterpret_cast<FnIsUseHitFromSummon>(g_base + RVA_IS_USE_HIT_FROM_SUMMON);
+
     auto* area = reinterpret_cast<AreaEffectEntity_o*>(areaEntity);
+
+    // Step 1: Get potential sources
+    AdventureActor_o* fxPlayer = reinterpret_cast<AdventureActor_o*>(area->fields._fxPlayer_k__BackingField);
     AdventureActor_o* owner = area->fields._owner_k__BackingField;
-    if (owner && owner->fields.effectManage) {
-        auto* effectsDict = owner->fields.effectManage->fields.effectsDict;
+
+    // Step 2: Try fxPlayer first, then owner as fallback
+    AdventureActor_o* source = fxPlayer ? fxPlayer : owner;
+
+    // Step 3: If source exists, check if summoned → resolve to summoner
+    bool isSummoned = false;
+    AdventureActor_o* summonerResolved = nullptr;
+    if (source && g_IsUseHitFromSummon) {
+        PlayerAdventureActor_o* rawSummoner = nullptr;
+        isSummoned = g_IsUseHitFromSummon(
+            reinterpret_cast<LogicEntity_o*>(source),
+            reinterpret_cast<PlayerAdventureActor_o**>(&rawSummoner),
+            nullptr);
+        if (isSummoned && rawSummoner)
+            summonerResolved = reinterpret_cast<AdventureActor_o*>(rawSummoner);
+    }
+
+    log("[AREA_SNAP] CopyBattleData force=%d fxPlayer=%p fxPlayerId=%s owner=%p ownerId=%s source=%s isSummoned=%d summoner=%s",
+        (int)force,
+        (void*)fxPlayer, fxPlayer ? adventureActorId(fxPlayer).c_str() : "null",
+        (void*)owner, owner ? adventureActorId(owner).c_str() : "null",
+        source ? adventureActorId(source).c_str() : "null",
+        (int)isSummoned,
+        summonerResolved ? adventureActorId(summonerResolved).c_str() : "null");
+
+    // Use resolved summoner as the final source for effects
+    if (summonerResolved)
+        source = summonerResolved;
+
+    EffectSnapshot snap;
+    if (source && source->fields.effectManage) {
+        auto* effectsDict = source->fields.effectManage->fields.effectsDict;
         if (effectsDict) {
             auto* entriesArr = effectsDict->fields._entries;
             int slotCount = effectsDict->fields._count;
@@ -309,10 +349,26 @@ static void __fastcall Hook_WeaponSetup(AdventureWeapon_o* weapon, LogicEntity_o
 {
     g_OrigWeaponSetup(weapon, owner, pos, posY, dir, target, targetPos, targetPosY, aimType, method);
 
+    // Lazy-init IsUseHitFromSummon
+    if (!g_IsUseHitFromSummon && g_base)
+        g_IsUseHitFromSummon = reinterpret_cast<FnIsUseHitFromSummon>(g_base + RVA_IS_USE_HIT_FROM_SUMMON);
+
+    // Resolve the real stats source — same as Hook_CopyBattleData:
+    // if the owner is a summoned entity, use the summoner instead
+    AdventureActor_o* source = reinterpret_cast<AdventureActor_o*>(owner);
+    if (source && g_IsUseHitFromSummon) {
+        PlayerAdventureActor_o* summoner = nullptr;
+        bool isSummoned = g_IsUseHitFromSummon(
+            reinterpret_cast<LogicEntity_o*>(source),
+            reinterpret_cast<PlayerAdventureActor_o**>(&summoner),
+            nullptr);
+        if (isSummoned && summoner)
+            source = reinterpret_cast<AdventureActor_o*>(summoner);
+    }
+
     EffectSnapshot snap;
-    auto* actor = reinterpret_cast<AdventureActor_o*>(owner);
-    if (actor && actor->fields.effectManage) {
-        auto* effectsDict = actor->fields.effectManage->fields.effectsDict;
+    if (source && source->fields.effectManage) {
+        auto* effectsDict = source->fields.effectManage->fields.effectsDict;
         if (effectsDict) {
             auto* entriesArr = effectsDict->fields._entries;
             int slotCount = effectsDict->fields._count;
@@ -427,8 +483,6 @@ static void __fastcall Hook_SavePlayerSnapshot(AdventureActor_o* player, void* m
     }
 
     // Collect active effects from player's effectsDict
-    int effectCount = 0;
-    int stackCount = 0;
     if (auto* em = player->fields.effectManage) {
         if (auto* dict = em->fields.effectsDict) {
             auto* entriesArr = dict->fields._entries;
@@ -446,7 +500,6 @@ static void __fastcall Hook_SavePlayerSnapshot(AdventureActor_o* player, void* m
                     AdventureEffect_o* effect = *reinterpret_cast<AdventureEffect_o**>(entry + valOffset);
                     if (!effect) continue;
                     if (effect->fields.removed) continue;
-                    effectCount++;
 
                     auto* stack = effect->fields._effectStack;
                     if (!stack || !stack->fields._array || stack->fields._size <= 0) continue;
@@ -470,7 +523,6 @@ static void __fastcall Hook_SavePlayerSnapshot(AdventureActor_o* player, void* m
                         int32_t paramType = valueCfg ? valueCfg->fields.effectTypeSecondSubtype_ : 0;
 
                         if (configId == 0) continue;
-                        stackCount++;
 
                         PlayerEffectEntry pe;
                         pe.instanceId = parentEffect->fields.id;
@@ -498,18 +550,10 @@ static void __fastcall Hook_SavePlayerSnapshot(AdventureActor_o* player, void* m
             }
         }
     }
-    log("[SNAP] SavePlayerSnapshot player=%s effects=%d stacks=%d entries=%d time=%s",
-        adventureActorId(player).c_str(), effectCount, stackCount, (int)snap.entries.size(), gameTime().c_str());
-    //for (auto& e : snap.entries) {
-    //    log("[SNAP]   configId=%d attrType=%d paramType=%d baseStat=%.1f damage=%lld",
-    //        e.configId, e.attributeType, e.parameterType, e.baseStatOnSnapshot, (long long)e.damage);
-    //}
 
     {
         std::lock_guard<std::mutex> lk(g_PlayerSnapshotMutex);
         g_PlayerSnapshots[adventureActorId(player)] = std::move(snap);
-        log("[SNAP] Stored snapshot for player=%s mapSize=%zu",
-            adventureActorId(player).c_str(), g_PlayerSnapshots.size());
     }
 }
 

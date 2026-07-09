@@ -616,14 +616,23 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
     j["liveCount"] = liveCount;
     json effects = json::array();
 
-    // ── Inherited effects from player snapshot (minions) ──────────────
+    // ── Inherited effects for minion actor hits ───────────────────────
+    // Only for minions mapped in g_MinionToPlayer (damageTypeTemp=1 actor hits).
+    // Area/weapon snapshots already capture the correct effects via IsUseHitFromSummon.
     if (resolveActor) {
         std::string actorId = adventureActorId(resolveActor);
-        std::lock_guard<std::mutex> mlk(g_MinionLinkMutex);
-        auto mIt = g_MinionToPlayer.find(actorId);
-        if (mIt != g_MinionToPlayer.end()) 
+
+        std::string playerId;
+        {
+            std::lock_guard<std::mutex> mlk(g_MinionLinkMutex);
+            auto mIt = g_MinionToPlayer.find(actorId);
+            if (mIt != g_MinionToPlayer.end())
+                playerId = mIt->second.playerId;
+        }
+
+        if (!playerId.empty()) {
             std::lock_guard<std::mutex> plk(g_PlayerSnapshotMutex);
-            auto pIt = g_PlayerSnapshots.find(mIt->second.playerId);
+            auto pIt = g_PlayerSnapshots.find(playerId);
             if (pIt != g_PlayerSnapshots.end()) {
                 for (auto& e : pIt->second.entries) {
                     json je;
@@ -657,11 +666,7 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
                     je["allValueConfigIds"] = allValueOptions;
                     effects.push_back(je);
                 }
-            } else {
-                log("[INHERIT] No player snapshot found for playerId=%s! mapSize=%zu", mIt->second.playerId.c_str(), g_PlayerSnapshots.size());
             }
-        } else {
-            log("[INHERIT] Actor %s NOT found in g_MinionToPlayer (size=%zu)", actorId.c_str(), g_MinionToPlayer.size());
         }
     }
     // ── End inherited effects ─────────────────────────────────────────
