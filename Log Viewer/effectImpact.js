@@ -75,8 +75,8 @@ function eiPatchStats(withOverrides, ef, ev, delta, coeff) {
     const otherArr = isAttacker ? withOverrides.dStats : withOverrides.aStats;
 
     let found = false;
-    const newArr = srcArr.map(s => {
-        if (s.id !== delta.attrType) return s; // share reference — no clone needed
+    const newArr = srcArr.map((s, idx) => {
+        if (idx !== delta.attrType) return s; // share reference — no clone needed
         found = true;
         const copy = Object.assign({}, s);
         if (ef.fromAttrDict || [ATTR_FIX, HITTED_ADDITIONAL_ATTR_FIX, PLAYER_ATTR_FIX].includes(ef.effectType)) {
@@ -93,7 +93,7 @@ function eiPatchStats(withOverrides, ef, ev, delta, coeff) {
 
     // Stat didn't exist in the array yet — append a new entry.
     if (!found) {
-        const fresh = { id: delta.attrType, origin: 0, base: 0, pct: 0, abs: 0 };
+        const fresh = { origin: 0, base: 0, pct: 0, abs: 0 };
         if (ef.fromAttrDict || [ATTR_FIX, HITTED_ADDITIONAL_ATTR_FIX, PLAYER_ATTR_FIX].includes(ef.effectType)) {
           if (delta.subType === 1)      fresh.base = delta.amount * coeff;
           else if (delta.subType === 2) fresh.pct  = delta.amount * coeff;

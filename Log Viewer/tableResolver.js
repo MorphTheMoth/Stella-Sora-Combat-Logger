@@ -66,6 +66,21 @@ function effectTypeHasAttr(et) {
     return name.includes('ATTR');
 }
 
+// ─── Level map resolution ─────────────────────────────────────────────────────
+// Looks up a configId in the levelMap (populated from /api/levelmap).
+// Returns { levelTypeData, levelData, allValueConfigIds } or defaults.
+function resolveLevelMap(configId) {
+    const entry = levelMap.get(configId);
+    if (entry) {
+        return {
+            levelTypeData: entry.lt,
+            levelData: entry.ld,
+            allValueConfigIds: entry.vc.map(v => ({ level: v.l, valueConfigId: v.v }))
+        };
+    }
+    return { levelTypeData: 0, levelData: 0, allValueConfigIds: [] };
+}
+
 // int skillId -> { ownerName, skillType, skillName, fcPath }
 const skillTable    = new Map();
 
@@ -168,9 +183,10 @@ function enrichHit(ev) {
 }
 
 function padStats(attrList) {
-  for (let i=0; i<=97; i++)
-    if (!attrList[i] || attrList[i].id > i)
-      attrList.splice(i, 0, {origin: 0, base:0, pct: 0, abs: 0, limPct: 0, id: i});
+  if (!attrList) return;
+  for (let i = 0; i <= 97; i++)
+    if (!attrList[i] || (attrList[i].id != null && attrList[i].id > i))
+      attrList.splice(i, 0, {origin: 0, base: 0, pct: 0, abs: 0, limPct: 0});
 }
 
 function enrichBuff(ev) {
@@ -218,14 +234,23 @@ function enrichEffectList(effectList) {
             if (ev.subType  != null) e.subType     = ev.subType;
             if (ev.value    != null) e.value       = ev.value;
         }
+        // Retrocompat: extract old-format level data into levelMap
+        if (e.allValueConfigIds && e.configId != null && !levelMap.has(e.configId)) {
+            levelMap.set(e.configId, {
+                lt: e.levelTypeData || 0,
+                ld: e.levelData || 0,
+                vc: e.allValueConfigIds.map(v => ({ l: v.level, v: v.valueConfigId }))
+            });
+        }
     }
 }
 
 function enrichAttrList(attrs) {
     if (!Array.isArray(attrs)) return;
-    for (const a of attrs) {
-        a.name = attrName(a.id);
-    }
+    attrs.forEach((a, i) => {
+        if (!a) return;
+        a.name = attrName(i);
+    });
 }
 
 function enrichAttrDictList(attrDictList) {
@@ -261,11 +286,29 @@ function enrichAttrDictList(attrDictList) {
                     extra._dictEnriched = true;
                     attrDictList.splice(i + sn, 0, extra);
                 }
+                // Retrocompat: extract old-format level data into levelMap
+                const cid0 = entry.configId ?? entry.attrId;
+                if (cid0 != null && entry.allValueConfigIds && !levelMap.has(cid0)) {
+                    levelMap.set(cid0, {
+                        lt: entry.levelTypeData || 0,
+                        ld: entry.levelData || 0,
+                        vc: entry.allValueConfigIds.map(v => ({ l: v.level, v: v.valueConfigId }))
+                    });
+                }
                 i += slots.length;
                 continue;
             }
         }
         entry._dictEnriched = true;
+        // Retrocompat: extract old-format level data into levelMap
+        const cid = entry.configId ?? entry.attrId;
+        if (cid != null && entry.allValueConfigIds && !levelMap.has(cid)) {
+            levelMap.set(cid, {
+                lt: entry.levelTypeData || 0,
+                ld: entry.levelData || 0,
+                vc: entry.allValueConfigIds.map(v => ({ l: v.level, v: v.valueConfigId }))
+            });
+        }
         i++;
     }
 }

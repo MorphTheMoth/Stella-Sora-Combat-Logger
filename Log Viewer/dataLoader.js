@@ -18,6 +18,9 @@ function parseTimeToMs(t) {
 let allEvents = [];
 let filtered = [];
 
+// Level map: configId → { lt: levelTypeData, ld: levelData, vc: [{l, v}] }
+let levelMap = new Map();
+
 const EST = 40;
 const BUFFER = 20;
 const POLL_MS = 50;
@@ -38,6 +41,26 @@ let totalHeightCached = 0;
 let lastFetchCount = 0;
 let currentSavedLog = null;
 let pendingAutoClear = false;
+
+// ─── Level map ────────────────────
+async function fetchLevelMap(savedLogName) {
+    try {
+        let url = '/api/levelmap';
+        if (savedLogName) url += '?savedlog=' + encodeURIComponent(savedLogName);
+        const res = await fetch(url, { cache: 'no-cache' });
+        const data = await res.json();
+        levelMap.clear();
+        for (const entry of (data.entries || [])) {
+            levelMap.set(entry.id, {
+                lt: entry.lt || 0,
+                ld: entry.ld || 0,
+                vc: (entry.vc || []).map(v => ({ l: v.l, v: v.v }))
+            });
+        }
+    } catch (e) {
+        console.error('Failed to fetch level map', e);
+    }
+}
 
 // ─── Fenwick tree ─────────────────
 class Fenwick {
@@ -148,6 +171,7 @@ window.onSavedLogChange = async function() {
     document.getElementById('scrollContent').innerHTML = '';
     closeSearch();
     refilterAndRender(true, true);
+    await fetchLevelMap(currentSavedLog);
     fetchLog(false).then(() => { setTimeout(poll, POLL_MS); });
 };
 
@@ -269,6 +293,8 @@ window.lastRun = async function() {
 
 let _fetching = false;
 let _emptyPollCount = 0;
+let _levelMapPollCount = 0;
+const LEVELMAP_POLL_INTERVAL = 40; // re-fetch every ~2s (40 * 50ms)
 const MAX_EMPTY_POLLS = 10;
 async function fetchLog(incremental = false) {
     if (_fetching) return;
@@ -337,12 +363,19 @@ function poll() {
         console.log('Poll stopped — saved log fully loaded');
         return;
     }
+    _levelMapPollCount++;
+    if (!currentSavedLog && _levelMapPollCount >= LEVELMAP_POLL_INTERVAL) {
+        _levelMapPollCount = 0;
+        fetchLevelMap(null);
+    }
     fetchLog(true).finally(() => {
         setTimeout(poll, POLL_MS);
     });
 }
 
 initTables().then(() => {
-    fetchLog(false).then(() => { setTimeout(poll, POLL_MS); });
+    fetchLevelMap(null).then(() => {
+        fetchLog(false).then(() => { setTimeout(poll, POLL_MS); });
+    });
     loadSavedLogsList();
 });

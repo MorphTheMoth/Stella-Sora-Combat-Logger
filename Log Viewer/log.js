@@ -194,7 +194,7 @@ function hitBody(ev, oi) {
     if(ev.AttackerStats?.attrs?.length) {
         h+=`<div class="collapsible-toggle${subOpenStates[`${oi}_astats-${oi}`] ? ' open' : ''}" data-target="astats-${oi}">Attacker Stats</div>
         <div class="collapsible-content" id="astats-${oi}" style="${subOpenStates[`${oi}_astats-${oi}`] ? 'display:block' : ''}"><table><tr><th>Name</th><th>Origin</th><th>Base</th><th>Pct</th><th>Abs</th><th>LimPct</th></tr>`;
-        ev.AttackerStats.attrs.forEach(a=>{ h+=`<tr><td>${esc(a.name||a.id)}</td><td>${a.origin!=null?a.origin:''}</td><td>${a.base!=null?a.base:''}</td><td>${a.pct!=null?a.pct:''}</td><td>${a.abs!=null?a.abs:''}</td><td>${a.limPct!=null?a.limPct:''}</td></tr>`; });
+        ev.AttackerStats.attrs.forEach(a=>{ if (a.origin==null&&a.base==null&&a.pct==null&&a.abs==null&&a.limPct==null) return; h+=`<tr><td>${esc(a.name)}</td><td>${a.origin!=null?a.origin:''}</td><td>${a.base!=null?a.base:''}</td><td>${a.pct!=null?a.pct:''}</td><td>${a.abs!=null?a.abs:''}</td><td>${a.limPct!=null?a.limPct:''}</td></tr>`; });
         h+=`</table></div>`;
     }
     h+=`</div>`;
@@ -222,7 +222,7 @@ function hitBody(ev, oi) {
     if(ev.DefenderStats?.attrs?.length) {
         h+=`<div class="collapsible-toggle${subOpenStates[`${oi}_dstats-${oi}`] ? ' open' : ''}" data-target="dstats-${oi}">Defender Stats</div>
         <div class="collapsible-content" id="dstats-${oi}" style="${subOpenStates[`${oi}_dstats-${oi}`] ? 'display:block' : ''}"><table><tr><th>Name</th><th>Origin</th><th>Base</th><th>Pct</th><th>Abs</th><th>LimPct</th></tr>`;
-        ev.DefenderStats.attrs.forEach(a=>{ h+=`<tr><td>${esc(a.name||a.id)}</td><td>${a.origin!=null?a.origin:''}</td><td>${a.base!=null?a.base:''}</td><td>${a.pct!=null?a.pct:''}</td><td>${a.abs!=null?a.abs:''}</td><td>${a.limPct!=null?a.limPct:''}</td></tr>`; });
+        ev.DefenderStats.attrs.forEach(a=>{ if (a.origin==null&&a.base==null&&a.pct==null&&a.abs==null&&a.limPct==null) return; h+=`<tr><td>${esc(a.name)}</td><td>${a.origin!=null?a.origin:''}</td><td>${a.base!=null?a.base:''}</td><td>${a.pct!=null?a.pct:''}</td><td>${a.abs!=null?a.abs:''}</td><td>${a.limPct!=null?a.limPct:''}</td></tr>`; });
         h+=`</table></div>`;
     }
     h+=`</div>`;

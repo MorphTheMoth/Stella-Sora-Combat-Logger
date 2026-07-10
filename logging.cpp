@@ -24,6 +24,12 @@ LogConfig           g_Cfg;
 std::atomic<int64_t> g_CombatStartTimeFP{0};
 int64_t*            g_LockStepTimePtr = nullptr;
 
+// Level map: configId → {levelTypeData, levelData, allValueConfigIds}
+// Written once per unique configId to a sidecar file to avoid repeating
+// these deterministic values in every hit event.
+static std::string                  g_LevelMapPath;
+static std::unordered_set<int32_t>  g_LevelMapKnown;
+
 // =============================================================================
 //  GAME TIME
 // =============================================================================
@@ -73,6 +79,51 @@ void logJson(const json& j) {
     std::lock_guard<std::mutex> lk(g_Mutex);
     fprintf(g_JsonLog, "%s\n", j.dump().c_str());
     fflush(g_JsonLog);
+}
+
+// =============================================================================
+//  LEVEL MAP
+// =============================================================================
+// Write a new entry to the levelMap file as a proper JSON array.
+// Reads the existing file, appends the entry, and rewrites.
+
+void WriteLevelMapEntry(int32_t configId, int32_t levelTypeData, int32_t levelData, const json& allValueConfigIds) {
+    if (configId <= 0) return;
+    if (g_LevelMapKnown.count(configId)) return;
+    g_LevelMapKnown.insert(configId);
+
+    // Read existing JSON array from file
+    json arr = json::array();
+    {
+        FILE* f = fopen(g_LevelMapPath.c_str(), "r");
+        if (f) {
+            fseek(f, 0, SEEK_END);
+            long sz = ftell(f);
+            if (sz > 0) {
+                rewind(f);
+                std::string buf(sz, '\0');
+                size_t read = fread(&buf[0], 1, sz, f);
+                buf.resize(read);
+                try { arr = json::parse(buf); } catch (...) {}
+            }
+            fclose(f);
+        }
+    }
+
+    // Append new entry
+    json entry;
+    entry["id"]  = configId;
+    entry["lt"]  = levelTypeData;
+    entry["ld"]  = levelData;
+    entry["vc"]  = allValueConfigIds;
+    arr.push_back(entry);
+
+    // Rewrite file
+    FILE* f = fopen(g_LevelMapPath.c_str(), "w");
+    if (f) {
+        fprintf(f, "%s", arr.dump().c_str());
+        fclose(f);
+    }
 }
 
 // =============================================================================
@@ -292,16 +343,17 @@ json logAdventureActorAttrsJson(AttributeList_o* attrList, const std::vector<Ele
 
         auto nearZero = [](double v) { return v > -1e-7 && v < 1e-7; };
         if (nearZero(origin) &&
-            nearZero(base_) && nearZero(pct) && nearZero(abs_) && nearZero(limPct))
+            nearZero(base_) && nearZero(pct) && nearZero(abs_) && nearZero(limPct)) {
+            attrs.push_back(json::object());  // empty object — JS treats as all-zero
             continue;
+        }
 
         json attr;
-        attr["id"]     = i;
-        attr["origin"] = Round(origin, 4);
-        attr["base"]   = Round(base_, 4);
-        attr["pct"]    = Round(pct, 4);
-        attr["abs"]    = Round(abs_, 4);
-        attr["limPct"] = Round(limPct, 4);
+        if (!nearZero(origin)) attr["origin"] = Round(origin, 4);
+        if (!nearZero(base_))   attr["base"]   = Round(base_, 4);
+        if (!nearZero(pct))     attr["pct"]    = Round(pct, 4);
+        if (!nearZero(abs_))    attr["abs"]    = Round(abs_, 4);
+        if (!nearZero(limPct))  attr["limPct"] = Round(limPct, 4);
         attrs.push_back(attr);
     }
 
@@ -657,13 +709,13 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
                             if (effectValueKeys.count(vid)) {
                                 anyFound = true;
                                 json ve;
-                                ve["level"] = lvl;
-                                ve["valueConfigId"] = vid;
+                                ve["l"] = lvl;
+                                ve["v"] = vid;
                                 allValueOptions.push_back(ve);
                             } else if (anyFound) break;
                         }
                     }
-                    je["allValueConfigIds"] = allValueOptions;
+                    WriteLevelMapEntry(e.configId, 0, 0, allValueOptions);
                     effects.push_back(je);
                 }
             }
@@ -715,11 +767,12 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
                         for (int lvl = 0; lvl <= 50; ++lvl) {
                             int32_t vid = baseConfigId + lvl * 10;
                             if (effectValueKeys.count(vid)) { anyFound = true;
-                                json ve; ve["level"] = lvl; ve["valueConfigId"] = vid;
+                                json ve; ve["l"] = lvl; ve["v"] = vid;
                                 allValueOptions.push_back(ve);
                             } else if (anyFound) break;
                         }
                     }
+                    WriteLevelMapEntry(baseConfigId, ltd, ld, allValueOptions);
                     auto* stack = effect->fields._effectStack;
                     if (stack && stack->fields._array) {
                         auto* array = stack->fields._array;
@@ -732,10 +785,7 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
                             AdventureEffect_o* parentEffect = base->fields._effect;
                             auto* ValueCfgPtr = parentEffect->fields._effectValueConfig_k__BackingField;
                             je["configId"] = baseConfigId;
-                            je["levelTypeData"] = ltd;
-                            je["levelData"] = ld;
                             je["valueConfigId"] = ValueCfgPtr ? ValueCfgPtr->fields.id_ : 0;
-                            je["allValueConfigIds"] = allValueOptions;
                             je["sourceType"] = parentEffect->fields.sourceType;
                             je["damage"] = static_cast<int64_t>(parentEffect->fields.Damage);
                             if (parentEffect->fields._owner)
@@ -755,8 +805,6 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
                     info.configId = cfgId;
                 }
                 je["configId"] = info.configId;
-                je["levelTypeData"] = info.levelTypeData;
-                je["levelData"] = info.levelData;
                 je["valueConfigId"] = info.valueConfigId;
                 je["sourceType"] = info.sourceType;
                 je["damage"] = info.damage;
@@ -767,12 +815,12 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
                     for (int lvl = 0; lvl <= 50; ++lvl) {
                         int32_t vid = info.configId + lvl * 10;
                         if (effectValueKeys.count(vid)) { anyFound = true;
-                            json ve; ve["level"] = lvl; ve["valueConfigId"] = vid;
+                            json ve; ve["l"] = lvl; ve["v"] = vid;
                             allValueOptions.push_back(ve);
                         } else if (anyFound) break;
                     }
                 }
-                je["allValueConfigIds"] = allValueOptions;
+                WriteLevelMapEntry(info.configId, info.levelTypeData, info.levelData, allValueOptions);
                 effects.push_back(je);
             }
         }
@@ -811,14 +859,15 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
                     if (effectValueKeys.count(vid)) {
                         anyFound = true;
                         json ve;
-                        ve["level"] = lvl;
-                        ve["valueConfigId"] = vid;
+                        ve["l"] = lvl;
+                        ve["v"] = vid;
                         allValueOptions.push_back(ve);
                     } else if (anyFound) {
                         break;
                     }
                 }
             }
+            WriteLevelMapEntry(baseConfigId, levelTypeData, levelData, allValueOptions);
 
             auto* stack = effect->fields._effectStack; // System_Collections_Generic_Stack_AdventureEffectBase__o*
             if (stack && stack->fields._array) {
@@ -837,10 +886,7 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
                     AdventureEffect_o* parentEffect = base->fields._effect; 
                     auto* ValueCfgPtr = parentEffect->fields._effectValueConfig_k__BackingField;
                     je["configId"] = baseConfigId;
-                    je["levelTypeData"] = levelTypeData;
-                    je["levelData"] = levelData;
                     je["valueConfigId"] = ValueCfgPtr ? ValueCfgPtr->fields.id_ : 0;
-                    je["allValueConfigIds"] = allValueOptions;
                     je["sourceType"] = parentEffect->fields.sourceType;
                     je["damage"]     = static_cast<int64_t>(parentEffect->fields.Damage);
 
@@ -929,8 +975,6 @@ json BuildAdditionalAttrDictJson(
                 int32_t currentValueConfigId = GetValueConfigId(
                     fromActor, baseId, lt, ld, nullptr);
                 entry["valueConfigId"] = currentValueConfigId;
-                entry["levelTypeData"] = lt;
-                entry["levelData"] = ld;
 
                 // Enumerate all possible value config IDs for this attribute at different levels
                 json allValueOptions = json::array();
@@ -941,15 +985,15 @@ json BuildAdditionalAttrDictJson(
                         if (attrValueKeys.count(vid)) {
                             anyFound = true;
                             json ve;
-                            ve["level"] = lvl;
-                            ve["valueConfigId"] = vid;
+                            ve["l"] = lvl;
+                            ve["v"] = vid;
                             allValueOptions.push_back(ve);
                         } else if (anyFound) {
                             break;
                         }
                     }
                 }
-                entry["allValueConfigIds"] = allValueOptions;
+                WriteLevelMapEntry(baseId, lt, ld, allValueOptions);
             }
         }
 
@@ -1224,5 +1268,32 @@ void InitializeLogger() {
         GetLocalTime(&t);
         fprintf(g_JsonLog, "=== JSON log started %02d:%02d:%02d ===\n", t.wHour, t.wMinute, t.wSecond);
         fflush(g_JsonLog);
+    }
+
+    // Level map file — reads existing entries so we don't re-write them
+    g_LevelMapPath = jsonDir + "\\levelMap.txt";
+    // Read existing entries to populate g_LevelMapKnown
+    {
+        FILE* existing = fopen(g_LevelMapPath.c_str(), "r");
+        if (existing) {
+            fseek(existing, 0, SEEK_END);
+            long sz = ftell(existing);
+            if (sz > 0) {
+                rewind(existing);
+                std::string buf(sz, '\0');
+                size_t read = fread(&buf[0], 1, sz, existing);
+                buf.resize(read);
+                try {
+                    json arr = json::parse(buf);
+                    if (arr.is_array()) {
+                        for (const auto& entry : arr) {
+                            if (entry.contains("id"))
+                                g_LevelMapKnown.insert(entry["id"].get<int32_t>());
+                        }
+                    }
+                } catch (...) {}
+            }
+            fclose(existing);
+        }
     }
 }

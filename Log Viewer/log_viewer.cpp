@@ -412,6 +412,22 @@ static std::string SavedLogPath(const std::string& name) {
 #endif
 }
 
+// Returns the path to the live levelMap.txt (same directory as LOG_FILE).
+static std::string LevelMapPath() {
+#ifdef _WIN32
+    size_t sep = LOG_FILE.find_last_of("\\/");
+#else
+    size_t sep = LOG_FILE.find_last_of('/');
+#endif
+    std::string dir = (sep != std::string::npos) ? LOG_FILE.substr(0, sep + 1) : "";
+    return dir + "levelMap.txt";
+}
+
+// Returns the path to the shared saved logs levelMap.txt.
+static std::string SavedLevelMapPath() {
+    return SavedLogsDir() + "/levelMap.txt";
+}
+
 // Sanitise the name: strip path separators and dots that could escape the dir.
 static std::string SanitiseName(const std::string& raw) {
     std::string out;
@@ -424,6 +440,7 @@ static std::string SanitiseName(const std::string& raw) {
 }
 
 // Reads the current log file and copies it verbatim to "saved logs/<name>.txt".
+// Also merges the live levelMap.txt into the shared saved logs/levelMap.txt.
 static bool SaveCurrentLog(const std::string& name, std::string& errMsg) {
     if (name.empty()) { errMsg = "empty name"; return false; }
     if (!EnsureSavedLogsDir()) { errMsg = "could not create saved logs folder"; return false; }
@@ -436,6 +453,71 @@ static bool SaveCurrentLog(const std::string& name, std::string& errMsg) {
     if (!dst.is_open()) { errMsg = "could not write " + dest_path; return false; }
 
     dst << src.rdbuf();
+
+    // Merge live levelMap.txt into saved logs/levelMap.txt
+    std::string liveLmPath = LevelMapPath();
+    std::string savedLmPath = SavedLevelMapPath();
+
+    // Load live levelMap
+    json liveArr = json::array();
+    {
+        std::ifstream lmFile(liveLmPath);
+        if (lmFile.is_open()) {
+            lmFile.seekg(0, std::ios::end);
+            long sz = lmFile.tellg();
+            if (sz > 0) {
+                lmFile.seekg(0, std::ios::beg);
+                std::string buf(sz, '\0');
+                lmFile.read(&buf[0], sz);
+                try { liveArr = json::parse(buf); } catch (...) {}
+            }
+        }
+    }
+
+    if (liveArr.empty()) return true; // nothing to merge
+
+    // Load saved levelMap (may not exist yet)
+    json savedArr = json::array();
+    {
+        std::ifstream lmFile(savedLmPath);
+        if (lmFile.is_open()) {
+            lmFile.seekg(0, std::ios::end);
+            long sz = lmFile.tellg();
+            if (sz > 0) {
+                lmFile.seekg(0, std::ios::beg);
+                std::string buf(sz, '\0');
+                lmFile.read(&buf[0], sz);
+                try { savedArr = json::parse(buf); } catch (...) {}
+            }
+        }
+    }
+
+    // Build set of existing IDs in saved
+    std::set<int32_t> savedIds;
+    for (const auto& entry : savedArr) {
+        if (entry.contains("id"))
+            savedIds.insert(entry["id"].get<int32_t>());
+    }
+
+    // Append new entries from live
+    for (const auto& entry : liveArr) {
+        if (entry.contains("id")) {
+            int32_t id = entry["id"].get<int32_t>();
+            if (!savedIds.count(id)) {
+                savedArr.push_back(entry);
+                savedIds.insert(id);
+            }
+        }
+    }
+
+    // Write merged result
+    {
+        std::ofstream out(savedLmPath, std::ios::trunc);
+        if (out.is_open()) {
+            out << savedArr.dump();
+        }
+    }
+
     return true;
 }
 
@@ -554,6 +636,42 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
             } else {
                 body = ReadJsonLog(after);
                 mg_http_reply(c, 200, "Content-Type: application/json\r\nCache-Control: no-cache\r\n", "%s", body.c_str());
+                HttpLog(200, method, uri, query, remote);
+            }
+        } else if (uri == "/api/levelmap") {
+            std::string lmPath;
+            char savedlog_buf[256] = {0};
+            struct mg_str q = hm->query;
+            if (mg_http_get_var(&q, "savedlog", savedlog_buf, sizeof(savedlog_buf)) > 0) {
+                lmPath = SavedLevelMapPath();
+            } else {
+                lmPath = LevelMapPath();
+            }
+
+            std::ifstream lmFile(lmPath);
+            if (lmFile.is_open()) {
+                // Read entire file as proper JSON
+                lmFile.seekg(0, std::ios::end);
+                long sz = lmFile.tellg();
+                lmFile.seekg(0, std::ios::beg);
+                std::string body(sz, '\0');
+                lmFile.read(&body[0], sz);
+
+                // Validate it's a JSON array, wrap in {"entries":...} if needed
+                try {
+                    json arr = json::parse(body);
+                    json result;
+                    result["entries"] = arr;
+                    body = result.dump();
+                } catch (...) {
+                    // Not valid JSON — return empty
+                    body = "{\"entries\":[]}";
+                }
+
+                mg_http_reply(c, 200, "Content-Type: application/json\r\nCache-Control: no-cache\r\n", "%s", body.c_str());
+                HttpLog(200, method, uri, query, remote);
+            } else {
+                mg_http_reply(c, 200, "Content-Type: application/json\r\nCache-Control: no-cache\r\n", "{\"entries\":[]}");
                 HttpLog(200, method, uri, query, remote);
             }
         } else if (uri == "/savelog" && method == "POST") {
