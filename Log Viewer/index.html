@@ -8,32 +8,107 @@
     <link rel="icon" type="image/png" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAAACXBIWXMAAC4jAAAuIwF4pT92AAAFG0lEQVRoBe1Yv6ucVRDNvrxUWhgttbBImiAIEq0FUwtCtIyVRvEfSCo7EVsL7ewEIX+CppZEwdbEkCK1PxAbjXnrObMzs3Pnzr27axbMk1zYd2fmnDkz9353v/d9e+LE4/E/3oHlcvkxPjYWx26p6Hxh3WN+/zgu4GpYwPLYLEB3/mJsXu29H6PDfe4KG4fe0UST2HQRXKjmHywWC7OHkgdD5F8AWnCqqYvcRv21bUjTYlmAxWcNKCZXAIvhTt/IGvCPTAPzF/h8hY+PwD8f7Ic3UeGCV1kdlU7U8A7QAHC7K9lsKdV8a6Szcxzq16oKg9jwjIMfG38n+Z3czo1uSkCFd7sqfaBcAGjWfHOsEL/VS6wim/rZGYfsuVGxGM/CwKz5axmjD/xmzDe74uZYuVuZZD6FzS5muyHEL7HQkMY6R/rFLlJlEcJJ4MZbqRXlLhxqoaSxcieYNMZbqH5kU8DnsA3iol4vhTVoubpI76vKCbprWMqtLqUVXYOwFM/TiGtHplpMo1s5bFALdfqIv0Csy9METj92IAKIn8fnExIwOuGYQ1xYy+VVxtWe5gzymxzovKpa5QLis8vPUdDsYbIRdAbPFiCF4MtjdaQhdin60Qb2Hj5Nk3A/YEzH7ch321Cd/3JADcNzvPKV+7th8PNumhzn34zHGf4V82FzM77EJ45Gy7h2qSMx78JpBWsBVQLHrsBJF09GU0SdRBEX0PXMrXhGtsJNTkxQ4GKMZRsc6nzNOWP0EY/HFa6Pho/oPUfWRlO7SVDxZtdDA6dwi/s7+EMTtajL43ManweByCtyP/jZ9Ps+NP4A+EQm6G3Ww9X7AM/jU85YGyzcLXgNd9aTiMya7RIswM02e9Nc/cN4epQE3bibHY2FOfhPCeCdjrBFgPkTWtdvF9DirqGX7DsNdHz2y6IclkQbeWfM33bOtZHX1Cvw+kig/vdIfomFdQE0u8E+EZRnnw5EcRbkKLAyVNWK+RV+AMKvkaTK/jYE7O2qGuKz5pnCN68LmJtdrLRGMeQ/H7BGB5g8hvOW5kcAto1nzOAcRNyM+Ab7JpPA+XMDj3Bzk4B/I+RUfXKDRHz6xiWk8AeiLwfhbU02UDWR830RGch+aEkWkXH3GyIcB3Y35IuNtNlC4mPEsELuSfwRO5IHxeXhapRfxOVqmC5w+R4q7wHmz4kVeRbyq2QaPhsDM4vILxEOrkTfChwzD41jgcksxYHbVbhC2/LjrBqCB72S63kg2nPKTx4MBvDq/dVFgVtjoaabn5nUiGd4nMG1X7nlhhCx0vZyxc4Amy6AguB8GDTcjMUQLBcaOarlvIwN/SieScDskdobg3G94EWctl8lcuHzHbwbE50m33hlUAsQK39JYFUTsDn+lwQsuYbp7E+a9CsNhBtO4HVxYhzNf7dVaPWXjwGwns2FtLlIFZs8jI8UiI8Xd2MMHPlxrBMoAhRE+E3tpWCkEBMwTuHDcze8OkwjcTDuI858eXJV+6zOz2Eeje4LCqK/0cGWnjS57k1JyvGpeQOyNTtaGy+mRfLFZrbo7kgqP/6gbJWa5psjpJfqGyaHcQaZTZJiTW7g0/yB1ULsl+QHSMxOS2uezcStjhOS38iJI5+NPcwY6eY4arySY3vzIf5tWEQ8qyHcnGGJ762BfQihIzbOUR03KUFMGBPOrr10Z29XAePHs4kmT2qjcfrUuI/sHLtV247T5YQNr9J/ujg0KQ2PmtiEj/Iexx/lHfgHSeXGJcFC2O4AAAAASUVORK5CYII=">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: sans-serif; background: #161616; color: #ddd; height: 100vh; display: flex; flex-direction: column; overflow: hidden; align-items: center; }
-        .page {
-            max-width: 1050px; width: 100%; height: 100%; display: flex;
-            flex-direction: column; background: #1a1a1a; margin: 0 auto; position: relative;
+        body { font-family: sans-serif; background: #161616; color: #ddd; overflow: hidden; }
+        html, body { height: 100%; }
+
+        .app-layout {
+            display: flex; flex-direction: row;
+            height: 100vh; width: 100%;
         }
-        h1 { color: #aaa; margin-bottom: 15px; flex-shrink: 0; }
-        .filters {
-            display: flex; gap: 6px; margin-bottom: 0;
-            flex-wrap: wrap; align-items: center; flex-shrink: 0;
-            padding: 10px 16px;
-            border-bottom: 1px solid #2c2c2c;
-            background: #1f1f1f;
+
+        /* ── Sidebars ── */
+        .flex-spacer { flex: 1; min-width: 0; }
+        .sidebar {
+            width: 280px; flex-shrink: 0;
+            background: #181818;
+            display: flex; flex-direction: column;
+            overflow-y: auto;
         }
-        .filters button, .filters select {
+        .sidebar-left { border-right: 1px solid #2c2c2c; }
+        .sidebar-right { border-left: 1px solid #2c2c2c; width: 440px; }
+        .sidebar-section {
+            padding: 10px 12px;
+            border-bottom: 1px solid #2a2a2a;
+        }
+        .sidebar-section:last-child { border-bottom: none; }
+        .sidebar-section.hidden { display: none; }
+        .sidebar-label {
+            font-size: 10px; color: #555; text-transform: uppercase;
+            letter-spacing: 0.06em; margin-bottom: 8px;
+        }
+        .sidebar button, .sidebar select {
+            width: 100%; margin-bottom: 4px;
             padding: 5px 12px; border: 1px solid #333; border-radius: 4px;
             background: #242424; color: #888; cursor: pointer;
             font-size: 12px; user-select: none;
             transition: background 0.12s, color 0.12s, border-color 0.12s;
             appearance: none;
         }
-        .filters button:hover, .filters select:hover {
+        .sidebar button:last-child, .sidebar select:last-child { margin-bottom: 0; }
+        .sidebar button:hover, .sidebar select:hover {
             background: #2e2e2e; color: #bbb; border-color: #444;
         }
-        .filters button.active {
+        .sidebar button.active {
             background: #303030; color: #ddd; border-color: #555;
         }
+        .sidebar button.clear-btn { color: #b07070; border-color: #4a3030; }
+        .sidebar button.clear-btn:hover { background: #2e2020; color: #cc8888; border-color: #5a3535; }
+        .sidebar .sidebar-btn-row {
+            display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 4px;
+        }
+        .sidebar .sidebar-btn-row button {
+            flex: 1; min-width: 0; margin-bottom: 0;
+        }
+        .sidebar .dc-formula-totals {
+            font-size: 11px; color: #999; line-height: 1.6;
+        }
+        .sidebar .dc-formula-totals strong { color: #ddd; }
+        .sidebar .dc-formula-totals .dc-diff-close { color: #555; }
+        .sidebar .dc-formula-totals .dc-diff-pos { color: #4a7a55; }
+        .sidebar .dc-formula-totals .dc-diff-neg { color: #7a3838; }
+        .sidebar .dc-effects-panel {
+            background: transparent; border: none; font-size: 11px;
+        }
+        .sidebar .dc-effects-body {
+            padding: 4px 0;
+        }
+        .sidebar .sidebar-ei-chips {
+            display: flex; flex-direction: column; align-items: center; gap: 3px;
+        }
+        .sidebar .sidebar-ei-chips .ei-src-chip,
+        .sidebar .sidebar-ei-chips .ei-chip-all {
+            width: 100%; text-align: center; box-sizing: border-box;
+            padding: 5px 12px; border-radius: 4px; font-size: 12px;
+            background: #242424; color: #888; border: 1px solid #333;
+            opacity: 1;
+        }
+        .sidebar .sidebar-ei-chips .ei-src-chip.ei-chip-active,
+        .sidebar .sidebar-ei-chips .ei-chip-all.ei-chip-active {
+            background: #303030; color: #ddd; border-color: #555;
+        }
+        .sidebar .sidebar-ei-chips .ei-src-chip:hover,
+        .sidebar .sidebar-ei-chips .ei-chip-all:hover {
+            background: #282828; border-color: #3a3a3a;
+        }
+
+        /* ── Main content area ── */
+        .main-area {
+            width: 1050px; flex-shrink: 0;
+            display: flex; flex-direction: column; overflow: hidden;
+            background: #1a1a1a;
+        }
+
+        /* ── Top row (tabs + stats) ── */
+        .top-row {
+            display: flex; align-items: center;
+            background: #1f1f1f; border-bottom: 1px solid #2c2c2c;
+            flex-shrink: 0;
+        }
+        .top-row .stats {
+            font-size: 11px; color: #888;
+            padding: 0 16px; white-space: nowrap; margin-left: auto;
+        }
+        #savedLogFilter { text-align: center; text-align-last: center; }
         #autoClearBtn {
             padding: 5px 12px; border: 1px solid #3a3a3a; border-radius: 4px;
             background: #1a1a1a; color: #555; cursor: pointer;
@@ -48,12 +123,6 @@
             background: #2a1515; color: #c06060; border-color: #5a2020;
             text-decoration: none;
         }
-        .filters button.clear-btn {
-            color: #b07070; border-color: #4a3030;
-        }
-        .filters button.clear-btn:hover {
-            background: #2e2020; color: #cc8888; border-color: #5a3535;
-        }
         #lastRunBtn {
             padding:5px 12px; border:1px solid #334a30; border-radius:4px;
             background:#242424; color:#70b070; font-size:12px; cursor:pointer;
@@ -61,7 +130,6 @@
         #lastRunBtn:hover {
             background: #203020; color: #88cc88; border-color: #355a35;
         }
-        .stats { font-size: 11px; color: #888; margin: 5px; flex-shrink: 0; align-self: flex-end; align-content: center; }
         .scroll-container {
             flex: 1; overflow-y: auto; position: relative;
             border-top: 1px solid #333; background: #1a1a1a; width: 100%;
@@ -157,10 +225,8 @@
 
         /* ── Tab navigation ── */
         .tab-bar {
-            display: flex; flex-shrink: 0;
+            display: flex; flex: 1;
             padding: 0 12px;
-            background: #1f1f1f;
-            border-bottom: 1px solid #2c2c2c;
         }
         .tab-btn {
             padding: 8px 18px; background: transparent; border: none;
@@ -219,7 +285,7 @@
         .legend-table .leg-pct { color: #777; text-align: right; width: 50px; }
 
         /* keep log panel filling remaining space */
-        #logPanel { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
+        #logPanel { display: flex; flex-direction: column; flex: 1; overflow: hidden; position: relative; }
         #logPanel.hidden { display: none; }
     
         .event.event-reset .event-header { background: #1a1010; border-left: 3px solid #5a2020; }
@@ -304,12 +370,6 @@
         /* DC scroll area */
         .dc-scroll-wrap {
             flex: 1; display: flex; flex-direction: column; overflow: hidden;
-        }
-        .dc-stats-row {
-            display: flex; align-items: center; gap: 8px;
-            padding: 4px 12px; background: #1f1f1f;
-            border-bottom: 1px solid #2c2c2c; flex-shrink: 0;
-            font-size: 11px; color: #888;
         }
         
         /* DC event rows */
@@ -410,26 +470,17 @@
             padding: 6px 10px 8px;
         }
         .dc-effects-empty { color: #555; font-style: italic; font-size: 11px; }
-        .dc-effects-list { display: flex; flex-wrap: wrap; gap: 4px; }
-        .dc-effects-group-label {
-            width: 100%; color: #666; font-size: 10px; text-transform: uppercase;
-            letter-spacing: 0.05em; padding: 2px 0; margin-top: 2px;
-        }
-        .dc-effects-group-label:first-child { margin-top: 0; }
         .dc-source-toggle {
             display: flex; align-items: center; gap: 5px;
-            cursor: pointer; padding: 3px 4px; border-radius: 3px;
+            cursor: pointer; padding: 4px 8px; border-radius: 3px;
             user-select: none; transition: background 0.1s;
+            font-size: 10px; color: #777;
         }
-        .dc-source-toggle:hover { background: #252525; color: #999; }
+        .dc-source-toggle:hover { background: rgba(255,255,255,0.06); color: #aaa; }
         .dc-source-arrow { font-size: 9px; color: #555; flex-shrink: 0; }
         .dc-source-count {
             margin-left: auto; background: #252525; border: 1px solid #2e2e2e;
             border-radius: 3px; padding: 0 5px; font-size: 10px; color: #555;
-        }
-        .dc-effects-chips-wrap {
-            display: flex; flex-wrap: wrap; gap: 4px;
-            padding: 4px 0 6px 12px;
         }
         .dc-effects-side-header {
             width: 100%; color: #888; font-size: 10px; font-weight: 600;
@@ -438,30 +489,46 @@
             border-top: 1px solid #2c2c2c;
         }
         .dc-effects-side-header:first-child { margin-top: 0; border-top: none; }
-        .dc-effect-chip {
-            display: inline-flex; flex-direction: column; gap: 1px;
-            padding: 3px 8px; border-radius: 4px;
-            border: 1px solid #333; background: #252525;
-            cursor: pointer; user-select: none;
-            transition: background 0.1s, border-color 0.1s, opacity 0.1s;
+
+        /* ── Stat Effects rows ── */
+        .dc-effects-rows {
+            display: flex; flex-direction: column; gap: 1px;
+            padding: 2px 0;
         }
-        .dc-effect-chip:hover { background: #2e2e2e; border-color: #444; }
-        .dc-effect-chip.dc-effect-disabled {
-            opacity: 0.38; background: #1e1e1e; border-color: #2a2a2a;
-            text-decoration: line-through;
+        .dc-effect-row {
+            display: flex; align-items: center; gap: 6px;
+            padding: 5px 8px; cursor: pointer; border-radius: 3px;
+            font-size: 11px; user-select: none;
+            transition: background 0.08s;
+            min-height: 24px;
         }
-        .dc-effect-chip.dc-effect-disabled:hover { opacity: 0.55; }
-        .dc-effect-name { color: #bbb; font-size: 11px; }
-        .dc-effect-stat { color: #6a9f6a; font-size: 10px; }
-        .dc-effect-chip.dc-effect-disabled .dc-effect-name { color: #555; }
-        .dc-effect-chip.dc-effect-disabled .dc-effect-stat { color: #4a6a4a; }
+        .dc-effect-row:nth-child(even) { background: rgba(255,255,255,0.015); }
+        .dc-effect-row:hover { background: rgba(255,255,255,0.06); }
+        .dc-effect-row.disabled { opacity: 0.35; }
+        .dc-effect-row-name {
+            flex: 1; overflow: hidden; text-overflow: ellipsis;
+            white-space: nowrap; color: #bbb; min-width: 0;
+        }
+        .dc-effect-row:hover .dc-effect-row-name { color: #ddd; }
+        .dc-effect-row.disabled .dc-effect-row-name { color: #555; }
+        .dc-effect-row-val {
+            width: 120px; text-align: left;
+            color: #6a9f6a; white-space: nowrap; flex-shrink: 0;
+            font-size: 10px;
+        }
+        .dc-effect-row.disabled .dc-effect-row-val { color: #4a6a4a; }
+        .dc-effect-row-lvl {
+            display: flex; align-items: center; justify-content: center; gap: 1px;
+            width: 55px; flex-shrink: 0;
+        }
 
         /* ── Level up/down buttons ── */
-        .dc-lvl-btn {
+        .sidebar .dc-lvl-btn, .dc-lvl-btn {
             display: inline-flex; align-items: center; justify-content: center;
-            width: 14px; height: 14px; border: 1px solid #444; border-radius: 3px;
-            background: #2a2a2a; color: #aaa; cursor: pointer; font-size: 10px;
-            line-height: 1; padding: 0; margin: 0 1px; vertical-align: middle;
+            width: 13px; min-width: 13px; height: 13px; min-height: 13px;
+            border: 1px solid #444; border-radius: 2px;
+            background: #2a2a2a; color: #888; cursor: pointer; font-size: 10px;
+            line-height: 1; padding: 0; margin: 0;
             transition: background 0.1s, color 0.1s, border-color 0.1s;
         }
         .dc-lvl-btn:hover { background: #3a3a3a; color: #ddd; border-color: #666; }
@@ -470,7 +537,7 @@
             pointer-events: none;
         }
         .dc-lvl-indicator {
-            color: #777; font-size: 9px; margin: 0 2px; vertical-align: middle;
+            color: #777; font-size: 11px; margin: 0 3px; vertical-align: middle;
         }
 
         /* ── Effect Impact panel ── */
@@ -563,6 +630,8 @@
             border-right: 1px solid #252525;
             background: #1d1d1d;
         }
+        .ei-td-source[onclick] { cursor: pointer; }
+        .ei-td-source[onclick]:hover { background: #222; }
         .ei-source-name {
             display: block; font-size: 10px; font-weight: 600;
             text-transform: uppercase; letter-spacing: 0.06em;
@@ -675,208 +744,230 @@
     </style>
 </head>
 <body>
-<div class="page">
-    <div style="display:flex; justify-content:space-between; align-items:center; padding:14px 16px; border-bottom:1px solid #2c2c2c; background:#1f1f1f; flex-shrink:0;">
-        <h1 style="margin:0; font-size:16px; color:#aaa; font-weight:500; letter-spacing:0.04em;">Stella Sora Combat Log Viewer</h1>
-        <div style="display:flex; gap:6px; align-items:center;">
+<div class="app-layout">
+
+    <!-- ── Left Sidebar ── -->
+    <div class="sidebar sidebar-left" id="sidebar">
+        <div class="sidebar-section">
+            <div class="sidebar-label">Controls</div>
             <button id="autoClearBtn" onclick="toggleAutoClear()">Auto Clear</button>
-            <select id="savedLogFilter" onchange="onSavedLogChange()" style="padding:5px 12px; border:1px solid #333; border-radius:4px; background:#242424; color:#888; font-size:12px; cursor:pointer; appearance:none; width: 200px;">
+            <select id="savedLogFilter" onchange="onSavedLogChange()">
                 <option value="">Live</option>
             </select>
-            <button id="saveLogBtn" onclick="saveLog()" style="padding:5px 12px; border:1px solid #333; border-radius:4px; background:#242424; color:#888; font-size:12px; cursor:pointer;">Save Log</button>
-            <button class="clear-btn" id="clearLogBtn" onclick="clearLog()" style="padding:5px 12px; border:1px solid #4a3030; border-radius:4px; background:#242424; color:#b07070; font-size:12px; cursor:pointer;">Clear Log</button>
+            <button id="saveLogBtn" onclick="saveLog()">Save Log</button>
+            <button class="clear-btn" id="clearLogBtn" onclick="clearLog()">Clear Log</button>
             <button id="lastRunBtn" onclick="lastRun()">Last Run</button>
         </div>
-    </div>
-
-    <div class="tab-bar">
-        <button class="tab-btn active" id="tabLog" onclick="switchTab('log')">Log</button>
-        <button class="tab-btn" id="tabAnalytics" onclick="switchTab('analytics')">Analytics</button>
-        <button class="tab-btn" id="tabDmgCalc" onclick="switchTab('dmgcalc')">Dmg Calc</button>
-        <button class="tab-btn" id="tabEffectImpact" onclick="switchTab('effectimpact')">Effect Impact</button>
-    </div>
-
-
-    <div id="logPanel">
-
-        <div class="filters">
-            <button class="type-filter-btn active" data-type="Hit" onclick="toggleTypeFilter(this)">Hits</button>
-            <button class="type-filter-btn" data-type="Buff" onclick="toggleTypeFilter(this)">Buffs</button>
-            <button class="type-filter-btn" data-type="Effect" onclick="toggleTypeFilter(this)">Effects</button>
-            <button class="type-filter-btn active" data-type="Skill Cast" onclick="toggleTypeFilter(this)">Skill Casts</button>
-            <div style="display:flex; gap:6px; flex:1; min-width:0;">
-                <select id="charFilter" onchange="onCharFilterChange()" style="flex:1; min-width:0;">
-                    <option value="">All Characters</option>
-                </select>
-                <select id="skillFilter" onchange="onSkillFilterChange()" style="flex:1; min-width:0;">
-                    <option value="">All Skills</option>
-                </select>
-                <select id="defenderFilter" onchange="onDefenderFilterChange()" style="flex:1; min-width:0;">
-                    <option value="">All Defenders</option>
-                </select>
+        <div class="sidebar-section" id="sidebarFilters">
+            <div class="sidebar-label">Filters</div>
+            <div class="sidebar-btn-row">
+                <button class="type-filter-btn active" data-type="Hit" onclick="toggleTypeFilter(this)">Hits</button>
+                <button class="type-filter-btn" data-type="Buff" onclick="toggleTypeFilter(this)">Buffs</button>
+                <button class="type-filter-btn" data-type="Effect" onclick="toggleTypeFilter(this)">Effects</button>
+                <button class="type-filter-btn active" data-type="Skill Cast" onclick="toggleTypeFilter(this)">Skill Casts</button>
+            </div>
+            <select id="charFilter" onchange="onCharFilterChange()">
+                <option value="">All Characters</option>
+            </select>
+            <select id="skillFilter" onchange="onSkillFilterChange()">
+                <option value="">All Skills</option>
+            </select>
+            <select id="defenderFilter" onchange="onDefenderFilterChange()">
+                <option value="">All Defenders</option>
+            </select>
+        </div>
+        <div class="sidebar-section" id="sidebarDcFilters">
+            <div class="sidebar-label">Filters</div>
+            <select id="dcCharFilter" onchange="dcOnCharFilterChange()">
+                <option value="">All Characters</option>
+            </select>
+            <select id="dcSkillFilter" onchange="dcOnSkillFilterChange()">
+                <option value="">All Skills</option>
+            </select>
+            <select id="dcDefenderFilter" onchange="dcOnDefenderFilterChange()">
+                <option value="">All Defenders</option>
+            </select>
+        </div>
+        <div class="sidebar-section" id="sidebarEiFilters">
+            <div class="sidebar-label">Sources</div>
+            <div class="sidebar-ei-chips" id="eiFilterChips">
+                <!-- rendered by effectImpact.js -->
             </div>
         </div>
-        <div class="stats" id="stats"></div>
-        <div class="search-bar" id="searchBar">
-            <input type="text" id="searchInput" placeholder="Search events… (Ctrl+F)" autocomplete="off" spellcheck="false">
-            <span class="search-count" id="searchCount"></span>
-            <button onclick="navigateSearch(-1)" title="Previous (Shift+Enter)">▲</button>
-            <button onclick="navigateSearch(1)" title="Next (Enter)">▼</button>
-            <button class="close-btn" onclick="closeSearch()" title="Close (Esc)">✕</button>
-        </div>
-        <div class="scroll-container" id="scrollContainer">
-            <div class="scroll-spacer" id="scrollSpacer"></div>
-            <div class="scroll-content" id="scrollContent"></div>
-        </div>
     </div>
+    <div class="flex-spacer"></div>
 
-    <div id="analyticsPanel">
-        <div class="chart-grid chart-grid-single">
+    <!-- ── Main Content ── -->
+    <div class="main-area">
 
-            <!-- ── Chart 1: Damage Share ── -->
-            <div class="chart-card">
-                <h3>Damage Share</h3>
-                <div class="chart-controls" style="flex-wrap:wrap; row-gap:6px;">
-                    <label>Group by:</label>
-                    <select id="dsGroupBy" onchange="Analytics.refreshDmgShareChart()">
-                        <option value="char">Character</option>
-                        <option value="dmgtype">Damage Type</option>
-                    </select>
+        <div class="top-row">
+            <div class="tab-bar">
+                <button class="tab-btn active" id="tabLog" onclick="switchTab('log')">Log</button>
+                <button class="tab-btn" id="tabAnalytics" onclick="switchTab('analytics')">Analytics</button>
+                <button class="tab-btn" id="tabDmgCalc" onclick="switchTab('dmgcalc')">Dmg Calc</button>
+                <button class="tab-btn" id="tabEffectImpact" onclick="switchTab('effectimpact')">Effect Impact</button>
+            </div>
+            <div class="stats" id="stats"></div>
+        </div>
 
-                    <label style="margin-left:8px">Granularity:</label>
-                    <select id="dsGranularity" onchange="Analytics.refreshDmgShareChart()">
-                        <option value="none">—</option>
-                        <option value="skill">› Skill</option>
-                        <option value="hit">› Skill › Hit #</option>
-                    </select>
+        <div id="logPanel">
+            <div class="search-bar" id="searchBar">
+                <input type="text" id="searchInput" placeholder="Search events… (Ctrl+F)" autocomplete="off" spellcheck="false">
+                <span class="search-count" id="searchCount"></span>
+                <button onclick="navigateSearch(-1)" title="Previous (Shift+Enter)">▲</button>
+                <button onclick="navigateSearch(1)" title="Next (Enter)">▼</button>
+                <button class="close-btn" onclick="closeSearch()" title="Close (Esc)">✕</button>
+            </div>
+            <div class="scroll-container" id="scrollContainer">
+                <div class="scroll-spacer" id="scrollSpacer"></div>
+                <div class="scroll-content" id="scrollContent"></div>
+            </div>
+        </div>
 
-                    <label style="margin-left:8px">Metric:</label>
-                    <select id="dsMetric" onchange="Analytics.refreshDmgShareChart()">
-                        <option value="dmg">Damage</option>
-                        <option value="multiplier">Base Multiplier</option>
-                        <option value="hits">Hit Count</option>
-                    </select>
+        <div id="analyticsPanel">
+            <div class="chart-grid chart-grid-single">
 
-                    <div style="width:100%; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-                        <label>Filter char:</label>
-                        <select id="dsFilterChar" onchange="Analytics.refreshDmgShareChart()">
-                            <option value="">All</option>
-                        </select>
-
-                        <label style="margin-left:8px">Filter type:</label>
-                        <select id="dsFilterType" onchange="Analytics.refreshDmgShareChart()">
-                            <option value="">All</option>
-                        </select>
-
-                        <label style="margin-left:8px">Filter defender:</label>
-                        <select id="dsFilterDefender" onchange="Analytics.refreshDmgShareChart()">
-                            <option value="">All</option>
-                        </select>
-
-                        <label style="margin-left:8px">Sort by:</label>
-                        <select id="dsSort" onchange="Analytics.refreshDmgShareChart()">
-                            <option value="value">Metric</option>
+                <!-- ── Chart 1: Damage Share ── -->
+                <div class="chart-card">
+                    <h3>Damage Share</h3>
+                    <div class="chart-controls" style="flex-wrap:wrap; row-gap:6px;">
+                        <label>Group by:</label>
+                        <select id="dsGroupBy" onchange="Analytics.refreshDmgShareChart()">
                             <option value="char">Character</option>
                             <option value="dmgtype">Damage Type</option>
-                            <option value="skill">Skill Name</option>
+                        </select>
+
+                        <label style="margin-left:8px">Granularity:</label>
+                        <select id="dsGranularity" onchange="Analytics.refreshDmgShareChart()">
+                            <option value="none">—</option>
+                            <option value="skill">› Skill</option>
+                            <option value="hit">› Skill › Hit #</option>
+                        </select>
+
+                        <label style="margin-left:8px">Metric:</label>
+                        <select id="dsMetric" onchange="Analytics.refreshDmgShareChart()">
+                            <option value="dmg">Damage</option>
+                            <option value="multiplier">Base Multiplier</option>
+                            <option value="hits">Hit Count</option>
+                        </select>
+
+                        <div style="width:100%; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                            <label>Filter char:</label>
+                            <select id="dsFilterChar" onchange="Analytics.refreshDmgShareChart()">
+                                <option value="">All</option>
+                            </select>
+
+                            <label style="margin-left:8px">Filter type:</label>
+                            <select id="dsFilterType" onchange="Analytics.refreshDmgShareChart()">
+                                <option value="">All</option>
+                            </select>
+
+                            <label style="margin-left:8px">Filter defender:</label>
+                            <select id="dsFilterDefender" onchange="Analytics.refreshDmgShareChart()">
+                                <option value="">All</option>
+                            </select>
+
+                            <label style="margin-left:8px">Sort by:</label>
+                            <select id="dsSort" onchange="Analytics.refreshDmgShareChart()">
+                                <option value="value">Metric</option>
+                                <option value="char">Character</option>
+                                <option value="dmgtype">Damage Type</option>
+                                <option value="skill">Skill Name</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="chart-canvas-wrap" style="height:320px">
+                        <canvas id="chartDmgShare"></canvas>
+                    </div>
+                    <table class="legend-table" id="legendDmgShare"></table>
+                </div>
+
+                <!-- ── Chart 2: Buff / Effect Presence ── -->
+                <div class="chart-card">
+                    <h3>Buff / Effect Presence on Hits</h3>
+                    <div class="chart-controls" style="flex-wrap:wrap; row-gap:6px;">
+                        <label>View by:</label>
+                        <select id="bpViewBy" onchange="Analytics.onBpViewByChange()">
+                            <option value="skill">Skill Hit</option>
+                            <option value="buff">Buff / Effect</option>
+                        </select>
+
+                        <label style="margin-left:8px">Pick:</label>
+                        <select id="bpPick" onchange="Analytics.refreshBuffChart()">
+                            <option value="">—</option>
+                        </select>
+
+                        <label style="margin-left:8px">Show:</label>
+                        <button id="bpToggleAB" class="bp-src-btn" data-src="attackerBuffs" onclick="Analytics.onBpSrcToggle(this)" style="padding:4px 10px;border:1px solid #444;border-radius:4px;background:#2a2a2a;color:#6a9fd8;font-size:12px;cursor:pointer;opacity:0.45;transition:opacity .15s">Att. Buffs</button>
+                        <button id="bpToggleAE" class="bp-src-btn" data-src="attackerEffects" onclick="Analytics.onBpSrcToggle(this)" style="padding:4px 10px;border:1px solid #444;border-radius:4px;background:#2a2a2a;color:#d4a84b;font-size:12px;cursor:pointer;opacity:1;transition:opacity .15s">Att. Effects</button>
+                        <button id="bpToggleDB" class="bp-src-btn" data-src="defenderBuffs" onclick="Analytics.onBpSrcToggle(this)" style="padding:4px 10px;border:1px solid #444;border-radius:4px;background:#2a2a2a;color:#c0605a;font-size:12px;cursor:pointer;opacity:0.45;transition:opacity .15s">Def. Buffs</button>
+                        <button id="bpToggleDE" class="bp-src-btn" data-src="defenderEffects" onclick="Analytics.onBpSrcToggle(this)" style="padding:4px 10px;border:1px solid #444;border-radius:4px;background:#2a2a2a;color:#8c4ba0;font-size:12px;cursor:pointer;opacity:1;transition:opacity .15s">Def. Effects</button>
+                        <button id="bpToggleAA" class="bp-src-btn" data-src="attackerAttrDict" onclick="Analytics.onBpSrcToggle(this)" style="padding:4px 10px;border:1px solid #444;border-radius:4px;background:#2a2a2a;color:#5abf8a;font-size:12px;cursor:pointer;opacity:1;transition:opacity .15s">Att. Attrs</button>
+                        <button id="bpToggleDA" class="bp-src-btn" data-src="defenderAttrDict" onclick="Analytics.onBpSrcToggle(this)" style="padding:4px 10px;border:1px solid #444;border-radius:4px;background:#2a2a2a;color:#bf855a;font-size:12px;cursor:pointer;opacity:1;transition:opacity .15s">Def. Attrs</button>
+
+                        <label style="margin-left:8px">Character:</label>
+                        <select id="bpFilterChar" onchange="Analytics.onBpViewByChange()">
+                            <option value="">All</option>
+                        </select>
+                        
+                        <label style="margin-left:8px">Filter defender:</label>
+                        <select id="bpFilterDefender" onchange="Analytics.onBpViewByChange()">
+                            <option value="">All</option>
                         </select>
                     </div>
+                    <div class="chart-canvas-wrap" style="height:320px; overflow-y:auto;">
+                        <canvas id="chartBuff"></canvas>
+                    </div>
                 </div>
-                <div class="chart-canvas-wrap" style="height:320px">
-                    <canvas id="chartDmgShare"></canvas>
+
+                <!-- ── Chart 3: Crit Distribution ── -->
+                <div class="chart-card">
+                    <h3>Crit Distribution</h3>
+                    <div class="chart-controls" style="flex-wrap:wrap; row-gap:6px;">
+                        <label>Character:</label>
+                        <select id="cdFilterChar" onchange="Analytics.refreshCritDist()">
+                            <option value="">All</option>
+                        </select>
+                    </div>
+                    <div id="critDistTable" style="font-size:12px;min-height:100px;">
+                        <div class="chart-empty">No player hit data</div>
+                    </div>
                 </div>
-                <table class="legend-table" id="legendDmgShare"></table>
+
             </div>
-
-            <!-- ── Chart 2: Buff / Effect Presence ── -->
-            <div class="chart-card">
-                <h3>Buff / Effect Presence on Hits</h3>
-                <div class="chart-controls" style="flex-wrap:wrap; row-gap:6px;">
-                    <label>View by:</label>
-                    <select id="bpViewBy" onchange="Analytics.onBpViewByChange()">
-                        <option value="skill">Skill Hit</option>
-                        <option value="buff">Buff / Effect</option>
-                    </select>
-
-                    <label style="margin-left:8px">Pick:</label>
-                    <select id="bpPick" onchange="Analytics.refreshBuffChart()">
-                        <option value="">—</option>
-                    </select>
-
-                    <label style="margin-left:8px">Show:</label>
-                    <button id="bpToggleAB" class="bp-src-btn" data-src="attackerBuffs" onclick="Analytics.onBpSrcToggle(this)" style="padding:4px 10px;border:1px solid #444;border-radius:4px;background:#2a2a2a;color:#6a9fd8;font-size:12px;cursor:pointer;opacity:0.45;transition:opacity .15s">Att. Buffs</button>
-                    <button id="bpToggleAE" class="bp-src-btn" data-src="attackerEffects" onclick="Analytics.onBpSrcToggle(this)" style="padding:4px 10px;border:1px solid #444;border-radius:4px;background:#2a2a2a;color:#d4a84b;font-size:12px;cursor:pointer;opacity:1;transition:opacity .15s">Att. Effects</button>
-                    <button id="bpToggleDB" class="bp-src-btn" data-src="defenderBuffs" onclick="Analytics.onBpSrcToggle(this)" style="padding:4px 10px;border:1px solid #444;border-radius:4px;background:#2a2a2a;color:#c0605a;font-size:12px;cursor:pointer;opacity:0.45;transition:opacity .15s">Def. Buffs</button>
-                    <button id="bpToggleDE" class="bp-src-btn" data-src="defenderEffects" onclick="Analytics.onBpSrcToggle(this)" style="padding:4px 10px;border:1px solid #444;border-radius:4px;background:#2a2a2a;color:#8c4ba0;font-size:12px;cursor:pointer;opacity:1;transition:opacity .15s">Def. Effects</button>
-                    <button id="bpToggleAA" class="bp-src-btn" data-src="attackerAttrDict" onclick="Analytics.onBpSrcToggle(this)" style="padding:4px 10px;border:1px solid #444;border-radius:4px;background:#2a2a2a;color:#5abf8a;font-size:12px;cursor:pointer;opacity:1;transition:opacity .15s">Att. Attrs</button>
-                    <button id="bpToggleDA" class="bp-src-btn" data-src="defenderAttrDict" onclick="Analytics.onBpSrcToggle(this)" style="padding:4px 10px;border:1px solid #444;border-radius:4px;background:#2a2a2a;color:#bf855a;font-size:12px;cursor:pointer;opacity:1;transition:opacity .15s">Def. Attrs</button>
-
-                    <label style="margin-left:8px">Character:</label>
-                    <select id="bpFilterChar" onchange="Analytics.onBpViewByChange()">
-                        <option value="">All</option>
-                    </select>
-                    
-                    <label style="margin-left:8px">Filter defender:</label>
-                    <select id="bpFilterDefender" onchange="Analytics.onBpViewByChange()">
-                        <option value="">All</option>
-                    </select>
-                </div>
-                <div class="chart-canvas-wrap" style="height:320px; overflow-y:auto;">
-                    <canvas id="chartBuff"></canvas>
-                </div>
-            </div>
-
-            <!-- ── Chart 3: Crit Distribution ── -->
-            <div class="chart-card">
-                <h3>Crit Distribution</h3>
-                <div class="chart-controls" style="flex-wrap:wrap; row-gap:6px;">
-                    <label>Character:</label>
-                    <select id="cdFilterChar" onchange="Analytics.refreshCritDist()">
-                        <option value="">All</option>
-                    </select>
-                </div>
-                <div id="critDistTable" style="font-size:12px;min-height:100px;">
-                    <div class="chart-empty">No player hit data</div>
-                </div>
-            </div>
-
         </div>
+
+        <div id="dmgCalcPanel">
+            <div class="dc-formula-bar" id="dcFormulaBar">
+                <!-- rendered by renderFormulaBar() -->
+            </div>
+            <div class="dc-scroll-wrap">
+                <div class="scroll-container" id="dcScrollContainer">
+                    <div class="scroll-spacer" id="dcScrollSpacer"></div>
+                    <div class="scroll-content" id="dcScrollContent"></div>
+                </div>
+            </div>
+        </div>
+
+        <div id="eiPanel">
+            <!-- rendered by effectImpact.js -->
+        </div>
+
     </div>
+    <div class="flex-spacer"></div>
 
-    <div id="dmgCalcPanel">
-        <div class="filters" id="dcFilters">
-            <div style="display:flex; gap:6px; flex:1; min-width:0;">
-                <select id="dcCharFilter" onchange="dcOnCharFilterChange()" style="flex:1; min-width:0;">
-                    <option value="">All Characters</option>
-                </select>
-                <select id="dcSkillFilter" onchange="dcOnSkillFilterChange()" style="flex:1; min-width:0;">
-                    <option value="">All Skills</option>
-                </select>
-                <select id="dcDefenderFilter" onchange="dcOnDefenderFilterChange()" style="flex:1; min-width:0;">
-                    <option value="">All Defenders</option>
-                </select>
+    <!-- ── Right Sidebar (dmgcalc only) ── -->
+    <div class="sidebar sidebar-right" id="sidebarRight">
+        <div class="sidebar-section" id="sidebarDcStats">
+            <div class="sidebar-label">Totals</div>
+            <div class="dc-formula-totals" id="dcSidebarTotals">
+                <span>Total Calc: <strong>0</strong></span>
+                <span style="display:block">Total In-Game: <strong>0</strong></span>
+            </div>
+            <div class="dc-effects-panel" id="dcEffectsPanel">
+                <!-- rendered by renderEffectsPanel() -->
             </div>
         </div>
-        <div class="dc-effects-panel" id="dcEffectsPanel">
-            <!-- rendered by renderEffectsPanel() -->
-        </div>
-        <div class="dc-formula-bar" id="dcFormulaBar">
-            <!-- rendered by renderFormulaBar() -->
-        </div>
-        <div class="dc-stats-row">
-            <span id="dcStats">0 hits</span>
-        </div>
-        <div class="dc-scroll-wrap">
-            <div class="scroll-container" id="dcScrollContainer">
-                <div class="scroll-spacer" id="dcScrollSpacer"></div>
-                <div class="scroll-content" id="dcScrollContent"></div>
-            </div>
-        </div>
-    </div>
-
-
-    <div id="eiPanel">
-        <!-- rendered by effectImpact.js -->
     </div>
 
     <script src="tableResolver.js"></script>

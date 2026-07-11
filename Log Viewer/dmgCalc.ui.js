@@ -30,7 +30,7 @@ const dcEffectsDisabled = new Set();
 // Map<key, {newValueConfigId,newValue,newAttrType,newSubType}> for level-overridden effects
 const dcEffectLevelOverrides = new Map();
 // Whether the effects panel is open
-let dcEffectsPanelOpen = true;
+
 // Which source sections are open; default collapsed (keys added on first toggle)
 const dcSourceOpenStates = {};
 
@@ -103,129 +103,109 @@ function renderEffectsPanel() {
     if (!panel) return;
     const effects = dcCollectAttrFixEffects(dcFiltered);
 
-    let html = `<div class="dc-effects-header" onclick="dcToggleEffectsPanel()">
-        <span class="dc-effects-arrow${dcEffectsPanelOpen ? ' open' : ''}">▶</span>
-        <span class="dc-effects-title">Stat Effects</span>
-        <span class="dc-effects-count">${effects.length} unique · click to disable</span>
-    </div>`;
+    let html = '';
+    if (effects.length === 0) {
+        html += `<div class="dc-effects-body"><span class="dc-effects-empty">No effects found in current filter.</span></div>`;
+    } else {
+        html += `<div class="dc-effects-body"><div class="dc-effects-rows">`;
 
-    if (dcEffectsPanelOpen) {
-        if (effects.length === 0) {
-            html += `<div class="dc-effects-body"><span class="dc-effects-empty">No effects found in current filter.</span></div>`;
-        } else {
-            html += `<div class="dc-effects-body"><div class="dc-effects-list">`;
-
-            // Group by side+source
-            const groupMap = new Map(); // `${side}||${source}` -> [effects]
-            for (const ef of effects) {
-                const gkey = `${ef.side}||${ef.source ?? 'Unknown'}`;
-                if (!groupMap.has(gkey)) groupMap.set(gkey, []);
-                groupMap.get(gkey).push(ef);
-            }
-
-            function renderGroup(gkey, label, groupEffects) {
-                if (!groupEffects.length) return '';
-                const isOpen = dcSourceOpenStates[gkey] === true;
-                const escapedGkey = gkey.replace(/'/g, "\\'");
-                let g = `<div class="dc-effects-group-label dc-source-toggle${isOpen ? ' open' : ''}" onclick="dcToggleSourceSection('${escapedGkey}')">
-                    <span class="dc-source-arrow">${isOpen ? '▾' : '▸'}</span>${esc(label)}
-                    <span class="dc-source-count">${groupEffects.length}</span>
-                </div>`;
-                if (isOpen) {
-                    g += `<div class="dc-effects-chips-wrap">`;
-                    for (const ef of groupEffects) {
-                        const disabled = dcEffectsDisabled.has(ef.key);
-                        let statLine;
-                        if (ef.isPotentialsGroup) {
-                            statLine = `${ef.count} hit${ef.count !== 1 ? 's' : ''} · zeroed when disabled`;
-                        } else {
-                            const override = dcEffectLevelOverrides.get(ef.key);
-                            const subLabel = ef.subType === 1 ? 'base' : ef.subType === 2 ? 'pct' : ef.subType === 3 ? 'abs' : '?';
-                            const attrLabel = ef.attrType != null ? attrName(ef.attrType) : '?';
-                            const raw = override ? override.newValue : ef.value;
-                            const overrideSubType = override ? override.newSubType : ef.subType;
-                            const overrideAttrType = override ? override.newAttrType : ef.attrType;
-                            const displaySubLabel = overrideSubType === 1 ? 'base' : overrideSubType === 2 ? 'pct' : overrideSubType === 3 ? 'abs' : '?';
-                            const displayAttrLabel = overrideAttrType != null ? attrName(overrideAttrType) : '?';
-                            const isSmall = raw != null && Math.abs(raw) < 15;
-                            const valStr = raw != null ? (isSmall ? (raw * 100).toFixed(2) + '%' : String(raw)) : '?';
-                            const countStr = ef.count > 1 ? ` ×${ef.count}` : '';
-                            const overrideMarker = override ? ' *' : '';
-                            statLine = `${esc(displayAttrLabel)} ${valStr>=0 ? '+' : ''}${valStr}${countStr} [${displaySubLabel}]${overrideMarker}`;
-                        }
-                        const titleExtra = ef.isPotentialsGroup
-                            ? `potentials · skillTitle=${ef.skillTitle}`
-                            : `${ef.side} · configId=${ef.configId}`;
-
-                        // Level buttons for multi-level effects — compute effective level from override
-                        const hasLevels = !ef.isPotentialsGroup && ef.allValueConfigIds && ef.allValueConfigIds.length > 1 && ef.currentLevelIdx >= 0;
-                        const escKey = ef.key.replace(/'/g, "\\'");
-                        let effectiveLevelIdx = ef.currentLevelIdx;
-                        if (hasLevels) {
-                            const existingOverride = dcEffectLevelOverrides.get(ef.key);
-                            if (existingOverride) {
-                                const overriddenIdx = ef.allValueConfigIds.findIndex(v => v.valueConfigId === existingOverride.newValueConfigId);
-                                if (overriddenIdx >= 0) effectiveLevelIdx = overriddenIdx;
-                            }
-                        }
-                        const maxLvl = hasLevels ? ef.allValueConfigIds.length - 1 : 0;
-
-                        let levelBtns = '';
-                        if (hasLevels) {
-                            levelBtns = `
-                                <button class="dc-lvl-btn dc-lvl-minus${effectiveLevelIdx <= 0 ? ' dc-lvl-disabled' : ''}"
-                                    onclick="event.stopPropagation();dcChangeEffectLevel('${escKey}',-1)"
-                                    title="Decrease level">−</button>
-                                <span class="dc-lvl-indicator">Lv.${effectiveLevelIdx + 1}/${maxLvl + 1}</span>
-                                <button class="dc-lvl-btn dc-lvl-plus${effectiveLevelIdx >= maxLvl ? ' dc-lvl-disabled' : ''}"
-                                    onclick="event.stopPropagation();dcChangeEffectLevel('${escKey}',1)"
-                                    title="Increase level">+</button>`;
-                        }
-
-                        g += `<div class="dc-effect-chip${disabled ? ' dc-effect-disabled' : ''}"
-                            onclick="dcToggleEffect('${ef.key}')"
-                            title="${disabled ? 'Click to re-enable' : 'Click to disable'}\n${titleExtra}">
-                            <span class="dc-effect-name">${levelBtns}${esc(ef.name)}</span>
-                            <span class="dc-effect-stat">${statLine}</span>
-                        </div>`;
-                    }
-                    g += `</div>`;
-                }
-                return g;
-            }
-
-            // Attacker groups first, then defender, then Potentials
-            for (const side of ['attacker', 'defender']) {
-                const sideEntries = [...groupMap.entries()].filter(([k]) => k.startsWith(side + '||'));
-                if (!sideEntries.length) continue;
-                const sideLabel = side === 'attacker' ? 'Attacker' : 'Defender';
-                html += `<div class="dc-effects-side-header">${sideLabel}</div>`;
-                for (const [gkey, groupEffects] of sideEntries) {
-                    const source = gkey.slice(side.length + 2);
-                    html += renderGroup(gkey, source, groupEffects);
-                }
-            }
-
-            // ── Potentials groups ────────────────────────────────────────────
-            const potentialsEntries = [...groupMap.entries()].filter(([k]) => k.startsWith('potentials||'));
-            if (potentialsEntries.length) {
-                html += `<div class="dc-effects-side-header">Potentials</div>`;
-                for (const [gkey, groupEffects] of potentialsEntries) {
-                    const source = gkey.slice('potentials||'.length);
-                    html += renderGroup(gkey, source, groupEffects);
-                }
-            }
-
-            html += `</div></div>`;
+        // Group by side+source
+        const groupMap = new Map();
+        for (const ef of effects) {
+            const gkey = `${ef.side}||${ef.source ?? 'Unknown'}`;
+            if (!groupMap.has(gkey)) groupMap.set(gkey, []);
+            groupMap.get(gkey).push(ef);
         }
+
+        function renderGroup(gkey, label, groupEffects) {
+            if (!groupEffects.length) return '';
+            const isOpen = dcSourceOpenStates[gkey] === true;
+            const escapedGkey = gkey.replace(/'/g, "\\'");
+            let g = `<div class="dc-source-toggle" onclick="dcToggleSourceSection('${escapedGkey}')">
+                <span class="dc-source-arrow">${isOpen ? '▾' : '▸'}</span><span>${esc(label)}</span>
+                <span class="dc-source-count">${groupEffects.length}</span>
+            </div>`;
+            if (isOpen) {
+                for (const ef of groupEffects) {
+                    const disabled = dcEffectsDisabled.has(ef.key);
+                    let valStr;
+                    if (ef.isPotentialsGroup) {
+                        valStr = `${ef.count} hit${ef.count !== 1 ? 's' : ''}`;
+                    } else {
+                        const override = dcEffectLevelOverrides.get(ef.key);
+                        const raw = override ? override.newValue : ef.value;
+                        const overrideAttrType = override ? override.newAttrType : ef.attrType;
+                        const overrideSubType = override ? override.newSubType : ef.subType;
+                        const displayAttrLabel = overrideAttrType != null ? attrName(overrideAttrType) : '';
+                        const isSmall = raw != null && Math.abs(raw) < 15;
+                        const val = raw != null ? (isSmall ? (raw * 100).toFixed(2) + '%' : String(raw)) : '?';
+                        const countStr = ef.count > 1 ? ` ×${ef.count}` : '';
+                        const overrideMarker = override ? ' *' : '';
+                        valStr = `${displayAttrLabel} ${val>=0 ? '+' : ''}${val}${countStr}${overrideMarker}`;
+                    }
+
+                    const hasLevels = !ef.isPotentialsGroup && ef.allValueConfigIds && ef.allValueConfigIds.length > 1 && ef.currentLevelIdx >= 0;
+                    const escKey = ef.key.replace(/'/g, "\\'");
+                    let effectiveLevelIdx = ef.currentLevelIdx;
+                    if (hasLevels) {
+                        const existingOverride = dcEffectLevelOverrides.get(ef.key);
+                        if (existingOverride) {
+                            const overriddenIdx = ef.allValueConfigIds.findIndex(v => v.valueConfigId === existingOverride.newValueConfigId);
+                            if (overriddenIdx >= 0) effectiveLevelIdx = overriddenIdx;
+                        }
+                    }
+                    const maxLvl = hasLevels ? ef.allValueConfigIds.length - 1 : 0;
+
+                    let levelBtns = '';
+                    if (hasLevels) {
+                        levelBtns = `
+                            <button class="dc-lvl-btn${effectiveLevelIdx <= 0 ? ' dc-lvl-disabled' : ''}"
+                                onclick="event.stopPropagation();dcChangeEffectLevel('${escKey}',-1)"
+                                title="Decrease level">−</button>
+                            <span class="dc-lvl-indicator">${effectiveLevelIdx + 1}/${maxLvl + 1}</span>
+                            <button class="dc-lvl-btn${effectiveLevelIdx >= maxLvl ? ' dc-lvl-disabled' : ''}"
+                                onclick="event.stopPropagation();dcChangeEffectLevel('${escKey}',1)"
+                                title="Increase level">+</button>`;
+                    }
+
+                    g += `<div class="dc-effect-row${disabled ? ' disabled' : ''}"
+                        onclick="dcToggleEffect('${ef.key}')"
+                        title="${esc(ef.name)} — ${esc(valStr).replace(/"/g,'&quot;')}">
+                        <span class="dc-effect-row-name">${esc(ef.name)}</span>
+                        <span class="dc-effect-row-val">${valStr}</span>
+                        <span class="dc-effect-row-lvl">${levelBtns}</span>
+                    </div>`;
+                }
+            }
+            return g;
+        }
+
+        // Attacker groups first, then defender, then Potentials
+        for (const side of ['attacker', 'defender']) {
+            const sideEntries = [...groupMap.entries()].filter(([k]) => k.startsWith(side + '||'));
+            if (!sideEntries.length) continue;
+            const sideLabel = side === 'attacker' ? 'Attacker' : 'Defender';
+            html += `<div class="dc-effects-side-header">${sideLabel}</div>`;
+            for (const [gkey, groupEffects] of sideEntries) {
+                const source = gkey.slice(side.length + 2);
+                html += renderGroup(gkey, source, groupEffects);
+            }
+        }
+
+        // ── Potentials groups ────────────────────────────────────────────────
+        const potentialsEntries = [...groupMap.entries()].filter(([k]) => k.startsWith('potentials||'));
+        if (potentialsEntries.length) {
+            html += `<div class="dc-effects-side-header">Potentials</div>`;
+            for (const [gkey, groupEffects] of potentialsEntries) {
+                const source = gkey.slice('potentials||'.length);
+                html += renderGroup(gkey, source, groupEffects);
+            }
+        }
+
+        html += `</div></div>`;
     }
     panel.innerHTML = html;
 }
-
-window.dcToggleEffectsPanel = function() {
-    dcEffectsPanelOpen = !dcEffectsPanelOpen;
-    renderEffectsPanel();
-};
 
 window.dcToggleSourceSection = function(gkey) {
     dcSourceOpenStates[gkey] = !dcSourceOpenStates[gkey];
@@ -238,6 +218,7 @@ window.dcToggleEffect = function(key) {
     renderEffectsPanel();
     renderFormulaBar();
     dcRender();
+    dcRefreshEI();
 };
 
 window.dcChangeEffectLevel = function(key, direction) {
@@ -296,42 +277,46 @@ window.dcChangeEffectLevel = function(key, direction) {
     renderEffectsPanel();
     renderFormulaBar();
     dcRender();
+    dcRefreshEI();
 };
 
-// ─── Formula bar rendering ────────────────────────────────────────────────────
-function renderFormulaBar() {
-    const bar = document.getElementById('dcFormulaBar');
-    if (!bar) return;
-
-    // Compute total calculated vs in-game damage across filtered hits
-    let totalCalc = 0;
-    let totalGame = 0;
+// ─── Dmg Calc totals (sidebar) ────────────────────────────────────────────────
+function dcRenderTotals() {
+    const el = document.getElementById('dcSidebarTotals');
+    if (!el) return;
+    let totalCalc = 0, totalGame = 0;
     dcFiltered.forEach(ev => {
         const f = calcHitFields(ev, null, dcEffectsDisabled, dcEffectLevelOverrides);
         totalCalc += calcDamage(f, dcBonus, dcDisabled);
         totalGame += f.finalDamage;
     });
-
     const overallDiff = totalGame > 0 ? ((totalCalc / totalGame) - 1) * 100 : null;
-    let diffHtml = '';
-    if (overallDiff != null) {
-        const cls = Math.abs(overallDiff) < 0.05 ? 'dc-diff-close' : overallDiff < 0 ? 'dc-diff-neg' : 'dc-diff-pos';
-        diffHtml = ` <span class="${cls}" style="margin-left:4px">(${overallDiff >= 0 ? '+' : ''}${overallDiff.toFixed(1)}%)</span>`;
-    }
-
-    // Percentage relative to Calc (swapped numbers)
+    const d1 = overallDiff != null
+        ? `<span class="${Math.abs(overallDiff) < 0.05 ? 'dc-diff-close' : overallDiff < 0 ? 'dc-diff-neg' : 'dc-diff-pos'}" style="margin-left:4px">(${overallDiff >= 0 ? '+' : ''}${overallDiff.toFixed(1)}%)</span>`
+        : '';
     const overallDiff2 = totalCalc > 0 ? ((totalGame / totalCalc) - 1) * 100 : null;
-    let diffHtml2 = '';
-    if (overallDiff2 != null) {
-        const cls2 = Math.abs(overallDiff2) < 0.05 ? 'dc-diff-close' : overallDiff2 < 0 ? 'dc-diff-neg' : 'dc-diff-pos';
-        diffHtml2 = ` <span class="${cls2}" style="margin-left:4px">(${overallDiff2 >= 0 ? '+' : ''}${overallDiff2.toFixed(1)}%)</span>`;
-    }
+    const d2 = overallDiff2 != null
+        ? `<span class="${Math.abs(overallDiff2) < 0.05 ? 'dc-diff-close' : overallDiff2 < 0 ? 'dc-diff-neg' : 'dc-diff-pos'}" style="margin-left:4px">(${overallDiff2 >= 0 ? '+' : ''}${overallDiff2.toFixed(1)}%)</span>`
+        : '';
+    el.innerHTML = `
+        <span>Total Calc: <strong>${Math.round(totalCalc).toLocaleString()}</strong>${d1}</span>
+        <span style="display:block">Total In-Game: <strong>${Math.round(totalGame).toLocaleString()}</strong>${d2}</span>
+    `;
+}
 
-    let html = `<div class="dc-formula-totals">
-        <span>Total Calc: <strong>${Math.round(totalCalc).toLocaleString()}</strong>${diffHtml}</span>
-        <span style="margin-left:16px">Total In-Game: <strong>${Math.round(totalGame).toLocaleString()}</strong>${diffHtml2}</span>
-    </div>
-    <div class="dc-formula-row">`;
+function dcRefreshEI() {
+    const el = document.getElementById('eiPanel');
+    if (el && el.classList.contains('visible') && typeof eiRender === 'function') {
+        eiRender();
+    }
+}
+
+// ─── Formula bar rendering ────────────────────────────────────────────────────
+function renderFormulaBar() {
+    const bar = document.getElementById('dcFormulaBar');
+    if (!bar) return;
+    dcRenderTotals();
+    let html = `<div class="dc-formula-row">`;
 
 
     const FORMULA_DISPLAY = [
@@ -438,6 +423,7 @@ window.dcToggleField = function(key) {
     else dcDisabled.add(key);
     renderFormulaBar();
     dcRender();
+    dcRefreshEI();
 };
 
 window.dcSetBonus = function(key, val) {
@@ -445,6 +431,7 @@ window.dcSetBonus = function(key, val) {
     dcBonus[key] = isNaN(n) ? 0 : n;
     renderFormulaBar();
     dcRender();
+    dcRefreshEI();
 };
 
 // ─── Per-hit event DOM ────────────────────────────────────────────────────────
@@ -846,7 +833,7 @@ function dcRefilterAndRender(resetScroll = false, autoSelectDefender = true) {
     dcBuildFenwick();
     renderFormulaBar();
     renderEffectsPanel();
-    document.getElementById('dcStats').textContent = `${dcFiltered.length} hits`;
+    document.getElementById('stats').textContent = `${dcFiltered.length} hits`;
     dcRender();
 }
 
@@ -879,22 +866,7 @@ window.dcRefreshIfVisible = function() {
         });
         const overallDiff = totalGame > 0 ? ((totalCalc / totalGame) - 1) * 100 : null;
         const overallDiff2 = totalCalc > 0 ? ((totalGame / totalCalc) - 1) * 100 : null;
-        const bar = document.getElementById('dcFormulaBar');
-        if (bar) {
-            const totalsEl = bar.querySelector('.dc-formula-totals');
-            if (totalsEl) {
-                const d1 = overallDiff != null
-                    ? `<span class="${Math.abs(overallDiff) < 0.05 ? 'dc-diff-close' : overallDiff < 0 ? 'dc-diff-neg' : 'dc-diff-pos'}" style="margin-left:4px">(${overallDiff >= 0 ? '+' : ''}${overallDiff.toFixed(1)}%)</span>`
-                    : '';
-                const d2 = overallDiff2 != null
-                    ? `<span class="${Math.abs(overallDiff2) < 0.05 ? 'dc-diff-close' : overallDiff2 < 0 ? 'dc-diff-neg' : 'dc-diff-pos'}" style="margin-left:4px">(${overallDiff2 >= 0 ? '+' : ''}${overallDiff2.toFixed(1)}%)</span>`
-                    : '';
-                totalsEl.innerHTML = `
-                    <span>Total Calc: <strong>${Math.round(totalCalc).toLocaleString()}</strong>${d1}</span>
-                    <span style="margin-left:16px">Total In-Game: <strong>${Math.round(totalGame).toLocaleString()}</strong>${d2}</span>
-                `;
-            }
-        }
+        dcRenderTotals();
 
         // Only re-render effects panel when new unique effects actually appear
         const newEffects = dcCollectAttrFixEffects(dcFiltered);
@@ -904,7 +876,7 @@ window.dcRefreshIfVisible = function() {
             renderEffectsPanel();
         }
 
-        document.getElementById('dcStats').textContent = `${dcFiltered.length} hits`;
+        document.getElementById('stats').textContent = `${dcFiltered.length} hits`;
         dcRender();
     }
 };

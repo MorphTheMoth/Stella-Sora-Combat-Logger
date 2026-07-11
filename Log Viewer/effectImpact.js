@@ -346,22 +346,23 @@ function eiRenderTable() {
         return `onclick="eiSetSort('${col}')"`;
     }
 
-    // Build source filter chips
-    let filterChips = '';
-    for (const { srcKey, source } of allSourceKeys) {
-        const active = !eiHiddenSources.has(srcKey);
-        const escapedKey = srcKey.replace(/'/g, "\\'");
-        filterChips += `<button class="ei-src-chip ei-chip-src ${active ? 'ei-chip-active' : ''}" onclick="eiToggleSourceFilter('${escapedKey}')">${esc(source)}</button>`;
+    // Render source filter chips into sidebar
+    const chipsEl = document.getElementById('eiFilterChips');
+    if (chipsEl) {
+        let chipsHtml = '';
+        for (const { srcKey, source } of allSourceKeys) {
+            const active = !eiHiddenSources.has(srcKey);
+            const escapedKey = srcKey.replace(/'/g, "\\'");
+            chipsHtml += `<button class="ei-src-chip ei-chip-src ${active ? 'ei-chip-active' : ''}" onclick="eiToggleSourceFilter('${escapedKey}')">${esc(source)}</button>`;
+        }
+        chipsHtml += `<button class="ei-chip-all" onclick="eiShowAllSources()">All</button>`;
+        chipsEl.innerHTML = chipsHtml;
     }
 
     let html = `
     <div class="ei-header-bar">
         <span class="ei-subtitle">${hitCountSample} hits · ${rows.length} unique effects</span>
         <button class="ei-refresh-btn" onclick="eiRender()">↻ Refresh</button>
-    </div>
-    <div class="ei-filter-bar">
-        ${filterChips}
-        <button class="ei-chip-all" onclick="eiShowAllSources()">All</button>
     </div>
     <div class="ei-scroll-wrap">
     <table class="ei-table">
@@ -436,8 +437,9 @@ function eiRenderTable() {
                 : '';
 
             // First row in group gets the rowspan source cell
+            const escapedSrcKey = srcKey.replace(/'/g, "\\'");
             const sourceCellHtml = j === i
-                ? `<td class="ei-td ei-td-source" rowspan="${groupSize}"><span class="ei-source-name">${esc(ef.source ?? 'Unknown')}</span></td>`
+                ? `<td class="ei-td ei-td-source" rowspan="${groupSize}" onclick="eiToggleSourceFilter('${escapedSrcKey}')"><span class="ei-source-name">${esc(ef.source ?? 'Unknown')}</span></td>`
                 : '';
 
             html += `<tr class="ei-row">
@@ -491,6 +493,10 @@ const _eiOrigSwitchTab = window.switchTab;
 window.switchTab = function(tab) {
     document.getElementById('tabEffectImpact').classList.toggle('active', tab === 'effectimpact');
     document.getElementById('eiPanel').classList.toggle('visible', tab === 'effectimpact');
-    if (tab === 'effectimpact') eiRender();
+    if (tab === 'effectimpact') {
+        eiRender();
+        if (typeof renderEffectsPanel === 'function') renderEffectsPanel();
+        if (typeof dcRenderTotals === 'function') dcRenderTotals();
+    }
     _eiOrigSwitchTab(tab);
 };

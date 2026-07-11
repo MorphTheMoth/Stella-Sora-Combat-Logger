@@ -123,7 +123,7 @@ function refilterAndRender(resetScroll = false, resetOpen = true) {
     buildSearchMatches();
     if (searchMatchIdx >= searchMatches.length) searchMatchIdx = searchMatches.length > 0 ? 0 : -1;
     updateSearchCount();
-    document.getElementById('stats').textContent = `${filtered.length} / ${allEvents.length}`;
+    document.getElementById('stats').textContent = `${filtered.length} / ${allEvents.length} events`;
     if (resetScroll || resetOpen) {
         container.scrollTop = 0;
     }
@@ -699,4 +699,13 @@ window.switchTab = function(tab) {
     document.getElementById('logPanel').classList.toggle('hidden', tab !== 'log');
     document.getElementById('analyticsPanel').classList.toggle('visible', tab === 'analytics');
     if (tab === 'analytics') Analytics.refresh();
+    // Toggle sidebar sections
+    const sbFilters = document.getElementById('sidebarFilters');
+    const sbDcFilters = document.getElementById('sidebarDcFilters');
+    if (sbFilters) sbFilters.classList.toggle('hidden', tab !== 'log');
+    if (sbDcFilters) sbDcFilters.classList.toggle('hidden', tab !== 'dmgcalc');
+    const sbEiFilters = document.getElementById('sidebarEiFilters');
+    if (sbEiFilters) sbEiFilters.classList.toggle('hidden', tab !== 'effectimpact');
+    const sbDcStats = document.getElementById('sidebarDcStats');
+    if (sbDcStats) sbDcStats.classList.toggle('hidden', tab !== 'dmgcalc' && tab !== 'effectimpact');
 };
