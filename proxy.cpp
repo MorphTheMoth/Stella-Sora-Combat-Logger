@@ -7,6 +7,7 @@
 #include "MinHook.h"
 #include "logging.h"
 #include "http_hooks.h"
+#include "star_tower_hooks.h"
 #include "game_structs.h"
 
 #ifdef WINHTTP_PROXY
@@ -837,6 +838,7 @@ static DWORD WINAPI InitThread(LPVOID) {
     loadConfig(logDir);
     BuildGemAttrTable(GetLocalAppDataPath() + "\\StellaSoraData");
     InitHttpLogger(logDir);
+    InitStarTowerLogger(logDir);
 
     for (int i = 0; i < 60; i++) {
         g_base = reinterpret_cast<uintptr_t>(GetModuleHandleA("GameAssembly.dll"));
@@ -886,6 +888,7 @@ BOOL APIENTRY DllMain(HMODULE hInst, DWORD reason, LPVOID reserved) {
         MH_Uninitialize();
         if (g_Log)     { log("[uninit] DLL detached."); fclose(g_Log); g_Log = nullptr; }
         if (g_JsonLog) { fclose(g_JsonLog); g_JsonLog = nullptr; }
+        ShutdownStarTowerLogger();
         ShutdownHttpLogger();
     }
     return TRUE;

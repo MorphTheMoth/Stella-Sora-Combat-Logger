@@ -16,6 +16,7 @@
 #include "logging.h"
 #include "json.hpp"
 #include "http_hooks.h"
+#include "star_tower_hooks.h"
 
 using json = nlohmann::json;
 
@@ -553,6 +554,10 @@ static void __fastcall Hook_DispatchMsgToLua(
             if (sendMsg && sendMsg->fields.msgBody)
                 charId = LogGemRefreshReq(sendMsg->fields.msgBody);
             LogGemRefreshResp(recvMsg->fields.msgBody, charId);
+        }
+
+        if (recvId == 4602 || recvId == 4608 || recvId == 4611 || recvId == 4614) {
+            HandleStarTowerMsg(recvId, recvMsg, sendMsg);
         }
     }
     g_OrigDispatchMsgToLua(self, recvMsg, bIsNext, sendMsg, method);
