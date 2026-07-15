@@ -629,7 +629,7 @@ function renderRollList() {
             <span class="roll-idx">#${r.idx}</span>
             <span class="roll-slot ${slotCls}">${slotLabel}</span>
             <span class="roll-char">${r.charId || '—'}</span>
-            <span class="roll-gem">g${r.gemIdx}</span>
+            <span class="roll-gem">slot ${r.gemIdx}</span>
             <span class="roll-attrs">${pills || '<span style="color:#383838">—</span>'}</span>
         `;
         frag.appendChild(li);
