@@ -149,16 +149,23 @@ static int64_t __fastcall Hook_CalcNormalDamage(
     double* fromEE, double* erAmend, double* defAmend, double* rcdSlotDmgRatio, double* toEERCD, double* skillIntensityRatio,
     double* toughnessBrokenDmgRatio, double* critRatio, double* envAmendRatio, void* method)
 {
-
+    auto callOriginal = [&]() -> int64_t {
+        return g_OrigCalcNormalDamage(
+            fromActor, toActor, hitDamageConfig, skillLevel, isCrit, isDot, hudColorIndex,
+            skillPercentAmend, talentGroupPercentAmend, skillAbsAmend, talentGroupAbsAmend,
+            perkIntensityRatio, slotDmgRatio, fromEE, erAmend, defAmend, rcdSlotDmgRatio,
+            toEERCD, skillIntensityRatio, toughnessBrokenDmgRatio, critRatio, envAmendRatio, method);
+    };
+    
     // ── Step 1: walk klass chain for static fields ───────────────────────────
-    if (!fromActor)         { log("[CND] BAIL: fromActor is null");         return 0; }
-    if (!fromActor->klass)  { log("[CND] BAIL: fromActor->klass is null");  return 0; }
+    if (!fromActor)         { log("[CND] BAIL: fromActor is null");         return callOriginal(); }
+    if (!fromActor->klass)  { log("[CND] BAIL: fromActor->klass is null");  return callOriginal(); }
 
     Il2CppClass* parentKlass = fromActor->klass->_1.parent;
-    if (!parentKlass) { log("[CND] BAIL: parentKlass is null"); return 0; }
+    if (!parentKlass) { log("[CND] BAIL: parentKlass is null"); return callOriginal(); }
 
     AdventureActor_c* actorClass = reinterpret_cast<AdventureActor_c*>(parentKlass);
-    if (!actorClass->static_fields) { log("[CND] BAIL: static_fields is null"); return 0; }
+    if (!actorClass->static_fields) { log("[CND] BAIL: static_fields is null"); return callOriginal(); }
 
     AdventureActor_StaticFields* staticFields = actorClass->static_fields;
 
@@ -215,11 +222,7 @@ static int64_t __fastcall Hook_CalcNormalDamage(
     }
 
     // ── Step 3: original call ────────────────────────────────────────────────
-    int64_t dmg = g_OrigCalcNormalDamage(
-        fromActor, toActor, hitDamageConfig, skillLevel, isCrit, isDot, hudColorIndex,
-        skillPercentAmend, talentGroupPercentAmend, skillAbsAmend, talentGroupAbsAmend,
-        perkIntensityRatio, slotDmgRatio, fromEE, erAmend, defAmend, rcdSlotDmgRatio,
-        toEERCD, skillIntensityRatio, toughnessBrokenDmgRatio, critRatio, envAmendRatio, method);
+    int64_t dmg = callOriginal();
 
     // ── Step 4: GDC ─────────────────────────────────────────────────────────
     GameDataController_o* gdc = GetGDC();
