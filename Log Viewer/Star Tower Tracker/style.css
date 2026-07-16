@@ -1,0 +1,80 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: sans-serif; background: #161616; color: #ddd; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+.page { max-width: 1200px; width: 100%; height: 100%; display: flex; flex-direction: column; background: #1a1a1a; margin: 0 auto; position: relative; }
+
+.app-header { display: flex; justify-content: space-between; align-items: center; padding: 10px 16px; border-bottom: 1px solid #2c2c2c; background: #1f1f1f; flex-shrink: 0; }
+.app-header h1 { font-size: 15px; color: #aaa; font-weight: 500; letter-spacing: 0.04em; }
+.header-actions { display: flex; gap: 8px; align-items: center; }
+#liveDot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #444; flex-shrink: 0; }
+#dataStatus { font-size: 11px; color: #555; }
+#runStats { font-size: 11px; color: #555; }
+
+.tab-bar { display: flex; flex-shrink: 0; padding: 0 12px; background: #1f1f1f; border-bottom: 1px solid #2c2c2c; }
+.tab-btn { padding: 8px 16px; background: transparent; border: none; border-bottom: 2px solid transparent; margin-bottom: -1px; color: #666; cursor: pointer; font-size: 12px; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; transition: color 0.12s, border-color 0.12s; }
+.tab-btn:hover { color: #aaa; }
+.tab-btn.active { color: #ccc; border-bottom-color: #555; }
+
+.tab-panel { display: none; flex: 1; overflow: hidden; flex-direction: column; }
+.tab-panel.active { display: flex; }
+
+.scroll-panel { flex: 1; overflow-y: auto; padding: 16px; }
+
+.filters { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; padding: 8px 16px; border-bottom: 1px solid #2c2c2c; background: #1f1f1f; flex-shrink: 0; }
+.filters select, .filters button { padding: 4px 10px; border: 1px solid #333; border-radius: 3px; background: #242424; color: #888; cursor: pointer; font-size: 12px; appearance: none; transition: background 0.12s; }
+.filters select:hover, .filters button:hover { background: #2e2e2e; color: #bbb; }
+.filters button.active { background: #303030; color: #ddd; border-color: #555; }
+
+.run-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.run-table th { text-align: left; padding: 6px 10px; border-bottom: 1px solid #333; color: #666; font-weight: 500; text-transform: uppercase; font-size: 10px; letter-spacing: 0.05em; position: sticky; top: 0; background: #1a1a1a; z-index: 1; }
+.run-table td { padding: 6px 10px; border-bottom: 1px solid #222; }
+.run-table tr:hover td { background: #202020; }
+.run-table .char-cell { display: flex; gap: 4px; align-items: center; }
+.run-table .char-cell img { width: 24px; height: 24px; border-radius: 3px; background: #2a2a2a; }
+.run-table .expand-btn { cursor: pointer; color: #555; font-size: 14px; width: 20px; text-align: center; user-select: none; }
+.run-table .expand-btn:hover { color: #aaa; }
+.run-timeline { display: none; background: #1e1e1e; }
+.run-timeline.open { display: table-row; }
+.run-timeline td { padding: 4px 16px 12px; }
+.tl-event { font-size: 11px; padding: 2px 0; border-bottom: 1px solid #252525; display: flex; gap: 8px; }
+.tl-event .tl-type { color: #555; min-width: 40px; font-weight: 500; }
+.tl-event .tl-detail { color: #777; }
+
+.chart-card { background: #222; border: 1px solid #2e2e2e; border-radius: 6px; padding: 14px 18px; margin-bottom: 14px; }
+.chart-card h3 { font-size: 12px; color: #888; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.07em; border-bottom: 1px solid #2c2c2c; padding-bottom: 6px; }
+.chart-wrap { position: relative; height: 260px; }
+
+.data-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+.data-table th { text-align: left; padding: 4px 8px; border-bottom: 1px solid #333; color: #666; font-weight: 500; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
+.data-table th.num, .data-table th.pct { text-align: right; }
+.data-table td { padding: 3px 8px; border-bottom: 1px solid #252525; }
+.data-table tr:hover td { background: #202020; }
+.data-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.data-table .pct { text-align: right; color: #555; font-variant-numeric: tabular-nums; }
+.eco-table th.num { text-align: right; }
+
+.portrait-sm { width: 20px; height: 20px; border-radius: 2px; background: #2a2a2a; vertical-align: middle; }
+.portrait { width: 36px; height: 36px; border-radius: 4px; background: #2a2a2a; }
+
+.stat-badge { display: inline-block; font-size: 10px; background: #252525; border: 1px solid #333; border-radius: 3px; padding: 1px 6px; margin-right: 3px; color: #888; }
+.stat-badge.boost2 { border-color: #4a6a4a; color: #8aba8a; }
+.stat-badge.boost3 { border-color: #6a4a20; color: #c8a050; }
+.stat-badge.new { border-color: #3a4a5a; color: #7a9ab8; }
+
+.shop-table { font-size: 11px; width: 100%; border-collapse: collapse; }
+.shop-table th { padding: 3px 6px; border-bottom: 1px solid #333; color: #666; font-size: 10px; text-transform: uppercase; }
+.shop-table td { padding: 2px 6px; border-bottom: 1px solid #252525; }
+.shop-table .type-potential { color: #8aba8a; }
+.shop-table .type-note { color: #ba9a6a; }
+.shop-table .bought { text-decoration: line-through; opacity: 0.4; }
+
+.tl-economy { margin-top: 10px; padding: 8px; background: #181818; border: 1px solid #2a2a2a; border-radius: 4px; }
+.tl-eco-title { font-size: 11px; color: #777; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; }
+.eco-table { width: 100%; border-collapse: collapse; font-size: 10px; }
+.eco-table th { text-align: left; padding: 2px 6px; border-bottom: 1px solid #333; color: #555; text-transform: uppercase; font-size: 9px; }
+.eco-table td { padding: 2px 6px; border-bottom: 1px solid #222; color: #888; }
+.eco-table tr.eco-total td { border-top: 1px solid #333; border-bottom: none; color: #aaa; }
+.eco-table .num { text-align: right; }
+.eco-table tr:hover td { background: #1e1e1e; }
+
+.no-data { display: flex; flex-direction: column; align-items: center; justify-content: center; flex: 1; color: #383838; gap: 8px; }
+.no-data span { font-size: 13px; }
