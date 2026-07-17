@@ -16,8 +16,19 @@ ST.allFloorEvents = [];
 ST.allStrengthenEvents = [];
 
 // ── Constants ──
-ST.NOTE_IDS = [90011, 90012, 90013, 90014, 90015, 90016, 90017, 90018, 90019, 90020, 90021, 90022, 90023];
+ST.NOTE_IDS = [90011, 90012, 90013, 90014, 90015, 90016, 90017, 90018];
 ST.ELEMENT_DMG_NOTES = [90018, 90019, 90020, 90021, 90022, 90023];
+ST.ELEMENT_ID = 90018;
+ST._ele = function(tid) { return ST.ELEMENT_DMG_NOTES.indexOf(tid) >= 0 ? ST.ELEMENT_ID : tid; };
+ST._collapseNoteCounts = function(counts) {
+    var out = Object.assign({}, counts);
+    var sum = 0;
+    ST.ELEMENT_DMG_NOTES.forEach(function(eid) {
+        if (out[eid]) { sum += out[eid]; delete out[eid]; }
+    });
+    if (sum > 0) out[ST.ELEMENT_ID] = (out[ST.ELEMENT_ID] || 0) + sum;
+    return out;
+};
 ST.ROOM_NAMES = ['Battle','Elite','Boss','Final Boss','Danger','Horror','Shop','Event','','','','','','','','Unify'];
 
 ST.charPortrait = function(charId) {
@@ -33,13 +44,18 @@ ST.decodePotentialId = function(tid) {
     return { charId: parseInt(s.slice(1, 4)), index: parseInt(s.slice(4)) };
 };
 
-ST.noteName = function(tid) { return ST.noteNames[tid] || ('Note ' + tid); };
+ST.noteName = function(tid) { 
+    if (tid === ST.ELEMENT_ID) return 'Element';
+    return ST.noteNames[tid] || ('Note ' + tid); 
+};
 ST.charName = function(charId) { return ST.charNames[charId] || ('Char ' + charId); };
 
 ST.roomTypeSource = function(rt) {
     if (rt === 0) return 'battle';
     if (rt === 1) return 'elite';
     if (rt === 2 || rt === 3) return 'boss';
+    if (rt === 6) return 'shop';
+    if (rt === 7) return 'event';
     return 'other';
 };
 
@@ -88,6 +104,45 @@ ST.fetchNoteNames = function() {
                 if (data[key]) ST.noteNames[tid] = data[key];
             });
         });
+};
+
+ST.fetchDiscData = function() {
+    return fetch('https://raw.githubusercontent.com/AutumnVN/StellaSoraData/refs/heads/main/EN/bin/Disc.json')
+        .then(function(r) { return r.json(); })
+        .then(function(discData) {
+            return fetch('https://raw.githubusercontent.com/AutumnVN/StellaSoraData/refs/heads/main/EN/bin/SecondarySkill.json')
+                .then(function(r) { return r.json(); })
+                .then(function(secData) {
+                    ST._buildDiscNoteLookup(discData, secData);
+                });
+        })
+        .catch(function(err) {
+            console.error('disc data failed', err);
+        });
+};
+
+ST._buildDiscNoteLookup = function(discData, secData) {
+    ST.discNoteNeeds = {};
+    for (var discId in discData) {
+        var disc = discData[discId];
+        var notes = {};
+        var harmonyCounts = {};
+        [disc.SecondarySkillGroupId1, disc.SecondarySkillGroupId2].forEach(function(groupId) {
+            if (!groupId) return;
+            var key = String(groupId) + '01';
+            var secSkill = secData[key];
+            if (!secSkill || !secSkill.NeedSubNoteSkills) return;
+            var needed = JSON.parse(secSkill.NeedSubNoteSkills);
+            for (var noteId in needed) {
+                notes[noteId] = true;
+                harmonyCounts[noteId] = (harmonyCounts[noteId] || 0) + 1;
+            }
+        });
+        ST.discNoteNeeds[discId] = {
+            notes: Object.keys(notes),
+            harmonyCounts: harmonyCounts,
+        };
+    }
 };
 
 // ── Log parsing ──
@@ -164,6 +219,25 @@ ST.allShopItems = [];
 
 ST._processRun = function(run, runIdx) {
     var start = run.start.data;
+
+    // Compute disc note need counts from first 3 disc IDs
+    run._harmoniesNotes = {};
+    run._discsNotes = {};
+    run._overallDiscNotes = {};
+    [0, 1, 2].forEach(function(i) {
+        var discId = start.discs && start.discs[i] ? String(start.discs[i].id) : null;
+        if (!discId) return;
+        var need = ST.discNoteNeeds && ST.discNoteNeeds[discId];
+        if (!need) return;
+        for (var noteId in need.harmonyCounts) {
+            run._harmoniesNotes[noteId] = (run._harmoniesNotes[noteId] || 0) + need.harmonyCounts[noteId];
+        }
+        need.notes.forEach(function(noteId) {
+            run._discsNotes[noteId] = (run._discsNotes[noteId] || 0) + 1;
+            run._overallDiscNotes[noteId] = 1;
+        });
+    });
+
     var state = {
         floor: start.floor || 1,
         roomType: start.roomType || 0,
@@ -186,7 +260,69 @@ ST._processRun = function(run, runIdx) {
     });
     (bag.res || []).forEach(function(r) {
         state.bag.res[r.tid] = (state.bag.res[r.tid] || 0) + Math.max(0, r.qty);
+        if (ST.isNote(r.tid)) {
+            state.bag.notes[r.tid] = (state.bag.notes[r.tid] || 0) + Math.max(0, r.qty);
+        }
     });
+
+    // Capture start-of-run note counts (after bag init, before start.infos subtraction)
+    run._startCountsAfter = ST._collapseNoteCounts(state.bag.notes);
+
+    // Process start-of-run note grants from RUN event's infos
+    // bag.res already includes these, so subtract to get the "before" state
+    var startNoteGains = [];
+    (start.infos || []).forEach(function(info) {
+        if (ST.isNote(info.tid)) {
+            var qty = Math.max(0, info.qty || 0);
+            if (qty > 0) {
+                var effectiveTid = ST._ele(info.tid);
+                var before;
+                if (effectiveTid !== info.tid) {
+                    // Element note: before = collapsed element total - qty
+                    var collapsed = ST._collapseNoteCounts(state.bag.notes);
+                    before = Math.max(0, (collapsed[effectiveTid] || 0) - qty);
+                } else {
+                    before = Math.max(0, (state.bag.notes[info.tid] || 0) - qty);
+                }
+                startNoteGains.push({ tid: effectiveTid, qty: qty, before: before, isNew: before === 0 });
+            }
+        }
+    });
+
+    run._startCountsBefore = ST._collapseNoteCounts(state.bag.notes);
+    if (startNoteGains.length > 0) {
+        var startNoteCountsBefore = ST._collapseNoteCounts(state.bag.notes);
+        startNoteGains.forEach(function(g) { startNoteCountsBefore[g.tid] = g.before; });
+        run._startCountsBefore = JSON.parse(JSON.stringify(startNoteCountsBefore));
+        var startTotalBefore = 0;
+        Object.keys(startNoteCountsBefore).forEach(function(k) { startTotalBefore += startNoteCountsBefore[k]; });
+
+        startNoteGains.forEach(function(g) {
+            ST.allNoteEvents.push({
+                runId: run.id,
+                floor: start.floor || 1,
+                roomType: start.roomType || 0,
+                source: 'start',
+                action: 'run',
+                tid: g.tid,
+                qty: g.qty,
+                lucky: 0,
+                isNew: g.isNew,
+                isStack: false,
+                context: {
+                    sameNoteBefore: g.before,
+                    totalNotesBefore: startTotalBefore,
+                    teamLevel: start.teamLevel || 1,
+                    noteCounts: startNoteCountsBefore,
+                    startCountsBefore: run._startCountsBefore,
+                    startCountsAfter: run._startCountsAfter,
+                    harmoniesNotes: run._harmoniesNotes,
+                    discsNotes: run._discsNotes,
+                    overallDiscNotes: run._overallDiscNotes,
+                },
+            });
+        });
+    }
 
     // Process initial room cases from RUN
     var pendingNpcEvents = {};
@@ -239,6 +375,11 @@ ST._processEvent = function(run, ev, state, pendingNpcEvents) {
         }
     }
 
+    // ── SEND: track hawker (shop) purchases ──
+    if (ev.type === 'SEND' && json.action === 'hawker') {
+        state._shopPending = true;
+    }
+
     // Update floor from enter
     if (json.action === 'enter' && json.room && json.room.data) {
         var rd = json.room.data;
@@ -260,12 +401,13 @@ ST._processEvent = function(run, ev, state, pendingNpcEvents) {
     }
 
     // Apply data.infos (sub-note skill changes)
+    var noteCountsSnapshot = ST._collapseNoteCounts(state.bag.notes);
     var infos = (json.data && json.data.infos) ? json.data.infos : [];
     var noteGains = [];
     infos.forEach(function(info) {
-        var tid = info.tid;
+        var tid = ST._ele(info.tid);
         var qty = info.qty || 0;
-        if (ST.isNote(tid)) {
+        if (ST.isNote(info.tid)) {
             var before = state.bag.notes[tid] || 0;
             state.bag.notes[tid] = before + Math.max(0, qty);
             if (qty > 0) noteGains.push({ tid: tid, qty: qty, before: before, lucky: info.luckyLevel || 0, isNew: info.new });
@@ -285,6 +427,10 @@ ST._processEvent = function(run, ev, state, pendingNpcEvents) {
     if (json.action === 'select' && json.selectResp && json.selectResp.resp) {
         var resp = json.selectResp.resp;
         var selCaseId = json.caseId;
+        var selectNoteGains = [];
+        var selectNoteCountsBefore = ST._collapseNoteCounts(state.bag.notes);
+        var selectTotalBefore = 0;
+        Object.keys(selectNoteCountsBefore).forEach(function(k) { selectTotalBefore += selectNoteCountsBefore[k]; });
 
         // Apply state changes
         (resp.items || []).forEach(function(item) {
@@ -292,12 +438,49 @@ ST._processEvent = function(run, ev, state, pendingNpcEvents) {
                 var prev = state.bag.potentials[item.tid] || 0;
                 state.bag.potentials[item.tid] = prev + (item.qty || 1);
             } else if (ST.isNote(item.tid)) {
-                state.bag.notes[item.tid] = (state.bag.notes[item.tid] || 0) + Math.max(0, item.qty || 1);
+                var tid = ST._ele(item.tid);
+                var before = selectNoteCountsBefore[tid] || 0;
+                var qty = Math.max(0, item.qty || 1);
+                state.bag.notes[tid] = (state.bag.notes[tid] || 0) + qty;
+                if (qty > 0) selectNoteGains.push({ tid: tid, qty: qty, before: before });
             }
         });
         (resp.subNoteSkills || []).forEach(function(sn) {
             if (ST.isNote(sn.tid)) {
-                state.bag.notes[sn.tid] = (state.bag.notes[sn.tid] || 0) + Math.max(0, sn.qty);
+                var tid = ST._ele(sn.tid);
+                var before = selectNoteCountsBefore[tid] || 0;
+                var qty = Math.max(0, sn.qty);
+                state.bag.notes[tid] = (state.bag.notes[tid] || 0) + qty;
+                if (qty > 0) selectNoteGains.push({ tid: tid, qty: qty, before: before });
+            }
+        });
+
+        // Record select note gains (after battle drops are already in state.bag.notes)
+        selectNoteGains.forEach(function(g) {
+            if (g.qty > 0) {
+                ST.allNoteEvents.push({
+                    runId: run.id,
+                    floor: state.floor,
+                    roomType: state.roomType,
+                    source: ST.roomTypeSource(state.roomType),
+                    action: json.action,
+                    tid: g.tid,
+                    qty: g.qty,
+                    lucky: 0,
+                    isNew: false,
+                    isStack: false,
+                    context: {
+                        sameNoteBefore: g.before,
+                        totalNotesBefore: selectTotalBefore,
+                        teamLevel: state.teamLevel,
+                        noteCounts: selectNoteCountsBefore,
+                        startCountsBefore: run._startCountsBefore,
+                        startCountsAfter: run._startCountsAfter,
+                        harmoniesNotes: run._harmoniesNotes,
+                        discsNotes: run._discsNotes,
+                        overallDiscNotes: run._overallDiscNotes,
+                    },
+                });
             }
         });
 
@@ -345,7 +528,10 @@ ST._processEvent = function(run, ev, state, pendingNpcEvents) {
     // Record note drop events from battle/npc
     if (noteGains.length > 0) {
         var totalBefore = 0;
-        Object.keys(state.bag.notes).forEach(function(k) { totalBefore += state.bag.notes[k]; });
+        Object.keys(noteCountsSnapshot).forEach(function(k) { totalBefore += noteCountsSnapshot[k]; });
+
+        var src = ST.roomTypeSource(state.roomType);
+        if (state._shopPending) { src = 'shop'; state._shopPending = false; }
 
         noteGains.forEach(function(g) {
             if (g.qty > 0) {
@@ -354,7 +540,7 @@ ST._processEvent = function(run, ev, state, pendingNpcEvents) {
                     runId: run.id,
                     floor: state.floor,
                     roomType: state.roomType,
-                    source: ST.roomTypeSource(state.roomType),
+                    source: src,
                     action: json.action,
                     tid: g.tid,
                     qty: g.qty,
@@ -365,6 +551,12 @@ ST._processEvent = function(run, ev, state, pendingNpcEvents) {
                         sameNoteBefore: g.before,
                         totalNotesBefore: totalBefore,
                         teamLevel: state.teamLevel,
+                        noteCounts: noteCountsSnapshot,
+                        startCountsBefore: run._startCountsBefore,
+                        startCountsAfter: run._startCountsAfter,
+                        harmoniesNotes: run._harmoniesNotes,
+                        discsNotes: run._discsNotes,
+                        overallDiscNotes: run._overallDiscNotes,
                     },
                 });
             }
@@ -532,7 +724,7 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     });
 
-    Promise.all([ST.fetchCharNames(), ST.fetchNoteNames()]).then(function() {
+    Promise.all([ST.fetchCharNames(), ST.fetchNoteNames(), ST.fetchDiscData()]).then(function() {
         ST.fetchLog();
     });
     ST.startLiveReload();
