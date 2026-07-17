@@ -289,26 +289,68 @@ ST.evalModel = function(events, modelKey, k) {
     nids.forEach(function(tid) { expected[tid] = 0; });
 
     var brierSum = 0;
+    var top1Correct = 0;
+    var rankSum = 0;
+    var perEventLoss = [];
+    var calibPairs = [];
 
     ncEvents.forEach(function(e) {
         observed[e.tid]++;
         var probs = ST.computeNoteProbs(e.context.noteCounts, modelKey, k, e.context);
         var p = Math.max(probs[e.tid] || 0, 1e-9);
+        var loss = -Math.log(p);
         ll += Math.log(p);
+        perEventLoss.push(loss);
+
+        var sorted = nids.slice().sort(function(a, b) { return (probs[b] || 0) - (probs[a] || 0); });
+        if (sorted[0] === e.tid) top1Correct++;
+        rankSum += sorted.indexOf(e.tid) + 1;
 
         nids.forEach(function(tid) {
             expected[tid] += probs[tid];
             var actual = tid === e.tid ? 1 : 0;
             var pred = probs[tid];
             brierSum += (actual - pred) * (actual - pred);
+            calibPairs.push({ pred: pred, actual: actual });
         });
     });
 
     var brier = brierSum / (total * nNoteTypes);
 
-    var nll = -ll;
+    var ece = 0;
+    var nPairs = calibPairs.length;
+    calibPairs.sort(function(a, b) { return a.pred - b.pred; });
+    var eceReliable = nPairs >= 100 && Math.abs(calibPairs[nPairs - 1].pred - calibPairs[0].pred) >= 1e-9;
+    if (eceReliable) {
+        var N_BINS = 10;
+        var binSize = Math.floor(nPairs / N_BINS);
+        for (var bi = 0; bi < N_BINS; bi++) {
+            var start = bi * binSize;
+            var end = bi === N_BINS - 1 ? nPairs : start + binSize;
+            if (end <= start) continue;
+            var sumPred = 0, sumObs = 0;
+            for (var pi = start; pi < end; pi++) {
+                sumPred += calibPairs[pi].pred;
+                sumObs += calibPairs[pi].actual;
+            }
+            var nBin = end - start;
+            ece += Math.abs(sumPred / nBin - sumObs / nBin) * nBin;
+        }
+        ece = ece / nPairs;
+    } else {
+        ece = 0;
+    }
 
-    return { logLik: ll, nll: nll, brier: brier, n: total };
+    var nll = -ll;
+    var meanRank = rankSum / total;
+    var top1Pct = (top1Correct / total) * 100;
+    var nllPer = nll / total;
+
+    return {
+        logLik: ll, nll: nll, nllPer: nllPer, brier: brier, n: total,
+        meanRank: meanRank, top1Pct: top1Pct, ece: ece, eceReliable: eceReliable,
+        perEventLoss: perEventLoss
+    };
 };
 
 // ── Foldable section helper ──
@@ -339,9 +381,10 @@ ST.buildModelComparison = function(events) {
 
     var k = ST.noteFilters.k || 10;
     var results = [];
-    var uniformP = 1 / ST.NOTE_IDS.length;
-    var bestCorrectP = -Infinity, bestNll = Infinity, bestBrier = Infinity, bestVsRandom = -Infinity, bestAic = Infinity;
-    var bestCorrectR = null, bestNllR = null, bestBrierR = null, bestVsRandomR = null, bestAicR = null;
+    var bestCorrectP = -Infinity, bestNll = Infinity, bestBrier = Infinity;
+    var bestTop1 = -Infinity, bestRank = Infinity, bestEce = Infinity;
+    var bestCorrectR = null, bestNllR = null, bestBrierR = null;
+    var bestTop1R = null, bestRankR = null, bestEceR = null;
 
     ST.modelDefs.forEach(function(md) {
         var usesK = md.key === 'additive' || md.key === 'sqrtBaseK';
@@ -353,13 +396,12 @@ ST.buildModelComparison = function(events) {
             : md.name;
         r.desc = md.desc;
         r.correctP = Math.exp(r.logLik / r.n) * 100;
-        r.vsRandom = r.correctP / (uniformP * 100);
         if (r.correctP > bestCorrectP) { bestCorrectP = r.correctP; bestCorrectR = r; }
-        if (r.vsRandom > bestVsRandom) { bestVsRandom = r.vsRandom; bestVsRandomR = r; }
         if (r.nll < bestNll) { bestNll = r.nll; bestNllR = r; }
-        r.aic = 2 * (md.params || 0) + 2 * r.nll;
-        if (r.aic < bestAic) { bestAic = r.aic; bestAicR = r; }
         if (r.brier < bestBrier) { bestBrier = r.brier; bestBrierR = r; }
+        if (r.top1Pct > bestTop1) { bestTop1 = r.top1Pct; bestTop1R = r; }
+        if (r.meanRank < bestRank) { bestRank = r.meanRank; bestRankR = r; }
+        if (r.eceReliable && r.ece < bestEce) { bestEce = r.ece; bestEceR = r; }
         results.push(r);
     });
 
@@ -373,26 +415,32 @@ ST.buildModelComparison = function(events) {
         var onclick = ' onclick="ST.selectModel(\'' + r.key + '\')"';
 
         var correctStyle = r === bestCorrectR ? ' style="color:#9aba8a"' : '';
-        var vsRandomStyle = r === bestVsRandomR ? ' style="color:#9aba8a"' : '';
-        var brierStyle = r === bestBrierR ? ' style="color:#9aba8a"' : '';
         var nllStyle = r === bestNllR ? ' style="color:#9aba8a"' : '';
-        var aicStyle = r === bestAicR ? ' style="color:#9aba8a"' : '';
+        var brierStyle = r === bestBrierR ? ' style="color:#9aba8a"' : '';
+        var top1Style = r === bestTop1R ? ' style="color:#9aba8a"' : '';
+        var rankStyle = r === bestRankR ? ' style="color:#9aba8a"' : '';
+        var eceStyle = r === bestEceR ? ' style="color:#9aba8a"' : '';
+        var eceCell = r.eceReliable ? r.ece.toFixed(4) : '—';
 
         rows += '<tr' + style + onclick + '><td>' + r.name + '<br><span style="font-size:9px;color:#555">' + r.desc + '</span></td>' +
             '<td class="pct"' + correctStyle + '>' + r.correctP.toFixed(2) + '%</td>' +
-            '<td class="num"' + vsRandomStyle + '>' + r.vsRandom.toFixed(2) + '×</td>' +
-            '<td class="num"' + brierStyle + '>' + r.brier.toFixed(4) + '</td>' +
-            '<td class="num"' + nllStyle + '>' + r.nll.toFixed(2) + '</td>' +
-            '<td class="num"' + aicStyle + '>' + r.aic.toFixed(1) + '</td></tr>';
+            '<td class="num"' + nllStyle + '>' + r.nllPer.toFixed(4) + '</td>' +
+            '<td class="pct"' + top1Style + '>' + r.top1Pct.toFixed(1) + '%</td>' +
+            '<td class="num"' + rankStyle + '>' + r.meanRank.toFixed(2) + '</td>' +
+            '<td class="num"' + eceStyle + '>' + eceCell + '</td>' +
+            '<td class="num"' + brierStyle + '>' + r.brier.toFixed(4) + '</td></tr>';
     });
 
     return '<div class="chart-card"><h3>Model Comparison (' + ncEvents.length + ' events)</h3>' +
         '<div style="font-size:11px;color:#555;margin-bottom:8px;line-height:1.6">' +
-            'Brier: 0 (perfect) to ~0.92 (random)<br>' +
-            'NLL: lower is better (negative log-likelihood)<br>' +
-            'AIC: NLL adjusted for model complexity (lower is better)' +
+            'Correct P%: geometric-mean probability assigned to the dropped note (higher = better)<br>' +
+            'NLL/n: per-event log-loss (lower = better)<br>' +
+            'Top-1%: fraction of drops where model\'s favorite note won<br>' +
+            'Mean Rank: avg rank (1=best) model assigned to the note that dropped (lower = better)<br>' +
+            'ECE: calibration error (10 equal-mass bins). "—" when &lt;100 prediction pairs<br>' +
+            'Brier: mean squared probability error (0=perfect, ~0.92=random)' +
         '</div>' +
-        '<table class="data-table"><tr><th>Model</th><th class="pct">Correct P%</th><th class="num">vs Random</th><th class="num">Brier</th><th class="num">NLL</th><th class="num">AIC</th></tr>' +
+        '<table class="data-table"><tr><th>Model</th><th class="pct">Correct P%</th><th class="num">NLL/n</th><th class="pct">Top-1%</th><th class="num">Mean Rank</th><th class="num">ECE</th><th class="num">Brier</th></tr>' +
         rows + '</table></div>';
 };
 
