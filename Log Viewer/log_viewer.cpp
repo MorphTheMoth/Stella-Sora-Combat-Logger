@@ -130,6 +130,11 @@ std::string LOG_FILE;
 static std::string g_saved_logs_dir;  // non-empty overrides SavedLogsDir()
 static bool g_local_mode = false;
 
+static std::string EMBLEM_LOG_PATH;
+static std::string ASCENSION_LOG_PATH;
+static const std::string EMBLEM_DIR = "Emblem Tracker";
+static const std::string ASCENSION_DIR = "Star Tower Tracker";
+
 static const char* REMOTE_BASE =
     "https://raw.githubusercontent.com/MorphTheMoth/Stella-Sora-Combat-Logger/refs/heads/main/Log%20Viewer";
 
@@ -564,10 +569,154 @@ std::string ReadJsonLogFrom(const std::string& path, size_t after = 0) {
 }
 
 // =============================================================================
+//  RawByteTailer — tracks byte offset for raw-text log files
+// =============================================================================
+class RawByteTailer {
+public:
+    RawByteTailer() {}
+    explicit RawByteTailer(const std::string& path) : m_path(path) {}
+
+    void setPath(const std::string& path) { m_path = path; }
+    const std::string& path() const { return m_path; }
+    bool isConfigured() const { return !m_path.empty(); }
+
+    struct TailResult {
+        std::string text;
+        size_t nextOffset = 0;
+        size_t totalSize  = 0;
+    };
+
+    TailResult tail(size_t after) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        TailResult r;
+        r.nextOffset = after;
+
+        std::ifstream file(m_path, std::ios::binary | std::ios::ate);
+        if (!file.is_open()) return r;
+
+        r.totalSize = static_cast<size_t>(file.tellg());
+        if (r.totalSize < after) {
+            r.nextOffset = 0;
+            r.totalSize = 0;
+            return r;
+        }
+
+        size_t bytes = r.totalSize - after;
+        if (after == 0 && bytes > 1024 * 1024)  bytes = 1024 * 1024;
+        else if (after > 0 && bytes > 256 * 1024) bytes = 256 * 1024;
+
+        file.seekg(static_cast<std::streamoff>(after));
+        r.text.resize(bytes);
+        file.read(&r.text[0], bytes);
+        r.text.resize(static_cast<size_t>(file.gcount()));
+        r.nextOffset = after + r.text.size();
+        return r;
+    }
+
+private:
+    std::string m_path;
+    std::mutex m_mutex;
+};
+
+static RawByteTailer g_emblem_tailer;
+static RawByteTailer g_ascension_tailer;
+
+// =============================================================================
+//  SSE client tracking
+// =============================================================================
+enum SseLogType { SSE_MAIN = 0, SSE_EMBLEM = 1, SSE_ASCENSION = 2 };
+
+struct SseClient {
+    struct mg_connection* conn;
+    SseLogType type;
+    size_t lastOffset;
+    std::string savedLogPath;  // empty = live log; non-empty = read from this path
+};
+
+static std::vector<SseClient> g_sse_clients;
+
+static void RemoveSseClient(struct mg_connection* c) {
+    auto it = std::remove_if(g_sse_clients.begin(), g_sse_clients.end(),
+        [c](const SseClient& sc) { return sc.conn == c; });
+    g_sse_clients.erase(it, g_sse_clients.end());
+}
+
+static void sendSseHeartbeat(struct mg_connection* c) {
+    mg_send(c, ": heartbeat\n\n", 13);
+}
+
+static void sendRawTextSse(struct mg_connection* c, const std::string& text) {
+    std::string frame;
+    std::istringstream iss(text);
+    std::string line;
+    while (std::getline(iss, line))
+        frame += "data: " + line + "\n";
+    frame += "\n";
+    mg_send(c, frame.c_str(), frame.size());
+}
+
+static void sendJsonSse(struct mg_connection* c, const json& j) {
+    std::string payload = j.dump();
+    std::string frame = "data: " + payload + "\n\n";
+    mg_send(c, frame.c_str(), frame.size());
+}
+
+static const char SSE_HEADERS[] =
+    "HTTP/1.1 200 OK\r\n"
+    "Content-Type: text/event-stream\r\n"
+    "Cache-Control: no-cache\r\n"
+    "Connection: keep-alive\r\n"
+    "\r\n";
+
+static void sse_timer_cb(void* arg) {
+    for (size_t i = 0; i < g_sse_clients.size(); ) {
+        auto& client = g_sse_clients[i];
+        bool advance = true;
+
+        if (client.type == SSE_EMBLEM && g_emblem_tailer.isConfigured()) {
+            auto r = g_emblem_tailer.tail(client.lastOffset);
+            if (r.nextOffset > client.lastOffset) {
+                sendRawTextSse(client.conn, r.text);
+                client.lastOffset = r.nextOffset;
+            } else {
+                sendSseHeartbeat(client.conn);
+            }
+        } else if (client.type == SSE_ASCENSION && g_ascension_tailer.isConfigured()) {
+            auto r = g_ascension_tailer.tail(client.lastOffset);
+            if (r.nextOffset > client.lastOffset) {
+                sendRawTextSse(client.conn, r.text);
+                client.lastOffset = r.nextOffset;
+            } else {
+                sendSseHeartbeat(client.conn);
+            }
+        } else if (client.type == SSE_MAIN) {
+            std::string body = client.savedLogPath.empty()
+                ? ReadJsonLog(client.lastOffset)
+                : ReadJsonLogFrom(client.savedLogPath, client.lastOffset);
+            json j;
+            try { j = json::parse(body); } catch (...) {}
+            size_t nextAfter = j.value("nextAfter", client.lastOffset);
+            if (nextAfter > client.lastOffset) {
+                sendJsonSse(client.conn, j);
+                client.lastOffset = nextAfter;
+            } else {
+                sendSseHeartbeat(client.conn);
+            }
+        } else {
+            sendSseHeartbeat(client.conn);
+        }
+
+        if (advance) ++i;
+    }
+}
+
+// =============================================================================
 //  Mongoose event handler
 // =============================================================================
 static void fn(struct mg_connection *c, int ev, void *ev_data) {
-    if (ev == MG_EV_HTTP_MSG) {
+    if (ev == MG_EV_CLOSE) {
+        RemoveSseClient(c);
+    } else if (ev == MG_EV_HTTP_MSG) {
         struct mg_http_message *hm = (struct mg_http_message *) ev_data;
 
         std::string uri    = MgStrToStd(hm->uri);
@@ -811,6 +960,201 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                     HttpLog(200, method, uri, query, remote);
                 }
             }
+        } else if (uri == "/events") {
+            struct mg_str q = hm->query;
+            char after_buf[32] = {0};
+            size_t after = 0;
+            if (mg_http_get_var(&q, "after", after_buf, sizeof(after_buf)) > 0)
+                after = static_cast<size_t>(std::stoull(after_buf));
+
+            char savedlog_buf[256] = {0};
+            std::string savedLogPath;
+            if (mg_http_get_var(&q, "savedlog", savedlog_buf, sizeof(savedlog_buf)) > 0) {
+                std::string safe_name = SanitiseName(std::string(savedlog_buf));
+                std::string saved_path = SavedLogPath(safe_name);
+                std::ifstream check(saved_path);
+                if (!check.good()) {
+                    mg_http_reply(c, 404, "Content-Type: application/json\r\nCache-Control: no-cache\r\n",
+                        "{\"error\":\"saved log not found\"}");
+                    HttpLog(404, method, uri, query, remote);
+                    return;
+                }
+                savedLogPath = saved_path;
+            }
+
+            mg_send(c, SSE_HEADERS, sizeof(SSE_HEADERS) - 1);
+
+            std::string body = savedLogPath.empty()
+                ? ReadJsonLog(after)
+                : ReadJsonLogFrom(savedLogPath, after);
+            json j;
+            try { j = json::parse(body); } catch (...) {}
+            size_t nextAfter = j.value("nextAfter", after);
+
+            if (after < nextAfter)
+                sendJsonSse(c, j);
+            else
+                sendSseHeartbeat(c);
+
+            SseClient sc;
+            sc.conn = c;
+            sc.type = SSE_MAIN;
+            sc.lastOffset = nextAfter;
+            sc.savedLogPath = savedLogPath;
+            g_sse_clients.push_back(sc);
+            HttpLog(200, method, uri, query, remote);
+        } else if (uri == "/emblems" || uri == "/emblems/") {
+            std::string fp = EMBLEM_DIR + "/gem_viewer.html";
+            std::ifstream file(fp);
+            if (file.good()) {
+                std::stringstream buf; buf << file.rdbuf();
+                mg_http_reply(c, 200, "Content-Type: text/html\r\n", "%s", buf.str().c_str());
+                HttpLog(200, method, uri, query, remote);
+            } else {
+                mg_http_reply(c, 404, "", "Not Found");
+                HttpLog(404, method, uri, query, remote);
+            }
+        } else if (uri.size() >= 9 && uri.compare(0, 9, "/emblems/") == 0) {
+            std::string rest = uri.substr(9);
+            if (rest == "log") {
+                if (EMBLEM_LOG_PATH.empty()) {
+                    ServerLog("GET /emblems/log — EMBLEM_LOG_PATH is empty (no -emblemlog set, default not found)");
+                    mg_http_reply(c, 404, "Content-Type: text/plain\r\n", "Emblem log not configured");
+                    HttpLog(404, method, uri, query, remote);
+                } else {
+                    ServerLog("GET /emblems/log — trying to read: %s", EMBLEM_LOG_PATH.c_str());
+                    std::ifstream file(EMBLEM_LOG_PATH);
+                    if (file.good()) {
+                        std::stringstream buf; buf << file.rdbuf();
+                        mg_http_reply(c, 200, "Content-Type: text/plain; charset=utf-8\r\nCache-Control: no-cache\r\n",
+                            "%s", buf.str().c_str());
+                        HttpLog(200, method, uri, query, remote);
+                    } else {
+                        ServerLog("GET /emblems/log — file NOT FOUND at path: %s", EMBLEM_LOG_PATH.c_str());
+                        mg_http_reply(c, 404, "Content-Type: text/plain\r\n", "Log file not found");
+                        HttpLog(404, method, uri, query, remote);
+                    }
+                }
+            } else if (rest == "events") {
+                if (!g_emblem_tailer.isConfigured()) {
+                    ServerLog("GET /emblems/events — emblem tailer not configured (no log file to watch)");
+                    mg_http_reply(c, 503, "Content-Type: text/plain\r\n", "Emblem log not configured");
+                    HttpLog(503, method, uri, query, remote);
+                } else {
+                    struct mg_str q = hm->query;
+                    char after_buf[32] = {0};
+                    size_t after = 0;
+                    if (mg_http_get_var(&q, "after", after_buf, sizeof(after_buf)) > 0)
+                        after = static_cast<size_t>(std::stoull(after_buf));
+
+                    mg_send(c, SSE_HEADERS, sizeof(SSE_HEADERS) - 1);
+                    auto r = g_emblem_tailer.tail(after);
+                    if (r.nextOffset > after)
+                        sendRawTextSse(c, r.text);
+                    else
+                        sendSseHeartbeat(c);
+
+                    SseClient sc;
+                    sc.conn = c;
+                    sc.type = SSE_EMBLEM;
+                    sc.lastOffset = r.nextOffset;
+                    g_sse_clients.push_back(sc);
+                    HttpLog(200, method, uri, query, remote);
+                }
+            } else {
+                if (rest.find("..") != std::string::npos) {
+                    mg_http_reply(c, 404, "", "Not Found");
+                    HttpLog(404, method, uri, query, remote);
+                } else {
+                    std::string fp = EMBLEM_DIR + "/" + rest;
+                    std::ifstream file(fp);
+                    if (file.good()) {
+                        std::stringstream buf; buf << file.rdbuf();
+                        std::string ct = "Content-Type: " + GetContentType(rest) + "\r\n";
+                        mg_http_reply(c, 200, ct.c_str(), "%s", buf.str().c_str());
+                        HttpLog(200, method, uri, query, remote);
+                    } else {
+                        mg_http_reply(c, 404, "", "Not Found");
+                        HttpLog(404, method, uri, query, remote);
+                    }
+                }
+            }
+        } else if (uri == "/ascension" || uri == "/ascension/") {
+            std::string fp = ASCENSION_DIR + "/index.html";
+            std::ifstream file(fp);
+            if (file.good()) {
+                std::stringstream buf; buf << file.rdbuf();
+                mg_http_reply(c, 200, "Content-Type: text/html\r\n", "%s", buf.str().c_str());
+                HttpLog(200, method, uri, query, remote);
+            } else {
+                mg_http_reply(c, 404, "", "Not Found");
+                HttpLog(404, method, uri, query, remote);
+            }
+        } else if (uri.size() >= 11 && uri.compare(0, 11, "/ascension/") == 0) {
+            std::string rest = uri.substr(11);
+            if (rest == "log") {
+                if (ASCENSION_LOG_PATH.empty()) {
+                    ServerLog("GET /ascension/log — ASCENSION_LOG_PATH is empty (no -ascensionlog set, default not found)");
+                    mg_http_reply(c, 404, "Content-Type: text/plain\r\n", "Ascension log not configured");
+                    HttpLog(404, method, uri, query, remote);
+                } else {
+                    ServerLog("GET /ascension/log — trying to read: %s", ASCENSION_LOG_PATH.c_str());
+                    std::ifstream file(ASCENSION_LOG_PATH);
+                    if (file.good()) {
+                        std::stringstream buf; buf << file.rdbuf();
+                        mg_http_reply(c, 200, "Content-Type: text/plain; charset=utf-8\r\nCache-Control: no-cache\r\n",
+                            "%s", buf.str().c_str());
+                        HttpLog(200, method, uri, query, remote);
+                    } else {
+                        ServerLog("GET /ascension/log — file NOT FOUND at path: %s", ASCENSION_LOG_PATH.c_str());
+                        mg_http_reply(c, 404, "Content-Type: text/plain\r\n", "Log file not found");
+                        HttpLog(404, method, uri, query, remote);
+                    }
+                }
+            } else if (rest == "events") {
+                if (!g_ascension_tailer.isConfigured()) {
+                    ServerLog("GET /ascension/events — ascension tailer not configured (no log file to watch)");
+                    mg_http_reply(c, 503, "Content-Type: text/plain\r\n", "Ascension log not configured");
+                    HttpLog(503, method, uri, query, remote);
+                } else {
+                    struct mg_str q = hm->query;
+                    char after_buf[32] = {0};
+                    size_t after = 0;
+                    if (mg_http_get_var(&q, "after", after_buf, sizeof(after_buf)) > 0)
+                        after = static_cast<size_t>(std::stoull(after_buf));
+
+                    mg_send(c, SSE_HEADERS, sizeof(SSE_HEADERS) - 1);
+                    auto r = g_ascension_tailer.tail(after);
+                    if (r.nextOffset > after)
+                        sendRawTextSse(c, r.text);
+                    else
+                        sendSseHeartbeat(c);
+
+                    SseClient sc;
+                    sc.conn = c;
+                    sc.type = SSE_ASCENSION;
+                    sc.lastOffset = r.nextOffset;
+                    g_sse_clients.push_back(sc);
+                    HttpLog(200, method, uri, query, remote);
+                }
+            } else {
+                if (rest.find("..") != std::string::npos) {
+                    mg_http_reply(c, 404, "", "Not Found");
+                    HttpLog(404, method, uri, query, remote);
+                } else {
+                    std::string fp = ASCENSION_DIR + "/" + rest;
+                    std::ifstream file(fp);
+                    if (file.good()) {
+                        std::stringstream buf; buf << file.rdbuf();
+                        std::string ct = "Content-Type: " + GetContentType(rest) + "\r\n";
+                        mg_http_reply(c, 200, ct.c_str(), "%s", buf.str().c_str());
+                        HttpLog(200, method, uri, query, remote);
+                    } else {
+                        mg_http_reply(c, 404, "", "Not Found");
+                        HttpLog(404, method, uri, query, remote);
+                    }
+                }
+            }
         } else {
             mg_http_reply(c, 404, "", "Not Found");
             HttpLog(404, method, uri, query, remote);
@@ -824,9 +1168,15 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
 int main(int argc, char** argv) {
     // Scan all arguments: last arg that doesn't start with '-' is the log path;
     // '-local' anywhere enables local file serving mode.
+    // '-emblemlog <path>' and '-ascensionlog <path>' configure tracker logs.
     for (int i = 1; i < argc; ++i) {
-        if (std::string(argv[i]) == "-local")
+        std::string arg = argv[i];
+        if (arg == "-local")
             g_local_mode = true;
+        else if (arg == "-emblemlog" && i + 1 < argc)
+            EMBLEM_LOG_PATH = argv[++i];
+        else if (arg == "-ascensionlog" && i + 1 < argc)
+            ASCENSION_LOG_PATH = argv[++i];
         else
             LOG_FILE = argv[i];
     }
@@ -842,9 +1192,59 @@ int main(int argc, char** argv) {
 
     if (LOG_FILE.empty())
         LOG_FILE = GetDefaultLogPath();
+
+    // Default emblems/ascension logs to the same folder as the saved logs folder
+    // (i.e. the directory containing LOG_FILE, or the user-passed directory if one was given).
+    {
+        std::string base_dir;
+        if (!g_saved_logs_dir.empty()) {
+            // User passed a directory — derive base_dir from it (strip "/saved logs" suffix)
+            const std::string suffix = "/saved logs";
+            if (g_saved_logs_dir.size() > suffix.size() &&
+                g_saved_logs_dir.compare(g_saved_logs_dir.size() - suffix.size(),
+                    suffix.size(), suffix) == 0) {
+                base_dir = g_saved_logs_dir.substr(0,
+                    g_saved_logs_dir.size() - suffix.size()) + "/";
+            }
+        }
+        if (base_dir.empty()) {
+            size_t sep = LOG_FILE.find_last_of("\\/");
+            base_dir = (sep != std::string::npos) ? LOG_FILE.substr(0, sep + 1) : "";
+        }
+        ServerLog("LOG_FILE: %s  =>  base_dir for emblem/ascension defaults: \"%s\"",
+            LOG_FILE.c_str(), base_dir.c_str());
+        if (EMBLEM_LOG_PATH.empty()) {
+            EMBLEM_LOG_PATH = base_dir + "http_log.txt";
+            ServerLog("EMBLEM_LOG_PATH defaulted to: %s", EMBLEM_LOG_PATH.c_str());
+        }
+        if (ASCENSION_LOG_PATH.empty()) {
+            ASCENSION_LOG_PATH = base_dir + "star_tower_log.txt";
+            ServerLog("ASCENSION_LOG_PATH defaulted to: %s", ASCENSION_LOG_PATH.c_str());
+        }
+    }
+
     if (!g_local_mode)
         ServerLog("Fetching files automatically from github, run with \"-local\" to use local files.");
     ScanStaticFolder(".");
+
+    {
+        std::ifstream ef(EMBLEM_LOG_PATH);
+        if (ef.good()) {
+            g_emblem_tailer.setPath(EMBLEM_LOG_PATH);
+            ServerLog("Emblem log: %s", EMBLEM_LOG_PATH.c_str());
+        } else {
+            ServerLog("Emblem log NOT FOUND: %s", EMBLEM_LOG_PATH.c_str());
+        }
+    }
+    {
+        std::ifstream af(ASCENSION_LOG_PATH);
+        if (af.good()) {
+            g_ascension_tailer.setPath(ASCENSION_LOG_PATH);
+            ServerLog("Ascension log: %s", ASCENSION_LOG_PATH.c_str());
+        } else {
+            ServerLog("Ascension log NOT FOUND: %s", ASCENSION_LOG_PATH.c_str());
+        }
+    }
     // Check if file or folder exists
 #ifdef _WIN32
     std::string folderPath = LOG_FILE;
@@ -886,6 +1286,8 @@ int main(int argc, char** argv) {
 
     const char* url = "http://0.0.0.0:9299";
     mg_http_listen(&mgr, url, fn, NULL);
+
+    mg_timer_add(&mgr, 500, MG_TIMER_REPEAT, sse_timer_cb, &mgr);
 
     ServerLog("Listening on http://localhost:9299");
     ServerLog("Press Ctrl+C to stop.");

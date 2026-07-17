@@ -49,11 +49,11 @@ body { font-family: sans-serif; background: #161616; color: #ddd; height: 100vh;
 
 .data-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
 .data-table th { text-align: left; padding: 4px 8px; border-bottom: 1px solid #333; color: #666; font-weight: 500; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
-.data-table th.num, .data-table th.pct { text-align: right; }
+.data-table th.num, .data-table th.pct { text-align: center; }
 .data-table td { padding: 3px 8px; border-bottom: 1px solid #252525; }
 .data-table tr:hover td { background: #202020; }
-.data-table .num { text-align: right; font-variant-numeric: tabular-nums; }
-.data-table .pct { text-align: right; color: #555; font-variant-numeric: tabular-nums; }
+.data-table .num { text-align: center; font-variant-numeric: tabular-nums; }
+.data-table .pct { text-align: center; color: #555; font-variant-numeric: tabular-nums; }
 .eco-table th.num { text-align: right; }
 
 .portrait-sm { width: 20px; height: 20px; border-radius: 2px; background: #2a2a2a; vertical-align: middle; }
@@ -96,3 +96,16 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px;
 input[type=range]::-webkit-slider-thumb:hover { background: #777; }
 input[type=range]::-moz-range-track { height: 4px; background: #333; border-radius: 2px; border: none; }
 input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 50%; background: #555; border: 1px solid #666; }
+
+/* ── Quick-swap buttons ── */
+#quickSwap {
+    position: fixed; bottom: 12px; left: 12px; z-index: 100;
+    display: flex; flex-direction: column; gap: 6px;
+}
+.qs-btn {
+    padding: 6px 14px; border: 1px solid #333; border-radius: 5px;
+    background: #1a1a1a; color: #555; font-size: 12px; cursor: pointer;
+    user-select: none; transition: background 0.12s, color 0.12s, border-color 0.12s;
+    white-space: nowrap; text-align: center; text-decoration: none;
+}
+.qs-btn:hover { background: #222; color: #888; border-color: #444; }

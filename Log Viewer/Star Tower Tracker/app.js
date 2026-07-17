@@ -143,6 +143,7 @@ ST._buildDiscNoteLookup = function(discData, secData) {
             harmonyCounts: harmonyCounts,
         };
     }
+    console.log('discNoteNeeds loaded: ' + Object.keys(ST.discNoteNeeds).length + ' discs');
 };
 
 // ── Log parsing ──
@@ -676,12 +677,13 @@ ST.switchTab = function(tab) {
 // ── Fetch log ──
 
 ST.fetchLog = function() {
-    return fetch('/star_tower_log.txt')
+    return fetch('log')
         .then(function(r) {
             if (!r.ok) throw new Error('HTTP ' + r.status);
             return r.text();
         })
         .then(function(text) {
+            ST._sseAcc = text;
             var events = ST.parseLog(text);
             ST.processRuns(events);
             var stats = document.getElementById('runStats');
@@ -697,7 +699,7 @@ ST.fetchLog = function() {
 
 ST.startLiveReload = function() {
     if (location.protocol === 'file:') return;
-    var es = new EventSource('/events');
+    var es = new EventSource('events');
     var dot = document.getElementById('liveDot');
     var errTimer = null;
 
@@ -706,7 +708,13 @@ ST.startLiveReload = function() {
         if (errTimer) { clearTimeout(errTimer); errTimer = null; }
     };
     es.onmessage = function(e) {
-        if (e.data === 'update') ST.fetchLog();
+        if (!e.data) return;
+        ST._sseAcc = (ST._sseAcc || '') + e.data + '\n';
+        var events = ST.parseLog(ST._sseAcc);
+        ST.processRuns(events);
+        var stats = document.getElementById('runStats');
+        stats.textContent = ST.runs.length + ' runs';
+        ST.switchTab(ST.activeTab);
     };
     es.onerror = function() {
         if (dot) { dot.style.background = '#6a3a3a'; dot.title = 'disconnected'; }
@@ -725,7 +733,8 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 
     Promise.all([ST.fetchCharNames(), ST.fetchNoteNames(), ST.fetchDiscData()]).then(function() {
-        ST.fetchLog();
+        if (ST.runs.length === 0) ST.fetchLog();
+    }).finally(function() {
+        ST.startLiveReload();
     });
-    ST.startLiveReload();
 });

@@ -139,6 +139,19 @@
         }
         .no-file span { font-size: 13px; }
         .no-file .hint { font-size: 11px; color: #2c2c2c; }
+
+        /* ── Quick-swap buttons ── */
+        #quickSwap {
+            position: fixed; bottom: 12px; left: 12px; z-index: 100;
+            display: flex; flex-direction: column; gap: 6px;
+        }
+        .qs-btn {
+            padding: 6px 14px; border: 1px solid #333; border-radius: 5px;
+            background: #1a1a1a; color: #555; font-size: 12px; cursor: pointer;
+            user-select: none; transition: background 0.12s, color 0.12s, border-color 0.12s;
+            white-space: nowrap; text-align: center; text-decoration: none;
+        }
+        .qs-btn:hover { background: #222; color: #888; border-color: #444; }
     </style>
 </head>
 <body>
@@ -470,7 +483,7 @@ async function fetchAttrData() {
 
 async function fetchLog() {
     try {
-        const res = await fetch('/http_log.txt');
+        const res = await fetch('log');
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const text = await res.text();
         parseLog(text, 'http_log.txt');
@@ -479,11 +492,13 @@ async function fetchLog() {
     }
 }
 
+let _accumulatedText = '';
+
 function startLiveReload() {
     // only connect when served from the local server
     if (location.protocol === 'file:') return;
 
-    const es = new EventSource('/events');
+    const es = new EventSource('events');
     const dot = document.getElementById('liveDot');
     let errTimer = null;
 
@@ -492,7 +507,9 @@ function startLiveReload() {
         if (errTimer) { clearTimeout(errTimer); errTimer = null; }
     };
     es.onmessage = e => {
-        if (e.data === 'update') fetchLog();
+        if (!e.data) return;
+        _accumulatedText += e.data + '\n';
+        parseLog(_accumulatedText, 'live');
     };
     es.onerror = () => {
         if (dot) { dot.style.background = '#6a3a3a'; dot.title = 'disconnected'; }
@@ -957,8 +974,11 @@ function refreshSlotChart() {
 }
 
 fetchAttrData();
-fetchLog();
 startLiveReload();
 </script>
+<div id="quickSwap">
+    <a class="qs-btn" href="/">Logs</a>
+    <a class="qs-btn" href="/ascension/">Ascension</a>
+</div>
 </body>
 </html>

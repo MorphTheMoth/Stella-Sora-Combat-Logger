@@ -160,10 +160,11 @@ window.onSavedLogChange = async function() {
     pendingAutoClear = false;
     const val = document.getElementById('savedLogFilter').value;
     currentSavedLog = val || null;
+    stopLiveUpdates();
+
     allEvents = [];
     filtered = [];
     lastFetchCount = 0;
-    _emptyPollCount = 0;
     openStates = {};
     measuredHeights = {};
     subOpenStates = {};
@@ -172,7 +173,7 @@ window.onSavedLogChange = async function() {
     closeSearch();
     refilterAndRender(true, true);
     await fetchLevelMap(currentSavedLog);
-    fetchLog(false).then(() => { setTimeout(poll, POLL_MS); });
+    startLiveUpdates();
 };
 
 // ─── Save / Clear / Fetch ─────────────────
@@ -216,6 +217,7 @@ window.clearLog = async function(skipConfirm) {
         const res = await fetch(url, { method: 'POST' });
         const data = await res.json();
         if (data.ok) {
+            stopLiveUpdates();
             allEvents = [];
             filtered = [];
             lastFetchCount = 0;
@@ -229,6 +231,7 @@ window.clearLog = async function(skipConfirm) {
                 loadSavedLogsList();
                 currentSavedLog = null;
             }
+            startLiveUpdates();
         } else {
             alert('Clear failed');
         }
@@ -270,10 +273,10 @@ window.lastRun = async function() {
         const res = await fetch('/cutlog?offset=' + origIndex, { method: 'POST' });
         const data = await res.json();
         if (data.ok) {
+            stopLiveUpdates();
             allEvents = [];
             filtered = [];
             lastFetchCount = 0;
-            _emptyPollCount = 0;
             openStates = {};
             measuredHeights = {};
             subOpenStates = {};
@@ -281,7 +284,7 @@ window.lastRun = async function() {
             document.getElementById('scrollContent').innerHTML = '';
             closeSearch();
             refilterAndRender(true, true);
-            fetchLog(false).then(() => { setTimeout(poll, POLL_MS); });
+            startLiveUpdates();
         } else {
             alert('Cut failed: ' + (data.error || 'Unknown error'));
         }
@@ -292,10 +295,100 @@ window.lastRun = async function() {
 };
 
 let _fetching = false;
-let _emptyPollCount = 0;
 let _levelMapPollCount = 0;
+let _es = null;
+let _esFallbackTimer = null;
 const LEVELMAP_POLL_INTERVAL = 40; // re-fetch every ~2s (40 * 50ms)
-const MAX_EMPTY_POLLS = 10;
+const SSE_FALLBACK_MS = 4000;       // if SSE never opens, one-shot fetchLog fallback
+
+// ─── SSE live updates ───────────────────────────────────────────────────────
+function stopLiveUpdates() {
+    if (_es) { try { _es.close(); } catch (e) {} _es = null; }
+    if (_esFallbackTimer) { clearTimeout(_esFallbackTimer); _esFallbackTimer = null; }
+}
+
+function startLiveUpdates() {
+    if (location.protocol === 'file:') return;
+    stopLiveUpdates();
+
+    const params = ['after=' + lastFetchCount];
+    if (currentSavedLog) params.push('savedlog=' + encodeURIComponent(currentSavedLog));
+    const newEs = new EventSource('/events?' + params.join('&'));
+    _es = newEs;
+
+    const dot = document.getElementById('liveDot');
+    newEs.onopen = () => {
+        if (newEs !== _es) return;
+        if (dot) { dot.style.background = '#4a8a4a'; dot.title = 'live'; }
+        if (_esFallbackTimer) { clearTimeout(_esFallbackTimer); _esFallbackTimer = null; }
+    };
+    newEs.onmessage = e => {
+        if (newEs !== _es) return;
+        if (!e.data) return;
+        try { handleSseEvent(JSON.parse(e.data)); }
+        catch (err) { console.error('SSE parse error', err); }
+    };
+    newEs.onerror = () => {
+        if (newEs !== _es) return;
+        if (dot) { dot.style.background = '#6a3a3a'; dot.title = 'disconnected'; }
+        try { newEs.close(); } catch (e) {}
+        if (newEs === _es) _es = null;
+        setTimeout(() => {
+            if (newEs === _es) startLiveUpdates();
+        }, 3000);
+    };
+
+    // If SSE never opens within a few seconds, do a one-shot fetchLog as fallback
+    // so the page isn't blank if the server doesn't support SSE.
+    if (lastFetchCount === 0) {
+        _esFallbackTimer = setTimeout(() => {
+            if (allEvents.length === 0) fetchLog(false);
+        }, SSE_FALLBACK_MS);
+    }
+}
+
+function handleSseEvent(data) {
+    const newEvents = data.events || [];
+    let nextAfter = data.nextAfter != null ? data.nextAfter : lastFetchCount + newEvents.length;
+
+    if (nextAfter < lastFetchCount) {
+        // Server reset (truncation / clear) — resync.
+        lastFetchCount = 0;
+        nextAfter = newEvents.length;
+    }
+
+    if (lastFetchCount > 0) {
+        // incremental
+        if (newEvents.length > 0) {
+            const startIdx = allEvents.length;
+            newEvents.forEach((ev, i) => {
+                ev._origIndex = startIdx + i;
+                enrichEvent(ev);
+                allEvents.push(ev);
+            });
+            if (autoClearOnRestart && !currentSavedLog && newEvents.some(e => e.Type === 'Reset')) {
+                pendingAutoClear = true;
+            } else if (pendingAutoClear && newEvents.length > 0) {
+                pendingAutoClear = false;
+                window.clearLog(true);
+                return;
+            }
+            refilterAndRender(false, false);
+        }
+    } else {
+        // initial load (or resync after truncation)
+        allEvents = newEvents;
+        allEvents.forEach((ev, i) => { ev._origIndex = i; enrichEvent(ev); });
+        refilterAndRender(true, true);
+    }
+    lastFetchCount = nextAfter;
+
+    if (window.dcRefreshIfVisible) window.dcRefreshIfVisible();
+    buildCharFilter();
+    buildDefenderFilter();
+}
+
+// One-shot fetchLog kept for the SSE fallback path.
 async function fetchLog(incremental = false) {
     if (_fetching) return;
     _fetching = true;
@@ -322,7 +415,6 @@ async function fetchLog(incremental = false) {
         const nextAfter = data.nextAfter != null ? data.nextAfter : (incremental ? lastFetchCount + newEvents.length : newEvents.length);
         if (incremental && lastFetchCount > 0) {
             if (newEvents.length > 0) {
-                _emptyPollCount = 0;
                 const startIdx = allEvents.length;
                 newEvents.forEach((ev, i) => {
                     ev._origIndex = startIdx + i;
@@ -337,12 +429,9 @@ async function fetchLog(incremental = false) {
                     return;
                 }
                 refilterAndRender(false, false);
-            } else {
-                _emptyPollCount++;
             }
             lastFetchCount = nextAfter;
         } else {
-            _emptyPollCount = 0;
             allEvents = newEvents;
             allEvents.forEach((ev, i) => { ev._origIndex = i; enrichEvent(ev); });
             lastFetchCount = nextAfter;
@@ -358,24 +447,18 @@ async function fetchLog(incremental = false) {
     }
 }
 
-function poll() {
-    if (currentSavedLog && _emptyPollCount >= MAX_EMPTY_POLLS) {
-        console.log('Poll stopped — saved log fully loaded');
-        return;
-    }
+// ─── Level map cadence ─────────────────────────────────────────────────────
+function pollLevelMap() {
     _levelMapPollCount++;
     if (!currentSavedLog && _levelMapPollCount >= LEVELMAP_POLL_INTERVAL) {
         _levelMapPollCount = 0;
         fetchLevelMap(null);
     }
-    fetchLog(true).finally(() => {
-        setTimeout(poll, POLL_MS);
-    });
 }
 
 initTables().then(() => {
-    fetchLevelMap(null).then(() => {
-        fetchLog(false).then(() => { setTimeout(poll, POLL_MS); });
-    });
+    fetchLevelMap(currentSavedLog);
+    startLiveUpdates();
+    setInterval(pollLevelMap, 50);
     loadSavedLogsList();
 });
