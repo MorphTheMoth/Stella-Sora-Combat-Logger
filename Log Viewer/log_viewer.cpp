@@ -226,7 +226,7 @@ std::string GetDefaultLogPath() {
         return std::string(path) + "\\Stella Sora Combat Logger\\ss_jsonlog.txt";
     return std::string("ss_jsonlog.txt");
 #else
-    return "ss_jsonlog.txt";
+    return "/dev/shm/StellaSoraLogger/ss_jsonlog.txt";
 #endif
 }
 
@@ -1320,7 +1320,14 @@ int main(int argc, char** argv) {
         ServerLog("WARNING: File does not exist: %s", LOG_FILE.c_str());
     }
 #else
-    { }
+    {
+        std::string folderPath = "/dev/shm/StellaSoraLogger";
+        struct stat st;
+        if (stat(folderPath.c_str(), &st) != 0) {
+            mkdir(folderPath.c_str(), 0755);
+            ServerLog("Created log directory: %s", folderPath.c_str());
+        }
+    }
     std::ifstream testFile(LOG_FILE);
     if (!testFile.good()) {
         ServerLog("WARNING: File does not exist: %s", LOG_FILE.c_str());
