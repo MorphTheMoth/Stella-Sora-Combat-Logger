@@ -6,6 +6,7 @@
 #include <windows.h>
 #include <cstdio>
 #include <cstdarg>
+#include <cerrno>
 #include <shlobj.h>
 #include <knownfolders.h>
 #include <combaseapi.h>
@@ -166,6 +167,17 @@ void loadConfig(const std::string& dir) {
             fclose(f);
             log("[config] log_config.json not found — wrote defaults to %s", path.c_str());
         }
+        g_Cfg.buffs                          = true;
+        g_Cfg.effects                        = true;
+        g_Cfg.damage                         = true;
+        g_Cfg.skill_casts                    = true;
+        g_Cfg.on_hit_attacker_stats          = true;
+        g_Cfg.on_hit_defender_stats          = true;
+        g_Cfg.on_hit_buff_list               = true;
+        g_Cfg.on_hit_effect_list             = true;
+        g_Cfg.on_hit_effect_list_information = true;
+        g_Cfg.on_hit_attacker_attr_dict      = true;
+        g_Cfg.on_hit_defender_attr_dict      = true;
         return;
     }
 
@@ -1238,7 +1250,10 @@ bool GetInstanceSnapInfo(int32_t instanceId, const std::string& actorId, Instanc
 std::string GetLocalAppDataPath() {
     PWSTR path_tmp;
     HRESULT hr = SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, NULL, &path_tmp);
-    if (FAILED(hr)) return "";
+    if (FAILED(hr)) {
+        OutputDebugStringA("[SS Logger] SHGetKnownFolderPath failed — COM may not be initialized on this thread\n");
+        return "";
+    }
     char ch[MAX_PATH];
     WideCharToMultiByte(CP_UTF8, 0, path_tmp, -1, ch, MAX_PATH, NULL, NULL);
     CoTaskMemFree(path_tmp);
@@ -1266,6 +1281,11 @@ void InitializeLogger() {
         GetLocalTime(&t);
         fprintf(g_JsonLog, "=== JSON log started %02d:%02d:%02d ===\n", t.wHour, t.wMinute, t.wSecond);
         fflush(g_JsonLog);
+    } else {
+        if (g_Log) {
+            fprintf(g_Log, "[ERROR] Failed to open JSON log: %s (errno=%d)\n", jsonPath.c_str(), errno);
+            fflush(g_Log);
+        }
     }
 
     // Level map file — reads existing entries so we don't re-write them

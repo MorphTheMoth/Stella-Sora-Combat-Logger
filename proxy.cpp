@@ -1,5 +1,6 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <objbase.h>
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -834,8 +835,9 @@ bool InstallHook(uintptr_t target, void* hook, void** original, const char* name
 }
 
 static DWORD WINAPI InitThread(LPVOID) {
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     InitializeLogger();
-    if (!g_Log) return 1;
+    if (!g_Log) { CoUninitialize(); return 1; }
 
     std::string logDir = GetLocalAppDataPath() + "\\Stella Sora Combat Logger";
     loadConfig(logDir);
@@ -849,10 +851,10 @@ static DWORD WINAPI InitThread(LPVOID) {
         log("[init] Waiting for GameAssembly.dll... attempt %d/60", i + 1);
         Sleep(500);
     }
-    if (!g_base) { log("[ERROR] GameAssembly.dll never loaded!"); return 1; }
+    if (!g_base) { log("[ERROR] GameAssembly.dll never loaded!"); CoUninitialize(); return 1; }
     log("[init] GameAssembly base=0x%llX", (unsigned long long)g_base);
 
-    if (MH_Initialize() != MH_OK) { log("[ERROR] MH_Initialize failed."); return 1; }
+    if (MH_Initialize() != MH_OK) { log("[ERROR] MH_Initialize failed."); CoUninitialize(); return 1; }
 
     InstallHook(g_base + RVA_EFFECT_ON_INIT,         reinterpret_cast<void*>(&Hook_EffectOnInit),       (void**)&g_OrigEffectOnInit,       "AdventureEffect$$OnInit");
     InstallHook(g_base + RVA_EFFECT_ON_CLEAR,        reinterpret_cast<void*>(&Hook_EffectOnClear),      (void**)&g_OrigEffectOnClear,      "AdventureEffectBase$$OnClear");
@@ -877,6 +879,7 @@ static DWORD WINAPI InitThread(LPVOID) {
     InstallHttpHooks(g_base);
     
     log("[init] Ready.");
+    CoUninitialize();
     return 0;
 }
 
