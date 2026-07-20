@@ -226,7 +226,7 @@ std::string GetDefaultLogPath() {
         return std::string(path) + "\\Stella Sora Combat Logger\\ss_jsonlog.txt";
     return std::string("ss_jsonlog.txt");
 #else
-    return "/dev/shm/StellaSoraLogger/ss_jsonlog.txt";
+    return "ss_jsonlog.txt";
 #endif
 }
 
@@ -1004,15 +1004,27 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
             g_sse_clients.push_back(sc);
             HttpLog(200, method, uri, query, remote);
         } else if (uri == "/emblems" || uri == "/emblems/") {
-            std::string fp = EMBLEM_DIR + "/gem_viewer.html";
-            std::ifstream file(fp);
-            if (file.good()) {
-                std::stringstream buf; buf << file.rdbuf();
-                mg_http_reply(c, 200, "Content-Type: text/html\r\n", "%s", buf.str().c_str());
-                HttpLog(200, method, uri, query, remote);
+            if (!g_local_mode) {
+                std::string url = std::string(REMOTE_BASE) + "/Emblem%20Tracker/gem_viewer.html";
+                std::string body = FetchRemoteFile(url);
+                if (!body.empty()) {
+                    mg_http_reply(c, 200, "Content-Type: text/html\r\n", "%s", body.c_str());
+                    HttpLog(200, method, uri, query, remote);
+                } else {
+                    mg_http_reply(c, 502, "Content-Type: text/plain\r\n", "Failed to fetch remote file");
+                    HttpLog(502, method, uri, query, remote);
+                }
             } else {
-                mg_http_reply(c, 404, "", "Not Found");
-                HttpLog(404, method, uri, query, remote);
+                std::string fp = EMBLEM_DIR + "/gem_viewer.html";
+                std::ifstream file(fp);
+                if (file.good()) {
+                    std::stringstream buf; buf << file.rdbuf();
+                    mg_http_reply(c, 200, "Content-Type: text/html\r\n", "%s", buf.str().c_str());
+                    HttpLog(200, method, uri, query, remote);
+                } else {
+                    mg_http_reply(c, 404, "", "Not Found");
+                    HttpLog(404, method, uri, query, remote);
+                }
             }
         } else if (uri.size() >= 9 && uri.compare(0, 9, "/emblems/") == 0) {
             std::string rest = uri.substr(9);
@@ -1065,6 +1077,17 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                 if (rest.find("..") != std::string::npos) {
                     mg_http_reply(c, 404, "", "Not Found");
                     HttpLog(404, method, uri, query, remote);
+                } else if (!g_local_mode) {
+                    std::string url = std::string(REMOTE_BASE) + "/Emblem%20Tracker/" + rest;
+                    std::string body = FetchRemoteFile(url);
+                    if (!body.empty()) {
+                        std::string ct = "Content-Type: " + GetContentType(rest) + "\r\n";
+                        mg_http_reply(c, 200, ct.c_str(), "%s", body.c_str());
+                        HttpLog(200, method, uri, query, remote);
+                    } else {
+                        mg_http_reply(c, 502, "Content-Type: text/plain\r\n", "Failed to fetch remote file");
+                        HttpLog(502, method, uri, query, remote);
+                    }
                 } else {
                     std::string fp = EMBLEM_DIR + "/" + rest;
                     std::ifstream file(fp);
@@ -1080,15 +1103,27 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                 }
             }
         } else if (uri == "/ascension" || uri == "/ascension/") {
-            std::string fp = ASCENSION_DIR + "/index.html";
-            std::ifstream file(fp);
-            if (file.good()) {
-                std::stringstream buf; buf << file.rdbuf();
-                mg_http_reply(c, 200, "Content-Type: text/html\r\n", "%s", buf.str().c_str());
-                HttpLog(200, method, uri, query, remote);
+            if (!g_local_mode) {
+                std::string url = std::string(REMOTE_BASE) + "/Star%20Tower%20Tracker/index.html";
+                std::string body = FetchRemoteFile(url);
+                if (!body.empty()) {
+                    mg_http_reply(c, 200, "Content-Type: text/html\r\n", "%s", body.c_str());
+                    HttpLog(200, method, uri, query, remote);
+                } else {
+                    mg_http_reply(c, 502, "Content-Type: text/plain\r\n", "Failed to fetch remote file");
+                    HttpLog(502, method, uri, query, remote);
+                }
             } else {
-                mg_http_reply(c, 404, "", "Not Found");
-                HttpLog(404, method, uri, query, remote);
+                std::string fp = ASCENSION_DIR + "/index.html";
+                std::ifstream file(fp);
+                if (file.good()) {
+                    std::stringstream buf; buf << file.rdbuf();
+                    mg_http_reply(c, 200, "Content-Type: text/html\r\n", "%s", buf.str().c_str());
+                    HttpLog(200, method, uri, query, remote);
+                } else {
+                    mg_http_reply(c, 404, "", "Not Found");
+                    HttpLog(404, method, uri, query, remote);
+                }
             }
         } else if (uri.size() >= 11 && uri.compare(0, 11, "/ascension/") == 0) {
             std::string rest = uri.substr(11);
@@ -1141,6 +1176,17 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                 if (rest.find("..") != std::string::npos) {
                     mg_http_reply(c, 404, "", "Not Found");
                     HttpLog(404, method, uri, query, remote);
+                } else if (!g_local_mode) {
+                    std::string url = std::string(REMOTE_BASE) + "/Star%20Tower%20Tracker/" + rest;
+                    std::string body = FetchRemoteFile(url);
+                    if (!body.empty()) {
+                        std::string ct = "Content-Type: " + GetContentType(rest) + "\r\n";
+                        mg_http_reply(c, 200, ct.c_str(), "%s", body.c_str());
+                        HttpLog(200, method, uri, query, remote);
+                    } else {
+                        mg_http_reply(c, 502, "Content-Type: text/plain\r\n", "Failed to fetch remote file");
+                        HttpLog(502, method, uri, query, remote);
+                    }
                 } else {
                     std::string fp = ASCENSION_DIR + "/" + rest;
                     std::ifstream file(fp);
@@ -1154,6 +1200,17 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                         HttpLog(404, method, uri, query, remote);
                     }
                 }
+            }
+        } else if (!g_local_mode && !uri.empty() && uri[0] == '/') {
+            std::string url = std::string(REMOTE_BASE) + uri;
+            std::string body = FetchRemoteFile(url);
+            if (!body.empty()) {
+                std::string ct_header = "Content-Type: " + GetContentType(uri) + "\r\n";
+                mg_http_reply(c, 200, ct_header.c_str(), "%s", body.c_str());
+                HttpLog(200, method, uri, query, remote);
+            } else {
+                mg_http_reply(c, 404, "", "Not Found");
+                HttpLog(404, method, uri, query, remote);
             }
         } else {
             mg_http_reply(c, 404, "", "Not Found");
@@ -1263,14 +1320,7 @@ int main(int argc, char** argv) {
         ServerLog("WARNING: File does not exist: %s", LOG_FILE.c_str());
     }
 #else
-    {
-        std::string folderPath = "/dev/shm/StellaSoraLogger";
-        struct stat st;
-        if (stat(folderPath.c_str(), &st) != 0) {
-            mkdir(folderPath.c_str(), 0755);
-            ServerLog("Created log directory: %s", folderPath.c_str());
-        }
-    }
+    { }
     std::ifstream testFile(LOG_FILE);
     if (!testFile.good()) {
         ServerLog("WARNING: File does not exist: %s", LOG_FILE.c_str());

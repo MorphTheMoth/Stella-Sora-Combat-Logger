@@ -51,16 +51,21 @@ const ELEM_IGN_STAT = { 1:29, 2:30, 3:31, 4:32, 5:33, 6:34 };
 
 // ─── Stat helpers ─────────────────────────────────────────────────────────────
 function statValue(attrs, id) {
-    // (origin+base)*(1+pct)+abs
-    return ((attrs[id].origin || 0) + (attrs[id].base || 0)) * (1 + (attrs[id].pct || 0)) + (attrs[id].abs || 0);
+    const s = attrs[id];
+    if (!s) return 0;
+    return ((s.origin || 0) + (s.base || 0)) * (1 + (s.pct || 0)) + (s.abs || 0);
 }
 
 function statBase(attrs, id) {
-    return (attrs[id].origin || 0) + (attrs[id].base || 0);
+    const s = attrs[id];
+    if (!s) return 0;
+    return (s.origin || 0) + (s.base || 0);
 }
 
 function statAbs(attrs, id) {
-    return (attrs[id].abs || 0);
+    const s = attrs[id];
+    if (!s) return 0;
+    return s.abs || 0;
 }
 
 // DamageType → attacker dmgType stat index

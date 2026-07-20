@@ -349,6 +349,7 @@ json logAdventureActorAttrsJson(AttributeList_o* attrList, const std::vector<Ele
         }
 
         json attr;
+        attr["id"] = i;
         if (!nearZero(origin)) attr["origin"] = Round(origin, 4);
         if (!nearZero(base_))   attr["base"]   = Round(base_, 4);
         if (!nearZero(pct))     attr["pct"]    = Round(pct, 4);
@@ -1257,10 +1258,7 @@ void InitializeLogger() {
         fflush(g_Log);
     }
 
-    HMODULE ntdll = GetModuleHandleA("ntdll.dll");
-    bool wine = ntdll && GetProcAddress(ntdll, "wine_get_version") != nullptr;
-    std::string jsonDir = wine ? "Z:\\dev\\shm\\StellaSoraLogger" : logDir;
-    if (wine) CreateDirectoryA("Z:\\dev\\shm\\StellaSoraLogger", nullptr);
+    std::string jsonDir = logDir;
     std::string jsonPath = jsonDir + "\\ss_jsonlog.txt";
     g_JsonLog = fopen(jsonPath.c_str(), "a");
     if (g_JsonLog) {
