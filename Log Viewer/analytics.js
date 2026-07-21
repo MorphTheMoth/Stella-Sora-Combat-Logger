@@ -169,6 +169,7 @@ const Analytics = (() => {
         const sortBy      = document.getElementById('dsSort').value;
 
         const map = {};
+        let hitCounts = {};
         getPlayerHits().forEach(ev => {
             const hc      = ev.HitConfig || {};
             const dp      = ev.DamageParams || {};
@@ -195,15 +196,17 @@ const Analytics = (() => {
                     : `${groupName}|${hc.skillTitle || '?'}|#${hc.hitNum ?? '?'}`;
             }
 
-            if (!map[key]) map[key] = { groupName, char, dmgtype, skillTitle: hc.skillTitle || '?', value: 0 };
+            if (!map[key]) { map[key] = { groupName, char, dmgtype, skillTitle: hc.skillTitle || '?', value: 0 }; hitCounts[key] = 0; }
             const dmg  = Number(dp.finalDamage) || 0;
             const mult = dp.skillPercentAmend != null ? dp.skillPercentAmend / 10000 : 0;
-            map[key].value += metric === 'dmg' ? dmg : metric === 'multiplier' ? mult : 1;
+            map[key].value += metric === 'dmg' ? dmg : metric === 'multiplier' || metric === 'singlemv' ? mult : 1;
+            if (metric === 'singlemv') hitCounts[key]++;
         });
 
         let slices = Object.entries(map).map(([key, d]) => ({
             ...d,
-            label: key.split('|').join(' › ')
+            label: key.split('|').join(' › '),
+            value: metric === 'singlemv' && hitCounts[key] > 0 ? d.value / hitCounts[key] : d.value
         }));
 
         if (sortBy === 'value')   slices.sort((a, b) => b.value - a.value);
@@ -215,7 +218,7 @@ const Analytics = (() => {
     }
 
     function makePieChart(canvasId, labels, values, colors, metric) {
-        const isFloat = metric === 'multiplier';
+        const isFloat = metric === 'multiplier' || metric === 'singlemv';
         return new Chart(document.getElementById(canvasId), {
             type: 'pie',
             data: {
@@ -243,7 +246,7 @@ const Analytics = (() => {
 
     function renderLegend(tableId, labels, values, colors, metric) {
         const total = values.reduce((s, v) => s + v, 0);
-        const isFloat = metric === 'multiplier';
+        const isFloat = metric === 'multiplier' || metric === 'singlemv';
         document.getElementById(tableId).innerHTML = labels.map((name, i) => {
             const pct = total > 0 ? (values[i] / total * 100).toFixed(1) : 0;
             const val = isFloat ? values[i].toFixed(2) + '%' : Number(values[i]).toLocaleString();
