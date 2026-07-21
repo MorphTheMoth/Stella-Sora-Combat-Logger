@@ -39,31 +39,33 @@ __attribute__((constructor)) void init_forwards() {
 // =============================================================================
 //  RVAs
 // =============================================================================
-static constexpr uintptr_t RVA_EFFECT_ON_INIT                = 0x11281A0;
-static constexpr uintptr_t RVA_EFFECT_ON_CLEAR               = 0x1123C90;
-static constexpr uintptr_t RVA_UPDATE_LOGIC                  = 0x1179570;
-static constexpr uintptr_t RVA_BATTLE_START                  = 0x102FFE0;
-static constexpr uintptr_t RVA_SPAWN_SKILL                   = 0x11780D0;
-static constexpr uintptr_t RVA_BUFF_EFFECT_ON_INIT           = 0x16C4BD0;
-static constexpr uintptr_t RVA_BUFF_ENTITY_INIT              = 0x16C9500;
-static constexpr uintptr_t RVA_BUFF_ENTITY_EXCUTE            = 0x16C81C0;
-static constexpr uintptr_t RVA_CALC_NORMAL_DAMAGE            = 0x110C100;
-static constexpr uintptr_t RVA_GET_ONCE_ATTR                      = 0x12840E0;
-static constexpr uintptr_t RVA_GET_VALUE_CONFIG_ID                = 0x1111080;
-static constexpr uintptr_t RVA_GET_EFFECT_VALUE                   = 0x1282100;
-static constexpr uintptr_t RVA_GET_ONCE_ADDITIONAL_ATTRIBUTE_VALUE = 0x1283F30;
-static constexpr uintptr_t RVA_MONSTER_ACTION_STATE_ON_ENTER = 0x1104CD0;
-static constexpr uintptr_t RVA_MODULE_CLEAR_DATA     = 0x15C78A0;  // AdventureModuleController$$ClearData
-static constexpr uintptr_t RVA_GET_BOTH_ALL_INFO     = 0x12263F0;  // AdventureActor$$GetBothAllInfo
-static constexpr uintptr_t RVA_AREA_COPY_BATTLE      = 0x169C610;  // AreaEffectEntity$$CopyBattleData
-static constexpr uintptr_t RVA_WEAPON_SETUP          = 0x16F57E0;  // AdventureWeapon$$Setup
-static constexpr uintptr_t RVA_FAKE_SET_ATTR_INFO     = 0x1360730;  // FakeAdventureActor$$SetAttrInfo
-static constexpr uintptr_t RVA_SET_PLAYER_SUMMON_ATTR = 0x1368980;  // MonsterAdventureActor$$SetPlayerSummonAttrInfo
-static constexpr uintptr_t RVA_SET_PLAYER_SUMMON_SNAP = 0x1368560;  // MonsterAdventureActor$$SetPlayerSummonAttrInfoBySnapshot
-static constexpr uintptr_t RVA_CLONE_SET_ATTR         = 0x14A2890;  // MonsterCloneAdventureActor$$SetAttr
-static constexpr uintptr_t RVA_PARSE_SUMMON_CFG       = 0x14A34A0;  // MonsterSummonInfo$$ParseSummonCfg
-static constexpr uintptr_t RVA_SAVE_PLAYER_SNAPSHOT  = 0x14AC8D0;  // PlayerAdventureActor$$SavePlayerAttributeSnapshot
-static constexpr uintptr_t RVA_IS_USE_HIT_FROM_SUMMON  = 0x10F83B0;  // ActorHelper$$IsUseHitFromSummon
+static constexpr uintptr_t RVA_EFFECT_ON_INIT                = 0x113E6D0;
+static constexpr uintptr_t RVA_EFFECT_ON_CLEAR               = 0x1139B40;
+static constexpr uintptr_t RVA_UPDATE_LOGIC                  = 0x118EF10;
+static constexpr uintptr_t RVA_BATTLE_START                  = 0x10450B0;
+static constexpr uintptr_t RVA_SPAWN_SKILL                   = 0x118DA40;
+static constexpr uintptr_t RVA_BUFF_EFFECT_ON_INIT           = 0x16F6B80;
+static constexpr uintptr_t RVA_BUFF_ENTITY_INIT              = 0x16FB6A0;
+static constexpr uintptr_t RVA_BUFF_ENTITY_EXCUTE            = 0x16FA360;
+static constexpr uintptr_t RVA_CALC_NORMAL_DAMAGE            = 0x11213B0;
+static constexpr uintptr_t RVA_GET_ONCE_ATTR                      = 0x1298660;
+static constexpr uintptr_t RVA_GET_VALUE_CONFIG_ID                = 0x1126950;
+static constexpr uintptr_t RVA_GET_EFFECT_VALUE                   = 0x1296860;
+static constexpr uintptr_t RVA_GET_ONCE_ADDITIONAL_ATTRIBUTE_VALUE = 0x12984E0;
+static constexpr uintptr_t RVA_MONSTER_ACTION_STATE_ON_ENTER = 0x1119F30;
+static constexpr uintptr_t RVA_MODULE_CLEAR_DATA     = 0x15DF600;  // AdventureModuleController$$ClearData
+static constexpr uintptr_t RVA_GET_BOTH_ALL_INFO     = 0x123EDF0;  // AdventureActor$$GetBothAllInfo
+static constexpr uintptr_t RVA_AREA_COPY_BATTLE      = 0x16AADA0;  // AreaEffectEntity$$CopyBattleData
+static constexpr uintptr_t RVA_WEAPON_SETUP          = 0x1727CC0;  // AdventureWeapon$$Setup
+static constexpr uintptr_t RVA_FAKE_SET_ATTR_INFO     = 0x1373550;  // FakeAdventureActor$$SetAttrInfo
+static constexpr uintptr_t RVA_SET_PLAYER_SUMMON_ATTR = 0x137BB80;  // MonsterAdventureActor$$SetPlayerSummonAttrInfo
+static constexpr uintptr_t RVA_SET_PLAYER_SUMMON_SNAP = 0x137B6B0;  // MonsterAdventureActor$$SetPlayerSummonAttrInfoBySnapshot
+static constexpr uintptr_t RVA_CLONE_SET_ATTR         = 0x149F820;  // MonsterCloneAdventureActor$$SetAttr
+static constexpr uintptr_t RVA_PARSE_SUMMON_CFG       = 0x14A0490;  // MonsterSummonInfo$$ParseSummonCfg
+static constexpr uintptr_t RVA_SAVE_PLAYER_SNAPSHOT  = 0x14A9B80;  // PlayerAdventureActor$$SavePlayerAttributeSnapshot
+static constexpr uintptr_t RVA_IS_USE_HIT_FROM_SUMMON  = 0x110BFC0;  // ActorHelper$$IsUseHitFromSummon
+static constexpr uintptr_t RVA_GDC_GET_HIT_DAMAGE      = 0x12966E0;  // GameDataController$$GetHitDamage
+static constexpr uintptr_t RVA_GDC_GET_MONSTER         = 0x12979E0;  // GameDataController$$GetMonster
 
 //  Cached module base
 static uintptr_t g_base = 0;
@@ -113,31 +115,41 @@ static void __fastcall Hook_ModuleClearData(void* self, void* method) {
 //  CalculateNormalDamage hook
 // =============================================================================
 using FnCalcNormalDamage = int64_t(__fastcall*)( AdventureActor_o*, AdventureActor_o*, Nova_Client_HitDamage_o*,
-    int32_t, bool, bool, int32_t*, double*, double*, double*, double*, double*, double*, double*, double*, double*, double*, double*, double*, double*, double*, double*, void*);
+    int32_t, bool, bool, int32_t*, int64_t*, int64_t*, int64_t*, int64_t*, int64_t*, int64_t*, int64_t*, int64_t*, int64_t*, int64_t*, int64_t*, int64_t*, int64_t*, int64_t*, int64_t*, void*);
 static FnCalcNormalDamage g_OrigCalcNormalDamage = nullptr;
 
 
 static std::atomic<GameDataController_o*> g_gdc{nullptr};  // atomic, not raw pointer
 
+// =============================================================================
+//  Capture GDC singleton from any GameDataController method
+//  All Get* methods follow (GameDataController_o* __this, int32_t key, MethodInfo*)
+// =============================================================================
+using FnGdcGet = void* (__fastcall*)(GameDataController_o*, int32_t, void*);
+
+struct GdcHook {
+    FnGdcGet original;
+    const char* name;
+};
+
+static GdcHook g_GdcHooks[2] = {
+    { nullptr, "GameDataController$$GetHitDamage" },
+    { nullptr, "GameDataController$$GetMonster" },
+};
+
+static void* __fastcall GdcHook_GetHitDamage(GameDataController_o* __this, int32_t key, void* method) {
+    if (!g_gdc.load(std::memory_order_relaxed) && __this)
+        g_gdc.store(__this, std::memory_order_relaxed);
+    return g_GdcHooks[0].original(__this, key, method);
+}
+static void* __fastcall GdcHook_GetMonster(GameDataController_o* __this, int32_t key, void* method) {
+    if (!g_gdc.load(std::memory_order_relaxed) && __this)
+        g_gdc.store(__this, std::memory_order_relaxed);
+    return g_GdcHooks[1].original(__this, key, method);
+}
+
 static GameDataController_o* GetGDC() {
-    GameDataController_o* cached = g_gdc.load(std::memory_order_relaxed);
-    if (cached) return cached;
-    if (!g_base) return nullptr;
-
-    GameDataController_c* gdcTypeInfo = *reinterpret_cast<GameDataController_c**>(g_base + 0x714E958);
-    if (!gdcTypeInfo) { log("[GDC] gdcTypeInfo is null"); return nullptr; }
-
-    Il2CppClass* parentClass = gdcTypeInfo->_1.parent;
-    if (!parentClass) { log("[GDC] parent (Singleton<GDC>) is null"); return nullptr; }
-
-    auto* sf = reinterpret_cast<Singleton_GameDataController__StaticFields*>(parentClass->static_fields);
-    if (!sf) { log("[GDC] singleton static_fields is null"); return nullptr; }
-
-    GameDataController_o* instance = sf->g_instance;  // store in a local first
-    if (!instance) { log("[GDC] g_instance is null — GDC not yet initialized"); return nullptr; }
-
-    g_gdc.store(instance, std::memory_order_relaxed);  // only cache if non-null
-    return instance;
+    return g_gdc.load(std::memory_order_relaxed);
 }
 
 
@@ -145,10 +157,10 @@ static GameDataController_o* GetGDC() {
 
 static int64_t __fastcall Hook_CalcNormalDamage(
     AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_Client_HitDamage_o* hitDamageConfig,
-    int32_t skillLevel, bool isCrit, bool isDot, int32_t* hudColorIndex, double* skillPercentAmend,
-    double* talentGroupPercentAmend, double* skillAbsAmend, double* talentGroupAbsAmend, double* perkIntensityRatio, double* slotDmgRatio,
-    double* fromEE, double* erAmend, double* defAmend, double* rcdSlotDmgRatio, double* toEERCD, double* skillIntensityRatio,
-    double* toughnessBrokenDmgRatio, double* critRatio, double* envAmendRatio, void* method)
+    int32_t skillLevel, bool isCrit, bool isDot, int32_t* hudColorIndex, int64_t* skillPercentAmend,
+    int64_t* talentGroupPercentAmend, int64_t* skillAbsAmend, int64_t* talentGroupAbsAmend, int64_t* perkIntensityRatio, int64_t* slotDmgRatio,
+    int64_t* fromEE, int64_t* erAmend, int64_t* defAmend, int64_t* rcdSlotDmgRatio, int64_t* toEERCD, int64_t* skillIntensityRatio,
+    int64_t* toughnessBrokenDmgRatio, int64_t* critRatio, int64_t* envAmendRatio, void* method)
 {
     auto callOriginal = [&]() -> int64_t {
         return g_OrigCalcNormalDamage(
@@ -159,14 +171,14 @@ static int64_t __fastcall Hook_CalcNormalDamage(
     };
     
     // ── Step 1: walk klass chain for static fields ───────────────────────────
-    if (!fromActor)         { log("[CND] BAIL: fromActor is null");         return callOriginal(); }
-    if (!fromActor->klass)  { log("[CND] BAIL: fromActor->klass is null");  return callOriginal(); }
+    if (!fromActor)         { return callOriginal(); }
+    if (!fromActor->klass)  { return callOriginal(); }
 
     Il2CppClass* parentKlass = fromActor->klass->_1.parent;
-    if (!parentKlass) { log("[CND] BAIL: parentKlass is null"); return callOriginal(); }
+    if (!parentKlass) { return callOriginal(); }
 
     AdventureActor_c* actorClass = reinterpret_cast<AdventureActor_c*>(parentKlass);
-    if (!actorClass->static_fields) { log("[CND] BAIL: static_fields is null"); return callOriginal(); }
+    if (!actorClass->static_fields) { return callOriginal(); }
 
     AdventureActor_StaticFields* staticFields = actorClass->static_fields;
 
@@ -471,14 +483,14 @@ static void __fastcall Hook_SavePlayerSnapshot(AdventureActor_o* player, void* m
             snap.baseValues.resize(0x61, 0.0);
             snap.pctValues.resize(0x61, 0.0);
             for (int t = 1; t < 0x61; t++) {
-                double* origin = reinterpret_cast<double*>(
-                    reinterpret_cast<uint8_t*>(entriesArr) + 0x20 + t * 0x28 + 0x00);
-                double* baseAmend = reinterpret_cast<double*>(
-                    reinterpret_cast<uint8_t*>(entriesArr) + 0x20 + t * 0x28 + 0x08);
-                double* pctAmend = reinterpret_cast<double*>(
-                    reinterpret_cast<uint8_t*>(entriesArr) + 0x20 + t * 0x28 + 0x10);
-                snap.baseValues[t] = *origin + *baseAmend;
-                snap.pctValues[t] = *pctAmend;
+                int64_t* origin = reinterpret_cast<int64_t*>(
+                    reinterpret_cast<uint8_t*>(entriesArr) + 0x20 + t * 0x20 + 0x00);
+                int64_t* baseAmend = reinterpret_cast<int64_t*>(
+                    reinterpret_cast<uint8_t*>(entriesArr) + 0x20 + t * 0x20 + 0x08);
+                int64_t* pctAmend = reinterpret_cast<int64_t*>(
+                    reinterpret_cast<uint8_t*>(entriesArr) + 0x20 + t * 0x20 + 0x10);
+                snap.baseValues[t] = (double)(*origin + *baseAmend) / 16777216.0;
+                snap.pctValues[t] = (double)(*pctAmend) / 16777216.0;
             }
         } else {
             log("[SNAP] SavePlayerSnapshot: attributeList entries is null");
@@ -775,14 +787,14 @@ using FnUpdateLogic = void(__fastcall*)( void*, TrueSync_FP_o, void*);
 static FnUpdateLogic g_OrigUpdateLogic = nullptr;
 
 static void __fastcall Hook_UpdateLogic(void* self, TrueSync_FP_o logicDeltaTime, void* method) {
-    EnableAllDebugGizmos(g_base);
+    // EnableAllDebugGizmos(g_base);
 
     // Lazy init: resolve LockStepManager._time pointer for gameTime()
     if (!g_LockStepTimePtr) {
-        auto* lsTypeInfo = *reinterpret_cast<Il2CppClass**>(g_base + 0x70F2D78);
+        auto* lsTypeInfo = reinterpret_cast<Il2CppClass*>(g_base + 0x717a760);
         if (lsTypeInfo && lsTypeInfo->static_fields) {
             g_LockStepTimePtr = reinterpret_cast<int64_t*>(
-                reinterpret_cast<uint8_t*>(lsTypeInfo->static_fields) + 0x08);
+                reinterpret_cast<uint8_t*>(lsTypeInfo->static_fields) + 0x18);
             log("[init] LockStep._time resolved at %p", (void*)g_LockStepTimePtr);
         } else {
             log("[init] LockStep static fields still not ready after game loaded");
@@ -796,14 +808,11 @@ using FnBattleStart = void(__fastcall*)( void*, void*, void*);
 static FnBattleStart g_OrigBattleStart = nullptr;
 
 static void __fastcall Hook_BattleStart(void* self, void* evt, void* method) {
-    auto* lsTypeInfo = *reinterpret_cast<Il2CppClass**>(g_base + 0x70F2D78);
+    auto* lsTypeInfo = reinterpret_cast<Il2CppClass*>(g_base + 0x717a760);
     if (lsTypeInfo && lsTypeInfo->static_fields) {
         int64_t t = *reinterpret_cast<int64_t*>(
-            reinterpret_cast<uint8_t*>(lsTypeInfo->static_fields) + 0x08);
+            reinterpret_cast<uint8_t*>(lsTypeInfo->static_fields) + 0x18);
         g_CombatStartTimeFP.store(t, std::memory_order_relaxed);
-        //log("[BattleStart] Combat started! LockStep._time = %lld", (long long)t);
-    } else {
-        //log("[BattleStart] Combat started! (could not read time)");
     }
     g_OrigBattleStart(self, evt, method);
 }
@@ -876,6 +885,8 @@ static DWORD WINAPI InitThread(LPVOID) {
     InstallHook(g_base + RVA_CLONE_SET_ATTR,         reinterpret_cast<void*>(&Hook_CloneSetAttr),       (void**)&g_OrigCloneSetAttr,       "MonsterCloneAdventureActor$$SetAttr");
     InstallHook(g_base + RVA_PARSE_SUMMON_CFG,       reinterpret_cast<void*>(&Hook_ParseSummonCfg),     (void**)&g_OrigParseSummonCfg,     "MonsterSummonInfo$$ParseSummonCfg");
     InstallHook(g_base + RVA_SAVE_PLAYER_SNAPSHOT,   reinterpret_cast<void*>(&Hook_SavePlayerSnapshot), (void**)&g_OrigSaveSnapshot,       "PlayerAdventureActor$$SavePlayerAttributeSnapshot");
+    InstallHook(g_base + RVA_GDC_GET_HIT_DAMAGE,    reinterpret_cast<void*>(&GdcHook_GetHitDamage),   (void**)&g_GdcHooks[0].original, g_GdcHooks[0].name);
+    InstallHook(g_base + RVA_GDC_GET_MONSTER,       reinterpret_cast<void*>(&GdcHook_GetMonster),      (void**)&g_GdcHooks[1].original, g_GdcHooks[1].name);
     InstallHttpHooks(g_base);
     
     log("[init] Ready.");

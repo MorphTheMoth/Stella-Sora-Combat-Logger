@@ -567,11 +567,11 @@ static void __fastcall Hook_DispatchMsgToLua(
 //  RVAs — HTTP layer
 // =============================================================================
 static constexpr uintptr_t RVA_YOSTAR_RESPONSE    = 0x3455A10; // 54876688
-static constexpr uintptr_t RVA_ALI_HTTP           = 0x5C5D7F0; // 96851952
-static constexpr uintptr_t RVA_SLS_HTTP           = 0x5B83CE0; // 95960288
-static constexpr uintptr_t RVA_NOVA_SEND_MSG      = 0x11D2AA0; // 18690208
-static constexpr uintptr_t RVA_NET_SEND_MSG       = 0x1310900; // 19990784
-static constexpr uintptr_t RVA_NET_DISPATCH_TO_LUA= 0x1311710; // 19994384
+static constexpr uintptr_t RVA_ALI_HTTP           = 0x5C5D4F0; // 96851184
+static constexpr uintptr_t RVA_SLS_HTTP           = 0x5BE5960; // 96360800
+static constexpr uintptr_t RVA_NOVA_SEND_MSG      = 0x11EAD80; // 18787712
+static constexpr uintptr_t RVA_NET_SEND_MSG       = 0x133E080; // 20177024
+static constexpr uintptr_t RVA_NET_DISPATCH_TO_LUA= 0x133EEA0; // 20180640
 
 // =============================================================================
 //  InstallHttpHooks (public entry point called from InitThread)

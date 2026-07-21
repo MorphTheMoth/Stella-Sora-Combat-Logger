@@ -34,7 +34,8 @@ static std::unordered_set<int32_t>  g_LevelMapKnown;
 // =============================================================================
 //  GAME TIME
 // =============================================================================
-static constexpr int64_t FP_ONE = 4294967296LL;
+static constexpr int64_t FP_ONE  = 4294967296LL;  // 2^32
+static constexpr int64_t FDP_ONE = 16777216LL;     // 2^24
 
 std::string gameTime() {
     int64_t elapsedFP = 0;
@@ -336,11 +337,10 @@ json logAdventureActorAttrsJson(AttributeList_o* attrList, const std::vector<Ele
 
     for (int i = 0; i < count && i < 98; ++i) {
         const auto& e = entries->m_Items[i].fields;
-        double origin = e.origin;
-        double base_  = e.baseAmend;
-        double pct    = e.percentAmend;
-        double abs_   = e.absAmend;
-        double limPct = e.limitedPercentAmend;
+        double origin = (double)e.origin / FDP_ONE;
+        double base_  = (double)e.baseAmend / FDP_ONE;
+        double pct    = (double)e.percentAmend / FDP_ONE;
+        double abs_   = (double)e.absAmend / FDP_ONE;
 
         if (overlay) {
             for (const auto& ov : *overlay) {
@@ -355,7 +355,7 @@ json logAdventureActorAttrsJson(AttributeList_o* attrList, const std::vector<Ele
 
         auto nearZero = [](double v) { return v > -1e-7 && v < 1e-7; };
         if (nearZero(origin) &&
-            nearZero(base_) && nearZero(pct) && nearZero(abs_) && nearZero(limPct)) {
+            nearZero(base_) && nearZero(pct) && nearZero(abs_)) {
             attrs.push_back(json::object());  // empty object — JS treats as all-zero
             continue;
         }
@@ -366,7 +366,6 @@ json logAdventureActorAttrsJson(AttributeList_o* attrList, const std::vector<Ele
         if (!nearZero(base_))   attr["base"]   = Round(base_, 4);
         if (!nearZero(pct))     attr["pct"]    = Round(pct, 4);
         if (!nearZero(abs_))    attr["abs"]    = Round(abs_, 4);
-        if (!nearZero(limPct))  attr["limPct"] = Round(limPct, 4);
         attrs.push_back(attr);
     }
 
@@ -389,7 +388,7 @@ json logAdventureActorSpecialAttrsJson(AdventureActor_o* actor) {
     json sattrs = json::array();
     for (int i = 0; i < count && i < 64; ++i) {
         const auto& e = entries->m_Items[i].fields;
-        double current  = e.current;
+        double current  = (double)e.current / FDP_ONE;
         int32_t max_type = e.max_type;
 
         auto nearZero = [](double v) { return v > -1e-7 && v < 1e-7; };
@@ -520,7 +519,7 @@ static std::vector<ElemDictEntry> ReadElemDict(ActorAdditionalAttrInfo_o* info) 
     auto* dict = info->fields.attributeWithElementOrDamageTypeDict;
     if (!dict || !dict->fields._entries) return out;
 
-    struct Entry { int32_t hashCode; int32_t next; int32_t key; float value; };
+    struct Entry { int32_t hashCode; int32_t next; int32_t key; int64_t value; };
     struct EntryArray {
         Il2CppObject        obj;
         Il2CppArrayBounds*  bounds;
@@ -535,7 +534,7 @@ static std::vector<ElemDictEntry> ReadElemDict(ActorAdditionalAttrInfo_o* info) 
         const Entry& e = arr->m_Items[i];
         if (e.hashCode <= 0) continue;
         ElementOrDmgAttrKey k = DecodeElemKey(e.key);
-        out.push_back({ k.attributeType, k.elementOrDamageType, k.isElementType, k.mode, (double)e.value });
+        out.push_back({ k.attributeType, k.elementOrDamageType, k.isElementType, k.mode, (double)e.value / FDP_ONE });
     }
     return out;
 }
@@ -670,8 +669,23 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
 
     // Pre-build key set from GDC's EffectValue_Map for fast level-enumeration lookups
     std::unordered_set<int32_t> effectValueKeys;
-    if (gdc && gdc->fields.EffectValue_Map)
+    if (gdc && gdc->fields.EffectValue_Map) {
+        static bool once = false;
         effectValueKeys = CollectDictKeys(gdc->fields.EffectValue_Map);
+        if (!once) {
+            once = true;
+            log("[LVLMAP] gdc=%p EffectValue_Map=%p keys=%zu",
+                (void*)gdc, (void*)gdc->fields.EffectValue_Map, effectValueKeys.size());
+        }
+    } else {
+        static bool once2 = false;
+        if (!once2) {
+            once2 = true;
+            log("[LVLMAP] MISSING: gdc=%p fields.EffectValue_Map=%p",
+                (void*)gdc,
+                (void*)(gdc ? gdc->fields.EffectValue_Map : nullptr));
+        }
+    }
 
     auto* entriesArr = effectsDict->fields._entries;
     int   slotCount  = effectsDict->fields._count;
@@ -866,6 +880,7 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
             // Enumerate all possible value config IDs for this effect at different levels
             json allValueOptions = json::array();
             if (!effectValueKeys.empty() && baseConfigId > 0) {
+                static bool once3 = false;
                 bool anyFound = false;
                 for (int lvl = 0; lvl <= 50; ++lvl) {
                     int32_t vid = baseConfigId + lvl * 10;
@@ -878,6 +893,12 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
                     } else if (anyFound) {
                         break;
                     }
+                }
+                if (!once3 && anyFound) {
+                    once3 = true;
+                    log("[LVLMAP] baseConfigId=%d first key at lvl=0 vid=%d found=%d keysample=%zu",
+                        baseConfigId, baseConfigId + 0*10, (int)(effectValueKeys.count(baseConfigId)),
+                        effectValueKeys.size() > 0 ? *(effectValueKeys.begin()) : 0);
                 }
             }
             WriteLevelMapEntry(baseConfigId, levelTypeData, levelData, allValueOptions);
@@ -1023,10 +1044,10 @@ static inline double RoundTo(double value, int decimals) {
 }
 
 void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_Client_HitDamage_o* hitDamageConfig,
-                  int32_t skillLevel, bool isCrit, bool isDot, int32_t* hudColorIndex, double* skillPercentAmend,
-                  double* talentGroupPercentAmend, double* skillAbsAmend, double* talentGroupAbsAmend, double* perkIntensityRatio,
-                  double* slotDmgRatio, double* fromEE, double* erAmend, double* defAmend, double* rcdSlotDmgRatio, double* toEERCD,
-                  double* skillIntensityRatio, double* toughnessBrokenDmgRatio, double* critRatio, double* envAmendRatio,
+                  int32_t skillLevel, bool isCrit, bool isDot, int32_t* hudColorIndex, int64_t* skillPercentAmend,
+                  int64_t* talentGroupPercentAmend, int64_t* skillAbsAmend, int64_t* talentGroupAbsAmend, int64_t* perkIntensityRatio,
+                  int64_t* slotDmgRatio, int64_t* fromEE, int64_t* erAmend, int64_t* defAmend, int64_t* rcdSlotDmgRatio, int64_t* toEERCD,
+                  int64_t* skillIntensityRatio, int64_t* toughnessBrokenDmgRatio, int64_t* critRatio, int64_t* envAmendRatio,
                   int64_t finalDamage,
                   AttributeList_o* attackerInfo, AttributeList_o* defenderInfo, 
                   ActorAdditionalAttrInfo_o* fromAdditionalAttrInfo,
@@ -1101,21 +1122,22 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
     dmgParams["isCrit"]                  = isCrit;
     dmgParams["isDot"]                   = isDot;
     dmgParams["hudColor"]                = hudColorIndex ? *hudColorIndex : -1;
-    dmgParams["skillPercentAmend"]       = Round(skillPercentAmend ? *skillPercentAmend : 0.0);
-    dmgParams["talentGroupPercentAmend"] = RoundTo(talentGroupPercentAmend ? *talentGroupPercentAmend : 0.0, 4);
-    dmgParams["skillAbsAmend"]           = RoundTo(skillAbsAmend ? *skillAbsAmend : 0.0, 4);
-    dmgParams["talentGroupAbsAmend"]     = RoundTo(talentGroupAbsAmend ? *talentGroupAbsAmend : 0.0, 4);
-    dmgParams["perkIntensityRatio"]      = RoundTo(perkIntensityRatio ? *perkIntensityRatio : 0.0, 4);
-    dmgParams["slotDmgRatio"]            = RoundTo(slotDmgRatio ? *slotDmgRatio : 0.0, 4);
-    dmgParams["fromEE"]                  = RoundTo(fromEE ? *fromEE : 0.0, 4);
-    dmgParams["erAmend"]                 = RoundTo(erAmend ? *erAmend : 0.0, 4);
-    dmgParams["defAmend"]                = RoundTo(defAmend ? *defAmend : 0.0, 4);
-    dmgParams["rcdSlotDmgRatio"]         = RoundTo(rcdSlotDmgRatio ? *rcdSlotDmgRatio : 0.0, 4);
-    dmgParams["toEERCD"]                 = RoundTo(toEERCD ? *toEERCD : 0.0, 4);
-    dmgParams["skillIntensityRatio"]     = RoundTo(skillIntensityRatio ? *skillIntensityRatio : 0.0, 4);
-    dmgParams["toughnessBrokenDmgRatio"] = RoundTo(toughnessBrokenDmgRatio ? *toughnessBrokenDmgRatio : 0.0, 4);
-    dmgParams["critRatio"]               = RoundTo(critRatio ? *critRatio : 0.0, 4);
-    dmgParams["envAmendRatio"]           = RoundTo(envAmendRatio ? *envAmendRatio : 0.0, 4);
+    auto toDbl = [](int64_t* p) -> double { return p ? (double)(*p) / FDP_ONE : 0.0; };
+    dmgParams["skillPercentAmend"]       = Round(toDbl(skillPercentAmend));
+    dmgParams["talentGroupPercentAmend"] = RoundTo(toDbl(talentGroupPercentAmend), 4);
+    dmgParams["skillAbsAmend"]           = RoundTo(toDbl(skillAbsAmend), 4);
+    dmgParams["talentGroupAbsAmend"]     = RoundTo(toDbl(talentGroupAbsAmend), 4);
+    dmgParams["perkIntensityRatio"]      = RoundTo(toDbl(perkIntensityRatio), 4);
+    dmgParams["slotDmgRatio"]            = RoundTo(toDbl(slotDmgRatio), 4);
+    dmgParams["fromEE"]                  = RoundTo(toDbl(fromEE), 4);
+    dmgParams["erAmend"]                 = RoundTo(toDbl(erAmend), 4);
+    dmgParams["defAmend"]                = RoundTo(toDbl(defAmend), 4);
+    dmgParams["rcdSlotDmgRatio"]         = RoundTo(toDbl(rcdSlotDmgRatio), 4);
+    dmgParams["toEERCD"]                 = RoundTo(toDbl(toEERCD), 4);
+    dmgParams["skillIntensityRatio"]     = RoundTo(toDbl(skillIntensityRatio), 4);
+    dmgParams["toughnessBrokenDmgRatio"] = RoundTo(toDbl(toughnessBrokenDmgRatio), 4);
+    dmgParams["critRatio"]               = RoundTo(toDbl(critRatio), 4);
+    dmgParams["envAmendRatio"]           = RoundTo(toDbl(envAmendRatio), 4);
     dmgParams["finalDamage"]             = finalDamage;
     j["DamageParams"]                    = dmgParams;
     

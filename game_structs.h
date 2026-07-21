@@ -160,7 +160,7 @@ struct __declspec(align(8)) BuffEffectBase_Fields {
 	int32_t processCount;
 	struct UnityEngine_WaitForSeconds_o* _waitForSeconds;
 	int32_t _buffuid;
-	float period;
+	int64_t period;
 };
 
 struct __declspec(align(8)) Nova_Client_HitDamage_Fields {
@@ -989,7 +989,6 @@ struct __declspec(align(8)) BuffEntity_Fields {
 	int32_t exceptNum;
 	struct System_Collections_Generic_List_int__o* _Tags_k__BackingField;
 	struct TrueSync_FP_o exceptTime;
-	bool _I_New_k__BackingField;
 	bool removed;
 };
 
@@ -1287,6 +1286,7 @@ struct BuffCom_Fields : LogicMonoComponent_Fields {
 	struct BuffCom_BuffUIHandle_o* BuffUIEvent;
 	struct System_Collections_Generic_Dictionary_int__int__o* firstIdBuffs;
 	struct AdventureActor_o* _owner;
+	bool useOldCode;
 	struct System_Collections_Generic_List_BuffCom_BuffHeadSlot__o* buffHeadSlots;
 	struct UnityEngine_Transform_o* buffSlotRoot;
 	int32_t tokenIndex;
@@ -1297,7 +1297,6 @@ struct BuffCom_Fields : LogicMonoComponent_Fields {
 	struct BuffCom_ReduceTimeHandle_o* JsReduceTimeEvent;
 	int32_t _reduceCountA;
 	int32_t _reduceTimeCount;
-	struct System_Collections_Generic_Dictionary_int__List_BuffEntity___o* buffTags;
 };
 
 struct ActorEffectManage_Fields : LogicMonoComponent_Fields {
@@ -1346,6 +1345,7 @@ struct AdventureActor_Fields : LogicEntity_Fields {
 	struct System_String_o* _attrID_k__BackingField;
 	int32_t _attrTempleteID_k__BackingField;
 	int32_t _skinID_k__BackingField;
+	struct TrueSync_FP_o strengthOverride;
 	bool isSyncActived;
 	struct System_String_o* GroupId;
 	int32_t _rowOfScene_k__BackingField;
@@ -1378,6 +1378,7 @@ struct AdventureActor_Fields : LogicEntity_Fields {
 	struct TrueSync_TSVector2_o _lastAttackTargetDeterministicPosition;
 	int64_t monsterTargetId;
 	struct LogicEntity_o* _monsterTarget;
+	struct LogicEntity_o* _soldierAttackTarget;
 	bool comboTriggerExitTime;
 	struct System_Action_AdventureActor__Combo_Event__o* _onAttackCustomEvent;
 	struct System_Action_AdventureActor__o* _onAttackInterrupted;
@@ -1454,7 +1455,7 @@ struct AdventureActor_Fields : LogicEntity_Fields {
 	int32_t _deadImmunityRC;
 	bool _isHpLocked_k__BackingField;
 	int64_t _lockedHp_k__BackingField;
-	bool forceControl;
+	int32_t _forceControlRC;
 	int32_t _disableMoveRC;
 	int32_t _disableMoveAgentCanMoveRC;
 	int32_t _disableRotateRC;
@@ -1488,7 +1489,7 @@ struct AdventureActor_Fields : LogicEntity_Fields {
 	struct TrueSync_FP_o _enterStunTime;
 	bool _isStunSpecialLostControlFinish;
 	struct TrueSync_CoroutineNode_o* _stunSpecialLostControlNode;
-	float currentDuration;
+	struct TrueSync_FP_o currentDuration;
 	struct TrueSync_FP_o totalDuration;
 	struct TrueSync_CoroutineNode_o* _charmMoveCoroutine;
 	struct TrueSync_TSVector2_o _charmDir;
@@ -1496,6 +1497,9 @@ struct AdventureActor_Fields : LogicEntity_Fields {
 	int64_t _fromId;
 	struct TrueSync_CoroutineNode_o* _terrorMoveCoroutine;
 	struct TrueSync_TSVector2_o _terrorDir;
+	struct TrueSync_FP_o _enterToughnessBrokenTime;
+	bool _isToughnessBrokenSpecialLostControlFinish;
+	struct TrueSync_CoroutineNode_o* _toughnessBrokenSpecialLostControlNode;
 	struct AdventureActor_o* tauntFromActor;
 	struct DeterministicShape_o _shape;
 	struct TrueSync_TSVector2_o randomPos;
@@ -1544,6 +1548,8 @@ struct AdventureActor_Fields : LogicEntity_Fields {
 	struct System_Collections_Generic_Dictionary_int__int__o* tags;
 	struct System_Collections_Generic_Dictionary_int__List_int___o* elementMarkTags;
 	struct System_Collections_Generic_Dictionary_int__FP__o* _hitImmunitys;
+	bool _hitIdImmuneTriggered;
+	bool _hitIdImmuneSeenNonImmune;
 	struct AdventureActor_ShowChangedHandle_o* ShowChangedEvent;
 	struct InGameActorVisualControlComponent_o* _visualControl_k__BackingField;
 	int32_t _hideRC;
@@ -2133,16 +2139,15 @@ struct System_String_o {
 };
 
 struct SpecialAttributeEntry_Fields {
-	double current;
+	int64_t current;
 	int32_t max_type;
 };
 
 struct AttributeEntry_Fields {
-	double origin;
-	double baseAmend;
-	double percentAmend;
-	double absAmend;
-	double limitedPercentAmend;
+	int64_t origin;
+	int64_t baseAmend;
+	int64_t percentAmend;
+	int64_t absAmend;
 };
 
 struct SpecialAttributeEntry_o {
@@ -2334,7 +2339,7 @@ struct __declspec(align(8)) ActorAdditionalAttrInfo_Fields {
 	struct AttributeList_o* _attributeList_k__BackingField;
 	bool _forceCrit_k__BackingField;
 	bool _forceMissDamage_k__BackingField;
-	struct System_Collections_Generic_Dictionary_int__float__o* attributeWithElementOrDamageTypeDict;
+	struct System_Collections_Generic_Dictionary_int__FDP__o* attributeWithElementOrDamageTypeDict;
 };
 
 struct ActorAdditionalAttrInfo_VTable {
@@ -2358,7 +2363,7 @@ struct ActorAdditionalAttrInfo_o {
 	ActorAdditionalAttrInfo_Fields fields;
 };
 
-struct __declspec(align(8)) System_Collections_Generic_Dictionary_int__float__Fields {
+struct __declspec(align(8)) System_Collections_Generic_Dictionary_int__FDP__Fields {
 	struct System_Int32_array* _buckets;
 	struct System_Collections_Generic_Dictionary_Entry_TKey__TValue__array* _entries;
 	int32_t _count;
@@ -2370,7 +2375,7 @@ struct __declspec(align(8)) System_Collections_Generic_Dictionary_int__float__Fi
 	struct System_Collections_Generic_Dictionary_ValueCollection_TKey__TValue__o* _values;
 	Il2CppObject* _syncRoot;
 };
-struct System_Collections_Generic_Dictionary_int__float__VTable {
+struct System_Collections_Generic_Dictionary_int__FDP__VTable {
 	VirtualInvokeData _0_Equals;
 	VirtualInvokeData _1_Finalize;
 	VirtualInvokeData _2_GetHashCode;
@@ -2418,17 +2423,17 @@ struct System_Collections_Generic_Dictionary_int__float__VTable {
 	VirtualInvokeData _44_GetObjectData;
 	VirtualInvokeData _45_OnDeserialization;
 };
-struct System_Collections_Generic_Dictionary_int__float__c {
+struct System_Collections_Generic_Dictionary_int__FDP__c {
 	Il2CppClass_1 _1;
 	void* static_fields;
 	Il2CppRGCTXData* rgctx_data;
 	Il2CppClass_2 _2;
-	System_Collections_Generic_Dictionary_int__float__VTable vtable;
+	System_Collections_Generic_Dictionary_int__FDP__VTable vtable;
 };
-struct System_Collections_Generic_Dictionary_int__float__o {
-	System_Collections_Generic_Dictionary_int__float__c *klass;
+struct System_Collections_Generic_Dictionary_int__FDP__o {
+	System_Collections_Generic_Dictionary_int__FDP__c *klass;
 	void *monitor;
-	System_Collections_Generic_Dictionary_int__float__Fields fields;
+	System_Collections_Generic_Dictionary_int__FDP__Fields fields;
 };
 
 struct __declspec(align(8)) System_Collections_Generic_Dictionary_int__int__Fields {
@@ -2629,7 +2634,7 @@ struct PlayerAdventureActor_Fields : AdventureActor_Fields {
 	bool isBornForceMove;
 	struct AttributeEntry_array* playerEntries;
 	struct AttributeList_o* attributeListOfInitialSnapshot;
-	struct System_Collections_Generic_Dictionary_int__float__o* attributeWithElementOrDamageTypeDictOfInitialSnapshot;
+	struct System_Collections_Generic_Dictionary_int__FDP__o* attributeWithElementOrDamageTypeDictOfInitialSnapshot;
 	struct System_Action_o* dodgeSkillActivationEndEvent;
 	struct System_Collections_Generic_Dictionary_ActionKey__ActionCondition__o* _actionConditionDict;
 	bool _movementHasInput;
@@ -2902,7 +2907,7 @@ struct AdventureWeapon_Fields : LogicEntity_Fields {
 	struct DeterministicCollider_o* _dtCollider_k__BackingField;
 	struct SkillSlotLevelInfo_o* bindSkillSlotLevelInfo;
 	struct AttributeList_o* attributeList;
-	struct System_Collections_Generic_Dictionary_int__float__o* attributeWithElementOrDamageTypeDict;
+	struct System_Collections_Generic_Dictionary_int__FDP__o* attributeWithElementOrDamageTypeDict;
 	struct System_String_o* _DefaultWeaponTag_k__BackingField;
 	struct System_String_o* _DefaultBulletTag_k__BackingField;
 	struct UnityEngine_Vector3_o _DefaultWeaponScale_k__BackingField;
@@ -3307,6 +3312,7 @@ struct AreaEffectEntity_Fields : LogicEntity_Fields {
 	struct UnityEngine_Vector3_o orginalAreaScale;
 	struct AdventureActor_o* _owner_k__BackingField;
 	struct AdventureFXPlayer_o* _fxPlayer_k__BackingField;
+	int64_t _fxToken;
 	struct AdventureEarlyWarningFXPlayer_o* _earlyWarningFXPlayer_k__BackingField;
 	int64_t _earlyWarningFXToken;
 	struct System_Collections_Generic_List_AreaEffect_Component__o* _components;
@@ -3315,7 +3321,7 @@ struct AreaEffectEntity_Fields : LogicEntity_Fields {
 	struct TrueSync_FP_o _leftTime;
 	struct TrueSync_FP_o _earlyWarningTime;
 	struct AttributeList_o* attributeList;
-	struct System_Collections_Generic_Dictionary_int__float__o* attributeWithElementOrDamageTypeDict;
+	struct System_Collections_Generic_Dictionary_int__FDP__o* attributeWithElementOrDamageTypeDict;
 	struct SkillSlotLevelInfo_o* bindSkillSlotLevelInfo;
 	struct System_Action_o* OnBeforeEnd;
 	int64_t _battleDataOwnerId;
