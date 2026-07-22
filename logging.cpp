@@ -22,8 +22,8 @@ FILE*               g_Log     = nullptr;
 FILE*               g_JsonLog = nullptr;
 std::mutex          g_Mutex;
 LogConfig           g_Cfg;
-std::atomic<int64_t> g_CombatStartTimeFP{0};
-int64_t*            g_LockStepTimePtr = nullptr;
+std::atomic<int64_t>          g_CombatStartTimeFP{0};
+std::atomic<int64_t>          g_GameTimeFP{0};
 
 // Level map: configId → {levelTypeData, levelData, allValueConfigIds}
 // Written once per unique configId to a sidecar file to avoid repeating
@@ -38,12 +38,9 @@ static constexpr int64_t FP_ONE  = 4294967296LL;  // 2^32
 static constexpr int64_t FDP_ONE = 16777216LL;     // 2^24
 
 std::string gameTime() {
-    int64_t elapsedFP = 0;
-    if (g_LockStepTimePtr) {
-        int64_t lockstepTime = *g_LockStepTimePtr;
-        int64_t combatStart = g_CombatStartTimeFP.load(std::memory_order_relaxed);
-        elapsedFP = combatStart != 0 ? lockstepTime - combatStart : 0;
-    }
+    int64_t lockstepTime = g_GameTimeFP.load(std::memory_order_relaxed);
+    int64_t combatStart  = g_CombatStartTimeFP.load(std::memory_order_relaxed);
+    int64_t elapsedFP = combatStart != 0 ? lockstepTime - combatStart : 0;
     int64_t totalMs  = (elapsedFP * 1000LL) / FP_ONE;
     int     ms       = (int)(totalMs % 1000);
     int64_t totalSec = totalMs / 1000;

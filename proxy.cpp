@@ -312,14 +312,6 @@ static void __fastcall Hook_CopyBattleData(void* areaEntity, bool force, void* m
             summonerResolved = reinterpret_cast<AdventureActor_o*>(rawSummoner);
     }
 
-    log("[AREA_SNAP] CopyBattleData force=%d fxPlayer=%p fxPlayerId=%s owner=%p ownerId=%s source=%s isSummoned=%d summoner=%s",
-        (int)force,
-        (void*)fxPlayer, fxPlayer ? adventureActorId(fxPlayer).c_str() : "null",
-        (void*)owner, owner ? adventureActorId(owner).c_str() : "null",
-        source ? adventureActorId(source).c_str() : "null",
-        (int)isSummoned,
-        summonerResolved ? adventureActorId(summonerResolved).c_str() : "null");
-
     // Use resolved summoner as the final source for effects
     if (summonerResolved)
         source = summonerResolved;
@@ -787,19 +779,7 @@ using FnUpdateLogic = void(__fastcall*)( void*, TrueSync_FP_o, void*);
 static FnUpdateLogic g_OrigUpdateLogic = nullptr;
 
 static void __fastcall Hook_UpdateLogic(void* self, TrueSync_FP_o logicDeltaTime, void* method) {
-    // EnableAllDebugGizmos(g_base);
-
-    // Lazy init: resolve LockStepManager._time pointer for gameTime()
-    if (!g_LockStepTimePtr) {
-        auto* lsTypeInfo = reinterpret_cast<Il2CppClass*>(g_base + 0x717a760);
-        if (lsTypeInfo && lsTypeInfo->static_fields) {
-            g_LockStepTimePtr = reinterpret_cast<int64_t*>(
-                reinterpret_cast<uint8_t*>(lsTypeInfo->static_fields) + 0x18);
-            log("[init] LockStep._time resolved at %p", (void*)g_LockStepTimePtr);
-        } else {
-            log("[init] LockStep static fields still not ready after game loaded");
-        }
-    }
+    g_GameTimeFP.fetch_add(logicDeltaTime.fields._serializedValue, std::memory_order_relaxed);
 
     g_OrigUpdateLogic(self, logicDeltaTime, method);
 }
@@ -808,12 +788,7 @@ using FnBattleStart = void(__fastcall*)( void*, void*, void*);
 static FnBattleStart g_OrigBattleStart = nullptr;
 
 static void __fastcall Hook_BattleStart(void* self, void* evt, void* method) {
-    auto* lsTypeInfo = reinterpret_cast<Il2CppClass*>(g_base + 0x717a760);
-    if (lsTypeInfo && lsTypeInfo->static_fields) {
-        int64_t t = *reinterpret_cast<int64_t*>(
-            reinterpret_cast<uint8_t*>(lsTypeInfo->static_fields) + 0x18);
-        g_CombatStartTimeFP.store(t, std::memory_order_relaxed);
-    }
+    g_CombatStartTimeFP.store(g_GameTimeFP.load(std::memory_order_relaxed), std::memory_order_relaxed);
     g_OrigBattleStart(self, evt, method);
 }
 
@@ -822,12 +797,12 @@ static FnSpawnSkill g_OrigSpawnSkill = nullptr;
 
 static void* __fastcall Hook_SpawnSkill(void* self, int32_t skillId, void* method) {
     void* result = g_OrigSpawnSkill(self, skillId, method);
-    
+
     if (skillId < 10000000) return result;
     if (!g_Cfg.skill_casts) return result;
-    
+
     BuildSkillCastJson(skillId);
-    
+
     return result;
 }
 

@@ -1094,6 +1094,13 @@ struct UnityEngine_MonoBehaviour_Fields : UnityEngine_Behaviour_Fields {
 	struct System_Threading_CancellationTokenSource_o* m_CancellationTokenSource;
 };
 
+struct LockStepManager_c {
+	Il2CppClass_1 _1;
+	struct LockStepManager_StaticFields* static_fields;
+	Il2CppRGCTXData* rgctx_data;
+	Il2CppClass_2 _2;
+};
+
 struct DeterministicShape_Fields {
 	int32_t shapeType;
 	struct TrueSync_FP_o width;

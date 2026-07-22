@@ -63,8 +63,8 @@ extern FILE*                g_Log;
 extern FILE*                g_JsonLog;
 extern std::mutex           g_Mutex;
 extern LogConfig            g_Cfg;
-extern std::atomic<int64_t> g_CombatStartTimeFP;
-extern int64_t*            g_LockStepTimePtr;
+extern std::atomic<int64_t>            g_CombatStartTimeFP;
+extern std::atomic<int64_t>            g_GameTimeFP;
 
 // Basic logging
 void log(const char* fmt, ...);
