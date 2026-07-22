@@ -29,7 +29,7 @@ function getDefender(ev) {
 
 // ─── Filter state ─────────────────
 let typeFilter = new Set(['Hit', 'Skill Cast']);
-let charFilter = '', skillFilter = '', defenderFilter = '';
+let charFilter = '', skillFilter = '', damageTypeFilter = '', defenderFilter = '';
 
 function buildCharFilter() {
     const all = new Set(); allEvents.forEach(e => getChars(e).forEach(c => all.add(c)));
@@ -56,6 +56,29 @@ function buildSkillFilter(evs) {
     sel.value = [...sel.options].some(o=>o.value===cur) ? cur : '';
     skillFilter = sel.value;
 }
+function buildDamageTypeFilter(evs) {
+    const all = new Set();
+    evs.forEach(e => {
+        if (e.Type === 'Hit' && e.HitConfig && e.HitConfig.damageType != null) {
+            all.add(e.HitConfig.damageType);
+        }
+    });
+    const sel = document.getElementById('damageTypeFilter');
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">All Damage Types</option>';
+    const MAX = 28;
+    [...all].sort((a, b) => a - b).forEach(dt => {
+        const o = document.createElement('option');
+        o.value = dt;
+        const label = dtName(dt);
+        o.textContent = label.length > MAX ? label.slice(0, MAX) + '…' : label;
+        o.title = label;
+        sel.appendChild(o);
+    });
+    sel.value = [...sel.options].some(o => o.value === cur) ? cur : '';
+    damageTypeFilter = sel.value;
+}
+
 function buildDefenderFilter() {
     const hitCounts = {};
     allEvents.forEach(e => getDefender(e).forEach(d => { hitCounts[d] = (hitCounts[d] || 0) + 1; }));
@@ -94,6 +117,8 @@ function applyFilters() {
     if (charFilter) evs = evs.filter(e => e.Type === 'Reset' || getChars(e).has(charFilter));
     buildSkillFilter(evs);
     if (skillFilter) evs = evs.filter(e => e.Type === 'Reset' || getSkillName(e) === skillFilter);
+    buildDamageTypeFilter(evs);
+    if (damageTypeFilter) evs = evs.filter(e => e.Type === 'Reset' || (e.HitConfig && e.HitConfig.damageType != null && String(e.HitConfig.damageType) === damageTypeFilter));
     if (defenderFilter) evs = evs.filter(e => e.Type === 'Reset' || (getDefender(e).has(defenderFilter) || getDefender(e).size === 0));
     return evs;
 }
@@ -682,6 +707,11 @@ window.onCharFilterChange = function() {
 
 window.onSkillFilterChange = function() {
     skillFilter = document.getElementById('skillFilter').value;
+    refilterAndRender(true);
+};
+
+window.onDamageTypeFilterChange = function() {
+    damageTypeFilter = document.getElementById('damageTypeFilter').value;
     refilterAndRender(true);
 };
 

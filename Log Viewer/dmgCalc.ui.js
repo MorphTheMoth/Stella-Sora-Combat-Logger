@@ -17,6 +17,7 @@ const dcDisabled = new Set();
 // ─── DC filter state ──────────────────────────────────────────────────────────
 let dcCharFilter = '';
 let dcSkillFilter = '';
+let dcDamageTypeFilter = '';
 let dcDefenderFilter = '';
 
 // Per-field bonus values (user-typed numbers added to all hits)
@@ -756,6 +757,29 @@ function dcBuildSkillFilter(evs) {
     dcSkillFilter = sel.value;
 }
 
+function dcBuildDamageTypeFilter(evs) {
+    const all = new Set();
+    evs.forEach(e => {
+        if (e.HitConfig && e.HitConfig.damageType != null) {
+            all.add(e.HitConfig.damageType);
+        }
+    });
+    const sel = document.getElementById('dcDamageTypeFilter');
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">All Damage Types</option>';
+    const MAX = 28;
+    [...all].sort((a, b) => a - b).forEach(dt => {
+        const o = document.createElement('option');
+        o.value = dt;
+        const label = dtName(dt);
+        o.textContent = label.length > MAX ? label.slice(0, MAX) + '…' : label;
+        o.title = label;
+        sel.appendChild(o);
+    });
+    sel.value = [...sel.options].some(o => o.value === cur) ? cur : '';
+    dcDamageTypeFilter = sel.value;
+}
+
 function dcBuildDefenderFilter(autoSelect = false) {
     const dmgTotals = {};
     allEvents.filter(e => e.Type === 'Hit').forEach(e => {
@@ -794,6 +818,8 @@ function dcApplyFilters() {
     if (dcCharFilter) evs = evs.filter(e => (e.AttackerDisplay || '') === dcCharFilter);
     dcBuildSkillFilter(evs);
     if (dcSkillFilter) evs = evs.filter(e => ((e.HitConfig || {}).skillTitle || '') === dcSkillFilter);
+    dcBuildDamageTypeFilter(evs);
+    if (dcDamageTypeFilter) evs = evs.filter(e => e.HitConfig && String(e.HitConfig.damageType) === dcDamageTypeFilter);
     if (dcDefenderFilter) {
         evs = evs.filter(e => {
             const name = e.DefenderDisplay || e.Defender;
@@ -813,6 +839,11 @@ window.dcOnSkillFilterChange = function() {
     dcSkillFilter = document.getElementById('dcSkillFilter').value;
     dcRefilterAndRender(true, false);
 };
+window.dcOnDamageTypeFilterChange = function() {
+    dcDamageTypeFilter = document.getElementById('dcDamageTypeFilter').value;
+    dcRefilterAndRender(true, false);
+};
+
 window.dcOnDefenderFilterChange = function() {
     dcDefenderFilter = document.getElementById('dcDefenderFilter').value;
     dcRefilterAndRender(true, false);
