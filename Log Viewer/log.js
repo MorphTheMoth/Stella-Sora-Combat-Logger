@@ -176,6 +176,7 @@ function hitBody(ev, oi) {
         <tr><th>Source Type</th><td>${dsName(hc.sourceType)}</td></tr>
         <tr><th>Damage Type</th><td>${dtName(hc.damageType)}</td></tr>
         <tr><th>Element Type</th><td>${elName(hc.elementType)}</td></tr>
+        <tr><th>Energy Charge</th><td>${hc.energyCharge!=null?hc.energyCharge:'?'}</td></tr>
         <tr><th>Hit Type</th><td>${htName(ev.HitType)}</td></tr>
         ${ev.SnapshotAt ? `<tr><th>Snapshot Age</th><td>${((parseTimeToMs(ev.Time)-parseTimeToMs(ev.SnapshotAt))/1000).toFixed(3)}s ago</td></tr>` : ''}
         ${ev.SummonAttrType !== undefined ? `<tr><th>Summon Attr Type</th><td>${ev.SummonAttrType}</td></tr>` : ''}

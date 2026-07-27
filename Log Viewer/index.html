@@ -283,6 +283,24 @@
         .legend-table .leg-name { color: #ccc; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .legend-table .leg-val { color: #aaa; text-align: right; }
         .legend-table .leg-pct { color: #777; text-align: right; width: 50px; }
+        .mt-check-row { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-top: 4px; }
+        .mt-cb-btn {
+            display: inline-flex; align-items: center; gap: 6px;
+            padding: 5px 12px; border: 1px solid #3a3a3a; border-radius: 4px;
+            background: #1a1a1a; color: #666; cursor: pointer;
+            font-size: 12px; user-select: none;
+            transition: background 0.12s, color 0.12s, border-color 0.12s;
+        }
+        .mt-cb-btn:hover { background: #222; color: #888; border-color: #4a4a4a; }
+        .mt-cb-btn:has(input:checked) { background: #2a2a2a; color: #ccc; border-color: #4a4a4a; }
+        .mt-cb-btn:has(input:checked):hover { background: #333; color: #ddd; border-color: #555; }
+        .mt-cb-btn input { display: none; }
+        .mt-table th, .mt-table td { padding: 4px 8px; border-bottom: 1px solid #2a2a2a; font-size: 12px; }
+        .mt-table th { color: #888; font-weight: normal; text-align: right; white-space: nowrap; }
+        .mt-table th.mt-th-label, .mt-table td.mt-td-label { text-align: left; width: 40%; }
+        .mt-table td.mt-td-val { color: #ccc; text-align: right; font-variant-numeric: tabular-nums; }
+        .mt-table th.mt-th-sortable { cursor: pointer; user-select: none; }
+        .mt-table th.mt-th-sortable:hover { color: #ccc; background: #1f1f1f; }
 
         /* keep log panel filling remaining space */
         #logPanel { display: flex; flex-direction: column; flex: 1; overflow: hidden; position: relative; }
@@ -866,9 +884,11 @@
                         <label style="margin-left:8px">Metric:</label>
                         <select id="dsMetric" onchange="Analytics.refreshDmgShareChart()">
                             <option value="dmg">Damage</option>
-                            <option value="multiplier">Base Multiplier</option>
-                            <option value="singlemv">Single Hit MV</option>
+                            <option value="multiplier">Total MV</option>
+                            <option value="singlemv">Base MV</option>
                             <option value="hits">Hit Count</option>
+                            <option value="energyCharge">Total Energy</option>
+                            <option value="singleec">Hit Energy</option>
                         </select>
 
                         <div style="width:100%; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
@@ -900,6 +920,57 @@
                         <canvas id="chartDmgShare"></canvas>
                     </div>
                     <table class="legend-table" id="legendDmgShare"></table>
+                </div>
+
+                <!-- ── Chart 4: Metrics Table ── -->
+                <div class="chart-card">
+                    <h3>Metrics Table</h3>
+                    <div class="chart-controls" style="flex-wrap:wrap; row-gap:6px;">
+                        <label>Group by:</label>
+                        <select id="mtGroupBy" onchange="Analytics.refreshMetricsTable()">
+                            <option value="char">Character</option>
+                            <option value="dmgtype">Damage Type</option>
+                        </select>
+
+                        <label style="margin-left:8px">Granularity:</label>
+                        <select id="mtGranularity" onchange="Analytics.refreshMetricsTable()">
+                            <option value="none">—</option>
+                            <option value="skill">› Skill</option>
+                            <option value="hit">› Skill › Hit #</option>
+                        </select>
+
+                        <label style="margin-left:8px">Filter char:</label>
+                        <select id="mtFilterChar" onchange="Analytics.refreshMetricsTable()">
+                            <option value="">All</option>
+                        </select>
+
+                        <label style="margin-left:8px">Filter type:</label>
+                        <select id="mtFilterType" onchange="Analytics.refreshMetricsTable()">
+                            <option value="">All</option>
+                        </select>
+
+                        <label style="margin-left:8px">Filter defender:</label>
+                        <select id="mtFilterDefender" onchange="Analytics.refreshMetricsTable()">
+                            <option value="">All</option>
+                        </select>
+
+                        <label style="margin-left:8px">Sort name by:</label>
+                        <select id="mtSort" onchange="Analytics.refreshMetricsTable()">
+                            <option value="char">Character</option>
+                            <option value="dmgtype">Damage Type</option>
+                            <option value="skill">Skill Name</option>
+                        </select>
+
+                        <div class="mt-check-row">
+                            <label class="mt-cb-btn"><input type="checkbox" class="mt-cb" value="dmg" checked onchange="Analytics.refreshMetricsTable()"> Damage</label>
+                            <label class="mt-cb-btn"><input type="checkbox" class="mt-cb" value="multiplier" checked onchange="Analytics.refreshMetricsTable()"> Total MV</label>
+                            <label class="mt-cb-btn"><input type="checkbox" class="mt-cb" value="singlemv" onchange="Analytics.refreshMetricsTable()"> Base MV</label>
+                            <label class="mt-cb-btn"><input type="checkbox" class="mt-cb" value="hits" checked onchange="Analytics.refreshMetricsTable()"> Hit Count</label>
+                            <label class="mt-cb-btn"><input type="checkbox" class="mt-cb" value="energyCharge" onchange="Analytics.refreshMetricsTable()"> Total Energy</label>
+                            <label class="mt-cb-btn"><input type="checkbox" class="mt-cb" value="singleec" onchange="Analytics.refreshMetricsTable()"> Hit Energy</label>
+                        </div>
+                    </div>
+                    <table class="mt-table" id="metricsTable"></table>
                 </div>
 
                 <!-- ── Chart 2: Buff / Effect Presence ── -->

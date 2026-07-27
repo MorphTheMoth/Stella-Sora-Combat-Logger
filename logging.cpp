@@ -1099,6 +1099,7 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
         hitCfg["elementType"]   = f.elementType_;
         hitCfg["skillId"]       = f.skillId_;
         hitCfg["skillSlotType"] = f.skillSlotType_;
+        hitCfg["energyCharge"] = f.energyCharge_;
         
         if (f.hitdamageInfo_)
             hitCfg["info"] = Il2CppStringToStd(f.hitdamageInfo_);

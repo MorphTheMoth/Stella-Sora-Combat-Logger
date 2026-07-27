@@ -163,6 +163,7 @@ function enrichHit(ev) {
             hc.hitNum     = h.hitNum;
             ev.source     = h.source;
         }
+        if (hc.energyCharge != null) hc.energyCharge /= 10000;
     }
 
     // Buff/effect lists — resolve names

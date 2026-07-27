@@ -197,16 +197,17 @@ const Analytics = (() => {
             }
 
             if (!map[key]) { map[key] = { groupName, char, dmgtype, skillTitle: hc.skillTitle || '?', value: 0 }; hitCounts[key] = 0; }
-            const dmg  = Number(dp.finalDamage) || 0;
-            const mult = dp.skillPercentAmend != null ? dp.skillPercentAmend / 10000 : 0;
-            map[key].value += metric === 'dmg' ? dmg : metric === 'multiplier' || metric === 'singlemv' ? mult : 1;
-            if (metric === 'singlemv') hitCounts[key]++;
+            const dmg    = Number(dp.finalDamage) || 0;
+            const mult   = dp.skillPercentAmend != null ? dp.skillPercentAmend / 10000 : 0;
+            const energy = Number(hc.energyCharge) || 0;
+            map[key].value += metric === 'dmg' ? dmg : metric === 'multiplier' || metric === 'singlemv' ? mult : metric === 'energyCharge' || metric === 'singleec' ? energy : 1;
+            if (metric === 'singlemv' || metric === 'singleec') hitCounts[key]++;
         });
 
         let slices = Object.entries(map).map(([key, d]) => ({
             ...d,
             label: key.split('|').join(' › '),
-            value: metric === 'singlemv' && hitCounts[key] > 0 ? d.value / hitCounts[key] : d.value
+            value: (metric === 'singlemv' || metric === 'singleec') && hitCounts[key] > 0 ? d.value / hitCounts[key] : d.value
         }));
 
         if (sortBy === 'value')   slices.sort((a, b) => b.value - a.value);
@@ -359,7 +360,219 @@ const Analytics = (() => {
         }
     }
 
-    // ── Chart 2: Buff / Effect Presence ──────────────────────────
+    // ── Chart 4: Metrics Table ────────────────────────────────────
+
+    const METRIC_LABELS = {
+        dmg:          'Damage',
+        multiplier:   'Total MV',
+        singlemv:     'Base MV',
+        hits:         'Hit Count',
+        energyCharge: 'Total Energy',
+        singleec:     'Hit Energy',
+    };
+
+    // Sort state: { key, dir } where key is a metric id, 'name', or 'metric:<id>'
+    let mtSortState = { key: 'dmg', dir: 'desc' };
+
+    function getSelectedMetrics() {
+        return [...document.querySelectorAll('.mt-cb:checked')].map(cb => cb.value);
+    }
+
+    function isFloatMetric(m) {
+        return m === 'multiplier' || m === 'singlemv';
+    }
+
+    function formatMetricValue(m, v) {
+        if (m === 'hits') return Number(v).toLocaleString();
+        if (m === 'multiplier' || m === 'singlemv') return v.toFixed(2) + '%';
+        return Number(v).toLocaleString();
+    }
+
+    function buildTableRows() {
+        const groupBy     = document.getElementById('mtGroupBy').value;
+        const granularity = document.getElementById('mtGranularity').value;
+        const filterChar  = document.getElementById('mtFilterChar').value;
+        const filterType  = document.getElementById('mtFilterType').value;
+        const filterDef   = document.getElementById('mtFilterDefender').value;
+        const metrics     = getSelectedMetrics();
+
+        const map = {};
+        const hitCounts = {};
+        getPlayerHits().forEach(ev => {
+            const hc      = ev.HitConfig || {};
+            const dp      = ev.DamageParams || {};
+            const char    = getCharName(ev);
+            const dmgtype = getDmgTypeName(ev);
+            const def     = getDefenderName(ev);
+
+            if (filterChar && char !== filterChar) return;
+            if (filterType && dmgtype !== filterType) return;
+            if (filterDef  && def   !== filterDef)   return;
+
+            const groupName = groupBy === 'char' ? char : dmgtype;
+
+            let key;
+            if (granularity === 'none') {
+                key = groupName;
+            } else if (granularity === 'skill') {
+                key = groupBy === 'dmgtype'
+                    ? `${groupName}|${char}`
+                    : `${groupName}|${hc.skillTitle || '?'}`;
+            } else {
+                key = groupBy === 'dmgtype'
+                    ? `${groupName}|${char}|${hc.skillTitle || '?'} #${hc.hitNum ?? '?'}`
+                    : `${groupName}|${hc.skillTitle || '?'}|#${hc.hitNum ?? '?'}`;
+            }
+
+            if (!map[key]) {
+                map[key] = {
+                    groupName, char, dmgtype,
+                    skillTitle: hc.skillTitle || '?',
+                    values: { dmg: 0, multiplier: 0, singlemv: 0, hits: 0, energyCharge: 0, singleec: 0 }
+                };
+                hitCounts[key] = 0;
+            }
+            const dmg    = Number(dp.finalDamage) || 0;
+            const mult   = dp.skillPercentAmend != null ? dp.skillPercentAmend / 10000 : 0;
+            const energy = Number(hc.energyCharge) || 0;
+            map[key].values.dmg          += dmg;
+            map[key].values.multiplier   += mult;
+            map[key].values.singlemv     += mult;
+            map[key].values.hits         += 1;
+            map[key].values.energyCharge += energy;
+            map[key].values.singleec     += energy;
+            hitCounts[key]++;
+        });
+
+        return Object.entries(map).map(([key, d]) => {
+            const hits = hitCounts[key] || 0;
+            if (hits > 0) {
+                d.values.singlemv = d.values.singlemv / hits;
+                d.values.singleec = d.values.singleec / hits;
+            }
+            return { key, ...d };
+        });
+    }
+
+    async function refreshMetricsTable() {
+        const granularity = document.getElementById('mtGranularity').value;
+        const metrics     = getSelectedMetrics();
+        const container   = document.getElementById('metricsTable');
+
+        if (!metrics.length) {
+            container.innerHTML = '<tr><td style="color:#555;font-style:italic;padding:8px">No metrics selected</td></tr>';
+            return;
+        }
+
+        let rows = buildTableRows();
+        if (!rows.length) {
+            container.innerHTML = '<tr><td style="color:#555;font-style:italic;padding:8px">No player hit data</td></tr>';
+            return;
+        }
+
+        sortRows(rows, metrics);
+
+        const uniqueGroups = [...new Set(rows.map(r => r.groupName))];
+        await resolveCharColors(uniqueGroups);
+
+        const depth = granularity === 'none' ? 0 : granularity === 'skill' ? 1 : 2;
+        const groupCounts = {}, groupIdx = {};
+        if (depth > 0) rows.forEach(r => { groupCounts[r.groupName] = (groupCounts[r.groupName] || 0) + 1; });
+
+        const arrow = mtSortState.dir === 'asc' ? ' ▲' : ' ▼';
+        const nameArrow = mtSortState.key === 'name' ? arrow : '';
+        const metricArrows = {};
+        metrics.forEach(m => { metricArrows[m] = mtSortState.key === m ? arrow : ''; });
+
+        let html = '<thead><tr>';
+        html += `<th class="mt-th-label mt-th-sortable" data-sort="name">Name${nameArrow}</th>`;
+        metrics.forEach(m => {
+            html += `<th class="mt-th-sortable" data-sort="${esc(m)}">${esc(METRIC_LABELS[m])}${metricArrows[m]}</th>`;
+        });
+        html += '</tr></thead><tbody>';
+
+        for (const r of rows) {
+            const base = charColor(r.groupName);
+            const color = depth === 0 ? base : (() => {
+                if (groupIdx[r.groupName] === undefined) groupIdx[r.groupName] = 0;
+                return tintCharColor(base, groupIdx[r.groupName]++, groupCounts[r.groupName], depth);
+            })();
+
+            const label = r.key.split('|').join(' › ');
+            html += `<tr><td class="mt-td-label"><span class="leg-color" style="background:${color}"></span><span title="${esc(label)}">${esc(label)}</span></td>`;
+            for (const m of metrics) {
+                const v = r.values[m] || 0;
+                html += `<td class="mt-td-val">${formatMetricValue(m, v)}</td>`;
+            }
+            html += '</tr>';
+        }
+
+        html += '</tbody>';
+        container.innerHTML = html;
+    }
+
+    function sortRows(rows, metrics) {
+        const sign = mtSortState.dir === 'asc' ? 1 : -1;
+        if (mtSortState.key === 'name') {
+            const mode = document.getElementById('mtSort').value;
+            const getter = mode === 'dmgtype' ? 'dmgtype' : mode === 'skill' ? 'skillTitle' : 'char';
+            rows.sort((a, b) => sign * a[getter].localeCompare(b[getter]));
+        } else if (metrics.includes(mtSortState.key)) {
+            const k = mtSortState.key;
+            rows.sort((a, b) => sign * ((a.values[k] || 0) - (b.values[k] || 0)));
+        }
+    }
+
+    function onMetricsTableHeaderClick(e) {
+        const th = e.target.closest('th.mt-th-sortable');
+        if (!th) return;
+        const key = th.dataset.sort;
+        if (mtSortState.key === key) {
+            mtSortState.dir = mtSortState.dir === 'asc' ? 'desc' : 'asc';
+        } else {
+            mtSortState.key = key;
+            mtSortState.dir = 'desc';
+        }
+        refreshMetricsTable();
+    }
+
+    function updateMetricsTableFilters() {
+        const hits = getPlayerHits();
+        const chars = new Set(), types = new Set(), defs = new Set();
+        const defDmg = {};
+        hits.forEach(ev => {
+            chars.add(getCharName(ev));
+            types.add(getDmgTypeName(ev));
+            const d = getDefenderName(ev);
+            defs.add(d);
+            defDmg[d] = (defDmg[d] || 0) + (Number((ev.DamageParams || {}).finalDamage) || 0);
+        });
+
+        const selChar = document.getElementById('mtFilterChar');
+        const selType = document.getElementById('mtFilterType');
+        const selDef  = document.getElementById('mtFilterDefender');
+        const curChar = selChar.value, curType = selType.value, curDef = selDef.value;
+
+        selChar.innerHTML = '<option value="">All</option>';
+        [...chars].sort().forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = n; selChar.appendChild(o); });
+
+        selType.innerHTML = '<option value="">All</option>';
+        [...types].sort().forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = n; selType.appendChild(o); });
+
+        selDef.innerHTML = '<option value="">All</option>';
+        [...defs].sort().forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = n; selDef.appendChild(o); });
+
+        if ([...selChar.options].some(o => o.value === curChar)) selChar.value = curChar;
+        if ([...selType.options].some(o => o.value === curType)) selType.value = curType;
+
+        if (!curDef && defs.size > 0) {
+            const topDef = Object.entries(defDmg).sort((a, b) => b[1] - a[1])[0]?.[0] || '';
+            selDef.value = topDef;
+        } else if ([...selDef.options].some(o => o.value === curDef)) {
+            selDef.value = curDef;
+        }
+    }
+
 
     function getActiveSrcs() {
         const srcs = [];
@@ -815,6 +1028,8 @@ const Analytics = (() => {
         refreshBuffChart();
         updateCritDistFilters();
         refreshCritDist();
+        updateMetricsTableFilters();
+        refreshMetricsTable();
     }
 
     // ── Chart 3: Crit Distribution ─────────────────────────────────
@@ -987,11 +1202,18 @@ const Analytics = (() => {
         });
     })();
 
+    // Metrics Table: delegated click listener for sortable column headers
+    (function initMetricsTableSort() {
+        const table = document.getElementById('metricsTable');
+        if (table) table.addEventListener('click', onMetricsTableHeaderClick);
+    })();
+
     return {
         refresh,
         refreshDmgShareChart,
         refreshBuffChart,
         refreshCritDist,
+        refreshMetricsTable,
         onGroupByChange: refreshDmgShareChart,
         onBpViewByChange,
         onBpSrcToggle,
