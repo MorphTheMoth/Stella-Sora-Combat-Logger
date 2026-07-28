@@ -184,7 +184,8 @@ ST.processRuns = function(events) {
     ST.allShopOffers = [];
 ST.allShopItems = [];
     ST.allFloorEvents = [];
-    ST.allStrengthenEvents = [];
+ST.allStrengthenEvents = [];
+ST._initialLoadDone = false;
  
      var currentRun = null;
     var runIdx = 0;
@@ -683,9 +684,10 @@ ST.fetchLog = function() {
             return r.text();
         })
         .then(function(text) {
-            ST._sseAcc = text;
             var events = ST.parseLog(text);
             ST.processRuns(events);
+            ST._initialLoadDone = true;
+            ST._sseAcc = '';
             var stats = document.getElementById('runStats');
             stats.textContent = ST.runs.length + ' runs';
             ST.switchTab(ST.activeTab);
@@ -708,7 +710,7 @@ ST.startLiveReload = function() {
         if (errTimer) { clearTimeout(errTimer); errTimer = null; }
     };
     es.onmessage = function(e) {
-        if (!e.data) return;
+        if (!e.data || !ST._initialLoadDone) return;
         ST._sseAcc = (ST._sseAcc || '') + e.data + '\n';
         var events = ST.parseLog(ST._sseAcc);
         ST.processRuns(events);

@@ -14,7 +14,7 @@ ST.renderRuns = function() {
             '<th></th><th>Tower</th><th>Characters</th><th>Floor</th><th>Potentials</th><th>Time</th><th>NPC</th>' +
             '</tr></thead><tbody>';
 
-        for (var i = 0; i < runs.length; i++) {
+        for (var i = runs.length - 1; i >= 0; i--) {
             var run = runs[i];
             var s = run.start.data;
             var chars = s.chars || [];

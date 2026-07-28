@@ -1,17 +1,10 @@
 // tabs/notes.js — Weighted RNG model analysis for note drops
 
-ST.noteFilters = { note: 0, sources: { battle: true, elite: true, boss: true }, stack: 'all', k: 10, pow: 0.5, powK: 0.1, model: 'harmoniesNotes05' };
+ST.noteFilters = { note: 0, sources: { battle: true, elite: true, boss: true }, stack: 'all', k: 10, pow: 0.5, powK: 0.1, model: 'hn0_5' };
 
 ST.selectModel = function(key) {
     ST.noteFilters.model = key;
     ST.renderNotes();
-};
-
-ST.modelLabel = function(key) {
-    for (var i = 0; i < ST.modelDefs.length; i++) {
-        if (ST.modelDefs[i].key === key) return ST.modelDefs[i].name;
-    }
-    return key;
 };
 
 ST.toggleNoteSource = function(src) {
@@ -21,212 +14,267 @@ ST.toggleNoteSource = function(src) {
     ST.renderNotes();
 };
 
+// ── Model groups ──
+
+ST._weightFns = {};
+
+ST._enc = function(v) { return String(v).replace('.', '_'); };
+
+ST.modelGroups = [
+    { key: 'hn',   name: 'harmoniesNotes + K', param: 'K',
+        params: [0.1,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75,3,3.25,3.5,3.75,4,4.5,5,5.5,6,7,8,10,15],
+        makeKey: function(v) { return 'hn' + ST._enc(v); },
+        makeName: function(v) { return 'harmoniesNotes + ' + v; },
+        makeDesc: function(v) { return 'weight = harmoniesNotes[tid] + ' + v; },
+        weight: function(nc, ctx, tid, v) { return ((ctx.harmoniesNotes && ctx.harmoniesNotes[tid]) || 0) + v; }
+    },
+    { key: 'dn',   name: 'discsNotes + K', param: 'K',
+        params: [0.1,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75,3,3.25,3.5,3.75,4,4.5,5,5.5,6,7,8,10,15],
+        makeKey: function(v) { return 'dn' + ST._enc(v); },
+        makeName: function(v) { return 'discsNotes + ' + v; },
+        makeDesc: function(v) { return 'weight = discsNotes[tid] + ' + v; },
+        weight: function(nc, ctx, tid, v) { return ((ctx.discsNotes && ctx.discsNotes[tid]) || 0) + v; }
+    },
+    { key: 'odn',  name: 'overallDiscNotes + K', param: 'K',
+        params: [0.01,0.05,0.1,0.15,0.2,0.25,0.3,0.35,0.4,0.45,0.5,0.55,0.6,0.65,0.7,0.8,0.9,1,1.25,1.5,2,3,4,5,7.5],
+        makeKey: function(v) { return 'odn' + ST._enc(v); },
+        makeName: function(v) { return 'overallDiscNotes + ' + v; },
+        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + ' + v; },
+        weight: function(nc, ctx, tid, v) { return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + v; }
+    },
+    { key: 'hn1sc', name: 'hn + 1 + \u221acount / D', param: 'D',
+        params: [0.5,1,1.5,2,2.5,3,3.5,4,4.5,5,5.5,6,6.5,7,8,9,10,12,15,20,25,30,40,50,75],
+        makeKey: function(v) { return 'hn1sc' + ST._enc(v); },
+        makeName: function(v) { return 'hn + 1 + \u221acount / ' + v; },
+        makeDesc: function(v) { return 'weight = harmoniesNotes[tid] + 1 + sqrt(count[tid]) / ' + v; },
+        weight: function(nc, ctx, tid, v) {
+            var hn = (ctx.harmoniesNotes && ctx.harmoniesNotes[tid]) || 0;
+            return hn + 1 + Math.sqrt(nc[tid] || 0) / v;
+        }
+    },
+    { key: 'hn1sb', name: 'hn + 1 + \u221abaseCarry / D', param: 'D',
+        params: [0.5,1,2,3,4,5,6,7,8,9,10,12,15,20,25,30,40,50,60,80,100,150,200,300,500],
+        makeKey: function(v) { return 'hn1sb' + ST._enc(v); },
+        makeName: function(v) { return 'hn + 1 + \u221abaseCarry / ' + v; },
+        makeDesc: function(v) { return 'weight = harmoniesNotes[tid] + 1 + sqrt(startCountsBefore[tid]) / ' + v; },
+        weight: function(nc, ctx, tid, v) {
+            var hn = (ctx.harmoniesNotes && ctx.harmoniesNotes[tid]) || 0;
+            return hn + 1 + Math.sqrt((ctx.startCountsBefore && ctx.startCountsBefore[tid]) || 0) / v;
+        }
+    },
+    { key: 'dn1sb', name: 'dn + 1 + \u221abaseCarry / D', param: 'D',
+        params: [0.5,1,2,3,4,5,6,7,8,9,10,12,15,20,25,30,40,50,60,80,100,150,200,300,500],
+        makeKey: function(v) { return 'dn1sb' + ST._enc(v); },
+        makeName: function(v) { return 'dn + 1 + \u221abaseCarry / ' + v; },
+        makeDesc: function(v) { return 'weight = discsNotes[tid] + 1 + sqrt(startCountsBefore[tid]) / ' + v; },
+        weight: function(nc, ctx, tid, v) {
+            var dn = (ctx.discsNotes && ctx.discsNotes[tid]) || 0;
+            return dn + 1 + Math.sqrt((ctx.startCountsBefore && ctx.startCountsBefore[tid]) || 0) / v;
+        }
+    },
+    { key: 'odn1sb', name: 'odn + 1 + \u221abaseCarry / D', param: 'D',
+        params: [0.5,1,2,3,4,5,6,7,8,9,10,12,15,20,25,30,40,50,60,80,100,150,200,300,500],
+        makeKey: function(v) { return 'odn1sb' + ST._enc(v); },
+        makeName: function(v) { return 'odn + 1 + \u221abaseCarry / ' + v; },
+        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + 1 + sqrt(startCountsBefore[tid]) / ' + v; },
+        weight: function(nc, ctx, tid, v) {
+            var odn = (ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0;
+            return odn + 1 + Math.sqrt((ctx.startCountsBefore && ctx.startCountsBefore[tid]) || 0) / v;
+        }
+    },
+    { key: 'hn1msb', name: '(hn + 1) \u00b7 (1 + \u221abaseCarry / D)', param: 'D',
+        params: [0.5,1,2,3,4,5,6,7,8,9,10,12,15,20,25,30,40,50,60,80,100,150,200,300,500],
+        makeKey: function(v) { return 'hn1msb' + ST._enc(v); },
+        makeName: function(v) { return '(hn + 1) \u00b7 (1 + \u221abaseCarry / ' + v + ')'; },
+        makeDesc: function(v) { return 'weight = (harmoniesNotes[tid] + 1) * (1 + sqrt(startCountsBefore[tid]) / ' + v + ') \u2014 multiplicative'; },
+        weight: function(nc, ctx, tid, v) {
+            var hn = (ctx.harmoniesNotes && ctx.harmoniesNotes[tid]) || 0;
+            return (hn + 1) * (1 + Math.sqrt((ctx.startCountsBefore && ctx.startCountsBefore[tid]) || 0) / v);
+        }
+    },
+    { key: 'add',  name: 'count + K', param: 'K',
+        params: [1,3,5,7,10,12,15,17,20,22,25,27,30,33,35,40,45,50,55,60,70,80,100,150,200],
+        makeKey: function(v) { return 'add' + ST._enc(v); },
+        makeName: function(v) { return 'count + ' + v; },
+        makeDesc: function(v) { return 'weight = count[tid] + ' + v; },
+        weight: function(nc, ctx, tid, v) { return (nc[tid] || 0) + v; }
+    },
+    { key: 'bc',   name: 'baseCarry + K', param: 'K',
+        params: [1,3,5,10,15,20,25,30,40,50,60,70,80,90,100,120,150,200,250,300,400,500,750,1000,1500],
+        makeKey: function(v) { return 'bc' + ST._enc(v); },
+        makeName: function(v) { return 'baseCarry + ' + v; },
+        makeDesc: function(v) { return 'weight = startCountsBefore[tid] + ' + v; },
+        weight: function(nc, ctx, tid, v) { return ((ctx.startCountsBefore && ctx.startCountsBefore[tid]) || 0) + v; }
+    },
+    { key: 'sbc',  name: '\u221abaseCarry + K', param: 'K',
+        params: [0.5,1,3,5,7,8,9,10,11,12,13,14,15,16,17,18,19,20,22,25,30,40,50,80,150],
+        makeKey: function(v) { return 'sbc' + ST._enc(v); },
+        makeName: function(v) { return '\u221abaseCarry + ' + v; },
+        makeDesc: function(v) { return 'weight = sqrt(startCountsBefore[tid]) + ' + v; },
+        weight: function(nc, ctx, tid, v) {
+            return Math.sqrt((ctx.startCountsBefore && ctx.startCountsBefore[tid]) || 0) + v;
+        }
+    },
+    { key: 'sadd', name: '\u221acount + baseCarry + K', param: 'K',
+        params: [0,0.5,1,2,3,5,7,10,12,15,17,20,22,25,27,30,33,35,40,45,50,60,80,100,150],
+        makeKey: function(v) { return 'sadd' + ST._enc(v); },
+        makeName: function(v) { return '\u221acount + baseCarry + ' + v; },
+        makeDesc: function(v) { return 'weight = sqrt(count[tid]) + startCountsBefore[tid] + ' + v; },
+        weight: function(nc, ctx, tid, v) {
+            return Math.sqrt(nc[tid] || 0) + ((ctx.startCountsBefore && ctx.startCountsBefore[tid]) || 0) + v;
+        }
+    },
+    { key: 'inv',  name: '1/(count + K)', param: 'K',
+        params: [1,3,5,7,10,15,20,25,30,40,50,60,80,100,150,200,300,400,500,700,1000,2000,5000,10000,50000],
+        makeKey: function(v) { return 'inv' + ST._enc(v); },
+        makeName: function(v) { return '1/(count + ' + v + ')'; },
+        makeDesc: function(v) { return 'weight = 1/(count[tid] + ' + v + ')'; },
+        weight: function(nc, ctx, tid, v) { return 1 / ((nc[tid] || 0) + v); }
+    },
+    { key: 'invbc', name: '1/(baseCarry + K)', param: 'K',
+        params: [0.1,0.5,1,2,3,5,10,20,30,50,100,200,500,1000,2000,5000,10000,50000,100000,500000,1000000,5000000,10000000,50000000,100000000],
+        makeKey: function(v) { return 'invbc' + ST._enc(v); },
+        makeName: function(v) { return '1/(baseCarry + ' + v + ')'; },
+        makeDesc: function(v) { return 'weight = 1/(startCountsBefore[tid] + ' + v + ')'; },
+        weight: function(nc, ctx, tid, v) { return 1 / (((ctx.startCountsBefore && ctx.startCountsBefore[tid]) || 0) + v); }
+    },
+    { key: 'uadd', name: 'uniform + count / K', param: 'K',
+        params: [0.5,1,2,3,4,5,6,7,8,9,10,12,15,20,25,30,40,50,60,80,100,150,200,300,500],
+        makeKey: function(v) { return 'uadd' + ST._enc(v); },
+        makeName: function(v) { return '1 + count / ' + v; },
+        makeDesc: function(v) { return 'weight = 1 + count[tid] / ' + v + ' \u2014 uniform baseline with weak count influence'; },
+        weight: function(nc, ctx, tid, v) { return 1 + (nc[tid] || 0) / v; }
+    },
+    { key: 'hndn', name: 'harmoniesNotes + discsNotes + K', param: 'K',
+        params: [0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75,3,3.5,4,4.5,5,5.5,6,7,8,10,12,15,20,30],
+        makeKey: function(v) { return 'hndn' + ST._enc(v); },
+        makeName: function(v) { return 'harmoniesNotes + discsNotes + ' + v; },
+        makeDesc: function(v) { return 'weight = harmoniesNotes[tid] + discsNotes[tid] + ' + v; },
+        weight: function(nc, ctx, tid, v) {
+            return ((ctx.harmoniesNotes && ctx.harmoniesNotes[tid]) || 0)
+                 + ((ctx.discsNotes && ctx.discsNotes[tid]) || 0) + v;
+        }
+    },
+    { key: 'odnhn', name: 'overallDiscNotes + harmoniesNotes + K', param: 'K',
+        params: [0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75,3,3.5,4,4.5,5,5.5,6,7,8,10,12,15,20,30],
+        makeKey: function(v) { return 'odnhn' + ST._enc(v); },
+        makeName: function(v) { return 'overallDiscNotes + harmoniesNotes + ' + v; },
+        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + harmoniesNotes[tid] + ' + v; },
+        weight: function(nc, ctx, tid, v) {
+            return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0)
+                 + ((ctx.harmoniesNotes && ctx.harmoniesNotes[tid]) || 0) + v;
+        }
+    },
+    { key: 'logc', name: 'log(count + 1) + K', param: 'K',
+        params: [0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75,3,3.5,4,4.5,5,5.5,6,7,8,10,12,15,20],
+        makeKey: function(v) { return 'logc' + ST._enc(v); },
+        makeName: function(v) { return 'log(count + 1) + ' + v; },
+        makeDesc: function(v) { return 'weight = log(count[tid] + 1) + ' + v + ' \u2014 diminishing returns on count'; },
+        weight: function(nc, ctx, tid, v) { return Math.log((nc[tid] || 0) + 1) + v; }
+    },
+    { key: 'logb', name: 'log(baseCarry + 1) + K', param: 'K',
+        params: [0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75,3,3.5,4,4.5,5,5.5,6,7,8,10,12,15,20],
+        makeKey: function(v) { return 'logb' + ST._enc(v); },
+        makeName: function(v) { return 'log(baseCarry + 1) + ' + v; },
+        makeDesc: function(v) { return 'weight = log(startCountsBefore[tid] + 1) + ' + v + ' \u2014 diminishing returns on carry'; },
+        weight: function(nc, ctx, tid, v) {
+            return Math.log(((ctx.startCountsBefore && ctx.startCountsBefore[tid]) || 0) + 1) + v;
+        }
+    },
+    { key: 'tl',   name: 'teamLevel/10 + K', param: 'K',
+        params: [0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75,3,3.5,4,4.5,5,5.5,6,7,8,10,12,15,20],
+        makeKey: function(v) { return 'tl' + ST._enc(v); },
+        makeName: function(v) { return 'teamLevel/10 + ' + v; },
+        makeDesc: function(v) { return 'weight = teamLevel / 10 + ' + v + ' \u2014 team level influence'; },
+        weight: function(nc, ctx, tid, v) { return (ctx.teamLevel || 1) / 10 + v; }
+    },
+    { key: 'rank', name: 'Rank-based', param: null, params: null,
+        isSpecial: true,
+        makeKey: function() { return null; },
+        variations: [
+            { key: 'rankLin', name: 'Rank linear', desc: 'weight = N+1\u2212rank where N = note types, rank 1 = highest count \u2014 linear decay' },
+            { key: 'rankExp', name: 'Rank exp', desc: 'weight = 2^(N\u22121\u2212rank) \u2014 steep exponential decay' },
+        ]
+    },
+    { key: 'uni',  name: 'Uniform', param: null, params: null,
+        makeKey: function() { return 'uniform'; },
+        makeName: function() { return 'Uniform (equal)'; },
+        makeDesc: function() { return 'all notes have equal weight = 1'; },
+        weight: function(nc, ctx, tid) { return 1; }
+    },
+];
+
+ST._buildModelDefs = function() {
+    ST.modelDefs = [];
+    ST._weightFns = {};
+    ST.modelGroups.forEach(function(g) {
+        if (g.isSpecial) {
+            (g.variations || []).forEach(function(v) {
+                ST.modelDefs.push({ key: v.key, name: v.name, desc: v.desc, group: g.key, groupName: g.name });
+            });
+            return;
+        }
+        if (g.params) {
+            g.params.forEach(function(p) {
+                var key = g.makeKey(p);
+                var name = g.makeName(p);
+                var desc = g.makeDesc ? g.makeDesc(p) : (g.desc || '');
+                ST.modelDefs.push({ key: key, name: name, desc: desc, group: g.key, groupName: g.name, param: p });
+                ST._weightFns[key] = function(nc, ctx, tid) { return g.weight(nc, ctx, tid, p); };
+            });
+        } else {
+            var key = g.makeKey();
+            ST.modelDefs.push({ key: key, name: g.makeName(), desc: g.makeDesc ? g.makeDesc() : '', group: g.key, groupName: g.name });
+            if (g.weight) ST._weightFns[key] = function(nc, ctx, tid) { return g.weight(nc, ctx, tid); };
+        }
+    });
+    // Register rank weight functions separately
+    ST._weightFns.rankLin = function(nc, ctx, tid, _nids) {
+        var nids = _nids || ST.NOTE_IDS;
+        var sorted = nids.slice().sort(function(a, b) { return (nc[b] || 0) - (nc[a] || 0); });
+        var idx = sorted.indexOf(tid);
+        return nids.length + 1 - (idx + 1);
+    };
+    ST._weightFns.rankExp = function(nc, ctx, tid, _nids) {
+        var nids = _nids || ST.NOTE_IDS;
+        var sorted = nids.slice().sort(function(a, b) { return (nc[b] || 0) - (nc[a] || 0); });
+        var idx = sorted.indexOf(tid);
+        return Math.pow(2, nids.length - 1 - idx);
+    };
+};
+ST._buildModelDefs();
+
 // ── Probability engine ──
 
 ST.computeNoteProbs = function(noteCounts, modelKey, k, context) {
     var nc = noteCounts || {};
     var nids = ST.NOTE_IDS;
     if (!nids || nids.length === 0) return {};
-    var weights = {};
-    var totalWeight = 0;
     var ctx = context || {};
 
-    switch (modelKey) {
-    case 'uniform':
-        nids.forEach(function(tid) { weights[tid] = 1; totalWeight += 1; });
-        break;
-    case 'add1':
-        nids.forEach(function(tid) { var w = (nc[tid] || 0) + 1; weights[tid] = w; totalWeight += w; });
-        break;
-    case 'add20':
-        nids.forEach(function(tid) { var w = (nc[tid] || 0) + 20; weights[tid] = w; totalWeight += w; });
-        break;
-    case 'add40':
-        nids.forEach(function(tid) { var w = (nc[tid] || 0) + 40; weights[tid] = w; totalWeight += w; });
-        break;
-    case 'baseCarry10':
-        nids.forEach(function(tid) {
-            var base = (ctx.startCountsBefore && ctx.startCountsBefore[tid]) || 0;
-            var w = base + 10;
-            weights[tid] = w; totalWeight += w;
-        });
-        break;
-    case 'baseCarry20':
-        nids.forEach(function(tid) {
-            var base = (ctx.startCountsBefore && ctx.startCountsBefore[tid]) || 0;
-            var w = base + 20;
-            weights[tid] = w; totalWeight += w;
-        });
-        break;
-    case 'sqrtBaseCarry10':
-        nids.forEach(function(tid) {
-            var base = (ctx.startCountsBefore && ctx.startCountsBefore[tid]) || 0;
-            var w = Math.sqrt(base) + 10;
-            weights[tid] = w; totalWeight += w;
-        });
-        break;
-    case 'sqrtBaseAdd5':
-        nids.forEach(function(tid) {
-            var base = (ctx.startCountsBefore && ctx.startCountsBefore[tid]) || 0;
-            var w = Math.sqrt(nc[tid] || 0) + base + 5;
-            weights[tid] = w; totalWeight += w;
-        });
-        break;
-    case 'sqrtBaseAdd10':
-        nids.forEach(function(tid) {
-            var base = (ctx.startCountsBefore && ctx.startCountsBefore[tid]) || 0;
-            var w = Math.sqrt(nc[tid] || 0) + base + 10;
-            weights[tid] = w; totalWeight += w;
-        });
-        break;
-    case 'sqrtBaseAdd20':
-        nids.forEach(function(tid) {
-            var base = (ctx.startCountsBefore && ctx.startCountsBefore[tid]) || 0;
-            var w = Math.sqrt(nc[tid] || 0) + base + 20;
-            weights[tid] = w; totalWeight += w;
-        });
-        break;
-    case 'invBaseCarry':
-        nids.forEach(function(tid) {
-            var w = 1 / (((ctx.startCountsBefore && ctx.startCountsBefore[tid]) || 0) + 1);
-            weights[tid] = w; totalWeight += w;
-        });
-        break;
-    case 'inv5':
-        nids.forEach(function(tid) { var w = 1 / ((nc[tid] || 0) + 5); weights[tid] = w; totalWeight += w; });
-        break;
-    case 'rankLin':
-    case 'rankExp':
+    var weightFn = ST._weightFns[modelKey];
+    if (!weightFn) {
+        var probs = {};
+        nids.forEach(function(tid) { probs[tid] = 1 / nids.length; });
+        return probs;
+    }
+
+    var weights = {};
+    var totalWeight = 0;
+    if (modelKey === 'rankLin' || modelKey === 'rankExp') {
         var sorted = nids.slice().sort(function(a, b) { return (nc[b] || 0) - (nc[a] || 0); });
         sorted.forEach(function(tid, idx) {
             var rank = idx + 1;
             var w = modelKey === 'rankLin' ? (nids.length + 1 - rank) : Math.pow(2, nids.length - 1 - rank);
             weights[tid] = w; totalWeight += w;
         });
-        break;
-    case 'harmoniesNotes05':
+    } else {
         nids.forEach(function(tid) {
-            var w = ((ctx.harmoniesNotes && ctx.harmoniesNotes[tid]) || 0) + 0.5;
-            weights[tid] = w; totalWeight += w;
+            var w = weightFn(nc, ctx, tid);
+            if (w == null || isNaN(w)) w = 0;
+            weights[tid] = w;
+            totalWeight += w;
         });
-        break;
-    case 'harmoniesNotes1':
-        nids.forEach(function(tid) {
-            var w = ((ctx.harmoniesNotes && ctx.harmoniesNotes[tid]) || 0) + 1;
-            weights[tid] = w; totalWeight += w;
-        });
-        break;
-    case 'discsNotes05':
-        nids.forEach(function(tid) {
-            var w = ((ctx.discsNotes && ctx.discsNotes[tid]) || 0) + 0.5;
-            weights[tid] = w; totalWeight += w;
-        });
-        break;
-    case 'discsNotes1':
-        nids.forEach(function(tid) {
-            var w = ((ctx.discsNotes && ctx.discsNotes[tid]) || 0) + 1;
-            weights[tid] = w; totalWeight += w;
-        });
-        break;
-    case 'overallDiscNotes05':
-        nids.forEach(function(tid) {
-            var w = ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + 0.5;
-            weights[tid] = w; totalWeight += w;
-        });
-        break;
-    case 'overallDiscNotes1':
-        nids.forEach(function(tid) {
-            var w = ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + 1;
-            weights[tid] = w; totalWeight += w;
-        });
-        break;
-    case 'harmoniesNotes15':
-        nids.forEach(function(tid) {
-            var w = ((ctx.harmoniesNotes && ctx.harmoniesNotes[tid]) || 0) + 1.5;
-            weights[tid] = w; totalWeight += w;
-        });
-        break;
-    case 'discsNotes15':
-        nids.forEach(function(tid) {
-            var w = ((ctx.discsNotes && ctx.discsNotes[tid]) || 0) + 1.5;
-            weights[tid] = w; totalWeight += w;
-        });
-        break;
-    case 'overallDiscNotes15':
-        nids.forEach(function(tid) {
-            var w = ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + 1.5;
-            weights[tid] = w; totalWeight += w;
-        });
-        break;
-    case 'hn1SC5':
-        nids.forEach(function(tid) {
-            var hn = (ctx.harmoniesNotes && ctx.harmoniesNotes[tid]) || 0;
-            var w = hn + 1 + Math.sqrt(nc[tid] || 0) / 5;
-            weights[tid] = w; totalWeight += w;
-        });
-        break;
-    case 'hn1SC10':
-        nids.forEach(function(tid) {
-            var hn = (ctx.harmoniesNotes && ctx.harmoniesNotes[tid]) || 0;
-            var w = hn + 1 + Math.sqrt(nc[tid] || 0) / 10;
-            weights[tid] = w; totalWeight += w;
-        });
-        break;
-    case 'hn1SC20':
-        nids.forEach(function(tid) {
-            var hn = (ctx.harmoniesNotes && ctx.harmoniesNotes[tid]) || 0;
-            var w = hn + 1 + Math.sqrt(nc[tid] || 0) / 20;
-            weights[tid] = w; totalWeight += w;
-        });
-        break;
-    case 'hn1SB5':
-        nids.forEach(function(tid) {
-            var hn = (ctx.harmoniesNotes && ctx.harmoniesNotes[tid]) || 0;
-            var base = (ctx.startCountsBefore && ctx.startCountsBefore[tid]) || 0;
-            var w = hn + 1 + Math.sqrt(base) / 5;
-            weights[tid] = w; totalWeight += w;
-        });
-        break;
-    case 'hn1SB10':
-        nids.forEach(function(tid) {
-            var hn = (ctx.harmoniesNotes && ctx.harmoniesNotes[tid]) || 0;
-            var base = (ctx.startCountsBefore && ctx.startCountsBefore[tid]) || 0;
-            var w = hn + 1 + Math.sqrt(base) / 10;
-            weights[tid] = w; totalWeight += w;
-        });
-        break;
-    case 'hn1SB20':
-        nids.forEach(function(tid) {
-            var hn = (ctx.harmoniesNotes && ctx.harmoniesNotes[tid]) || 0;
-            var base = (ctx.startCountsBefore && ctx.startCountsBefore[tid]) || 0;
-            var w = hn + 1 + Math.sqrt(base) / 20;
-            weights[tid] = w; totalWeight += w;
-        });
-        break;
-    case 'ovd1SB10':
-        nids.forEach(function(tid) {
-            var ovd = (ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0;
-            var base = (ctx.startCountsBefore && ctx.startCountsBefore[tid]) || 0;
-            var w = ovd + 1 + Math.sqrt(base) / 10;
-            weights[tid] = w; totalWeight += w;
-        });
-        break;
-    case 'dn1SB10':
-        nids.forEach(function(tid) {
-            var dn = (ctx.discsNotes && ctx.discsNotes[tid]) || 0;
-            var base = (ctx.startCountsBefore && ctx.startCountsBefore[tid]) || 0;
-            var w = dn + 1 + Math.sqrt(base) / 10;
-            weights[tid] = w; totalWeight += w;
-        });
-        break;
-    case 'hn1MulSB10':
-        nids.forEach(function(tid) {
-            var hn = (ctx.harmoniesNotes && ctx.harmoniesNotes[tid]) || 0;
-            var base = (ctx.startCountsBefore && ctx.startCountsBefore[tid]) || 0;
-            var w = (hn + 1) * (1 + Math.sqrt(base) / 10);
-            weights[tid] = w; totalWeight += w;
-        });
-        break;
     }
 
     var probs = {};
@@ -238,42 +286,12 @@ ST.computeNoteProbs = function(noteCounts, modelKey, k, context) {
     return probs;
 };
 
-// ── Model comparison helpers ──
-
-ST.modelDefs = [
-    { key: 'uniform', name: 'Uniform (equal)', desc: 'all notes have the same drop weight = 1', params: 0 },
-    { key: 'harmoniesNotes05', name: 'harmoniesNotes + 0.5', desc: 'weight = (# of disc harmonies needing this note) + 0.5', params: 0 },
-    { key: 'harmoniesNotes1', name: 'harmoniesNotes + 1', desc: 'weight = (# of disc harmonies needing this note) + 1', params: 0 },
-    { key: 'harmoniesNotes15', name: 'harmoniesNotes + 1.5', desc: 'weight = (# of disc harmonies needing this note) + 1.5', params: 0 },
-    { key: 'discsNotes05', name: 'discsNotes + 0.5', desc: 'weight = (# of discs needing this note) + 0.5', params: 0 },
-    { key: 'discsNotes1', name: 'discsNotes + 1', desc: 'weight = (# of discs needing this note) + 1', params: 0 },
-    { key: 'discsNotes15', name: 'discsNotes + 1.5', desc: 'weight = (# of discs needing this note) + 1.5', params: 0 },
-    { key: 'overallDiscNotes05', name: 'overallDiscNotes + 0.5', desc: 'weight = (any disc needs this note? 1:0) + 0.5', params: 0 },
-    { key: 'overallDiscNotes1', name: 'overallDiscNotes + 1', desc: 'weight = (any disc needs this note? 1:0) + 1', params: 0 },
-    { key: 'overallDiscNotes15', name: 'overallDiscNotes + 1.5', desc: 'weight = (any disc needs this note? 1:0) + 1.5', params: 0 },
-    { key: 'hn1SC5', name: 'harmoniesNotes + 1 + √count/5', desc: 'weight = harmony count + 1 + sqrt(runtime count) / 5', params: 0 },
-    { key: 'hn1SC10', name: 'harmoniesNotes + 1 + √count/10', desc: 'weight = harmony count + 1 + sqrt(runtime count) / 10', params: 0 },
-    { key: 'hn1SC20', name: 'harmoniesNotes + 1 + √count/20', desc: 'weight = harmony count + 1 + sqrt(runtime count) / 20', params: 0 },
-    { key: 'hn1SB5', name: 'harmoniesNotes + 1 + √baseCarry/5', desc: 'weight = harmony count + 1 + sqrt(start-of-run baseCarry) / 5', params: 0 },
-    { key: 'hn1SB10', name: 'harmoniesNotes + 1 + √baseCarry/10', desc: 'weight = harmony count + 1 + sqrt(start-of-run baseCarry) / 10', params: 0 },
-    { key: 'hn1SB20', name: 'harmoniesNotes + 1 + √baseCarry/20', desc: 'weight = harmony count + 1 + sqrt(start-of-run baseCarry) / 20', params: 0 },
-    { key: 'ovd1SB10', name: 'overallDiscNotes + 1 + √baseCarry/10', desc: 'weight = (any disc needs this note? 1:0) + 1 + sqrt(start-of-run baseCarry) / 10', params: 0 },
-    { key: 'dn1SB10', name: 'discsNotes + 1 + √baseCarry/10', desc: 'weight = (# discs needing this note) + 1 + sqrt(start-of-run baseCarry) / 10', params: 0 },
-    { key: 'hn1MulSB10', name: '(harmoniesNotes+1) · (1 + √baseCarry/10)', desc: 'weight = (harmony count + 1) * (1 + sqrt(start-of-run baseCarry) / 10) — multiplicative', params: 0 },
-    { key: 'add1', name: 'count + 1', desc: 'weight = count + 1 — weak count advantage', params: 0 },
-    { key: 'add20', name: 'count + 20', desc: 'weight = count + 20 — very strong base', params: 0 },
-    { key: 'add40', name: 'count + 40', desc: 'weight = count + 40 — dominant base', params: 0 },
-    { key: 'baseCarry10', name: 'baseCarry + 10', desc: 'weight = startCountsBefore(note) + 10', params: 0 },
-    { key: 'baseCarry20', name: 'baseCarry + 20', desc: 'weight = startCountsBefore(note) + 20', params: 0 },
-    { key: 'sqrtBaseCarry10', name: '√baseCarry + 10', desc: 'weight = √(startCountsBefore(note)) + 10', params: 0 },
-    { key: 'sqrtBaseAdd5', name: '√count + baseCarry + 5', desc: 'weight = √(count) + startCountsBefore(note) + 5', params: 0 },
-    { key: 'sqrtBaseAdd10', name: '√count + baseCarry + 10', desc: 'weight = √(count) + startCountsBefore(note) + 10', params: 0 },
-    { key: 'sqrtBaseAdd20', name: '√count + baseCarry + 20', desc: 'weight = √(count) + startCountsBefore(note) + 20', params: 0 },
-    { key: 'invBaseCarry', name: '1/(baseCarry+1)', desc: 'weight = 1/(startCountsBefore(note) + 1) — balancing, favors notes with less carry-over', params: 0 },
-    { key: 'inv5', name: '1/(count+5)', desc: 'weight = 1/(count+5) — weak balancing', params: 0 },
-    { key: 'rankLin', name: 'Rank linear', desc: 'weight = N+1−rank(r), where N = note types, rank 1 = highest count — linear decay', params: 0 },
-    { key: 'rankExp', name: 'Rank exp', desc: 'weight = 2^(N−1−rank), steep exponential decay — only top-2 matter', params: 0 },
-];
+ST.modelLabel = function(key) {
+    for (var i = 0; i < ST.modelDefs.length; i++) {
+        if (ST.modelDefs[i].key === key) return ST.modelDefs[i].name;
+    }
+    return key;
+};
 
 ST.evalModel = function(events, modelKey, k) {
     var ncEvents = events.filter(function(e) { return e.context && e.context.noteCounts; });
@@ -375,26 +393,34 @@ ST.section = function(html) {
 
 // ── Build tables ──
 
+ST._modelGroupOpen = {};
+
+ST.toggleModelGroup = function(gkey) {
+    ST._modelGroupOpen[gkey] = !ST._modelGroupOpen[gkey];
+    ST.renderNotes();
+};
+
 ST.buildModelComparison = function(events) {
     var ncEvents = events.filter(function(e) { return e.context && e.context.noteCounts; });
     if (ncEvents.length < 5) return '';
 
-    var k = ST.noteFilters.k || 10;
     var results = [];
     var bestCorrectP = -Infinity, bestNll = Infinity, bestBrier = Infinity;
     var bestTop1 = -Infinity, bestRank = Infinity, bestEce = Infinity;
     var bestCorrectR = null, bestNllR = null, bestBrierR = null;
     var bestTop1R = null, bestRankR = null, bestEceR = null;
 
+    var byGroup = {};
+
     ST.modelDefs.forEach(function(md) {
-        var usesK = md.key === 'additive' || md.key === 'sqrtBaseK';
-        var r = ST.evalModel(events, md.key, usesK ? k : 0);
+        var r = ST.evalModel(events, md.key, 0);
         if (!r) return;
         r.key = md.key;
-        r.name = usesK ? md.name.replace(' + K', ' + ' + k)
-            : md.key === 'powBaseCarry' ? 'baseCarry^' + (ST.noteFilters.pow || 0.5) + ' + ' + (ST.noteFilters.powK || 0.1)
-            : md.name;
+        r.name = md.name;
         r.desc = md.desc;
+        r.group = md.group;
+        r.groupName = md.groupName;
+        r.param = md.param;
         r.correctP = Math.exp(r.logLik / r.n) * 100;
         if (r.correctP > bestCorrectP) { bestCorrectP = r.correctP; bestCorrectR = r; }
         if (r.nll < bestNll) { bestNll = r.nll; bestNllR = r; }
@@ -403,45 +429,105 @@ ST.buildModelComparison = function(events) {
         if (r.meanRank < bestRank) { bestRank = r.meanRank; bestRankR = r; }
         if (r.eceReliable && r.ece < bestEce) { bestEce = r.ece; bestEceR = r; }
         results.push(r);
+        if (!byGroup[r.group]) byGroup[r.group] = [];
+        byGroup[r.group].push(r);
     });
 
-    var selectedModel = ST.noteFilters.model || 'harmoniesNotes05';
-    var rows = '';
-    results.forEach(function(r) {
-        var isSelected = r.key === selectedModel;
-        var style = ' style="cursor:pointer;';
-        if (isSelected) style += 'border-left:3px solid #7aba7a;background:#2a2a2a;';
-        style += '"';
-        var onclick = ' onclick="ST.selectModel(\'' + r.key + '\')"';
+    var selectedModel = ST.noteFilters.model || 'hn0_5';
+    var totalRows = 0;
 
-        var correctStyle = r === bestCorrectR ? ' style="color:#9aba8a"' : '';
-        var nllStyle = r === bestNllR ? ' style="color:#9aba8a"' : '';
-        var brierStyle = r === bestBrierR ? ' style="color:#9aba8a"' : '';
-        var top1Style = r === bestTop1R ? ' style="color:#9aba8a"' : '';
-        var rankStyle = r === bestRankR ? ' style="color:#9aba8a"' : '';
-        var eceStyle = r === bestEceR ? ' style="color:#9aba8a"' : '';
-        var eceCell = r.eceReliable ? r.ece.toFixed(4) : '—';
-
-        rows += '<tr' + style + onclick + '><td>' + r.name + '<br><span style="font-size:9px;color:#555">' + r.desc + '</span></td>' +
-            '<td class="pct"' + correctStyle + '>' + r.correctP.toFixed(2) + '%</td>' +
-            '<td class="num"' + nllStyle + '>' + r.nllPer.toFixed(4) + '</td>' +
-            '<td class="pct"' + top1Style + '>' + r.top1Pct.toFixed(1) + '%</td>' +
-            '<td class="num"' + rankStyle + '>' + r.meanRank.toFixed(2) + '</td>' +
-            '<td class="num"' + eceStyle + '>' + eceCell + '</td>' +
-            '<td class="num"' + brierStyle + '>' + r.brier.toFixed(4) + '</td></tr>';
-    });
-
-    return '<div class="chart-card"><h3>Model Comparison (' + ncEvents.length + ' events)</h3>' +
-        '<div style="font-size:11px;color:#555;margin-bottom:8px;line-height:1.6">' +
-            'Correct P%: geometric-mean probability assigned to the dropped note (higher = better)<br>' +
-            'NLL/n: per-event log-loss (lower = better)<br>' +
-            'Top-1%: fraction of drops where model\'s favorite note won<br>' +
-            'Mean Rank: avg rank (1=best) model assigned to the note that dropped (lower = better)<br>' +
-            'ECE: calibration error (10 equal-mass bins). "—" when &lt;100 prediction pairs<br>' +
-            'Brier: mean squared probability error (0=perfect, ~0.92=random)' +
+    // Build group summary rows
+    var html = '<div class="chart-card"><h3>Model Comparison (' + ncEvents.length + ' events)</h3>' +
+        '<div style="font-size:11px;color:#666;margin-bottom:8px;line-height:1.6">' +
+            'Each group shows the <strong>best</strong> Correct P% model within its family. Click to expand and see all ' +
+            'variations. Rows highlighted green = best overall across all groups for that metric.<br>' +
+            'Correct P%: geometric-mean probability assigned to the dropped note (higher = better) &middot; ' +
+            'NLL/n: per-event log-loss (lower = better) &middot; ' +
+            'Top-1%: fraction where model\'s favorite won &middot; ' +
+            'Mean Rank: avg rank model assigned to the dropped note &middot; ' +
+            'ECE: calibration error (10 equal-mass bins, "—" if fewer than 100 prediction pairs) &middot; ' +
+            'Brier: mean squared probability error' +
         '</div>' +
-        '<table class="data-table"><tr><th>Model</th><th class="pct">Correct P%</th><th class="num">NLL/n</th><th class="pct">Top-1%</th><th class="num">Mean Rank</th><th class="num">ECE</th><th class="num">Brier</th></tr>' +
-        rows + '</table></div>';
+        '<table class="data-table"><tr><th></th><th>Model</th><th class="pct">Correct P%</th><th class="num">NLL/n</th><th class="pct">Top-1%</th><th class="num">Mean Rank</th><th class="num">ECE</th><th class="num">Brier</th></tr>';
+
+    var groupsInOrder = ST.modelGroups.map(function(g) { return g.key; });
+    groupsInOrder.forEach(function(gkey) {
+        var grpResults = byGroup[gkey];
+        if (!grpResults || grpResults.length === 0) return;
+        var groupDef;
+        for (var gi = 0; gi < ST.modelGroups.length; gi++) {
+            if (ST.modelGroups[gi].key === gkey) { groupDef = ST.modelGroups[gi]; break; }
+        }
+        if (!groupDef) return;
+
+        // Find best in group by Correct P%
+        var best = grpResults[0];
+        for (var ri = 1; ri < grpResults.length; ri++) {
+            if (grpResults[ri].correctP > best.correctP) best = grpResults[ri];
+        }
+
+        var isOpen = ST._modelGroupOpen[gkey];
+        var toggleArrow = isOpen ? '&#9660;' : '&#9654;';
+        var displayStyle = isOpen ? '' : ' style="display:none"';
+        var isSelected = best.key === selectedModel;
+        var headerStyle = ' style="cursor:pointer;border-bottom:' + (isOpen ? 'none' : '1px solid #252525') + ';';
+        if (isSelected) headerStyle += 'border-left:3px solid #7aba7a;background:#2a2a2a;';
+        headerStyle += '"';
+
+        var correctStyle = best === bestCorrectR ? ' style="color:#9aba8a"' : '';
+        var nllStyle = best === bestNllR ? ' style="color:#9aba8a"' : '';
+        var brierStyle = best === bestBrierR ? ' style="color:#9aba8a"' : '';
+        var top1Style = best === bestTop1R ? ' style="color:#9aba8a"' : '';
+        var rankStyle = best === bestRankR ? ' style="color:#9aba8a"' : '';
+        var eceStyle = best === bestEceR ? ' style="color:#9aba8a"' : '';
+        var eceCell = best.eceReliable ? best.ece.toFixed(4) : '—';
+
+        var countLabel = grpResults.length > 1 ? ' <span style="font-size:9px;color:#555">(' + grpResults.length + ')</span>' : '';
+
+        html += '<tr class="mg-header" onclick="ST.toggleModelGroup(\'' + gkey + '\')" data-mg="' + gkey + '"' + headerStyle + '>' +
+            '<td class="expand-btn" style="font-size:10px">' + toggleArrow + '</td>' +
+            '<td><span style="font-weight:500">' + groupDef.name + '</span>' + countLabel + '<br><span style="font-size:9px;color:#555">' + best.name + '</span></td>' +
+            '<td class="pct"' + correctStyle + '>' + best.correctP.toFixed(2) + '%</td>' +
+            '<td class="num"' + nllStyle + '>' + best.nllPer.toFixed(4) + '</td>' +
+            '<td class="pct"' + top1Style + '>' + best.top1Pct.toFixed(1) + '%</td>' +
+            '<td class="num"' + rankStyle + '>' + best.meanRank.toFixed(2) + '</td>' +
+            '<td class="num"' + eceStyle + '>' + eceCell + '</td>' +
+            '<td class="num"' + brierStyle + '>' + best.brier.toFixed(4) + '</td></tr>';
+
+        // Detail rows (all variations in the group)
+        // Sort by name for easy scanning; group header still shows best Correct P%
+        var sortedInGroup = grpResults.slice().sort(function(a, b) { return (a.param || 0) - (b.param || 0); });
+        var subRows = '';
+        sortedInGroup.forEach(function(r) {
+            var isSubSelected = r.key === selectedModel;
+            var selStyle = isSubSelected ? ' style="border-left:2px solid #7aba7a;background:#2a2a2a"' : '';
+            var click = ' onclick="ST.selectModel(\'' + r.key + '\')"';
+
+            var sc = r === bestCorrectR ? ' style="color:#9aba8a"' : '';
+            var sn = r === bestNllR ? ' style="color:#9aba8a"' : '';
+            var sb = r === bestBrierR ? ' style="color:#9aba8a"' : '';
+            var st = r === bestTop1R ? ' style="color:#9aba8a"' : '';
+            var sr = r === bestRankR ? ' style="color:#9aba8a"' : '';
+            var se = r === bestEceR ? ' style="color:#9aba8a"' : '';
+            var ec = r.eceReliable ? r.ece.toFixed(4) : '—';
+
+            subRows += '<tr' + selStyle + click + '>' +
+                '<td></td>' +
+                '<td style="padding-left:20px;font-size:11px">' + r.name + '<br><span style="font-size:9px;color:#555">' + r.desc + '</span></td>' +
+                '<td class="pct"' + sc + '>' + r.correctP.toFixed(2) + '%</td>' +
+                '<td class="num"' + sn + '>' + r.nllPer.toFixed(4) + '</td>' +
+                '<td class="pct"' + st + '>' + r.top1Pct.toFixed(1) + '%</td>' +
+                '<td class="num"' + sr + '>' + r.meanRank.toFixed(2) + '</td>' +
+                '<td class="num"' + se + '>' + ec + '</td>' +
+                '<td class="num"' + sb + '>' + r.brier.toFixed(4) + '</td></tr>';
+        });
+
+        html += '<tr class="mg-detail" data-mg="' + gkey + '"' + displayStyle + '><td colspan="8" style="padding:0">' +
+            '<table class="data-table" style="margin:0;border-top:1px solid #252525">' + subRows + '</table></td></tr>';
+    });
+
+    html += '</table></div>';
+    return html;
 };
 
 ST.buildPerNote = function(events, modelKey, k) {
@@ -757,7 +843,7 @@ ST.buildDropDetail = function() {
     var e = ST._noteDropDetails[idx];
     if (!e || !e.context) return '';
 
-    var modelKey = ST.noteFilters.model || 'harmoniesNotes05';
+    var modelKey = ST.noteFilters.model || 'hn0_5';
     var k = ST.noteFilters.k || 10;
     var probs = ST.computeNoteProbs(e.context.noteCounts, modelKey, k, e.context);
 
@@ -786,15 +872,8 @@ ST.renderNotes = function() {
 
     var k = ST.noteFilters.k;
     if (k === undefined || k === null) k = 10;
-    var modelKey = ST.noteFilters.model || 'harmoniesNotes05';
-    var isAdditive = modelKey === 'additive' || modelKey === 'sqrtBaseK';
-    var isPowBase = modelKey === 'powBaseCarry';
+    var modelKey = ST.noteFilters.model || 'hn0_5';
     var modelName = ST.modelLabel(modelKey);
-
-    var p = ST.noteFilters.pow;
-    if (p === undefined || p === null) p = 0.5;
-    var powK = ST.noteFilters.powK;
-    if (powK === undefined || powK === null) powK = 0.1;
 
     var noteOpts = '<option value="0"' + (ST.noteFilters.note === 0 ? ' selected' : '') + '>All Notes</option>';
     ST.NOTE_IDS.forEach(function(tid) {
@@ -810,29 +889,9 @@ ST.renderNotes = function() {
             src.charAt(0).toUpperCase() + src.slice(1) + '</button>';
     });
 
-    var kSlider = isAdditive
-        ? '<span style="margin-left:14px;font-size:11px;color:#666;white-space:nowrap">N+</span>' +
-          '<input type="text" id="kInput" value="' + k + '" style="width:36px;padding:2px 4px;border:1px solid #333;border-radius:3px;background:#242424;color:#ccc;font-size:12px;text-align:center" onchange="var v=parseInt(this.value);if(!isNaN(v)&&v>=0){ST.noteFilters.k=v;ST.renderNotes()}">' +
-          '<button style="padding:2px 8px;border:1px solid #333;border-radius:3px;background:#242424;color:#888;cursor:pointer;font-size:12px;line-height:1.2" onclick="ST.noteFilters.k=Math.max(0,(ST.noteFilters.k||0)-1);document.getElementById(\'kInput\').value=ST.noteFilters.k;ST.renderNotes()">−</button>' +
-          '<button style="padding:2px 8px;border:1px solid #333;border-radius:3px;background:#242424;color:#888;cursor:pointer;font-size:12px;line-height:1.2" onclick="ST.noteFilters.k=Math.min(100,(ST.noteFilters.k||0)+1);document.getElementById(\'kInput\').value=ST.noteFilters.k;ST.renderNotes()">+</button>'
-        : '';
+    var nameLabel = '<span style="margin-left:14px;font-size:11px;color:#555">model: ' + modelName + '</span>';
 
-    var pSlider = isPowBase
-        ? '<span style="margin-left:14px;font-size:11px;color:#666;white-space:nowrap">p=</span>' +
-          '<input type="text" id="pInput" value="' + p + '" style="width:36px;padding:2px 4px;border:1px solid #333;border-radius:3px;background:#242424;color:#ccc;font-size:12px;text-align:center" onchange="var v=parseFloat(this.value);if(!isNaN(v)){v=Math.max(0,Math.min(3,v));ST.noteFilters.pow=v;ST.renderNotes()}">' +
-          '<button style="padding:2px 8px;border:1px solid #333;border-radius:3px;background:#242424;color:#888;cursor:pointer;font-size:12px;line-height:1.2" onclick="var v=parseFloat((ST.noteFilters.pow||0.5)-0.1);v=Math.max(0,Math.round(v*10)/10);ST.noteFilters.pow=v;document.getElementById(\'pInput\').value=v;ST.renderNotes()">−</button>' +
-          '<button style="padding:2px 8px;border:1px solid #333;border-radius:3px;background:#242424;color:#888;cursor:pointer;font-size:12px;line-height:1.2" onclick="var v=parseFloat((ST.noteFilters.pow||0.5)+0.1);v=Math.min(3,Math.round(v*10)/10);ST.noteFilters.pow=v;document.getElementById(\'pInput\').value=v;ST.renderNotes()">+</button>' +
-          '<span style="margin-left:14px;font-size:11px;color:#666;white-space:nowrap">K=</span>' +
-          '<input type="text" id="powKInput" value="' + powK + '" style="width:40px;padding:2px 4px;border:1px solid #333;border-radius:3px;background:#242424;color:#ccc;font-size:12px;text-align:center" onchange="var v=parseFloat(this.value);if(!isNaN(v)){v=Math.max(0,v);ST.noteFilters.powK=v;ST.renderNotes()}">' +
-          '<button style="padding:2px 8px;border:1px solid #333;border-radius:3px;background:#242424;color:#888;cursor:pointer;font-size:12px;line-height:1.2" onclick="var v=parseFloat((ST.noteFilters.powK||0.1)-0.1);v=Math.max(0,Math.round(v*100)/100);ST.noteFilters.powK=v;document.getElementById(\'powKInput\').value=v;ST.renderNotes()">−</button>' +
-          '<button style="padding:2px 8px;border:1px solid #333;border-radius:3px;background:#242424;color:#888;cursor:pointer;font-size:12px;line-height:1.2" onclick="var v=parseFloat((ST.noteFilters.powK||0.1)+0.1);v=Math.round(v*100)/100;ST.noteFilters.powK=v;document.getElementById(\'powKInput\').value=v;ST.renderNotes()">+</button>'
-        : '';
-
-    var nameLabel = (!isAdditive && !isPowBase)
-        ? '<span style="margin-left:14px;font-size:11px;color:#555">model: ' + modelName + '</span>'
-        : '';
-
-    var sliderHtml = kSlider + pSlider + nameLabel;
+    var sliderHtml = nameLabel;
 
     var html =
         '<div class="filters" id="noteFilters">' +
