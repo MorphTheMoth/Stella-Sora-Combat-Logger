@@ -194,12 +194,8 @@ ST._initialLoadDone = false;
         var ev = events[i];
 
         if (ev.type === 'RUN') {
-            if (currentRun && !currentRun.end) {
-                // State update mid-run — don't fragment
-            } else {
-                currentRun = { id: runIdx++, start: ev, events: [], end: null };
-                ST.runs.push(currentRun);
-            }
+            currentRun = { id: runIdx++, start: ev, events: [], end: null };
+            ST.runs.push(currentRun);
         } else if (ev.type === 'END') {
             if (currentRun) currentRun.end = ev;
         } else if (currentRun) {
@@ -684,10 +680,10 @@ ST.fetchLog = function() {
             return r.text();
         })
         .then(function(text) {
+            ST._sseAcc = text;
             var events = ST.parseLog(text);
             ST.processRuns(events);
             ST._initialLoadDone = true;
-            ST._sseAcc = '';
             var stats = document.getElementById('runStats');
             stats.textContent = ST.runs.length + ' runs';
             ST.switchTab(ST.activeTab);
@@ -709,9 +705,12 @@ ST.startLiveReload = function() {
         if (dot) { dot.style.background = '#4a8a4a'; dot.title = 'live'; }
         if (errTimer) { clearTimeout(errTimer); errTimer = null; }
     };
+    var sseMsgCount = 0;
     es.onmessage = function(e) {
         if (!e.data || !ST._initialLoadDone) return;
-        ST._sseAcc = (ST._sseAcc || '') + e.data + '\n';
+        sseMsgCount++;
+        if (sseMsgCount === 1) return;  // skip the full-dump re-send
+        ST._sseAcc += '\n' + e.data;
         var events = ST.parseLog(ST._sseAcc);
         ST.processRuns(events);
         var stats = document.getElementById('runStats');
