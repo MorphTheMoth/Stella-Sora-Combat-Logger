@@ -34,16 +34,21 @@ let charFilter = '', skillFilter = '', damageTypeFilter = '', defenderFilter = '
 function buildCharFilter() {
     const all = new Set(); allEvents.forEach(e => getChars(e).forEach(c => all.add(c)));
     const sel = document.getElementById('charFilter');
-    const cur = sel.value;
+    const prev = charFilter;
     sel.innerHTML = '<option value="">All Characters</option>';
     [...all].sort().forEach(c => { const o=document.createElement('option'); o.value=c; o.textContent=c; sel.appendChild(o); });
-    sel.value = [...sel.options].some(o=>o.value===cur) ? cur : '';
-    charFilter = sel.value;
+    if ([...sel.options].some(o => o.value === prev)) {
+        sel.value = prev;
+        charFilter = prev;
+    } else if (!prev) {
+        sel.value = '';
+        charFilter = '';
+    }
 }
 function buildSkillFilter(evs) {
     const all = new Set(); evs.forEach(e => { const n=getSkillName(e); if(n) all.add(n); });
     const sel = document.getElementById('skillFilter');
-    const cur = sel.value;
+    const prev = skillFilter;
     sel.innerHTML = '<option value="">All Skills</option>';
     const MAX = 28;
     [...all].sort().forEach(s => {
@@ -53,8 +58,13 @@ function buildSkillFilter(evs) {
         o.title = s;
         sel.appendChild(o);
     });
-    sel.value = [...sel.options].some(o=>o.value===cur) ? cur : '';
-    skillFilter = sel.value;
+    if ([...sel.options].some(o => o.value === prev)) {
+        sel.value = prev;
+        skillFilter = prev;
+    } else if (!prev) {
+        sel.value = '';
+        skillFilter = '';
+    }
 }
 function buildDamageTypeFilter(evs) {
     const all = new Set();
@@ -64,7 +74,7 @@ function buildDamageTypeFilter(evs) {
         }
     });
     const sel = document.getElementById('damageTypeFilter');
-    const cur = sel.value;
+    const prev = damageTypeFilter;
     sel.innerHTML = '<option value="">All Damage Types</option>';
     const MAX = 28;
     [...all].sort((a, b) => a - b).forEach(dt => {
@@ -75,8 +85,13 @@ function buildDamageTypeFilter(evs) {
         o.title = label;
         sel.appendChild(o);
     });
-    sel.value = [...sel.options].some(o => o.value === cur) ? cur : '';
-    damageTypeFilter = sel.value;
+    if ([...sel.options].some(o => o.value === prev)) {
+        sel.value = prev;
+        damageTypeFilter = prev;
+    } else if (!prev) {
+        sel.value = '';
+        damageTypeFilter = '';
+    }
 }
 
 function buildDefenderFilter() {
@@ -84,7 +99,7 @@ function buildDefenderFilter() {
     allEvents.forEach(e => getDefender(e).forEach(d => { hitCounts[d] = (hitCounts[d] || 0) + 1; }));
     const all = Object.keys(hitCounts);
     const sel = document.getElementById('defenderFilter');
-    const cur = sel.value;
+    const prev = defenderFilter;
     sel.innerHTML = '<option value="">All Defenders</option>';
     const MAX = 28;
     [...all].sort().forEach(c => {
@@ -94,13 +109,14 @@ function buildDefenderFilter() {
         o.title = c;
         sel.appendChild(o);
     });
-    if (cur && [...sel.options].some(o => o.value === cur)) {
-        sel.value = cur;
-    } else {
+    if (prev && [...sel.options].some(o => o.value === prev)) {
+        sel.value = prev;
+        defenderFilter = prev;
+    } else if (!prev) {
         const top = all.sort((a, b) => hitCounts[b] - hitCounts[a])[0] || '';
         sel.value = top;
+        defenderFilter = top;
     }
-    defenderFilter = sel.value;
 }
 
 function applyFilters() {
@@ -734,7 +750,7 @@ window.switchTab = function(tab) {
     const sbFilters = document.getElementById('sidebarFilters');
     const sbDcFilters = document.getElementById('sidebarDcFilters');
     if (sbFilters) sbFilters.classList.toggle('hidden', tab !== 'log');
-    if (sbDcFilters) sbDcFilters.classList.toggle('hidden', tab !== 'dmgcalc');
+    if (sbDcFilters) sbDcFilters.classList.toggle('hidden', tab !== 'dmgcalc' && tab !== 'effectimpact');
     const sbEiFilters = document.getElementById('sidebarEiFilters');
     if (sbEiFilters) sbEiFilters.classList.toggle('hidden', tab !== 'effectimpact');
     const sbDcStats = document.getElementById('sidebarDcStats');

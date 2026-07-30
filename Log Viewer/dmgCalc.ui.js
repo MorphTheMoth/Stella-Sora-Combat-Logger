@@ -726,14 +726,19 @@ function dcBuildCharFilter() {
         if (e.AttackerDisplay) all.add(e.AttackerDisplay);
     });
     const sel = document.getElementById('dcCharFilter');
-    const cur = sel.value;
+    const prev = dcCharFilter;
     sel.innerHTML = '<option value="">All Characters</option>';
     [...all].sort().forEach(c => {
         const o = document.createElement('option');
         o.value = c; o.textContent = c; sel.appendChild(o);
     });
-    sel.value = [...sel.options].some(o => o.value === cur) ? cur : '';
-    dcCharFilter = sel.value;
+    if ([...sel.options].some(o => o.value === prev)) {
+        sel.value = prev;
+        dcCharFilter = prev;
+    } else if (!prev) {
+        sel.value = '';
+        dcCharFilter = '';
+    }
 }
 
 function dcBuildSkillFilter(evs) {
@@ -743,7 +748,7 @@ function dcBuildSkillFilter(evs) {
         if (n) all.add(n);
     });
     const sel = document.getElementById('dcSkillFilter');
-    const cur = sel.value;
+    const prev = dcSkillFilter;
     sel.innerHTML = '<option value="">All Skills</option>';
     const MAX = 28;
     [...all].sort().forEach(s => {
@@ -753,8 +758,13 @@ function dcBuildSkillFilter(evs) {
         o.title = s;
         sel.appendChild(o);
     });
-    sel.value = [...sel.options].some(o => o.value === cur) ? cur : '';
-    dcSkillFilter = sel.value;
+    if ([...sel.options].some(o => o.value === prev)) {
+        sel.value = prev;
+        dcSkillFilter = prev;
+    } else if (!prev) {
+        sel.value = '';
+        dcSkillFilter = '';
+    }
 }
 
 function dcBuildDamageTypeFilter(evs) {
@@ -765,7 +775,7 @@ function dcBuildDamageTypeFilter(evs) {
         }
     });
     const sel = document.getElementById('dcDamageTypeFilter');
-    const cur = sel.value;
+    const prev = dcDamageTypeFilter;
     sel.innerHTML = '<option value="">All Damage Types</option>';
     const MAX = 28;
     [...all].sort((a, b) => a - b).forEach(dt => {
@@ -776,8 +786,13 @@ function dcBuildDamageTypeFilter(evs) {
         o.title = label;
         sel.appendChild(o);
     });
-    sel.value = [...sel.options].some(o => o.value === cur) ? cur : '';
-    dcDamageTypeFilter = sel.value;
+    if ([...sel.options].some(o => o.value === prev)) {
+        sel.value = prev;
+        dcDamageTypeFilter = prev;
+    } else if (!prev) {
+        sel.value = '';
+        dcDamageTypeFilter = '';
+    }
 }
 
 function dcBuildDefenderFilter(autoSelect = false) {
@@ -791,7 +806,7 @@ function dcBuildDefenderFilter(autoSelect = false) {
     });
     const all = Object.keys(dmgTotals);
     const sel = document.getElementById('dcDefenderFilter');
-    const cur = sel.value;
+    const prev = dcDefenderFilter;
     sel.innerHTML = '<option value="">All Defenders</option>';
     const MAX = 28;
     [...all].sort().forEach(c => {
@@ -804,13 +819,15 @@ function dcBuildDefenderFilter(autoSelect = false) {
     if (autoSelect) {
         const top = all.sort((a, b) => dmgTotals[b] - dmgTotals[a])[0] || '';
         sel.value = top;
-    } else if ([...sel.options].some(o => o.value === cur)) {
-        sel.value = cur;
-    } else {
+        dcDefenderFilter = top;
+    } else if ([...sel.options].some(o => o.value === prev)) {
+        sel.value = prev;
+        dcDefenderFilter = prev;
+    } else if (!prev) {
         const top = all.sort((a, b) => dmgTotals[b] - dmgTotals[a])[0] || '';
         sel.value = top;
+        dcDefenderFilter = top;
     }
-    dcDefenderFilter = sel.value;
 }
 
 function dcApplyFilters() {
