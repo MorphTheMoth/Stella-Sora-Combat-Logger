@@ -813,8 +813,7 @@ function buildEffectTable(dataFiles) {
         for (const key of Object.keys(jEffect)) {
             if (!key.startsWith('63')) continue;
             const configId = parseInt(key, 10);
-            const prefixStr = key.slice(0, 7);
-            const prefix = parseInt(prefixStr, 10);
+            const prefix = Math.floor(configId / 100) - 10;
             const name = blitzNameMap.get(prefix);
             effectTable.set(configId, { label: `Boss Blitz \\ ${name}`, source: 'Boss Blitz' });
         }
