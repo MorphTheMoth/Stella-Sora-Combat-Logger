@@ -1,6 +1,7 @@
 // tabs/notes.js — Weighted RNG model analysis for note drops
 
 ST.noteFilters = { note: 0, sources: { battle: true, elite: true, boss: true }, stack: 'all', k: 10, pow: 0.5, powK: 0.1, model: 'hn0_5' };
+ST._bestOdnK = null;
 
 ST.selectModel = function(key) {
     ST.noteFilters.model = key;
@@ -42,56 +43,93 @@ ST.modelGroups = [
         makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + ' + v; },
         weight: function(nc, ctx, tid, v) { return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + v; }
     },
-    { key: 'hn1sc', name: 'hn + 1 + \u221acount / D', param: 'D',
-        params: [0.5,1,1.5,2,2.5,3,3.5,4,4.5,5,5.5,6,6.5,7,8,9,10,12,15,20,25,30,40,50,75],
-        makeKey: function(v) { return 'hn1sc' + ST._enc(v); },
-        makeName: function(v) { return 'hn + 1 + \u221acount / ' + v; },
-        makeDesc: function(v) { return 'weight = harmoniesNotes[tid] + 1 + sqrt(count[tid]) / ' + v; },
+
+    // — Composite models (odn + other terms) —
+    { key: 'odnc', name: 'overallDiscNotes + count + K', param: 'K',
+        params: [0.01,0.05,0.1,0.15,0.2,0.25,0.3,0.35,0.4,0.45,0.5,0.55,0.6,0.65,0.7,0.8,0.9,1,1.25,1.5,2,3,4,5,7.5],
+        makeKey: function(v) { return 'odnc' + ST._enc(v); },
+        makeName: function(v) { return 'overallDiscNotes + count + ' + v; },
+        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + count[tid] + ' + v; },
         weight: function(nc, ctx, tid, v) {
-            var hn = (ctx.harmoniesNotes && ctx.harmoniesNotes[tid]) || 0;
-            return hn + 1 + Math.sqrt(nc[tid] || 0) / v;
+            return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + (nc[tid] || 0) + v;
         }
     },
-    { key: 'hn1sb', name: 'hn + 1 + \u221abaseCarry / D', param: 'D',
-        params: [0.5,1,2,3,4,5,6,7,8,9,10,12,15,20,25,30,40,50,60,80,100,150,200,300,500],
-        makeKey: function(v) { return 'hn1sb' + ST._enc(v); },
-        makeName: function(v) { return 'hn + 1 + \u221abaseCarry / ' + v; },
-        makeDesc: function(v) { return 'weight = harmoniesNotes[tid] + 1 + sqrt(startCountsBefore[tid]) / ' + v; },
+    { key: 'odnsc', name: 'overallDiscNotes + \u221acount + K', param: 'K',
+        params: [0.01,0.05,0.1,0.15,0.2,0.25,0.3,0.35,0.4,0.45,0.5,0.55,0.6,0.65,0.7,0.8,0.9,1,1.25,1.5,2,3,4,5,7.5],
+        makeKey: function(v) { return 'odnsc' + ST._enc(v); },
+        makeName: function(v) { return 'overallDiscNotes + \u221acount + ' + v; },
+        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + sqrt(count[tid]) + ' + v; },
         weight: function(nc, ctx, tid, v) {
-            var hn = (ctx.harmoniesNotes && ctx.harmoniesNotes[tid]) || 0;
-            return hn + 1 + Math.sqrt((ctx.startCountsBefore && ctx.startCountsBefore[tid]) || 0) / v;
+            return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + Math.sqrt(nc[tid] || 0) + v;
         }
     },
-    { key: 'dn1sb', name: 'dn + 1 + \u221abaseCarry / D', param: 'D',
-        params: [0.5,1,2,3,4,5,6,7,8,9,10,12,15,20,25,30,40,50,60,80,100,150,200,300,500],
-        makeKey: function(v) { return 'dn1sb' + ST._enc(v); },
-        makeName: function(v) { return 'dn + 1 + \u221abaseCarry / ' + v; },
-        makeDesc: function(v) { return 'weight = discsNotes[tid] + 1 + sqrt(startCountsBefore[tid]) / ' + v; },
+    { key: 'odnsb', name: 'overallDiscNotes + \u221asuppNotes + K', param: 'K',
+        params: [0.01,0.05,0.1,0.15,0.2,0.25,0.3,0.35,0.4,0.45,0.5,0.55,0.6,0.65,0.7,0.8,0.9,1,1.25,1.5,2,3,4,5,7.5],
+        makeKey: function(v) { return 'odnsb' + ST._enc(v); },
+        makeName: function(v) { return 'overallDiscNotes + \u221asuppNotes + ' + v; },
+        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + sqrt(startCountsBefore[tid]) + ' + v; },
         weight: function(nc, ctx, tid, v) {
-            var dn = (ctx.discsNotes && ctx.discsNotes[tid]) || 0;
-            return dn + 1 + Math.sqrt((ctx.startCountsBefore && ctx.startCountsBefore[tid]) || 0) / v;
+            return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0)
+                 + Math.sqrt((ctx.startCountsBefore && ctx.startCountsBefore[tid]) || 0) + v;
         }
     },
-    { key: 'odn1sb', name: 'odn + 1 + \u221abaseCarry / D', param: 'D',
+    { key: 'odncsc', name: 'overallDiscNotes + count + \u221acount + K', param: 'K',
+        params: [0.01,0.05,0.1,0.15,0.2,0.25,0.3,0.35,0.4,0.45,0.5,0.55,0.6,0.65,0.7,0.8,0.9,1,1.25,1.5,2,3,4,5,7.5],
+        makeKey: function(v) { return 'odncsc' + ST._enc(v); },
+        makeName: function(v) { return 'overallDiscNotes + count + \u221acount + ' + v; },
+        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + count[tid] + sqrt(count[tid]) + ' + v; },
+        weight: function(nc, ctx, tid, v) {
+            return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + (nc[tid] || 0) + Math.sqrt(nc[tid] || 0) + v;
+        }
+    },
+    { key: 'odncd', name: 'overallDiscNotes + ? + count / D', param: 'D',
         params: [0.5,1,2,3,4,5,6,7,8,9,10,12,15,20,25,30,40,50,60,80,100,150,200,300,500],
-        makeKey: function(v) { return 'odn1sb' + ST._enc(v); },
-        makeName: function(v) { return 'odn + 1 + \u221abaseCarry / ' + v; },
-        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + 1 + sqrt(startCountsBefore[tid]) / ' + v; },
+        makeKey: function(v) { return 'odncd' + ST._enc(v); },
+        makeName: function(v) { return 'overallDiscNotes + ? + count / ' + v; },
+        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + bestOdnK + count[tid] / ' + v + ' \u2014 odn best-K baseline with count/D'; },
+        weight: function(nc, ctx, tid, v) {
+            return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + (nc[tid] || 0) / v + (ST._bestOdnK || 0);
+        }
+    },
+    { key: 'odnscd', name: 'overallDiscNotes + ? + \u221acount / D', param: 'D',
+        params: [0.5,1,2,3,4,5,6,7,8,9,10,12,15,20,25,30,40,50,60,80,100,150,200,300,500],
+        makeKey: function(v) { return 'odnscd' + ST._enc(v); },
+        makeName: function(v) { return 'overallDiscNotes + ? + \u221acount / ' + v; },
+        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + bestOdnK + sqrt(count[tid]) / ' + v + ' \u2014 odn best-K with sqrt(count)/D'; },
+        weight: function(nc, ctx, tid, v) {
+            return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + Math.sqrt(nc[tid] || 0) / v + (ST._bestOdnK || 0);
+        }
+    },
+    { key: 'odnmc', name: '(odn + 1) \u00b7 (1 + count / D)', param: 'D',
+        params: [0.5,1,2,3,4,5,6,7,8,9,10,12,15,20,25,30,40,50,60,80,100,150,200,300,500],
+        makeKey: function(v) { return 'odnmc' + ST._enc(v); },
+        makeName: function(v) { return '(odn + 1) \u00b7 (1 + count / ' + v + ')'; },
+        makeDesc: function(v) { return 'weight = (overallDiscNotes[tid] + 1) * (1 + count[tid] / ' + v + ') \u2014 multiplicative'; },
         weight: function(nc, ctx, tid, v) {
             var odn = (ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0;
-            return odn + 1 + Math.sqrt((ctx.startCountsBefore && ctx.startCountsBefore[tid]) || 0) / v;
+            return (odn + 1) * (1 + (nc[tid] || 0) / v);
         }
     },
-    { key: 'hn1msb', name: '(hn + 1) \u00b7 (1 + \u221abaseCarry / D)', param: 'D',
+    { key: 'odncsd', name: 'overallDiscNotes + ? + odn \u00b7 suppNotes / D', param: 'D',
         params: [0.5,1,2,3,4,5,6,7,8,9,10,12,15,20,25,30,40,50,60,80,100,150,200,300,500],
-        makeKey: function(v) { return 'hn1msb' + ST._enc(v); },
-        makeName: function(v) { return '(hn + 1) \u00b7 (1 + \u221abaseCarry / ' + v + ')'; },
-        makeDesc: function(v) { return 'weight = (harmoniesNotes[tid] + 1) * (1 + sqrt(startCountsBefore[tid]) / ' + v + ') \u2014 multiplicative'; },
+        makeKey: function(v) { return 'odncsd' + ST._enc(v); },
+        makeName: function(v) { return 'overallDiscNotes + ? + odn\u00b7suppNotes / ' + v; },
+        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + bestOdnK + overallDiscNotes[tid] * startCountsBefore[tid] / ' + v + ' \u2014 odn + bestK + interaction with suppNotes/D'; },
         weight: function(nc, ctx, tid, v) {
-            var hn = (ctx.harmoniesNotes && ctx.harmoniesNotes[tid]) || 0;
-            return (hn + 1) * (1 + Math.sqrt((ctx.startCountsBefore && ctx.startCountsBefore[tid]) || 0) / v);
+            var odn = (ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0;
+            return odn + (ST._bestOdnK || 0) + odn * ((ctx.startCountsBefore && ctx.startCountsBefore[tid]) || 0) / v;
         }
     },
+    { key: 'dnc',  name: 'discsNotes + count + K', param: 'K',
+        params: [0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75,3,3.5,4,4.5,5,5.5,6,7,8,10,12,15,20,30],
+        makeKey: function(v) { return 'dnc' + ST._enc(v); },
+        makeName: function(v) { return 'discsNotes + count + ' + v; },
+        makeDesc: function(v) { return 'weight = discsNotes[tid] + count[tid] + ' + v; },
+        weight: function(nc, ctx, tid, v) {
+            return ((ctx.discsNotes && ctx.discsNotes[tid]) || 0) + (nc[tid] || 0) + v;
+        }
+    },
+
     { key: 'add',  name: 'count + K', param: 'K',
         params: [1,3,5,7,10,12,15,17,20,22,25,27,30,33,35,40,45,50,55,60,70,80,100,150,200],
         makeKey: function(v) { return 'add' + ST._enc(v); },
@@ -99,45 +137,7 @@ ST.modelGroups = [
         makeDesc: function(v) { return 'weight = count[tid] + ' + v; },
         weight: function(nc, ctx, tid, v) { return (nc[tid] || 0) + v; }
     },
-    { key: 'bc',   name: 'baseCarry + K', param: 'K',
-        params: [1,3,5,10,15,20,25,30,40,50,60,70,80,90,100,120,150,200,250,300,400,500,750,1000,1500],
-        makeKey: function(v) { return 'bc' + ST._enc(v); },
-        makeName: function(v) { return 'baseCarry + ' + v; },
-        makeDesc: function(v) { return 'weight = startCountsBefore[tid] + ' + v; },
-        weight: function(nc, ctx, tid, v) { return ((ctx.startCountsBefore && ctx.startCountsBefore[tid]) || 0) + v; }
-    },
-    { key: 'sbc',  name: '\u221abaseCarry + K', param: 'K',
-        params: [0.5,1,3,5,7,8,9,10,11,12,13,14,15,16,17,18,19,20,22,25,30,40,50,80,150],
-        makeKey: function(v) { return 'sbc' + ST._enc(v); },
-        makeName: function(v) { return '\u221abaseCarry + ' + v; },
-        makeDesc: function(v) { return 'weight = sqrt(startCountsBefore[tid]) + ' + v; },
-        weight: function(nc, ctx, tid, v) {
-            return Math.sqrt((ctx.startCountsBefore && ctx.startCountsBefore[tid]) || 0) + v;
-        }
-    },
-    { key: 'sadd', name: '\u221acount + baseCarry + K', param: 'K',
-        params: [0,0.5,1,2,3,5,7,10,12,15,17,20,22,25,27,30,33,35,40,45,50,60,80,100,150],
-        makeKey: function(v) { return 'sadd' + ST._enc(v); },
-        makeName: function(v) { return '\u221acount + baseCarry + ' + v; },
-        makeDesc: function(v) { return 'weight = sqrt(count[tid]) + startCountsBefore[tid] + ' + v; },
-        weight: function(nc, ctx, tid, v) {
-            return Math.sqrt(nc[tid] || 0) + ((ctx.startCountsBefore && ctx.startCountsBefore[tid]) || 0) + v;
-        }
-    },
-    { key: 'inv',  name: '1/(count + K)', param: 'K',
-        params: [1,3,5,7,10,15,20,25,30,40,50,60,80,100,150,200,300,400,500,700,1000,2000,5000,10000,50000],
-        makeKey: function(v) { return 'inv' + ST._enc(v); },
-        makeName: function(v) { return '1/(count + ' + v + ')'; },
-        makeDesc: function(v) { return 'weight = 1/(count[tid] + ' + v + ')'; },
-        weight: function(nc, ctx, tid, v) { return 1 / ((nc[tid] || 0) + v); }
-    },
-    { key: 'invbc', name: '1/(baseCarry + K)', param: 'K',
-        params: [0.1,0.5,1,2,3,5,10,20,30,50,100,200,500,1000,2000,5000,10000,50000,100000,500000,1000000,5000000,10000000,50000000,100000000],
-        makeKey: function(v) { return 'invbc' + ST._enc(v); },
-        makeName: function(v) { return '1/(baseCarry + ' + v + ')'; },
-        makeDesc: function(v) { return 'weight = 1/(startCountsBefore[tid] + ' + v + ')'; },
-        weight: function(nc, ctx, tid, v) { return 1 / (((ctx.startCountsBefore && ctx.startCountsBefore[tid]) || 0) + v); }
-    },
+
     { key: 'uadd', name: 'uniform + count / K', param: 'K',
         params: [0.5,1,2,3,4,5,6,7,8,9,10,12,15,20,25,30,40,50,60,80,100,150,200,300,500],
         makeKey: function(v) { return 'uadd' + ST._enc(v); },
@@ -172,22 +172,7 @@ ST.modelGroups = [
         makeDesc: function(v) { return 'weight = log(count[tid] + 1) + ' + v + ' \u2014 diminishing returns on count'; },
         weight: function(nc, ctx, tid, v) { return Math.log((nc[tid] || 0) + 1) + v; }
     },
-    { key: 'logb', name: 'log(baseCarry + 1) + K', param: 'K',
-        params: [0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75,3,3.5,4,4.5,5,5.5,6,7,8,10,12,15,20],
-        makeKey: function(v) { return 'logb' + ST._enc(v); },
-        makeName: function(v) { return 'log(baseCarry + 1) + ' + v; },
-        makeDesc: function(v) { return 'weight = log(startCountsBefore[tid] + 1) + ' + v + ' \u2014 diminishing returns on carry'; },
-        weight: function(nc, ctx, tid, v) {
-            return Math.log(((ctx.startCountsBefore && ctx.startCountsBefore[tid]) || 0) + 1) + v;
-        }
-    },
-    { key: 'tl',   name: 'teamLevel/10 + K', param: 'K',
-        params: [0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75,3,3.5,4,4.5,5,5.5,6,7,8,10,12,15,20],
-        makeKey: function(v) { return 'tl' + ST._enc(v); },
-        makeName: function(v) { return 'teamLevel/10 + ' + v; },
-        makeDesc: function(v) { return 'weight = teamLevel / 10 + ' + v + ' \u2014 team level influence'; },
-        weight: function(nc, ctx, tid, v) { return (ctx.teamLevel || 1) / 10 + v; }
-    },
+
     { key: 'rank', name: 'Rank-based', param: null, params: null,
         isSpecial: true,
         makeKey: function() { return null; },
@@ -412,6 +397,17 @@ ST.buildModelComparison = function(events) {
 
     var byGroup = {};
 
+    // Pre-evaluate odn models to find best K
+    ST._bestOdnK = null;
+    var bestOdnCorrectP = -Infinity;
+    ST.modelDefs.forEach(function(md) {
+        if (md.group !== 'odn') return;
+        var rr = ST.evalModel(events, md.key, 0);
+        if (!rr) return;
+        var cp = Math.exp(rr.logLik / rr.n) * 100;
+        if (cp > bestOdnCorrectP) { bestOdnCorrectP = cp; ST._bestOdnK = md.param; }
+    });
+
     ST.modelDefs.forEach(function(md) {
         var r = ST.evalModel(events, md.key, 0);
         if (!r) return;
@@ -422,6 +418,11 @@ ST.buildModelComparison = function(events) {
         r.groupName = md.groupName;
         r.param = md.param;
         r.correctP = Math.exp(r.logLik / r.n) * 100;
+        // Show actual bestK in odncd/odnscd names
+        if ((r.group === 'odncd' || r.group === 'odnscd' || r.group === 'odncsd') && ST._bestOdnK !== null) {
+            r.name = r.name.replace('?', String(ST._bestOdnK));
+            r.desc = r.desc.replace('bestOdnK', String(ST._bestOdnK));
+        }
         if (r.correctP > bestCorrectP) { bestCorrectP = r.correctP; bestCorrectR = r; }
         if (r.nll < bestNll) { bestNll = r.nll; bestNllR = r; }
         if (r.brier < bestBrier) { bestBrier = r.brier; bestBrierR = r; }
@@ -447,6 +448,14 @@ ST.buildModelComparison = function(events) {
             'Mean Rank: avg rank model assigned to the dropped note &middot; ' +
             'ECE: calibration error (10 equal-mass bins, "—" if fewer than 100 prediction pairs) &middot; ' +
             'Brier: mean squared probability error' +
+        '</div>' +
+        '<div style="font-size:10px;color:#555;margin-bottom:8px;line-height:1.5">' +
+            'Terms: <strong>harmoniesNotes</strong> = total harmony material copies needed across your 3 equipped discs &middot; ' +
+            '<strong>discsNotes</strong> = how many of your 3 discs feature this note (0\u20133) &middot; ' +
+            '<strong>overallDiscNotes</strong> = whether this note appears on any equipped disc (0/1) &middot; ' +
+            '<strong>count</strong> = how many of this note type you own before the drop &middot; ' +
+            '<strong>suppNotes</strong> = startCountsBefore (support discs you brought into the run) &middot; ' +
+            '<strong>K, D</strong> = model parameters varied within the group' +
         '</div>' +
         '<table class="data-table"><tr><th></th><th>Model</th><th class="pct">Correct P%</th><th class="num">NLL/n</th><th class="pct">Top-1%</th><th class="num">Mean Rank</th><th class="num">ECE</th><th class="num">Brier</th></tr>';
 
@@ -483,10 +492,14 @@ ST.buildModelComparison = function(events) {
         var eceCell = best.eceReliable ? best.ece.toFixed(4) : '—';
 
         var countLabel = grpResults.length > 1 ? ' <span style="font-size:9px;color:#555">(' + grpResults.length + ')</span>' : '';
+        var groupName = groupDef.name;
+        if ((gkey === 'odncd' || gkey === 'odnscd' || gkey === 'odncsd') && ST._bestOdnK !== null) {
+            groupName = groupName.replace('?', String(ST._bestOdnK));
+        }
 
         html += '<tr class="mg-header" onclick="ST.toggleModelGroup(\'' + gkey + '\')" data-mg="' + gkey + '"' + headerStyle + '>' +
             '<td class="expand-btn" style="font-size:10px">' + toggleArrow + '</td>' +
-            '<td><span style="font-weight:500">' + groupDef.name + '</span>' + countLabel + '<br><span style="font-size:9px;color:#555">' + best.name + '</span></td>' +
+            '<td><span style="font-weight:500">' + groupName + '</span>' + countLabel + '<br><span style="font-size:9px;color:#555">' + best.name + '</span></td>' +
             '<td class="pct"' + correctStyle + '>' + best.correctP.toFixed(2) + '%</td>' +
             '<td class="num"' + nllStyle + '>' + best.nllPer.toFixed(4) + '</td>' +
             '<td class="pct"' + top1Style + '>' + best.top1Pct.toFixed(1) + '%</td>' +
@@ -739,9 +752,12 @@ ST.buildLLMData = function(events) {
     lines.push('Each event shows the counts of each note type BEFORE the drop and which');
     lines.push('note won. Note mapping: ' + labels);
     lines.push('');
-    lines.push('Each event also has startCountsBefore and startCountsAfter in its context:');
-    lines.push('- startCountsBefore = carry-over notes from prior runs (bag before start.infos)');
-    lines.push('- startCountsAfter = carry-over + free start.infos (total count at run start)');
+    lines.push('Each event also has harmoniesNotes, discsNotes, overallDiscNotes, startCountsBefore, and startCountsAfter in its context:');
+    lines.push('- harmoniesNotes = harmony material copies needed across your 3 equipped discs (from NeedSubNoteSkills)');
+    lines.push('- discsNotes = how many of your 3 discs feature this note in their secondary skills (0-3)');
+    lines.push('- overallDiscNotes = 1 if this note appears on any equipped disc, 0 otherwise');
+    lines.push('- startCountsBefore = support discs (bag before start.infos)');
+    lines.push('- startCountsAfter = support discs + free start.infos (total count at run start)');
     lines.push('These are the same for all events in a run.');
     lines.push('');
     lines.push('Format per event:');
@@ -770,16 +786,16 @@ ST.buildLLMData = function(events) {
     lines.push('that best fits this data. Model families to consider:');
     lines.push('- additive: w = count + K');
     lines.push('- sqrt: w = sqrt(count) + K');
-    lines.push('- baseCarry + fixed K: w = baseCarry(note) + K for K in {5,10,20}');
-    lines.push('- sqrt(baseCarry) + fixed K: w = sqrt(baseCarry(note)) + K for K in {5,10}');
-    lines.push('- sqrt(count) + baseCarry + fixed K: w = sqrt(count) + baseCarry(note) + K for K in {5,10,20}');
-    lines.push('- sqrt(count) + baseCarry + adjustable K: w = sqrt(count) + baseCarry(note) + K');
-    lines.push('- baseCarry(note)^p + K: adjustable p and K');
+    lines.push('- suppNotes + fixed K: w = suppNotes(note) + K for K in {5,10,20}');
+    lines.push('- sqrt(suppNotes) + fixed K: w = sqrt(suppNotes(note)) + K for K in {5,10}');
+    lines.push('- sqrt(count) + suppNotes + fixed K: w = sqrt(count) + suppNotes(note) + K for K in {5,10,20}');
+    lines.push('- sqrt(count) + suppNotes + adjustable K: w = sqrt(count) + suppNotes(note) + K');
+    lines.push('- suppNotes(note)^p + K: adjustable p and K');
     lines.push('- power: w = count^p + K');
     lines.push('- inverse: w = 1 / (count + K)');
     lines.push('- rank-based: linear or exponential decay by count rank');
-    lines.push('- baseCarry rank: linear decay by startCountsBefore rank');
-    lines.push('- inverse baseCarry: w = 1 / (baseCarry + 1)');
+    lines.push('- suppNotes rank: linear decay by startCountsBefore rank');
+    lines.push('- inverse suppNotes: w = 1 / (suppNotes + 1)');
     lines.push('- power: w = count^p + K');
     lines.push('- inverse: w = 1 / (count + K)');
     lines.push('- rank-based: linear or exponential decay by count rank');
