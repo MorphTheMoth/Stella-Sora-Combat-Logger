@@ -576,7 +576,7 @@ function calcHitFields(ev, statOverrides, dcEffectsDisabled, dcEffectLevelOverri
 
     // DEF
     const defIgnore    = statBase(aStats, 10);   // DEF_Ignore = index 10
-    const defPenetrate = statBase(aStats, 9);    // DEF_Penetrate = index 9
+    const defPenetrate = statValue(aStats, 9);   // DEF_Penetrate = index 9
     const defRaw       = statBase(dStats, 2);    // DEF = index 2
     const effectiveDef = defRaw * (1 - defIgnore) - defPenetrate;
     const defAmend     = 1 - (effectiveDef * 40) / (effectiveDef * 32 + 24000);
