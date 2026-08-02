@@ -134,6 +134,26 @@ function calcPenRes(aStats, dStats, el, penBonus, resBonus) {
 }
 
 // ─── Effect collection ────────────────────────────────────────────────────────
+// Fallback level resolution: when the levelMap entry is missing or stale (its
+// valueConfigId list doesn't contain the hit's actual valueConfigId), derive the
+// level candidates directly from the value tables using the game's
+// "configId + level*10" valueConfigId scheme. Returns { vc, curIdx } or null.
+function deriveLevelCandidates(configId, valueConfigId, fromAttrDict) {
+    if (configId == null || configId <= 0 || valueConfigId == null) return null;
+    const table = fromAttrDict ? onceAttrValueTable : effectValueTable;
+    const vc = [];
+    let anyFound = false;
+    for (let lvl = 0; lvl <= 50; lvl++) {
+        const vid = configId + lvl * 10;
+        if (table.has(vid)) { anyFound = true; vc.push({ level: lvl, valueConfigId: vid }); }
+        else if (anyFound) break;
+    }
+    if (vc.length < 2) return null;
+    const curIdx = vc.findIndex(v => v.valueConfigId === valueConfigId);
+    if (curIdx < 0) return null;
+    return { vc, curIdx };
+}
+
 // Collect unique effects across all filtered hits.
 // Returns an array of { key, side, configId, valueConfigId, name, attrType, subType, value, count, source, fromAttrDict }
 function dcCollectAttrFixEffects(dcFiltered) {
@@ -160,8 +180,12 @@ function dcCollectAttrFixEffects(dcFiltered) {
                     const key = `${side}:${e.configId}:${e.valueConfigId ?? ''}`;
                     if (!seen.has(key)) {
                         const lm = resolveLevelMap(e.configId);
-                        const allVcIds = lm.allValueConfigIds;
-                        const curIdx = allVcIds.findIndex(v => v.valueConfigId === e.valueConfigId);
+                        let allVcIds = lm.allValueConfigIds;
+                        let curIdx = allVcIds.findIndex(v => v.valueConfigId === e.valueConfigId);
+                        if (curIdx < 0) {
+                            const derived = deriveLevelCandidates(e.configId, e.valueConfigId, false);
+                            if (derived) { allVcIds = derived.vc; curIdx = derived.curIdx; }
+                        }
                         seen.set(key, {
                             key, side,
                             configId: e.configId,
@@ -200,8 +224,12 @@ function dcCollectAttrFixEffects(dcFiltered) {
                     const stacks = e.stacks != null ? e.stacks : 1;
                     if (!seen.has(key)) {
                         const lm = resolveLevelMap(cid);
-                        const allVcIds = lm.allValueConfigIds;
-                        const curIdx = allVcIds.findIndex(v => v.valueConfigId === e.valueConfigId);
+                        let allVcIds = lm.allValueConfigIds;
+                        let curIdx = allVcIds.findIndex(v => v.valueConfigId === e.valueConfigId);
+                        if (curIdx < 0) {
+                            const derived = deriveLevelCandidates(cid, e.valueConfigId, true);
+                            if (derived) { allVcIds = derived.vc; curIdx = derived.curIdx; }
+                        }
                         seen.set(key, {
                             key, side,
                             configId: cid,
