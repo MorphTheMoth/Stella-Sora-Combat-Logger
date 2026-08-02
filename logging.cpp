@@ -417,10 +417,13 @@ bool EnableAllDebugGizmos(uintptr_t moduleBase)
 {
     if (!moduleBase) return false;
 
-    // Use the helper instance captured by the Awake hook (with klass filter).
-    extern std::atomic<uintptr_t> g_HelperInstance;
-    uintptr_t obj = g_HelperInstance.load(std::memory_order_relaxed);
-    if (!obj) return false;
+    // Resolve the AdventureModuleDebugHelper singleton the same way the engine
+    // does (SceneSingleton<T>.get_Instance chain — see GetDebugHelperInstance
+    // in proxy.cpp).  Returns null until the instance exists; the caller re-runs
+    // this every logic tick so it takes effect as soon as the helper is up.
+    void* helper = GetDebugHelperInstance();
+    if (!helper) return false;
+    uintptr_t obj = reinterpret_cast<uintptr_t>(helper);
 
     // Enable based on config
     *(char *)(obj + 0x28) = g_Cfg.player_gizmo ? 1 : 0; // PlayerGizmo
@@ -436,6 +439,16 @@ bool EnableAllDebugGizmos(uintptr_t moduleBase)
     *(char *)(obj + 0x32) = g_Cfg.player_path_gizmo ? 1 : 0; // PlayerPathGizmo
     *(char *)(obj + 0x33) = g_Cfg.camera_gizmo ? 1 : 0; // CameraGizmo
 
+    // One-shot read-back so a single run confirms the flags actually landed on
+    // the instance the engine reads.  Removed once confirmed working.
+    static bool s_gizmoWriteLogged = false;
+    if (!s_gizmoWriteLogged) {
+        s_gizmoWriteLogged = true;
+        log("[gizmo] flags written to instance 0x%llX: monster=%d bullet=%d hitbox=%d (readback %d)",
+            (unsigned long long)obj,
+            *(char *)(obj + 0x29), *(char *)(obj + 0x2A),
+            g_Cfg.hitbox_gizmo, *(char *)(obj + 0x2B));
+    }
     return true;
 }
 

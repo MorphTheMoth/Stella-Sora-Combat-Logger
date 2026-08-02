@@ -183,9 +183,10 @@ void BuildResetJson();
 std::string GetLocalAppDataPath();
 void InitializeLogger();
 
-// Captured by Hook_SceneSingletonAwake with klass filtering; used by
-// EnableAllDebugGizmos to write the gizmo flag bytes to the helper instance.
-extern std::atomic<uintptr_t> g_HelperInstance;
+// Resolve the AdventureModuleDebugHelper singleton (SceneSingleton<T>.
+// get_Instance chain — defined in proxy.cpp).  Used by EnableAllDebugGizmos
+// to write the gizmo flag bytes onto the same instance the engine reads.
+void* GetDebugHelperInstance();
 
 bool InstallHook(uintptr_t target, void* hook, void** original, const char* name);
 
