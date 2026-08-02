@@ -3048,6 +3048,7 @@ struct GameDataController_Fields : Singleton_GameDataController__Fields {
 	struct System_Collections_Generic_Dictionary_int__Monster__o* Monster_Map;
 	struct System_Collections_Generic_Dictionary_int__MonsterActionBranch__o* MonsterActionBranch_Map;
 	struct System_Collections_Generic_Dictionary_int__MonsterAI__o* MonsterAI_Map;
+	struct System_Collections_Generic_Dictionary_long__MonsterAttackAjust__o* MonsterAttackAjust_Map;
 	struct System_Collections_Generic_Dictionary_int__MonsterAttributeContact__o* MonsterAttributeContact_Map;
 	struct System_Collections_Generic_Dictionary_int__MonsterManual__o* MonsterManual_Map;
 	struct System_Collections_Generic_Dictionary_int__MonsterSkin__o* MonsterSkin_Map;
@@ -3082,6 +3083,11 @@ struct GameDataController_Fields : Singleton_GameDataController__Fields {
 	struct System_Collections_Generic_Dictionary_string__TestCharacterAtt__o* TestCharacterAtt_Map;
 	struct System_Collections_Generic_Dictionary_int__TestCharacterList__o* TestCharacterList_Map;
 	struct System_Collections_Generic_Dictionary_int__TestTeamData__o* TestTeamData_Map;
+	struct System_Collections_Generic_Dictionary_int__TraceHuntControl__o* TraceHuntControl_Map;
+	struct System_Collections_Generic_Dictionary_int__TraceHuntLogEntryTemplate__o* TraceHuntLogEntryTemplate_Map;
+	struct System_Collections_Generic_Dictionary_int__TraceHuntScoreSwitch__o* TraceHuntScoreSwitch_Map;
+	struct System_Collections_Generic_List_TraceHuntSelfHuntExtraCost__o* TraceHuntSelfHuntExtraCost_List;
+	struct System_Collections_Generic_List_TraceHuntStar__o* TraceHuntStar_List;
 	struct System_Collections_Generic_Dictionary_int__Trap__o* Trap_Map;
 	struct System_Collections_Generic_Dictionary_int__TravelerDuelFansLevel__o* TravelerDuelFansLevel_Map;
 	struct System_Collections_Generic_Dictionary_int__TravelerDuelHotValueItem__o* TravelerDuelHotValueItem_Map;
@@ -3352,6 +3358,57 @@ struct AreaEffectEntity_o {
 	AreaEffectEntity_c *klass;
 	void *monitor;
 	AreaEffectEntity_Fields fields;
+};
+
+// =============================================================================
+//  Minimal opaque forward declarations for the HitBox-area-hit hooks
+// =============================================================================
+// Only the fields these hooks actually touch are defined; everything else
+// remains forward-declared so we don't pull in megabytes of unused types.
+
+struct IHitBoxContext_Fields {
+};
+struct IHitBoxContext_c; // forward-declared class type
+struct IHitBoxContext_o {
+	IHitBoxContext_c *klass;
+	void *monitor;
+	IHitBoxContext_Fields fields;
+};
+
+struct DeterministicCollider_Fields {
+	// We never read or write any field of this struct from the hook —
+	// the engine passes it through unchanged to the original function.
+	// Defined as a single byte to give the struct a non-zero size.
+	uint8_t _opaque[1];
+};
+struct DeterministicCollider_c; // forward-declared class type
+struct DeterministicCollider_o {
+	DeterministicCollider_c *klass;
+	void *monitor;
+	DeterministicCollider_Fields fields;
+};
+
+struct DeterministicRaycastHit_Fields {
+	uint8_t _opaque[1];
+};
+struct DeterministicRaycastHit_o {
+	DeterministicRaycastHit_Fields fields;
+};
+
+// Transform's get_position returns a Vector3 by value (returned in XMM0 on
+// x64).  Only a few fields of UnityEngine_Transform are useful for the hook
+// (we call get_transform on a Component, then get_position on the Transform).
+// We don't need the full Transform layout — just the klass pointer and monitor
+// are required to be at the right offsets to make the type a valid il2cpp obj.
+struct UnityEngine_Transform_o {
+	void* klass;
+	void* monitor;
+	// ...rest of fields elided — we only ever treat this as opaque
+};
+struct UnityEngine_Component_o {
+	void* klass;
+	void* monitor;
+	// ...rest of fields elided
 };
 
 #ifndef _MSC_VER

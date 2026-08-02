@@ -183,6 +183,10 @@ void BuildResetJson();
 std::string GetLocalAppDataPath();
 void InitializeLogger();
 
+// Captured by Hook_SceneSingletonAwake with klass filtering; used by
+// EnableAllDebugGizmos to write the gizmo flag bytes to the helper instance.
+extern std::atomic<uintptr_t> g_HelperInstance;
+
 bool InstallHook(uintptr_t target, void* hook, void** original, const char* name);
 
 bool EnableAllDebugGizmos(uintptr_t moduleBase);

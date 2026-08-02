@@ -64,8 +64,42 @@ static constexpr uintptr_t RVA_CLONE_SET_ATTR         = 0x149F820;  // MonsterCl
 static constexpr uintptr_t RVA_PARSE_SUMMON_CFG       = 0x14A0490;  // MonsterSummonInfo$$ParseSummonCfg
 static constexpr uintptr_t RVA_SAVE_PLAYER_SNAPSHOT  = 0x14A9B80;  // PlayerAdventureActor$$SavePlayerAttributeSnapshot
 static constexpr uintptr_t RVA_IS_USE_HIT_FROM_SUMMON  = 0x110BFC0;  // ActorHelper$$IsUseHitFromSummon
-static constexpr uintptr_t RVA_GDC_GET_HIT_DAMAGE      = 0x12966E0;  // GameDataController$$GetHitDamage
-static constexpr uintptr_t RVA_GDC_GET_MONSTER         = 0x12979E0;  // GameDataController$$GetMonster
+static constexpr uintptr_t RVA_GDC_GET_HIT_DAMAGE      = 0x1296E60;  // GameDataController$$GetHitDamage
+static constexpr uintptr_t RVA_GDC_GET_MONSTER         = 0x1298160;  // GameDataController$$GetMonster
+static constexpr uintptr_t RVA_SHOW_RECTANGLE_GIZMO    = 0x111F500;  // AdventureModuleDebugHelper$$ShowRectangleGizmo
+static constexpr uintptr_t RVA_SHOW_CIRCLE_GIZMO       = 0x111DB70;  // AdventureModuleDebugHelper$$ShowCircleGizmo
+static constexpr uintptr_t RVA_SHOW_RING_GIZMO         = 0x111F7B0;  // AdventureModuleDebugHelper$$ShowRingGizmo
+static constexpr uintptr_t RVA_SHOW_FAN_GIZMO          = 0x111DDE0;  // AdventureModuleDebugHelper$$ShowFanGizmo
+static constexpr uintptr_t RVA_SHOW_FAN_RING_GIZMO     = 0x111E1E0;  // AdventureModuleDebugHelper$$ShowFanRingGizmo
+static constexpr uintptr_t RVA_SHOW_ARROW_LINE_GIZMO   = 0x111D260;  // AdventureModuleDebugHelper$$ShowArrowLineGizmo
+static constexpr uintptr_t RVA_SHOW_PLAYER_GIZMO       = 0x111F190;  // AdventureModuleDebugHelper$$ShowPlayerGizmo
+static constexpr uintptr_t RVA_SHOW_MONSTER_GIZMO      = 0x111E620;  // AdventureModuleDebugHelper$$ShowMonsterGizmo
+
+// HitBox$$* area-hit methods — we hook these and force the gizmo path ourselves
+// (the engine's internal flag check fails because its deref chain is broken
+// in this binary, so the gizmo is never shown by the engine).
+static constexpr uintptr_t RVA_HITBOX_RECTANGLE_AREA_HIT = 0x1717430;  // HitBox$$RectangleAreaHit
+static constexpr uintptr_t RVA_HITBOX_CIRCLE_AREA_HIT    = 0x17156B0;  // HitBox$$CircleAreaHit
+static constexpr uintptr_t RVA_HITBOX_FAN_AREA_HIT       = 0x1715CC0;  // HitBox$$FanAreaHit
+static constexpr uintptr_t RVA_HITBOX_HIT_SINGLE_TARGET  = 0x1716880;  // HitBox$$HitSingleTarget
+
+// SceneSingleton<AdventureModuleDebugHelper>.get_Instance() — the MethodInfo
+// RVA (data section) per script.json.  FUN_180014830 (RVA 0x14830) implements
+// get_Instance and takes this MethodInfo* to resolve the singleton instance.
+static constexpr uintptr_t RVA_ADM_GET_INSTANCE_METHODINFO = 0x71F4C18;
+static constexpr uintptr_t RVA_GET_INSTANCE_IMPL           = 0x14830;   // FUN_180014830
+
+// Helpers used to compute gizmo positions / dimensions
+static constexpr uintptr_t RVA_COMPONENT_GET_TRANSFORM = 0x58552A0;   // UnityEngine.Component$$get_transform
+static constexpr uintptr_t RVA_TRANSFORM_GET_POSITION = 0x5885B30;   // UnityEngine.Transform$$get_position
+static constexpr uintptr_t RVA_FP_OP_EXPLICIT_TO_FLOAT = 0x53B6C30;  // float op_Explicit(FP)
+
+// Captured by Hook_SceneSingletonAwake — updated on every Awake.  The
+// SceneSingleton<object>.Awake shared code at RVA 0x3940FC0 fires for ALL
+// concrete SceneSingleton<T> types, but the last one to Awake in practice
+// is AdventureModuleDebugHelper (debug helper initialised after other systems).
+// We validate m_CachedPtr before use to skip destroyed objects.
+std::atomic<uintptr_t> g_HelperInstance{0};
 
 //  Cached module base
 static uintptr_t g_base = 0;
@@ -292,12 +326,17 @@ static void __fastcall Hook_CopyBattleData(void* areaEntity, bool force, void* m
 
     auto* area = reinterpret_cast<AreaEffectEntity_o*>(areaEntity);
 
-    // Step 1: Get potential sources
+    // Step 1: Get potential sources.
+    // NOTE: since the game update, AreaEffectEntity::CopyBattleData copies stats
+    // from _owner_k__BackingField only. _fxPlayer_k__BackingField is now a real
+    // AdventureFXPlayer (MonoBehaviour, NOT an AdventureActor), so it must never
+    // be used as the effect source.
     AdventureActor_o* fxPlayer = reinterpret_cast<AdventureActor_o*>(area->fields._fxPlayer_k__BackingField);
     AdventureActor_o* owner = area->fields._owner_k__BackingField;
 
-    // Step 2: Try fxPlayer first, then owner as fallback
-    AdventureActor_o* source = fxPlayer ? fxPlayer : owner;
+    // Step 2: Owner is the game's stats source; fxPlayer is only a legacy
+    // fallback for the pre-update layout where it pointed at the owner actor.
+    AdventureActor_o* source = owner ? owner : fxPlayer;
 
     // Step 3: If source exists, check if summoned → resolve to summoner
     bool isSummoned = false;
@@ -594,6 +633,65 @@ struct SummonCfgFields {
     bool useSummonHit;
 };
 
+// Player dataID → display name (for summon-owner logging).
+static const char* SummonerName(int32_t dataId) {
+    switch (dataId) {
+        case 103: return "Amber";
+        case 106: return "Aeloria";
+        case 107: return "Tilia";
+        case 108: return "Kasimira";
+        case 109: return "Aobelle";
+        case 110: return "Firenze";
+        case 111: return "Iris";
+        case 112: return "Noya";
+        case 113: return "Shimiao";
+        case 114: return "Chaton";
+        case 115: return "Firefly";
+        case 116: return "Ridge";
+        case 117: return "Jinglin";
+        case 118: return "Coronis";
+        case 119: return "Nanoha";
+        case 120: return "Canace";
+        case 123: return "Ann";
+        case 125: return "Freesia";
+        case 126: return "Flora";
+        case 127: return "Teresa";
+        case 129: return "Yoranda";
+        case 130: return "Donna";
+        case 131: return "Bloc";
+        case 132: return "Minova";
+        case 133: return "Nazuka";
+        case 134: return "Fuyuka";
+        case 135: return "Mistique";
+        case 136: return "Angie";
+        case 137: return "Eleanor";
+        case 138: return "Nyx";
+        case 139: return "Allie";
+        case 140: return "Sparkla";
+        case 141: return "Chixia";
+        case 142: return "Cosette";
+        case 143: return "Wraith";
+        case 144: return "Chitose";
+        case 145: return "Otoha";
+        case 146: return "Benito";
+        case 147: return "Caramel";
+        case 149: return "Gerie";
+        case 150: return "Laru";
+        case 151: return "Yunshu";
+        case 152: return "Jiyue";
+        case 153: return "Danyun";
+        case 155: return "Shia";
+        case 156: return "Nazuna";
+        case 157: return "Karin";
+        case 158: return "Laru";
+        case 159: return "Coronis";
+        case 160: return "Willow";
+        case 163: return "Greyhorn";
+        case 164: return "Shuo";
+        default: return "?";
+    }
+}
+
 static void __fastcall Hook_ParseSummonCfg(void* summonInfo, void* cfgData, void* spawnInfo, void* method)
 {
     g_OrigParseSummonCfg(summonInfo, cfgData, spawnInfo, method);
@@ -604,7 +702,19 @@ static void __fastcall Hook_ParseSummonCfg(void* summonInfo, void* cfgData, void
         attrType = f->summonAttrType;
         perc = f->attrPercent;
     }
-    log("[MINION] MonsterSummonInfo$$ParseSummonCfg summonAttrType=%d percent=%d time=%s", attrType, perc, gameTime().c_str());
+    // Summoner (owner) is MonsterSummonInfo._SummonActor_k__BackingField:
+    // first field after LogicComponent (0x10) + klass/monitor (0x10) = +0x20.
+    int32_t ownerId = 0;
+    const char* ownerName = "?";
+    if (summonInfo) {
+        AdventureActor_o* summoner = *reinterpret_cast<AdventureActor_o**>(reinterpret_cast<uint8_t*>(summonInfo) + 0x20);
+        if (summoner) {
+            ownerId = summoner->fields._dataID_k__BackingField;
+            ownerName = SummonerName(ownerId);
+        }
+    }
+    //log("[MINION] summon type=%d percent=%d owner=%s(%d) time=%s",
+    //    attrType, perc, ownerName, ownerId, gameTime().c_str());
 }
 
 using FnGetBothAllInfo = void(__fastcall*)(AdventureActor_o*, void*);
@@ -781,7 +891,377 @@ static FnUpdateLogic g_OrigUpdateLogic = nullptr;
 static void __fastcall Hook_UpdateLogic(void* self, TrueSync_FP_o logicDeltaTime, void* method) {
     g_GameTimeFP.fetch_add(logicDeltaTime.fields._serializedValue, std::memory_order_relaxed);
 
+    // Re-apply gizmo flags every tick — the engine clears them between frames,
+    // so a one-shot write at DllMain is not enough.
+    EnableAllDebugGizmos(g_base);
+
     g_OrigUpdateLogic(self, logicDeltaTime, method);
+}
+
+// Hook SceneSingleton<object>.Awake — always capture (last Awake wins).
+// We validate m_CachedPtr before each gizmo call to skip destroyed objects.
+using FnSceneSingletonAwake = void(__fastcall*)(void*, void*);
+static FnSceneSingletonAwake g_OrigSceneSingletonAwake = nullptr;
+
+static void __fastcall Hook_SceneSingletonAwake(void* __this, void* method) {
+    if (__this) {
+        g_HelperInstance.store(reinterpret_cast<uintptr_t>(__this), std::memory_order_relaxed);
+    }
+    g_OrigSceneSingletonAwake(__this, method);
+}
+
+// Hook helper gizmo methods to see if the engine ever calls them. If they never
+// fire, the engine's broken deref chain in HitBox methods is preventing the
+// gizmo flag check from succeeding, and we need a workaround.
+using FnShowRectangleGizmo = void(__fastcall*)(void*, void*, float, float, float, void*, float, float, void*);
+static FnShowRectangleGizmo g_OrigShowRectangleGizmo = nullptr;
+
+static void __fastcall Hook_ShowRectangleGizmo(void* __this, void* pos, float width, float length, float rot, void* color, float duarationTime, float lineWidthPixels, void* method) {
+    g_OrigShowRectangleGizmo(__this, pos, width, length, rot, color, duarationTime, lineWidthPixels, method);
+}
+
+using FnShowPlayerGizmo = void(__fastcall*)(void*, void*, float, void*, void*, void*, void*, void*);
+static FnShowPlayerGizmo g_OrigShowPlayerGizmo = nullptr;
+
+static void __fastcall Hook_ShowPlayerGizmo(void* __this, void* pos, float radius, void* actorName, void* stateName, void* skillName, void* color, void* method) {
+    g_OrigShowPlayerGizmo(__this, pos, radius, actorName, stateName, skillName, color, method);
+}
+
+using FnShowMonsterGizmo = void(__fastcall*)(void*, void*, void*, void*, float, void*, void*, void*, void*, void*);
+static FnShowMonsterGizmo g_OrigShowMonsterGizmo = nullptr;
+
+static void __fastcall Hook_ShowMonsterGizmo(void* __this, void* pos, void* forward, void* up, float radius, void* actorName, void* stateName, void* skillName, void* color, void* method) {
+    g_OrigShowMonsterGizmo(__this, pos, forward, up, radius, actorName, stateName, skillName, color, method);
+}
+
+// =============================================================================
+//  HitBox area-hit nuclear hooks
+// -----------------------------------------------------------------------------
+//  The engine's internal deref chain inside HitBox$$*AreaHit / HitSingleTarget
+//  is broken in this binary (the rgctx data structure Ghidra shows doesn't
+//  actually match the in-memory layout), so the engine never calls
+//  Show*Gizmo.  We hook the area-hit methods themselves and replicate the
+//  gizmo path ourselves using the helper instance captured by the
+//  SceneSingleton<AdventureModuleDebugHelper>.Awake hook.
+// =============================================================================
+
+// Typedefs for the helper functions we call to compute gizmo parameters.
+typedef UnityEngine_Transform_o* (__fastcall* FnGetTransform)(void* __this, void* method);
+// Transform$$get_position returns a 12-byte Vector3 — x64 ABI hides a return
+// pointer in RDX (after __this in RCX); the method arg follows.
+typedef void (__fastcall* FnGetPosition)(UnityEngine_Transform_o* __this, void* ret, void* method);
+// float op_Explicit(FP) — returns the float value via XMM0; pass 8-byte FP
+// value in RCX.
+typedef float (__fastcall* FnFPOpExplicitToFloat)(int64_t fpSerialized, void* method);
+
+// Show* gizmo function pointers — pass Vector3/Color as void* (the engine
+// reads them as 12/16-byte structs via the x64 ABI; on a 12-byte struct the
+// caller reserves a stack slot and passes its address in RDX).  We allocate
+// the storage locally and pass its address.
+typedef void (__fastcall* FnShowRectangleGizmo_t)(void* __this, void* pos, float width, float length, float rot, void* color, float duarationTime, float lineWidthPixels, void* method);
+typedef void (__fastcall* FnShowCircleGizmo_t)   (void* __this, void* pos, void* up, float radius, void* color, float duarationTime, float lineWidthPixels, void* method);
+typedef void (__fastcall* FnShowRingGizmo_t)     (void* __this, void* pos, void* up, float innerRadius, float radius, void* innerColor, void* color, float duarationTime, void* method);
+typedef void (__fastcall* FnShowFanGizmo_t)      (void* __this, void* pos, float radius, float angle, float rot, void* color, float duarationTime, void* method);
+typedef void (__fastcall* FnShowFanRingGizmo_t)  (void* __this, void* pos, float innerRadius, float radius, float angle, float rot, void* color, float duarationTime, void* method);
+typedef void (__fastcall* FnShowArrowLineGizmo_t)(void* __this, void* start, void* end, void* color, float duarationTime, void* method);
+
+// Local-then-pass helpers (we hold the struct in a local var and pass &local;
+// the engine reads it through the pointer the compiler places in the right
+// register per the x64 ABI).
+
+static void CallShowRectangleGizmo(void* helper, const UnityEngine_Vector3_o* pos,
+                                   float width, float length, float rot,
+                                   const UnityEngine_Color_o* color,
+                                   float durationTime, float lineWidthPixels) {
+    auto fn = (FnShowRectangleGizmo_t)(g_base + RVA_SHOW_RECTANGLE_GIZMO);
+    fn(helper, (void*)pos, width, length, rot, (void*)color, durationTime, lineWidthPixels, nullptr);
+}
+
+static void CallShowCircleGizmo(void* helper, const UnityEngine_Vector3_o* pos,
+                                const UnityEngine_Vector3_o* up, float radius,
+                                const UnityEngine_Color_o* color,
+                                float durationTime, float lineWidthPixels) {
+    auto fn = (FnShowCircleGizmo_t)(g_base + RVA_SHOW_CIRCLE_GIZMO);
+    fn(helper, (void*)pos, (void*)up, radius, (void*)color, durationTime, lineWidthPixels, nullptr);
+}
+
+static void CallShowRingGizmo(void* helper, const UnityEngine_Vector3_o* pos,
+                              const UnityEngine_Vector3_o* up, float innerRadius, float radius,
+                              const UnityEngine_Color_o* innerColor, const UnityEngine_Color_o* color,
+                              float durationTime) {
+    auto fn = (FnShowRingGizmo_t)(g_base + RVA_SHOW_RING_GIZMO);
+    fn(helper, (void*)pos, (void*)up, innerRadius, radius, (void*)innerColor, (void*)color, durationTime, nullptr);
+}
+
+static void CallShowFanGizmo(void* helper, const UnityEngine_Vector3_o* pos,
+                             float radius, float angle, float rot,
+                             const UnityEngine_Color_o* color, float durationTime) {
+    auto fn = (FnShowFanGizmo_t)(g_base + RVA_SHOW_FAN_GIZMO);
+    fn(helper, (void*)pos, radius, angle, rot, (void*)color, durationTime, nullptr);
+}
+
+static void CallShowFanRingGizmo(void* helper, const UnityEngine_Vector3_o* pos,
+                                 float innerRadius, float radius, float angle, float rot,
+                                 const UnityEngine_Color_o* color, float durationTime) {
+    auto fn = (FnShowFanRingGizmo_t)(g_base + RVA_SHOW_FAN_RING_GIZMO);
+    fn(helper, (void*)pos, innerRadius, radius, angle, rot, (void*)color, durationTime, nullptr);
+}
+
+static void CallShowArrowLineGizmo(void* helper, const UnityEngine_Vector3_o* start,
+                                   const UnityEngine_Vector3_o* end, const UnityEngine_Color_o* color,
+                                   float durationTime) {
+    auto fn = (FnShowArrowLineGizmo_t)(g_base + RVA_SHOW_ARROW_LINE_GIZMO);
+    fn(helper, (void*)start, (void*)end, (void*)color, durationTime, nullptr);
+}
+
+// Convert a TrueSync_FP value (int64 serialized) to a float.
+static float FPToFloat(int64_t fpSerialized) {
+    if (!g_base) return 0.0f;
+    auto fn = (FnFPOpExplicitToFloat)(g_base + RVA_FP_OP_EXPLICIT_TO_FLOAT);
+    return fn(fpSerialized, nullptr);
+}
+
+// Compute the gizmo world position for a HitBox area hit:
+//   pos = (param4.x, transform.position.y, param4.y)
+// Returns true on success; out is filled. Returns false if owner/transform is null.
+static bool ComputeHitboxPos(HitBox_o* hitBox, TrueSync_TSVector2_o* param4, UnityEngine_Vector3_o* out) {
+    if (!hitBox || !param4 || !out) return false;
+    if (!g_base) return false;
+
+    auto getXform = (FnGetTransform)(g_base + RVA_COMPONENT_GET_TRANSFORM);
+    auto getPos   = (FnGetPosition)(g_base + RVA_TRANSFORM_GET_POSITION);
+
+    void* owner = (void*)hitBox->fields.owner;
+    if (!owner) return false;
+    UnityEngine_Transform_o* xform = getXform(owner, nullptr);
+    if (!xform) return false;
+    UnityEngine_Vector3_o worldPos;
+    getPos(xform, &worldPos, nullptr);
+
+    out->fields.x = FPToFloat(param4->fields.x.fields._serializedValue);
+    out->fields.y = worldPos.fields.y;
+    out->fields.z = FPToFloat(param4->fields.y.fields._serializedValue);
+    return true;
+}
+
+// Like ComputeHitboxPos but uses param1->transform.position as-is
+// (no FP mixing) — used for HitSingleTarget's start point.
+static bool ComputeTransformPos(HitBox_o* hitBox, UnityEngine_Vector3_o* out) {
+    if (!hitBox || !out) return false;
+    if (!g_base) return false;
+    auto getXform = (FnGetTransform)(g_base + RVA_COMPONENT_GET_TRANSFORM);
+    auto getPos   = (FnGetPosition)(g_base + RVA_TRANSFORM_GET_POSITION);
+    UnityEngine_Transform_o* xform = getXform((void*)hitBox, nullptr);
+    if (!xform) return false;
+    getPos(xform, out, nullptr);
+    return true;
+}
+
+static bool ComputeComponentPos(void* comp, UnityEngine_Vector3_o* out) {
+    if (!comp || !out) return false;
+    if (!g_base) return false;
+    auto getXform = (FnGetTransform)(g_base + RVA_COMPONENT_GET_TRANSFORM);
+    auto getPos   = (FnGetPosition)(g_base + RVA_TRANSFORM_GET_POSITION);
+    UnityEngine_Transform_o* xform = getXform(comp, nullptr);
+    if (!xform) return false;
+    getPos(xform, out, nullptr);
+    return true;
+}
+
+// Standard white color used by the engine's gizmo calls.
+static const UnityEngine_Color_o kWhiteColor = { { 1.0f, 1.0f, 1.0f, 1.0f } };
+// Standard up vector (0, 1, 0) used for circle/ring gizmos.
+static const UnityEngine_Vector3_o kUpVector = { { 0.0f, 1.0f, 0.0f } };
+
+// Resolve the AdventureModuleDebugHelper instance via the engine's own
+// SceneSingleton<T>.get_Instance() (FUN_180014830) — exactly what the original
+// HitBox code does internally (see HitboxAreaHits.md).  This is reliable because
+// it reads the class-specific static field, unlike the Awake hook which catches
+// every SceneSingleton type.  We replicate the engine's own resolution chain
+// (see HitboxAreaHits.md: klass from MethodInfo+0x20, Class::Init if needed,
+// static fields via klass+0xc0, instance at staticFields+0xb8) WITHOUT calling
+// FUN_180014830 (which crashes if invoked before the class is initialized).
+// Returns null on any failure (caller skips the gizmo).
+static void* GetHelperForGizmo() {
+    if (!g_Cfg.hitbox_gizmo) return 0;
+    static uintptr_t s_methodInfo = 0;
+    if (!s_methodInfo) s_methodInfo = g_base + RVA_ADM_GET_INSTANCE_METHODINFO;
+    uintptr_t mi = s_methodInfo;
+
+    // klass candidate at +0x20 (qword 4).
+    uintptr_t klass = *(uintptr_t*)(mi + 0x20);
+    // Sanity: klass must be a pointer inside the GameAssembly module.
+    uintptr_t modEnd = g_base + 0x80000000;  // GameAssembly is < 2GB typically
+    if (klass < g_base || klass >= modEnd) {
+        return nullptr;
+    }
+
+    // Ensure the class is initialized (matches engine's FUN_18062d9a0 call).
+    uint8_t initFlag = *(uint8_t*)(klass + 0x135);
+    if ((initFlag & 1) == 0) {
+        using FnClassInit = uintptr_t(__fastcall*)(uintptr_t);
+        static FnClassInit classInit = (FnClassInit)(g_base + 0x62d9a0);
+        klass = classInit(klass);
+        if (!klass) return nullptr;
+    }
+
+    uintptr_t p1 = *(uintptr_t*)(klass + 0xc0);
+    if (!p1) return nullptr;
+    uintptr_t staticFields = *(uintptr_t*)(p1 + 0x10);
+    if (!staticFields) return nullptr;
+
+    uintptr_t fieldPtr = *(uintptr_t*)(staticFields + 0xb8);
+    uintptr_t inst = fieldPtr;
+    if (!inst) return nullptr;
+    if (*(uintptr_t*)(inst + 0x10) == 0) return nullptr;
+    return (void*)inst;
+}
+
+// ---- HitBox$$RectangleAreaHit ----------------------------------------------
+// bool HitBox__RectangleAreaHit (HitBox_o* __this, TrueSync_FP_o width, TrueSync_FP_o length,
+//                                 TrueSync_TSVector2_o pos, TrueSync_FP_o rot, int32_t* hittedCount,
+//                                 int32_t* damageCount, int32_t uniqueAttackId,
+//                                 UnityEngine_GameObject_o* hurtEffectPrefab, bool isHittedEffectScale,
+//                                 int32_t layerMask, TrueSync_FP_o damageImmuneDuration, bool randomHit,
+//                                 System_Action_AdventureActor__o* cb, bool effectIgnoreTimeScale,
+//                                 const MethodInfo* method);
+// 14 args + this + method = 16 stack slots on x64.  Pass them as a tail of void*s.
+using FnHitBoxRectangleAreaHit = bool(__fastcall*)(void*, int64_t, int64_t, void*, int64_t, int32_t*, int32_t*,
+                                                  int32_t, void*, bool, int32_t, int64_t, bool, void*, bool, void*);
+static FnHitBoxRectangleAreaHit g_OrigHitBoxRectangleAreaHit = nullptr;
+
+static bool __fastcall Hook_HitBox_RectangleAreaHit(
+    void* __this, int64_t width, int64_t length, void* pos, int64_t rot,
+    int32_t* hittedCount, int32_t* damageCount,
+    int32_t uniqueAttackId, void* hurtEffectPrefab, bool isHittedEffectScale,
+    int32_t layerMask, int64_t damageImmuneDuration, bool randomHit,
+    void* cb, bool effectIgnoreTimeScale, void* method)
+{
+    bool result = g_OrigHitBoxRectangleAreaHit(__this, width, length, pos, rot, hittedCount, damageCount,
+                                               uniqueAttackId, hurtEffectPrefab, isHittedEffectScale,
+                                               layerMask, damageImmuneDuration, randomHit,
+                                               cb, effectIgnoreTimeScale, method);
+    if (void* helper = GetHelperForGizmo()) {
+        UnityEngine_Vector3_o worldPos;
+        TrueSync_TSVector2_o* posVec = (TrueSync_TSVector2_o*)pos;
+        if (ComputeHitboxPos((HitBox_o*)__this, posVec, &worldPos)) {
+            UnityEngine_Color_o color = kWhiteColor;
+            CallShowRectangleGizmo(helper, &worldPos,
+                                   FPToFloat(width), FPToFloat(length), FPToFloat(rot),
+                                   &color, 0.0f, 0.0f);
+        }
+    }
+    return result;
+}
+
+// ---- HitBox$$CircleAreaHit -------------------------------------------------
+// bool HitBox__CircleAreaHit (HitBox_o* __this, TrueSync_FP_o radius, TrueSync_FP_o innerRadius,
+//                              TrueSync_TSVector2_o pos, int32_t* hittedCount, int32_t* damageCount,
+//                              int32_t uniqueAttackId, UnityEngine_GameObject_o* hurtEffectPrefab,
+//                              bool isHittedEffectScale, int32_t layerMask, TrueSync_FP_o damageImmuneDuration,
+//                              bool randomHit, bool effectIgnoreTimeScale, const MethodInfo* method);
+using FnHitBoxCircleAreaHit = bool(__fastcall*)(void*, int64_t, int64_t, void*, int32_t*, int32_t*,
+                                                int32_t, void*, bool, int32_t, int64_t, bool, bool, void*);
+static FnHitBoxCircleAreaHit g_OrigHitBoxCircleAreaHit = nullptr;
+
+static bool __fastcall Hook_HitBox_CircleAreaHit(
+    void* __this, int64_t radius, int64_t innerRadius, void* pos,
+    int32_t* hittedCount, int32_t* damageCount,
+    int32_t uniqueAttackId, void* hurtEffectPrefab, bool isHittedEffectScale,
+    int32_t layerMask, int64_t damageImmuneDuration, bool randomHit,
+    bool effectIgnoreTimeScale, void* method)
+{
+    bool result = g_OrigHitBoxCircleAreaHit(__this, radius, innerRadius, pos, hittedCount, damageCount,
+                                            uniqueAttackId, hurtEffectPrefab, isHittedEffectScale,
+                                            layerMask, damageImmuneDuration, randomHit,
+                                            effectIgnoreTimeScale, method);
+    if (void* helper = GetHelperForGizmo()) {
+        UnityEngine_Vector3_o worldPos;
+        TrueSync_TSVector2_o* posVec = (TrueSync_TSVector2_o*)pos;
+        if (ComputeHitboxPos((HitBox_o*)__this, posVec, &worldPos)) {
+            float r = FPToFloat(radius);
+            float ir = FPToFloat(innerRadius);
+            // Engine picks ShowRingGizmo when innerRadius > 0 (per
+            // HitBox_CircleAreaHit decompilation) — replicate that.
+            UnityEngine_Color_o color = kWhiteColor;
+            if (ir > 0.0f) {
+                CallShowRingGizmo(helper, &worldPos, &kUpVector, ir, r, &color, &color, 0.0f);
+            } else {
+                CallShowCircleGizmo(helper, &worldPos, &kUpVector, r, &color, 0.0f, 0.0f);
+            }
+        }
+    }
+    return result;
+}
+
+// ---- HitBox$$FanAreaHit ----------------------------------------------------
+// bool HitBox__FanAreaHit (HitBox_o* __this, TrueSync_FP_o angle, TrueSync_FP_o radius,
+//                          TrueSync_FP_o innerRadius, TrueSync_TSVector2_o pos, TrueSync_FP_o rot,
+//                          int32_t* hittedCount, int32_t* damageCount, int32_t uniqueAttackId,
+//                          UnityEngine_GameObject_o* hurtEffectPrefab, bool isHittedEffectScale,
+//                          TrueSync_FP_o damageImmuneDuration, bool effectIgnoreTimeScale,
+//                          const MethodInfo* method);
+using FnHitBoxFanAreaHit = bool(__fastcall*)(void*, int64_t, int64_t, int64_t, void*, int64_t,
+                                             int32_t*, int32_t*, int32_t, void*, bool, int64_t, bool, void*);
+static FnHitBoxFanAreaHit g_OrigHitBoxFanAreaHit = nullptr;
+
+static bool __fastcall Hook_HitBox_FanAreaHit(
+    void* __this, int64_t angle, int64_t radius, int64_t innerRadius, void* pos, int64_t rot,
+    int32_t* hittedCount, int32_t* damageCount,
+    int32_t uniqueAttackId, void* hurtEffectPrefab, bool isHittedEffectScale,
+    int64_t damageImmuneDuration, bool effectIgnoreTimeScale, void* method)
+{
+    bool result = g_OrigHitBoxFanAreaHit(__this, angle, radius, innerRadius, pos, rot, hittedCount, damageCount,
+                                         uniqueAttackId, hurtEffectPrefab, isHittedEffectScale,
+                                         damageImmuneDuration, effectIgnoreTimeScale, method);
+    if (void* helper = GetHelperForGizmo()) {
+        UnityEngine_Vector3_o worldPos;
+        TrueSync_TSVector2_o* posVec = (TrueSync_TSVector2_o*)pos;
+        if (ComputeHitboxPos((HitBox_o*)__this, posVec, &worldPos)) {
+            float a  = FPToFloat(angle);
+            float r  = FPToFloat(radius);
+            float ir = FPToFloat(innerRadius);
+            float rt = FPToFloat(rot);
+            // Engine picks ShowFanRingGizmo when innerRadius > 0 (per
+            // HitBox_FanAreaHit decompilation) — replicate that.
+            UnityEngine_Color_o color = kWhiteColor;
+            if (ir > 0.0f) {
+                CallShowFanRingGizmo(helper, &worldPos, ir, r, a, rt, &color, 0.0f);
+            } else {
+                CallShowFanGizmo(helper, &worldPos, r, a, rt, &color, 0.0f);
+            }
+        }
+    }
+    return result;
+}
+
+// ---- HitBox$$HitSingleTarget ----------------------------------------------
+// bool HitBox__HitSingleTarget (HitBox_o* __this, int32_t uniqueAttackId, DeterministicCollider_o* hitTarget,
+//                                bool* hitted, bool* damaged, DeterministicRaycastHit_o* raycastHit,
+//                                UnityEngine_GameObject_o* hurtEffectPrefab, bool isHittedEffectScale,
+//                                TrueSync_FP_o damageImmuneDuration, int32_t onceAttackTargetCount,
+//                                bool effectIgnoreTimeScale, const MethodInfo* method);
+using FnHitBoxHitSingleTarget = bool(__fastcall*)(void*, int32_t, void*, bool*, bool*, void*,
+                                                  void*, bool, int64_t, int32_t, bool, void*);
+static FnHitBoxHitSingleTarget g_OrigHitBoxHitSingleTarget = nullptr;
+
+static bool __fastcall Hook_HitBox_HitSingleTarget(
+    void* __this, int32_t uniqueAttackId, void* hitTarget, bool* hitted, bool* damaged, void* raycastHit,
+    void* hurtEffectPrefab, bool isHittedEffectScale, int64_t damageImmuneDuration,
+    int32_t onceAttackTargetCount, bool effectIgnoreTimeScale, void* method)
+{
+    bool result = g_OrigHitBoxHitSingleTarget(__this, uniqueAttackId, hitTarget, hitted, damaged, raycastHit,
+                                              hurtEffectPrefab, isHittedEffectScale, damageImmuneDuration,
+                                              onceAttackTargetCount, effectIgnoreTimeScale, method);
+    if (void* helper = GetHelperForGizmo()) {
+        UnityEngine_Vector3_o startPos, endPos;
+        if (ComputeTransformPos((HitBox_o*)__this, &startPos) &&
+            ComputeComponentPos(hitTarget, &endPos)) {
+            UnityEngine_Color_o color = kWhiteColor;
+            CallShowArrowLineGizmo(helper, &startPos, &endPos, &color, 0.0f);
+        }
+    }
+    return result;
 }
 
 using FnBattleStart = void(__fastcall*)( void*, void*, void*);
@@ -860,8 +1340,19 @@ static DWORD WINAPI InitThread(LPVOID) {
     InstallHook(g_base + RVA_CLONE_SET_ATTR,         reinterpret_cast<void*>(&Hook_CloneSetAttr),       (void**)&g_OrigCloneSetAttr,       "MonsterCloneAdventureActor$$SetAttr");
     InstallHook(g_base + RVA_PARSE_SUMMON_CFG,       reinterpret_cast<void*>(&Hook_ParseSummonCfg),     (void**)&g_OrigParseSummonCfg,     "MonsterSummonInfo$$ParseSummonCfg");
     InstallHook(g_base + RVA_SAVE_PLAYER_SNAPSHOT,   reinterpret_cast<void*>(&Hook_SavePlayerSnapshot), (void**)&g_OrigSaveSnapshot,       "PlayerAdventureActor$$SavePlayerAttributeSnapshot");
-    InstallHook(g_base + RVA_GDC_GET_HIT_DAMAGE,    reinterpret_cast<void*>(&GdcHook_GetHitDamage),   (void**)&g_GdcHooks[0].original, g_GdcHooks[0].name);
-    InstallHook(g_base + RVA_GDC_GET_MONSTER,       reinterpret_cast<void*>(&GdcHook_GetMonster),      (void**)&g_GdcHooks[1].original, g_GdcHooks[1].name);
+    InstallHook(g_base + RVA_GDC_GET_HIT_DAMAGE,     reinterpret_cast<void*>(&GdcHook_GetHitDamage),    (void**)&g_GdcHooks[0].original, g_GdcHooks[0].name);
+    InstallHook(g_base + RVA_GDC_GET_MONSTER,        reinterpret_cast<void*>(&GdcHook_GetMonster),      (void**)&g_GdcHooks[1].original, g_GdcHooks[1].name);
+    InstallHook(g_base + RVA_SHOW_RECTANGLE_GIZMO,   reinterpret_cast<void*>(&Hook_ShowRectangleGizmo), (void**)&g_OrigShowRectangleGizmo, "AdventureModuleDebugHelper$$ShowRectangleGizmo");
+    InstallHook(g_base + RVA_SHOW_PLAYER_GIZMO,      reinterpret_cast<void*>(&Hook_ShowPlayerGizmo),    (void**)&g_OrigShowPlayerGizmo,    "AdventureModuleDebugHelper$$ShowPlayerGizmo");
+    InstallHook(g_base + RVA_SHOW_MONSTER_GIZMO,     reinterpret_cast<void*>(&Hook_ShowMonsterGizmo),   (void**)&g_OrigShowMonsterGizmo,   "AdventureModuleDebugHelper$$ShowMonsterGizmo");
+
+    // HitBox area-hit nuclear hooks — force the gizmo path even though the
+    // engine's broken deref chain never lets it run naturally.
+    InstallHook(g_base + RVA_HITBOX_RECTANGLE_AREA_HIT, reinterpret_cast<void*>(&Hook_HitBox_RectangleAreaHit), (void**)&g_OrigHitBoxRectangleAreaHit, "HitBox$$RectangleAreaHit");
+    InstallHook(g_base + RVA_HITBOX_CIRCLE_AREA_HIT,    reinterpret_cast<void*>(&Hook_HitBox_CircleAreaHit),    (void**)&g_OrigHitBoxCircleAreaHit,    "HitBox$$CircleAreaHit");
+    InstallHook(g_base + RVA_HITBOX_FAN_AREA_HIT,       reinterpret_cast<void*>(&Hook_HitBox_FanAreaHit),       (void**)&g_OrigHitBoxFanAreaHit,       "HitBox$$FanAreaHit");
+    InstallHook(g_base + RVA_HITBOX_HIT_SINGLE_TARGET,  reinterpret_cast<void*>(&Hook_HitBox_HitSingleTarget),  (void**)&g_OrigHitBoxHitSingleTarget,  "HitBox$$HitSingleTarget");
+    InstallHook(g_base + 0x3940FC0, reinterpret_cast<void*>(&Hook_SceneSingletonAwake), (void**)&g_OrigSceneSingletonAwake, "SceneSingleton<AdventureModuleDebugHelper>$$Awake");
     InstallHttpHooks(g_base);
     
     log("[init] Ready.");

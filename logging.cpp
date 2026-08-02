@@ -248,6 +248,14 @@ void loadConfig(const std::string& dir) {
             }
         }
         log("[config] Loaded log_config.json");
+        log("[config] Gizmo flags: player=%d monster=%d bullet=%d hitbox=%d "
+            "hearing_p=%d hearing_m=%d vision_p=%d vision_m=%d "
+            "input_vision=%d monster_path=%d player_path=%d camera=%d dummy=%d",
+            g_Cfg.player_gizmo, g_Cfg.monster_gizmo, g_Cfg.bullet_gizmo, g_Cfg.hitbox_gizmo,
+            g_Cfg.hearing_gizmo_for_player, g_Cfg.hearing_gizmo_for_monster,
+            g_Cfg.vision_gizmo_for_player, g_Cfg.vision_gizmo_for_monster,
+            g_Cfg.input_and_vision_gizmo, g_Cfg.monster_path_gizmo,
+            g_Cfg.player_path_gizmo, g_Cfg.camera_gizmo, g_Cfg.monster_dummy_mode);
     } catch (...) {
         log("[config] Failed to parse log_config.json — using defaults");
     }
@@ -405,53 +413,14 @@ json logAdventureActorSpecialAttrsJson(AdventureActor_o* actor) {
 // =============================================================================
 //  Debug Gizmos
 // =============================================================================
-#include <cstdint>
-#include <cstdarg>
-bool logGizsmos = false;
-
 bool EnableAllDebugGizmos(uintptr_t moduleBase)
 {
-    if (!moduleBase) {
-        log("[DebugGizmos] ERROR: Failed to get module base");
-        return false;
-    }
-    if (logGizsmos) log("[DebugGizmos] Module base: 0x%llX", moduleBase);
+    if (!moduleBase) return false;
 
-    typedef uintptr_t(*GetDebugHelper_t)(uintptr_t);
-    uintptr_t getterAddr = moduleBase + (0x180014840 - 0x180000000);
-    GetDebugHelper_t GetDebugHelper = (GetDebugHelper_t)getterAddr;
-
-    uintptr_t dat_f048 = moduleBase + (0x18715f048 - 0x180000000);
-    uintptr_t dat_f048_val = *(uintptr_t *)dat_f048;
-    if (logGizsmos) log("[DebugGizmos] DAT_18715f048 value: 0x%llX", dat_f048_val);
-    if (!dat_f048_val) {
-        log("[DebugGizmos] ERROR: DAT_18715f048 is null");
-        return false;
-    }
-
-    uintptr_t obj = GetDebugHelper(dat_f048_val);
-    if (logGizsmos) log("[DebugGizmos] AdventureModuleDebugHelper instance: 0x%llX", obj);
-    if (!obj) {
-        log("[DebugGizmos] ERROR: getter returned null — call this later in init");
-        return false;
-    }
-
-    if (logGizsmos) {
-      // Log current state with proper field names
-      log("[DebugGizmos] Current values:");
-      log("[DebugGizmos]   PlayerGizmo          (+0x28): %d", *(char *)(obj + 0x28));
-      log("[DebugGizmos]   MonsterGizmo         (+0x29): %d", *(char *)(obj + 0x29));
-      log("[DebugGizmos]   BulletGizmo          (+0x2A): %d", *(char *)(obj + 0x2A));
-      log("[DebugGizmos]   HitboxGizmo          (+0x2B): %d", *(char *)(obj + 0x2B));
-      log("[DebugGizmos]   HearingGizmoForPlayer  (+0x2C): %d", *(char *)(obj + 0x2C));
-      log("[DebugGizmos]   HearingGizmoForMonster (+0x2D): %d", *(char *)(obj + 0x2D));
-      log("[DebugGizmos]   VisionGizmoForPlayer   (+0x2E): %d", *(char *)(obj + 0x2E));
-      log("[DebugGizmos]   VisionGizmoForMonster  (+0x2F): %d", *(char *)(obj + 0x2F));
-      log("[DebugGizmos]   InputAndVisionGizmo  (+0x30): %d", *(char *)(obj + 0x30));
-      log("[DebugGizmos]   MonsterPathGizmo     (+0x31): %d", *(char *)(obj + 0x31));
-      log("[DebugGizmos]   PlayerPathGizmo      (+0x32): %d", *(char *)(obj + 0x32));
-      log("[DebugGizmos]   CameraGizmo          (+0x33): %d", *(char *)(obj + 0x33));
-    }
+    // Use the helper instance captured by the Awake hook (with klass filter).
+    extern std::atomic<uintptr_t> g_HelperInstance;
+    uintptr_t obj = g_HelperInstance.load(std::memory_order_relaxed);
+    if (!obj) return false;
 
     // Enable based on config
     *(char *)(obj + 0x28) = g_Cfg.player_gizmo ? 1 : 0; // PlayerGizmo
@@ -467,24 +436,6 @@ bool EnableAllDebugGizmos(uintptr_t moduleBase)
     *(char *)(obj + 0x32) = g_Cfg.player_path_gizmo ? 1 : 0; // PlayerPathGizmo
     *(char *)(obj + 0x33) = g_Cfg.camera_gizmo ? 1 : 0; // CameraGizmo
 
-    if (logGizsmos) {
-      // Verify
-      log("[DebugGizmos] Values after write:");
-      log("[DebugGizmos]   PlayerGizmo          (+0x28): %s", *(char *)(obj + 0x28) ? "OK" : "FAILED");
-      log("[DebugGizmos]   MonsterGizmo         (+0x29): %s", *(char *)(obj + 0x29) ? "OK" : "FAILED");
-      log("[DebugGizmos]   BulletGizmo          (+0x2A): %s", *(char *)(obj + 0x2A) ? "OK" : "FAILED");
-      log("[DebugGizmos]   HitboxGizmo          (+0x2B): %s", *(char *)(obj + 0x2B) ? "OK" : "FAILED");
-      log("[DebugGizmos]   HearingGizmoForPlayer  (+0x2C): %s", *(char *)(obj + 0x2C) ? "OK" : "FAILED");
-      log("[DebugGizmos]   HearingGizmoForMonster (+0x2D): %s", *(char *)(obj + 0x2D) ? "OK" : "FAILED");
-      log("[DebugGizmos]   VisionGizmoForPlayer   (+0x2E): %s", *(char *)(obj + 0x2E) ? "OK" : "FAILED");
-      log("[DebugGizmos]   VisionGizmoForMonster  (+0x2F): %s", *(char *)(obj + 0x2F) ? "OK" : "FAILED");
-      log("[DebugGizmos]   InputAndVisionGizmo  (+0x30): %s", *(char *)(obj + 0x30) ? "OK" : "FAILED");
-      log("[DebugGizmos]   MonsterPathGizmo     (+0x31): %s", *(char *)(obj + 0x31) ? "OK" : "FAILED");
-      log("[DebugGizmos]   PlayerPathGizmo      (+0x32): %s", *(char *)(obj + 0x32) ? "OK" : "FAILED");
-      log("[DebugGizmos]   CameraGizmo          (+0x33): %s", *(char *)(obj + 0x33) ? "OK" : "FAILED");
-
-      log("[DebugGizmos] Done.");
-    }
     return true;
 }
 
