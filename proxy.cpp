@@ -175,7 +175,7 @@ static int64_t __fastcall Hook_CalcNormalDamage(
             perkIntensityRatio, slotDmgRatio, fromEE, erAmend, defAmend, rcdSlotDmgRatio,
             toEERCD, skillIntensityRatio, toughnessBrokenDmgRatio, critRatio, envAmendRatio, method);
     };
-    
+
     // ── Step 1: walk klass chain for static fields ───────────────────────────
     if (!fromActor)         { return callOriginal(); }
     if (!fromActor->klass)  { return callOriginal(); }
@@ -607,61 +607,7 @@ struct SummonCfgFields {
 
 // Player dataID → display name (for summon-owner logging).
 static const char* SummonerName(int32_t dataId) {
-    switch (dataId) {
-        case 103: return "Amber";
-        case 106: return "Aeloria";
-        case 107: return "Tilia";
-        case 108: return "Kasimira";
-        case 109: return "Aobelle";
-        case 110: return "Firenze";
-        case 111: return "Iris";
-        case 112: return "Noya";
-        case 113: return "Shimiao";
-        case 114: return "Chaton";
-        case 115: return "Firefly";
-        case 116: return "Ridge";
-        case 117: return "Jinglin";
-        case 118: return "Coronis";
-        case 119: return "Nanoha";
-        case 120: return "Canace";
-        case 123: return "Ann";
-        case 125: return "Freesia";
-        case 126: return "Flora";
-        case 127: return "Teresa";
-        case 129: return "Yoranda";
-        case 130: return "Donna";
-        case 131: return "Bloc";
-        case 132: return "Minova";
-        case 133: return "Nazuka";
-        case 134: return "Fuyuka";
-        case 135: return "Mistique";
-        case 136: return "Angie";
-        case 137: return "Eleanor";
-        case 138: return "Nyx";
-        case 139: return "Allie";
-        case 140: return "Sparkla";
-        case 141: return "Chixia";
-        case 142: return "Cosette";
-        case 143: return "Wraith";
-        case 144: return "Chitose";
-        case 145: return "Otoha";
-        case 146: return "Benito";
-        case 147: return "Caramel";
-        case 149: return "Gerie";
-        case 150: return "Laru";
-        case 151: return "Yunshu";
-        case 152: return "Jiyue";
-        case 153: return "Danyun";
-        case 155: return "Shia";
-        case 156: return "Nazuna";
-        case 157: return "Karin";
-        case 158: return "Laru";
-        case 159: return "Coronis";
-        case 160: return "Willow";
-        case 163: return "Greyhorn";
-        case 164: return "Shuo";
-        default: return "?";
-    }
+    switch (dataId) { case 103: return "Amber"; case 106: return "Aeloria"; case 107: return "Tilia"; case 108: return "Kasimira"; case 109: return "Aobelle"; case 110: return "Firenze"; case 111: return "Iris"; case 112: return "Noya"; case 113: return "Shimiao"; case 114: return "Chaton"; case 115: return "Firefly"; case 116: return "Ridge"; case 117: return "Jinglin"; case 118: return "Coronis"; case 119: return "Nanoha"; case 120: return "Canace"; case 123: return "Ann"; case 125: return "Freesia"; case 126: return "Flora"; case 127: return "Teresa"; case 129: return "Yoranda"; case 130: return "Donna"; case 131: return "Bloc"; case 132: return "Minova"; case 133: return "Nazuka"; case 134: return "Fuyuka"; case 135: return "Mistique"; case 136: return "Angie"; case 137: return "Eleanor"; case 138: return "Nyx"; case 139: return "Allie"; case 140: return "Sparkla"; case 141: return "Chixia"; case 142: return "Cosette"; case 143: return "Wraith"; case 144: return "Chitose"; case 145: return "Otoha"; case 146: return "Benito"; case 147: return "Caramel"; case 149: return "Gerie"; case 150: return "Laru"; case 151: return "Yunshu"; case 152: return "Jiyue"; case 153: return "Danyun"; case 155: return "Shia"; case 156: return "Nazuna"; case 157: return "Karin"; case 158: return "Laru"; case 159: return "Coronis"; case 160: return "Willow"; case 163: return "Greyhorn"; case 164: return "Shuo"; default: return "?"; }
 }
 
 static void __fastcall Hook_ParseSummonCfg(void* summonInfo, void* cfgData, void* spawnInfo, void* method)
@@ -750,11 +696,11 @@ static void __fastcall Hook_EffectOnInit(void* self, int32_t effType, int32_t so
     g_OrigEffectOnInit(self, effType, sourceType, id, effectConfig, effectValueConfig,
                        owner, fromActor, shareCD, takeEffectLimit, shareTakeEffectLimit,
                        initCD, fromBuff, method);
-    
+
     int32_t configId = 0;
     if (effectConfig)
         configId = effectConfig->fields.id_;
-    
+
     if (configId > 0) {
         int32_t instanceId = reinterpret_cast<AdventureEffect_o*>(self)->fields.id;
         TrackInstanceConfig(instanceId, configId);
@@ -769,7 +715,7 @@ static void __fastcall Hook_EffectOnInit(void* self, int32_t effType, int32_t so
         info.fromActorId = adventureActorId(fromActor);
         StoreInstanceSnapInfo(instanceId, info);
     }
-    
+
     if (g_Cfg.effects) {
         BuildBuffJson("Effect", configId, owner, fromActor, 1);
     }
@@ -782,11 +728,11 @@ static void __fastcall Hook_BuffEffectOnInit(void* self, AdventureActor_o* owner
                                              Nova_Client_BuffEffect_o* buffEffectConfig, int32_t buffUid, void* method)
 {
     g_OrigBuffEffectOnInit(self, owner, fromActor, buffEntity, buffEffectConfig, buffUid, method);
-    
+
     int32_t configId = 0;
     if (buffEffectConfig)
         configId = buffEffectConfig->fields.id_;
-    
+
     if (g_Cfg.buffs) {
         BuildBuffJson("Buff", configId, owner, fromActor, 1);
     }
@@ -808,12 +754,12 @@ static void __fastcall Hook_BuffEntityExcute(BuffEntity_o* self, int32_t addType
                                              AdventureActor_o* fromActor, void* method)
 {
     g_OrigBuffEntityExcute(self, addType, fromActor, method);
-    
+
     int32_t configId = 0;
     if (self->fields.buffConfig)
         configId = self->fields.buffConfig->fields.id_;
     int32_t buffNum = self->fields.buffNum;
-    
+
     // Owner is the actor who owns the BuffCom that contains this BuffEntity
     AdventureActor_o* owner = nullptr;
     BuffCom_o* bc = self->fields._buffCom;
@@ -1035,7 +981,7 @@ static DWORD WINAPI InitThread(LPVOID) {
     InstallHook(g_base + RVA_SHOW_CIRCLE_GIZMO_DIAG, reinterpret_cast<void*>(&Hook_ShowCircleGizmoDiag), (void**)&g_OrigShowCircleGizmoDiag, "ShowCircleGizmo(debug observer)");
     InstallHook(g_base + RVA_SHOW_RING_GIZMO_DIAG,   reinterpret_cast<void*>(&Hook_ShowRingGizmoDiag),   (void**)&g_OrigShowRingGizmoDiag,   "ShowRingGizmo(debug observer)");
     InstallHttpHooks(g_base);
-    
+
     log("[init] Ready.");
     CoUninitialize();
     return 0;
