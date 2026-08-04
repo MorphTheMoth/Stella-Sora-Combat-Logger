@@ -434,12 +434,33 @@ static void __fastcall Hook_FakeSetAttrInfo(AdventureActor_o* self, int32_t temp
 using FnSetPlayerSummonAttr = void(__fastcall*)(AdventureActor_o*, AdventureActor_o*, int32_t, void*);
 static FnSetPlayerSummonAttr g_OrigSetPlayerSummonAttr = nullptr;
 
+// Captures a player's live attribute base/pct values + active effects.
+// Defined below; both the live-inherit summon hook and the battle-start
+// snapshot hook use it at their respective reference times.
+static PlayerEffectSnapshot CapturePlayerEffectSnapshot(AdventureActor_o* player);
+
 static void __fastcall Hook_SetPlayerSummonAttr(AdventureActor_o* self, AdventureActor_o* player,
                                                 int32_t percent, void* method)
 {
     g_OrigSetPlayerSummonAttr(self, player, percent, method);
-    log("[MINION] MonsterAdventureActor$$SetPlayerSummonAttrInfo percent=%d player=%s time=%s",
-        percent, player ? adventureActorId(player).c_str() : "null", gameTime().c_str());
+
+    // Live-inherit path (summonAttrType=1): the engine copies the player's LIVE
+    // attributeList into the minion's .origin at summon time, so capture the
+    // player's effects/values right now (not the battle-start snapshot).
+    if (self && player) {
+        MinionLink link;
+        link.playerId = adventureActorId(player);
+        link.summonAttrType = 1;
+        link.summonSnapshot = CapturePlayerEffectSnapshot(player);
+        link.summonSnapshot.time = gameTime();
+        {
+            std::lock_guard<std::mutex> lk(g_MinionLinkMutex);
+            g_MinionToPlayer[adventureActorId(self)] = std::move(link);
+        }
+    }
+
+    //log("[MINION] MonsterAdventureActor$$SetPlayerSummonAttrInfo percent=%d player=%s time=%s",
+    //    percent, player ? adventureActorId(player).c_str() : "null", gameTime().c_str());
 }
 
 using FnSetPlayerSummonSnap = void(__fastcall*)(AdventureActor_o*, AdventureActor_o*, int32_t, void*);
@@ -450,14 +471,17 @@ static void __fastcall Hook_SetPlayerSummonSnap(AdventureActor_o* self, Adventur
 {
     g_OrigSetPlayerSummonSnap(self, player, percent, method);
 
-    // Store minion→player mapping for inherited effect tracking
+    // Store minion→player mapping for inherited effect tracking.
+    // Snapshot path (summonAttrType=2): the minion's stats come from the
+    // player's battle-start snapshot, so no per-minion capture is stored here —
+    // BuildEffectListJson resolves the player's snapshot via playerId.
     if (self && player) {
         MinionLink link;
         link.playerId = adventureActorId(player);
         link.summonAttrType = 2;
         {
             std::lock_guard<std::mutex> lk(g_MinionLinkMutex);
-            g_MinionToPlayer[adventureActorId(self)] = link;
+            g_MinionToPlayer[adventureActorId(self)] = std::move(link);
         }
     }
 
@@ -466,19 +490,17 @@ static void __fastcall Hook_SetPlayerSummonSnap(AdventureActor_o* self, Adventur
 }
 
 // =============================================================================
-//  Player snapshot stat save hook — capture player's effects for minions
+//  Player snapshot stat capture — shared by the battle-start save hook and the
+//  live-inherit summon hook (SetPlayerSummonAttrInfo).
 // =============================================================================
 using FnSaveSnapshot = void(__fastcall*)(AdventureActor_o*, void*);
 static FnSaveSnapshot g_OrigSaveSnapshot = nullptr;
 
-static void __fastcall Hook_SavePlayerSnapshot(AdventureActor_o* player, void* method)
-{
-    g_OrigSaveSnapshot(player, method);
-
-    if (!player) { log("[SNAP] SavePlayerSnapshot: player is null"); return; }
-
+// Capture a player's live attribute base/pct values plus active effects into a
+// PlayerEffectSnapshot. The caller decides the reference time: battle start for
+// the snapshot path, summon time for the live-inherit path.
+static PlayerEffectSnapshot CapturePlayerEffectSnapshot(AdventureActor_o* player) {
     PlayerEffectSnapshot snap;
-    snap.time = gameTime();
 
     // Read origin + baseAmend (total base) AND percentAmend from player's attributeList
     if (auto* sl = player->fields.attributeList) {
@@ -495,11 +517,7 @@ static void __fastcall Hook_SavePlayerSnapshot(AdventureActor_o* player, void* m
                 snap.baseValues[t] = (double)(*origin + *baseAmend) / 16777216.0;
                 snap.pctValues[t] = (double)(*pctAmend) / 16777216.0;
             }
-        } else {
-            log("[SNAP] SavePlayerSnapshot: attributeList entries is null");
         }
-    } else {
-        log("[SNAP] SavePlayerSnapshot: attributeList is null for player=%s", adventureActorId(player).c_str());
     }
 
     // Collect active effects from player's effectsDict
@@ -571,6 +589,18 @@ static void __fastcall Hook_SavePlayerSnapshot(AdventureActor_o* player, void* m
         }
     }
 
+    return snap;
+}
+
+static void __fastcall Hook_SavePlayerSnapshot(AdventureActor_o* player, void* method)
+{
+    g_OrigSaveSnapshot(player, method);
+
+    if (!player) { log("[SNAP] SavePlayerSnapshot: player is null"); return; }
+
+    PlayerEffectSnapshot snap = CapturePlayerEffectSnapshot(player);
+    snap.time = gameTime();
+
     {
         std::lock_guard<std::mutex> lk(g_PlayerSnapshotMutex);
         g_PlayerSnapshots[adventureActorId(player)] = std::move(snap);
@@ -631,8 +661,8 @@ static void __fastcall Hook_ParseSummonCfg(void* summonInfo, void* cfgData, void
             ownerName = SummonerName(ownerId);
         }
     }
-    //log("[MINION] summon type=%d percent=%d owner=%s(%d) time=%s",
-    //    attrType, perc, ownerName, ownerId, gameTime().c_str());
+    log("[MINION] summonAttrType=%d attrPercent=%d owner=%s(%d) time=%s",
+        attrType, perc, ownerName, ownerId, gameTime().c_str());
 }
 
 using FnGetBothAllInfo = void(__fastcall*)(AdventureActor_o*, void*);
@@ -854,14 +884,14 @@ void* GetDebugHelperInstance() {
         GIZMO_LOG("[gizmo] resolve #%lld mi=0x%llX -> implausible (not patched yet?)", (long long)s_attempts, (unsigned long long)mi);
         return nullptr;
     }
-    GIZMO_LOG("[gizmo] resolve #%lld mi=0x%llX -> calling get_Instance", (long long)s_attempts, (unsigned long long)mi);
+    //GIZMO_LOG("[gizmo] resolve #%lld mi=0x%llX -> calling get_Instance", (long long)s_attempts, (unsigned long long)mi);
 
     uintptr_t inst = getInstance(mi);
     if (!inst) {
         GIZMO_LOG("[gizmo]   get_Instance -> 0 (helper not awake yet, retrying)");
         return nullptr;
     }
-    GIZMO_LOG("[gizmo] RESOLVED instance=0x%llX", (unsigned long long)inst);
+    //GIZMO_LOG("[gizmo] RESOLVED instance=0x%llX", (unsigned long long)inst);
     #undef GIZMO_LOG
     return (void*)inst;
 }
@@ -880,10 +910,6 @@ static FnShowCircleGizmoDiag_t g_OrigShowCircleGizmoDiag = nullptr;
 
 static void __fastcall Hook_ShowCircleGizmoDiag(void* __this, void* pos, void* up, float radius, void* color, float durationTime, float lineWidthPixels, void* method) {
     static int64_t s_count = 0;
-    if ((++s_count) <= 3 || (s_count % 500) == 0) {
-        log("[gizmo] ENGINE ShowCircleGizmo x%lld this=0x%llX r=%.2f dur=%.2f",
-            (long long)s_count, (unsigned long long)__this, radius, durationTime);
-    }
     g_OrigShowCircleGizmoDiag(__this, pos, up, radius, color, durationTime, lineWidthPixels, method);
 }
 
@@ -892,10 +918,6 @@ static FnShowRingGizmoDiag_t g_OrigShowRingGizmoDiag = nullptr;
 
 static void __fastcall Hook_ShowRingGizmoDiag(void* __this, void* pos, void* up, float innerRadius, float radius, void* innerColor, void* color, float durationTime, void* method) {
     static int64_t s_count = 0;
-    if ((++s_count) <= 3 || (s_count % 500) == 0) {
-        log("[gizmo] ENGINE ShowRingGizmo x%lld this=0x%llX ir=%.2f r=%.2f dur=%.2f",
-            (long long)s_count, (unsigned long long)__this, innerRadius, radius, durationTime);
-    }
     g_OrigShowRingGizmoDiag(__this, pos, up, innerRadius, radius, innerColor, color, durationTime, method);
 }
 

@@ -305,15 +305,15 @@ const char* AttrName(int i) {
 
 std::string adventureActorId(AdventureActor_o* actor) {
     if (!actor) return "null";
-    
+
     int32_t dataId = actor->fields._dataID_k__BackingField;
     int32_t skinId = actor->fields._skinID_k__BackingField;
-    
+
     bool isBelongToPlayer = false;
     auto* attrList = actor->fields.attributeList;
     if (attrList)
         isBelongToPlayer = attrList->fields.isBelongToPlayer;
-    
+
     // Return a compact string: "p:<dataId>" for players, "e:<skinId>" for enemies.
     // JS will resolve these to display names using the same game data files.
     char buf[32];
@@ -439,16 +439,6 @@ bool EnableAllDebugGizmos(uintptr_t moduleBase)
     *(char *)(obj + 0x32) = g_Cfg.player_path_gizmo ? 1 : 0; // PlayerPathGizmo
     *(char *)(obj + 0x33) = g_Cfg.camera_gizmo ? 1 : 0; // CameraGizmo
 
-    // One-shot read-back so a single run confirms the flags actually landed on
-    // the instance the engine reads.  Removed once confirmed working.
-    static bool s_gizmoWriteLogged = false;
-    if (!s_gizmoWriteLogged) {
-        s_gizmoWriteLogged = true;
-        log("[gizmo] flags written to instance 0x%llX: monster=%d bullet=%d hitbox=%d (readback %d)",
-            (unsigned long long)obj,
-            *(char *)(obj + 0x29), *(char *)(obj + 0x2A),
-            g_Cfg.hitbox_gizmo, *(char *)(obj + 0x2B));
-    }
     return true;
 }
 
@@ -527,24 +517,24 @@ void BuildBuffJson(const char* type, int32_t configId, AdventureActor_o* owner, 
     j["Type"] = "Buff";
     j["Action"] = isAdd > 0 ? "Add" : "Remove";
     j["Time"] = gameTime();
-    
+
     if (owner) {
         j["Owner"] = adventureActorId(owner);
         j["OwnerDisplay"] = adventureActorDisplay(owner);
     }
-    
+
     if (fromActor) {
         j["Source"] = adventureActorId(fromActor);
         j["SourceDisplay"] = adventureActorDisplay(fromActor);
     }
-    
+
     j["ConfigId"] = configId;
-    
+
     if (buffNum > 0)
         j["Stacks"] = buffNum;
-    
+
     j["SubType"] = type;
-    
+
     logJson(j);
 }
 
@@ -633,11 +623,6 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
     if (gdc && gdc->fields.EffectValue_Map) {
         static bool once = false;
         effectValueKeys = CollectDictKeys(gdc->fields.EffectValue_Map);
-        if (!once) {
-            once = true;
-            log("[LVLMAP] gdc=%p EffectValue_Map=%p keys=%zu",
-                (void*)gdc, (void*)gdc->fields.EffectValue_Map, effectValueKeys.size());
-        }
     } else {
         static bool once2 = false;
         if (!once2) {
@@ -659,53 +644,62 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
     // ── Inherited effects for minion actor hits ───────────────────────
     // Only for minions mapped in g_MinionToPlayer (damageTypeTemp=1 actor hits).
     // Area/weapon snapshots already capture the correct effects via IsUseHitFromSummon.
+    // Effect-inheritance source per path:
+    //  - live-inherit (summonAttrType=1): the minion's stats are the player's LIVE
+    //    values at summon time, so use the per-minion summonSnapshot captured then.
+    //  - snapshot path (summonAttrType=2): the minion's stats come from the player's
+    //    battle-start snapshot, so resolve g_PlayerSnapshots via playerId.
     if (resolveActor) {
         std::string actorId = adventureActorId(resolveActor);
 
-        std::string playerId;
+        const PlayerEffectSnapshot* src = nullptr;
         {
             std::lock_guard<std::mutex> mlk(g_MinionLinkMutex);
             auto mIt = g_MinionToPlayer.find(actorId);
-            if (mIt != g_MinionToPlayer.end())
-                playerId = mIt->second.playerId;
+            if (mIt != g_MinionToPlayer.end()) {
+                if (!mIt->second.summonSnapshot.entries.empty())
+                    src = &mIt->second.summonSnapshot;
+                else if (!mIt->second.playerId.empty()) {
+                    std::lock_guard<std::mutex> plk(g_PlayerSnapshotMutex);
+                    auto pIt = g_PlayerSnapshots.find(mIt->second.playerId);
+                    if (pIt != g_PlayerSnapshots.end())
+                        src = &pIt->second;
+                }
+            }
         }
 
-        if (!playerId.empty()) {
-            std::lock_guard<std::mutex> plk(g_PlayerSnapshotMutex);
-            auto pIt = g_PlayerSnapshots.find(playerId);
-            if (pIt != g_PlayerSnapshots.end()) {
-                for (auto& e : pIt->second.entries) {
-                    json je;
-                    je["configId"] = e.configId;
-                    je["valueConfigId"] = e.valueConfigId;
-                    je["sourceType"] = e.sourceType;
-                    je["damage"] = e.damage;
-                    je["effectType"] = 12;  // ATTR_FIX
-                    je["attrType"] = e.attributeType;
-                    je["baseStatOnSnapshot"] = e.baseStatOnSnapshot;
-                    je["pctStatOnSnapshot"] = e.pctStatOnSnapshot;
-                    je["attributeType"] = e.attributeType;
-                    je["parameterType"] = e.parameterType;
-                    je["fromOwnerSnapshot"] = true;
-                    if (!e.ownerId.empty())
-                        je["owner"] = e.ownerId;
-                    json allValueOptions = json::array();
-                    if (!effectValueKeys.empty() && e.configId > 0) {
-                        bool anyFound = false;
-                        for (int lvl = 0; lvl <= 50; ++lvl) {
-                            int32_t vid = e.configId + lvl * 10;
-                            if (effectValueKeys.count(vid)) {
-                                anyFound = true;
-                                json ve;
-                                ve["l"] = lvl;
-                                ve["v"] = vid;
-                                allValueOptions.push_back(ve);
-                            } else if (anyFound) break;
-                        }
+        if (src) {
+            for (auto& e : src->entries) {
+                json je;
+                je["configId"] = e.configId;
+                je["valueConfigId"] = e.valueConfigId;
+                je["sourceType"] = e.sourceType;
+                je["damage"] = e.damage;
+                je["effectType"] = 12;  // ATTR_FIX
+                je["attrType"] = e.attributeType;
+                je["baseStatOnSnapshot"] = e.baseStatOnSnapshot;
+                je["pctStatOnSnapshot"] = e.pctStatOnSnapshot;
+                je["attributeType"] = e.attributeType;
+                je["parameterType"] = e.parameterType;
+                je["fromOwnerSnapshot"] = true;
+                if (!e.ownerId.empty())
+                    je["owner"] = e.ownerId;
+                json allValueOptions = json::array();
+                if (!effectValueKeys.empty() && e.configId > 0) {
+                    bool anyFound = false;
+                    for (int lvl = 0; lvl <= 50; ++lvl) {
+                        int32_t vid = e.configId + lvl * 10;
+                        if (effectValueKeys.count(vid)) {
+                            anyFound = true;
+                            json ve;
+                            ve["l"] = lvl;
+                            ve["v"] = vid;
+                            allValueOptions.push_back(ve);
+                        } else if (anyFound) break;
                     }
-                    WriteLevelMapEntry(e.configId, 0, 0, allValueOptions);
-                    effects.push_back(je);
                 }
+                WriteLevelMapEntry(e.configId, 0, 0, allValueOptions);
+                effects.push_back(je);
             }
         }
     }
@@ -878,7 +872,7 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
                     AdventureEffectBase_o* base = *reinterpret_cast<AdventureEffectBase_o**>(itemsStart + s * sizeof(void*));
                     if (!base) continue;
 
-                    AdventureEffect_o* parentEffect = base->fields._effect; 
+                    AdventureEffect_o* parentEffect = base->fields._effect;
                     auto* ValueCfgPtr = parentEffect->fields._effectValueConfig_k__BackingField;
                     je["configId"] = baseConfigId;
                     je["valueConfigId"] = ValueCfgPtr ? ValueCfgPtr->fields.id_ : 0;
@@ -923,7 +917,7 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
     }
     j["timeTriggerEffects"] = timeTrig;
 
-    
+
     return j;
 }
 
@@ -1010,7 +1004,7 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
                   int64_t* slotDmgRatio, int64_t* fromEE, int64_t* erAmend, int64_t* defAmend, int64_t* rcdSlotDmgRatio, int64_t* toEERCD,
                   int64_t* skillIntensityRatio, int64_t* toughnessBrokenDmgRatio, int64_t* critRatio, int64_t* envAmendRatio,
                   int64_t finalDamage,
-                  AttributeList_o* attackerInfo, AttributeList_o* defenderInfo, 
+                  AttributeList_o* attackerInfo, AttributeList_o* defenderInfo,
                   ActorAdditionalAttrInfo_o* fromAdditionalAttrInfo,
                   ActorAdditionalAttrInfo_o* toAdditionalAttrInfo,
                   System_Collections_Generic_Dictionary_int__int__o* fromAttrDict,
@@ -1039,7 +1033,7 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
     j["Time"] = gameTime();
     if (snapshotTime && !snapshotTime->empty())
         j["SnapshotAt"] = *snapshotTime;
-    
+
     if (fromActor) {
         j["Attacker"] = adventureActorId(fromActor);
         j["AttackerDisplay"] = adventureActorDisplay(fromActor);
@@ -1048,10 +1042,10 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
         j["Defender"] = adventureActorId(toActor);
         j["DefenderDisplay"] = adventureActorDisplay(toActor);
     }
-    
+
     if (hitDamageConfig) {
         const auto& f = hitDamageConfig->fields;
-        
+
         json hitCfg;
         hitCfg["hitDamageId"]   = f.id_;
         hitCfg["levelTypeData"] = f.levelTypeData_;
@@ -1064,10 +1058,10 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
         hitCfg["skillId"]       = f.skillId_;
         hitCfg["skillSlotType"] = f.skillSlotType_;
         hitCfg["energyCharge"] = f.energyCharge_;
-        
+
         if (f.hitdamageInfo_)
             hitCfg["info"] = Il2CppStringToStd(f.hitdamageInfo_);
-        
+
         j["HitConfig"] = hitCfg;
     }
     j["HitType"] = g_CurrentDamageTypeTemp;
@@ -1102,7 +1096,7 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
     dmgParams["envAmendRatio"]           = RoundTo(toDbl(envAmendRatio), 4);
     dmgParams["finalDamage"]             = finalDamage;
     j["DamageParams"]                    = dmgParams;
-    
+
 
 
 
@@ -1113,7 +1107,7 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
         if (!attackerSpecial.empty())
             j["AttackerSpecial"] = attackerSpecial;
     }
-    
+
     if (toActor && g_Cfg.on_hit_defender_stats) {
         json defenderStats = logAdventureActorAttrsJson(defenderInfo, toOverlay.empty() ? nullptr : &toOverlay);
         json defenderSpecial = logAdventureActorSpecialAttrsJson(toActor);
@@ -1121,23 +1115,23 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
         if (!defenderSpecial.empty())
             j["DefenderSpecial"] = defenderSpecial;
     }
-    
+
     if (fromActor && g_Cfg.on_hit_buff_list) {
         json attackerBuffs = BuildBuffListJson(fromActor);
         j["AttackerBuffs"] = attackerBuffs;
     }
-    
+
     if (toActor && g_Cfg.on_hit_buff_list) {
         json defenderBuffs = BuildBuffListJson(toActor);
         j["DefenderBuffs"] = defenderBuffs;
     }
-    
+
     if (fromActor && g_Cfg.on_hit_effect_list) {
         ActorEffectManage_o* effectManage = fromActor->fields.effectManage;
         json effects = BuildEffectListJson(effectManage, g_Cfg.on_hit_effect_list_information, gdc, GetEffectValue, GetOnceAttr, GetValueConfigId, GetAttrValue, fromActor, effectSnapshot);
         if (!effects.empty())
             j["AttackerEffects"] = effects;
-    }    
+    }
 
     if (toActor && g_Cfg.on_hit_effect_list) {
         ActorEffectManage_o* effectManage = toActor->fields.effectManage;
@@ -1166,7 +1160,7 @@ void BuildSkillCastJson(int32_t skillId) {
     j["Type"] = "Skill Cast";
     j["Time"] = gameTime();
     j["SkillId"] = skillId;
-    
+
     logJson(j);
 }
 
@@ -1174,7 +1168,7 @@ void BuildResetJson() {
     json j;
     j["Type"] = "Reset";
     j["Time"] = gameTime();
-    
+
     logJson(j);
     //log("[Reset] %s", gameTime().c_str());
 }

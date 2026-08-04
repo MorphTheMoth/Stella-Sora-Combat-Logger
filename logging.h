@@ -131,6 +131,11 @@ struct PlayerEffectSnapshot {
 struct MinionLink {
     std::string playerId;
     int32_t summonAttrType;
+    // Live-inherit path (summonAttrType=1) only: the player's effects/stats at
+    // the moment the minion was summoned, since the engine copies the LIVE
+    // attributeList on that path. Empty for the snapshot path, which instead
+    // resolves the player's battle-start snapshot via playerId.
+    PlayerEffectSnapshot summonSnapshot;
 };
 extern std::mutex g_PlayerSnapshotMutex;
 extern std::unordered_map<std::string, PlayerEffectSnapshot> g_PlayerSnapshots;
