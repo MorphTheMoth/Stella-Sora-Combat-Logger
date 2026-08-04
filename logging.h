@@ -199,16 +199,3 @@ void* GetDebugHelperInstance();
 bool InstallHook(uintptr_t target, void* hook, void** original, const char* name);
 
 bool EnableAllDebugGizmos(uintptr_t moduleBase);
-
-struct DictEntry_Int_Int_L {
-    int32_t hashCode;
-    int32_t next;
-    int32_t key;
-    int32_t value;
-};
-struct DictEntryArray_Int_Int_L {
-    Il2CppObject            obj;
-    Il2CppArrayBounds*      bounds;
-    il2cpp_array_size_t     max_length;
-    DictEntry_Int_Int_L     m_Items[1]; // flexible
-};

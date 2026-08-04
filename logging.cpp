@@ -470,19 +470,12 @@ static std::vector<ElemDictEntry> ReadElemDict(ActorAdditionalAttrInfo_o* info) 
     auto* dict = info->fields.attributeWithElementOrDamageTypeDict;
     if (!dict || !dict->fields._entries) return out;
 
-    struct Entry { int32_t hashCode; int32_t next; int32_t key; int64_t value; };
-    struct EntryArray {
-        Il2CppObject        obj;
-        Il2CppArrayBounds*  bounds;
-        il2cpp_array_size_t max_length;
-        Entry               m_Items[1];
-    };
-    auto* arr    = reinterpret_cast<EntryArray*>(dict->fields._entries);
+    auto* arr    = reinterpret_cast<System_Collections_Generic_Dictionary_Entry_int__FDP__array*>(dict->fields._entries);
     int32_t cap  = (int32_t)arr->max_length;
     if (cap <= 0 || cap > 4096) return out;
 
     for (int32_t i = 0; i < cap; ++i) {
-        const Entry& e = arr->m_Items[i];
+        const auto& e = arr->m_Items[i].fields;
         if (e.hashCode <= 0) continue;
         ElementOrDmgAttrKey k = DecodeElemKey(e.key);
         out.push_back({ k.attributeType, k.elementOrDamageType, k.isElementType, k.mode, (double)e.value / FDP_ONE });
@@ -712,14 +705,10 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
         // Build a quick lookup by effect ID: find live effects still in the dict
         std::unordered_set<int32_t> dictIds;
         if (entriesArr && slotCount > 0) {
-            constexpr size_t entrySize = 0x18;
-            constexpr size_t valOffset  = 0x10;
-            uintptr_t entries = reinterpret_cast<uintptr_t>(entriesArr)
-                              + offsetof(System_Collections_Generic_Dictionary_Entry_TKey__TValue__array, m_Items);
             for (int i = 0; i < slotCount; ++i) {
-                uintptr_t entry = entries + i * entrySize;
-                if (*reinterpret_cast<int32_t*>(entry) < 0) continue;
-                AdventureEffect_o* effect = *reinterpret_cast<AdventureEffect_o**>(entry + valOffset);
+                const auto& e = entriesArr->m_Items[i].fields;
+                if (e.hashCode < 0) continue;
+                AdventureEffect_o* effect = reinterpret_cast<AdventureEffect_o*>(e.value);
                 if (!effect || effect->fields.removed) continue;
                 dictIds.insert(effect->fields.id);
             }
@@ -729,14 +718,10 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
             // Try live effect first
             bool usedLive = false;
             if (dictIds.count(instId) && entriesArr && slotCount > 0) {
-                constexpr size_t entrySize = 0x18;
-                constexpr size_t valOffset  = 0x10;
-                uintptr_t entries = reinterpret_cast<uintptr_t>(entriesArr)
-                                  + offsetof(System_Collections_Generic_Dictionary_Entry_TKey__TValue__array, m_Items);
                 for (int i = 0; i < slotCount; ++i) {
-                    uintptr_t entry = entries + i * entrySize;
-                    if (*reinterpret_cast<int32_t*>(entry) < 0) continue;
-                    AdventureEffect_o* effect = *reinterpret_cast<AdventureEffect_o**>(entry + valOffset);
+                    const auto& e = entriesArr->m_Items[i].fields;
+                    if (e.hashCode < 0) continue;
+                    AdventureEffect_o* effect = reinterpret_cast<AdventureEffect_o*>(e.value);
                     if (!effect || effect->fields.removed) continue;
                     if (effect->fields.id != instId) continue;
                     auto* effectCfg = effect->fields._effectConfig_k__BackingField;
@@ -759,10 +744,8 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
                     if (stack && stack->fields._array) {
                         auto* array = stack->fields._array;
                         int size = stack->fields._size;
-                        constexpr size_t arrayHeaderSize = 0x20;
-                        uintptr_t itemsStart = reinterpret_cast<uintptr_t>(array) + arrayHeaderSize;
                         for (int s = 0; s < size; ++s) {
-                            AdventureEffectBase_o* base = *reinterpret_cast<AdventureEffectBase_o**>(itemsStart + s * sizeof(void*));
+                            AdventureEffectBase_o* base = array->m_Items[s];
                             if (!base) continue;
                             AdventureEffect_o* parentEffect = base->fields._effect;
                             auto* ValueCfgPtr = parentEffect->fields._effectValueConfig_k__BackingField;
@@ -811,18 +794,11 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
     }
 
     if (entriesArr && slotCount > 0) {
-        constexpr size_t entrySize = 0x18;
-        constexpr size_t valOffset  = 0x10;
-
-        uintptr_t entries = reinterpret_cast<uintptr_t>(entriesArr)
-                          + offsetof(System_Collections_Generic_Dictionary_Entry_TKey__TValue__array, m_Items);
-
         for (int i = 0; i < slotCount; ++i) {
-            uintptr_t entry = entries + i * entrySize;
-            int32_t hashCode = *reinterpret_cast<int32_t*>(entry);
-            if (hashCode < 0) continue; // free slot
+            const auto& e = entriesArr->m_Items[i].fields;
+            if (e.hashCode < 0) continue; // free slot
 
-            AdventureEffect_o* effect = *reinterpret_cast<AdventureEffect_o**>(entry + valOffset);
+            AdventureEffect_o* effect = reinterpret_cast<AdventureEffect_o*>(e.value);
             if (!effect) continue;
             if (effect->fields.removed) continue;
 
@@ -863,13 +839,10 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
                 auto* array = stack->fields._array;     // AdventureEffectBase_array*
                 int size = stack->fields._size;         // number of items currently in stack
 
-                constexpr size_t arrayHeaderSize = 0x20; // klass(8) + monitor(8) + bounds(8) + max_length(8)
-                uintptr_t itemsStart = reinterpret_cast<uintptr_t>(array) + arrayHeaderSize;
-
                 for (int s = 0; s < size; ++s) {
 
                     json je;
-                    AdventureEffectBase_o* base = *reinterpret_cast<AdventureEffectBase_o**>(itemsStart + s * sizeof(void*));
+                    AdventureEffectBase_o* base = array->m_Items[s];
                     if (!base) continue;
 
                     AdventureEffect_o* parentEffect = base->fields._effect;
@@ -936,7 +909,7 @@ json BuildAdditionalAttrDictJson(
     json arr = json::array();
     if (!dict || !dict->klass || !dict->fields._entries) return arr;
 
-    auto* entryArr = reinterpret_cast<DictEntryArray_Int_Int_L*>(dict->fields._entries);
+    auto* entryArr = reinterpret_cast<System_Collections_Generic_Dictionary_Entry_int__int__array*>(dict->fields._entries);
     int32_t capacity = static_cast<int32_t>(entryArr->max_length);
     if (capacity <= 0 || capacity > 4096) return arr;
 
@@ -947,7 +920,7 @@ json BuildAdditionalAttrDictJson(
     }
 
     for (int32_t i = 0; i < capacity; ++i) {
-        const DictEntry_Int_Int_L& e = entryArr->m_Items[i];
+        const auto& e = entryArr->m_Items[i].fields;
         if (e.hashCode <= 0) continue; // vacant or deleted slot
 
         json entry;

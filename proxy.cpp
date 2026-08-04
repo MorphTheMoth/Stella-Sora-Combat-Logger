@@ -334,15 +334,10 @@ static void __fastcall Hook_CopyBattleData(void* areaEntity, bool force, void* m
             auto* entriesArr = effectsDict->fields._entries;
             int slotCount = effectsDict->fields._count;
             if (entriesArr && slotCount > 0) {
-                constexpr size_t entrySize = 0x18;
-                constexpr size_t valOffset  = 0x10;
-                uintptr_t entries = reinterpret_cast<uintptr_t>(entriesArr)
-                                  + offsetof(System_Collections_Generic_Dictionary_Entry_TKey__TValue__array, m_Items);
                 for (int i = 0; i < slotCount; ++i) {
-                    uintptr_t entry = entries + i * entrySize;
-                    int32_t hashCode = *reinterpret_cast<int32_t*>(entry);
-                    if (hashCode < 0) continue;
-                    AdventureEffect_o* effect = *reinterpret_cast<AdventureEffect_o**>(entry + valOffset);
+                    const auto& e = entriesArr->m_Items[i].fields;
+                    if (e.hashCode < 0) continue;
+                    AdventureEffect_o* effect = reinterpret_cast<AdventureEffect_o*>(e.value);
                     if (!effect) continue;
                     if (effect->fields.removed) continue;
                     snap.insert(effect->fields.id);
@@ -393,15 +388,10 @@ static void __fastcall Hook_WeaponSetup(AdventureWeapon_o* weapon, LogicEntity_o
             auto* entriesArr = effectsDict->fields._entries;
             int slotCount = effectsDict->fields._count;
             if (entriesArr && slotCount > 0) {
-                constexpr size_t entrySize = 0x18;
-                constexpr size_t valOffset  = 0x10;
-                uintptr_t entries = reinterpret_cast<uintptr_t>(entriesArr)
-                                  + offsetof(System_Collections_Generic_Dictionary_Entry_TKey__TValue__array, m_Items);
                 for (int i = 0; i < slotCount; ++i) {
-                    uintptr_t entry = entries + i * entrySize;
-                    int32_t hashCode = *reinterpret_cast<int32_t*>(entry);
-                    if (hashCode < 0) continue;
-                    AdventureEffect_o* effect = *reinterpret_cast<AdventureEffect_o**>(entry + valOffset);
+                    const auto& e = entriesArr->m_Items[i].fields;
+                    if (e.hashCode < 0) continue;
+                    AdventureEffect_o* effect = reinterpret_cast<AdventureEffect_o*>(e.value);
                     if (!effect) continue;
                     if (effect->fields.removed) continue;
                     snap.insert(effect->fields.id);
@@ -508,14 +498,9 @@ static PlayerEffectSnapshot CapturePlayerEffectSnapshot(AdventureActor_o* player
             snap.baseValues.resize(0x61, 0.0);
             snap.pctValues.resize(0x61, 0.0);
             for (int t = 1; t < 0x61; t++) {
-                int64_t* origin = reinterpret_cast<int64_t*>(
-                    reinterpret_cast<uint8_t*>(entriesArr) + 0x20 + t * 0x20 + 0x00);
-                int64_t* baseAmend = reinterpret_cast<int64_t*>(
-                    reinterpret_cast<uint8_t*>(entriesArr) + 0x20 + t * 0x20 + 0x08);
-                int64_t* pctAmend = reinterpret_cast<int64_t*>(
-                    reinterpret_cast<uint8_t*>(entriesArr) + 0x20 + t * 0x20 + 0x10);
-                snap.baseValues[t] = (double)(*origin + *baseAmend) / 16777216.0;
-                snap.pctValues[t] = (double)(*pctAmend) / 16777216.0;
+                const auto& e = entriesArr->m_Items[t].fields;
+                snap.baseValues[t] = (double)(e.origin + e.baseAmend) / 16777216.0;
+                snap.pctValues[t] = (double)(e.percentAmend) / 16777216.0;
             }
         }
     }
@@ -526,16 +511,10 @@ static PlayerEffectSnapshot CapturePlayerEffectSnapshot(AdventureActor_o* player
             auto* entriesArr = dict->fields._entries;
             int slotCount = dict->fields._count;
             if (entriesArr && slotCount > 0) {
-                constexpr size_t entrySize = 0x18;
-                constexpr size_t valOffset = 0x10;
-                uintptr_t entries = reinterpret_cast<uintptr_t>(entriesArr)
-                    + offsetof(System_Collections_Generic_Dictionary_Entry_TKey__TValue__array, m_Items);
-
                 for (int i = 0; i < slotCount; ++i) {
-                    uintptr_t entry = entries + i * entrySize;
-                    int32_t hashCode = *reinterpret_cast<int32_t*>(entry);
-                    if (hashCode < 0) continue;
-                    AdventureEffect_o* effect = *reinterpret_cast<AdventureEffect_o**>(entry + valOffset);
+                    const auto& e = entriesArr->m_Items[i].fields;
+                    if (e.hashCode < 0) continue;
+                    AdventureEffect_o* effect = reinterpret_cast<AdventureEffect_o*>(e.value);
                     if (!effect) continue;
                     if (effect->fields.removed) continue;
 
@@ -544,11 +523,9 @@ static PlayerEffectSnapshot CapturePlayerEffectSnapshot(AdventureActor_o* player
 
                     auto* array = stack->fields._array;
                     int size = stack->fields._size;
-                    constexpr size_t arrayHeaderSize = 0x20;
-                    uintptr_t itemsStart = reinterpret_cast<uintptr_t>(array) + arrayHeaderSize;
 
                     for (int s = 0; s < size; ++s) {
-                        AdventureEffectBase_o* base = *reinterpret_cast<AdventureEffectBase_o**>(itemsStart + s * sizeof(void*));
+                        AdventureEffectBase_o* base = array->m_Items[s];
                         if (!base) continue;
 
                         AdventureEffect_o* parentEffect = base->fields._effect;
@@ -619,45 +596,30 @@ static void __fastcall Hook_CloneSetAttr(AdventureActor_o* self, AdventureActor_
         gameTime().c_str());
 }
 
-using FnParseSummonCfg = void(__fastcall*)(void*, void*, void*, void*);
+using FnParseSummonCfg = void(__fastcall*)(MonsterSummonInfo_o*, SummonCfg_o*, void*, void*);
 static FnParseSummonCfg g_OrigParseSummonCfg = nullptr;
-
-// Minimal struct to read SummonCfg fields by offset
-struct SummonCfgFields {
-    int32_t summonType;
-    int32_t summonFollowType;
-    int32_t summonAttrType;
-    int32_t summonRelation;
-    int32_t attrPercent;
-    int64_t leftTime;
-    int32_t maxCount;
-    bool retainWhenCrossLevel;
-    bool useSummonHit;
-};
 
 // Player dataID → display name (for summon-owner logging).
 static const char* SummonerName(int32_t dataId) {
     switch (dataId) { case 103: return "Amber"; case 106: return "Aeloria"; case 107: return "Tilia"; case 108: return "Kasimira"; case 109: return "Aobelle"; case 110: return "Firenze"; case 111: return "Iris"; case 112: return "Noya"; case 113: return "Shimiao"; case 114: return "Chaton"; case 115: return "Firefly"; case 116: return "Ridge"; case 117: return "Jinglin"; case 118: return "Coronis"; case 119: return "Nanoha"; case 120: return "Canace"; case 123: return "Ann"; case 125: return "Freesia"; case 126: return "Flora"; case 127: return "Teresa"; case 129: return "Yoranda"; case 130: return "Donna"; case 131: return "Bloc"; case 132: return "Minova"; case 133: return "Nazuka"; case 134: return "Fuyuka"; case 135: return "Mistique"; case 136: return "Angie"; case 137: return "Eleanor"; case 138: return "Nyx"; case 139: return "Allie"; case 140: return "Sparkla"; case 141: return "Chixia"; case 142: return "Cosette"; case 143: return "Wraith"; case 144: return "Chitose"; case 145: return "Otoha"; case 146: return "Benito"; case 147: return "Caramel"; case 149: return "Gerie"; case 150: return "Laru"; case 151: return "Yunshu"; case 152: return "Jiyue"; case 153: return "Danyun"; case 155: return "Shia"; case 156: return "Nazuna"; case 157: return "Karin"; case 158: return "Laru"; case 159: return "Coronis"; case 160: return "Willow"; case 163: return "Greyhorn"; case 164: return "Shuo"; default: return "?"; }
 }
 
-static void __fastcall Hook_ParseSummonCfg(void* summonInfo, void* cfgData, void* spawnInfo, void* method)
+static void __fastcall Hook_ParseSummonCfg(MonsterSummonInfo_o* summonInfo, SummonCfg_o* cfgData, void* spawnInfo, void* method)
 {
     g_OrigParseSummonCfg(summonInfo, cfgData, spawnInfo, method);
     int32_t attrType = -1;
     int32_t perc = 0;
     bool useSummonHit = false;
     if (cfgData) {
-        auto* f = reinterpret_cast<SummonCfgFields*>(reinterpret_cast<uint8_t*>(cfgData) + 0x10); // skip klass+monitor
-        attrType = f->summonAttrType;
-        perc = f->attrPercent;
-        useSummonHit = f->useSummonHit;
+        attrType = cfgData->fields.summonAttrType;
+        perc = cfgData->fields.attrPercent;
+        useSummonHit = cfgData->fields.useSummonHit;
     }
-    // Summoner (owner) is MonsterSummonInfo._SummonActor_k__BackingField:
-    // first field after LogicComponent (0x10) + klass/monitor (0x10) = +0x20.
+    // Summoner (owner) is MonsterSummonInfo._SummonActor_k__BackingField
     int32_t ownerId = 0;
     const char* ownerName = "?";
     if (summonInfo) {
-        AdventureActor_o* summoner = *reinterpret_cast<AdventureActor_o**>(reinterpret_cast<uint8_t*>(summonInfo) + 0x20);
+        AdventureActor_o* summoner = summonInfo->fields._SummonActor_k__BackingField;
         if (summoner) {
             ownerId = summoner->fields._dataID_k__BackingField;
             ownerName = SummonerName(ownerId);
@@ -665,8 +627,8 @@ static void __fastcall Hook_ParseSummonCfg(void* summonInfo, void* cfgData, void
         // useSummonHit is copied onto the summoned monster's MonsterSummonInfo by
         // ParseSummonCfg; also record it on the minion link so damage events from
         // this minion can be labeled "Live". The minion is the LogicComponent
-        // entity: MonsterSummonInfo._Entity_k__BackingField @ +0x10.
-        AdventureActor_o* minion = *reinterpret_cast<AdventureActor_o**>(reinterpret_cast<uint8_t*>(summonInfo) + 0x10);
+        // entity: MonsterSummonInfo._Entity_k__BackingField (inherited).
+        AdventureActor_o* minion = reinterpret_cast<AdventureActor_o*>(summonInfo->fields._Entity_k__BackingField);
         if (minion) {
             std::lock_guard<std::mutex> lk(g_MinionLinkMutex);
             g_MinionToPlayer[adventureActorId(minion)].useSummonHit = useSummonHit;
@@ -696,15 +658,10 @@ static void __fastcall Hook_GetBothAllInfo(AdventureActor_o* actor, void* method
                     auto* entriesArr = effectsDict->fields._entries;
                     int slotCount = effectsDict->fields._count;
                     if (entriesArr && slotCount > 0) {
-                        constexpr size_t entrySize = 0x18;
-                        constexpr size_t valOffset = 0x10;
-                        uintptr_t entries = reinterpret_cast<uintptr_t>(entriesArr)
-                                          + offsetof(System_Collections_Generic_Dictionary_Entry_TKey__TValue__array, m_Items);
                         for (int i = 0; i < slotCount; ++i) {
-                            uintptr_t entry = entries + i * entrySize;
-                            int32_t hashCode = *reinterpret_cast<int32_t*>(entry);
-                            if (hashCode < 0) continue;
-                            AdventureEffect_o* effect = *reinterpret_cast<AdventureEffect_o**>(entry + valOffset);
+                            const auto& e = entriesArr->m_Items[i].fields;
+                            if (e.hashCode < 0) continue;
+                            AdventureEffect_o* effect = reinterpret_cast<AdventureEffect_o*>(e.value);
                             if (!effect) continue;
                             if (effect->fields.removed) continue;
                             auto* stack = effect->fields._effectStack;

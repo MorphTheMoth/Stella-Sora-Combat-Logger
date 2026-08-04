@@ -2096,6 +2096,41 @@ struct System_Collections_Generic_Dictionary_Entry_TKey__TValue__array {
 	System_Collections_Generic_Dictionary_Entry_TKey__TValue__o m_Items[65535];
 };
 
+// The generic Entry above is for reference-typed values (key/value are pointers).
+// Value-type dictionaries (Dictionary<int,int>, Dictionary<int,FDP>) use these
+// mirrored layouts instead — key/value are stored inline, not boxed.
+struct System_Collections_Generic_Dictionary_Entry_int__int__Fields {
+	int32_t hashCode;
+	int32_t next;
+	int32_t key;
+	int32_t value;
+};
+struct System_Collections_Generic_Dictionary_Entry_int__int__o {
+	System_Collections_Generic_Dictionary_Entry_int__int__Fields fields;
+};
+struct System_Collections_Generic_Dictionary_Entry_int__int__array {
+	Il2CppObject obj;
+	Il2CppArrayBounds *bounds;
+	il2cpp_array_size_t max_length;
+	System_Collections_Generic_Dictionary_Entry_int__int__o m_Items[65535];
+};
+
+struct __declspec(align(8)) System_Collections_Generic_Dictionary_Entry_int__FDP__Fields {
+	int32_t hashCode;
+	int32_t next;
+	int32_t key;
+	int64_t value;
+};
+struct System_Collections_Generic_Dictionary_Entry_int__FDP__o {
+	System_Collections_Generic_Dictionary_Entry_int__FDP__Fields fields;
+};
+struct System_Collections_Generic_Dictionary_Entry_int__FDP__array {
+	Il2CppObject obj;
+	Il2CppArrayBounds *bounds;
+	il2cpp_array_size_t max_length;
+	System_Collections_Generic_Dictionary_Entry_int__FDP__o m_Items[65535];
+};
+
 struct __declspec(align(8)) System_String_Fields {
 	int32_t _stringLength;
 	uint16_t _firstChar;
@@ -2340,6 +2375,113 @@ struct AdventureActor_StaticFields {
 	struct TrueSync_FP_o addEnergyForMainControlTemp;
 	struct System_Collections_Generic_List_GameEnum_stateAttributeType__o* strongControlStatusEffects;
 	struct System_Collections_Generic_List_GameEnum_stateAttributeType__o* weakControlStatusEffects;
+};
+
+// MonsterSummonInfo / SummonCfg — copied from the il2cpp dump (only these three
+// classes are needed by the summon hooks).
+struct __declspec(align(8)) SummonCfg_Fields {
+	int32_t summonType;
+	int32_t summonFollowType;
+	int32_t summonAttrType;
+	int32_t summonRelation;
+	int32_t attrPercent;
+	struct TrueSync_FP_o leftTime;
+	int32_t maxCount;
+	bool retainWhenCrossLevel;
+	bool useSummonHit;
+};
+struct SummonCfg_VTable {
+	VirtualInvokeData _0_Equals;
+	VirtualInvokeData _1_Finalize;
+	VirtualInvokeData _2_GetHashCode;
+	VirtualInvokeData _3_ToString;
+};
+struct SummonCfg_c {
+	Il2CppClass_1 _1;
+	void* static_fields;
+	Il2CppRGCTXData* rgctx_data;
+	Il2CppClass_2 _2;
+	SummonCfg_VTable vtable;
+};
+struct SummonCfg_o {
+	SummonCfg_c *klass;
+	void *monitor;
+	SummonCfg_Fields fields;
+};
+
+struct __declspec(align(8)) LogicComponent_Fields {
+	struct LogicEntity_o* _Entity_k__BackingField;
+	bool active;
+};
+struct LogicComponent_VTable {
+	VirtualInvokeData _0_Equals;
+	VirtualInvokeData _1_Finalize;
+	VirtualInvokeData _2_GetHashCode;
+	VirtualInvokeData _3_ToString;
+	VirtualInvokeData _4_get_ActiveSelf;
+	VirtualInvokeData _5_set_ActiveSelf;
+	VirtualInvokeData _6_SetEntity;
+	VirtualInvokeData _7_Init;
+	VirtualInvokeData _8_unknown;
+	VirtualInvokeData _9_unknown;
+	VirtualInvokeData _10_Shutdown;
+	VirtualInvokeData _11_OnActive;
+	VirtualInvokeData _12_OnDeactive;
+	VirtualInvokeData _13_OnInit;
+	VirtualInvokeData _14_OnShutdown;
+};
+struct LogicComponent_c {
+	Il2CppClass_1 _1;
+	void* static_fields;
+	Il2CppRGCTXData* rgctx_data;
+	Il2CppClass_2 _2;
+	LogicComponent_VTable vtable;
+};
+struct LogicComponent_o {
+	LogicComponent_c *klass;
+	void *monitor;
+	LogicComponent_Fields fields;
+};
+
+struct MonsterSummonInfo_Fields : LogicComponent_Fields {
+	struct AdventureActor_o* _SummonActor_k__BackingField;
+	struct SummonCfg_o* _SummonCfg_k__BackingField;
+	int32_t _SummonType_k__BackingField;
+	bool _IsCoexisted_k__BackingField;
+	bool _HaveLeftTime_k__BackingField;
+	struct TrueSync_FP_o _LeftTime_k__BackingField;
+	bool _UseSummonHit_k__BackingField;
+	bool _isDestroy;
+};
+struct MonsterSummonInfo_VTable {
+	VirtualInvokeData _0_Equals;
+	VirtualInvokeData _1_Finalize;
+	VirtualInvokeData _2_GetHashCode;
+	VirtualInvokeData _3_ToString;
+	VirtualInvokeData _4_get_ActiveSelf;
+	VirtualInvokeData _5_set_ActiveSelf;
+	VirtualInvokeData _6_SetEntity;
+	VirtualInvokeData _7_Init;
+	VirtualInvokeData _8_unknown;
+	VirtualInvokeData _9_unknown;
+	VirtualInvokeData _10_Shutdown;
+	VirtualInvokeData _11_OnActive;
+	VirtualInvokeData _12_OnDeactive;
+	VirtualInvokeData _13_OnInit;
+	VirtualInvokeData _14_OnShutdown;
+	VirtualInvokeData _15_OnLogicUpdate;
+};
+struct MonsterSummonInfo_c {
+	Il2CppClass_1 _1;
+	void* static_fields;
+	Il2CppRGCTXData* rgctx_data;
+	Il2CppClass_2 _2;
+	MonsterSummonInfo_VTable vtable;
+};
+struct MonsterSummonInfo_o {
+	MonsterSummonInfo_c *klass;
+	void *monitor;
+	MonsterSummonInfo_Fields fields;
 };
 
 struct __declspec(align(8)) ActorAdditionalAttrInfo_Fields {
