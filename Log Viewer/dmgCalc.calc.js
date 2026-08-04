@@ -300,6 +300,12 @@ function dcCollectAttrFixEffects(dcFiltered) {
 function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides) {
     const origA = ev.AttackerStats?.attrs || [];
     const origD = ev.DefenderStats?.attrs || [];
+    // ── Disabled character ──────────────────────────────────────────────
+    // Zero the whole hit (damage + effects) when its attacker is toggled off.
+    const charName = ev.AttackerDisplay || ev.Attacker || '';
+    if (charName && typeof dcCharsDisabled !== 'undefined' && dcCharsDisabled.has(charName)) {
+        return { aStats: origA, dStats: origD, _potentialsDisabled: true };
+    }
     if (dcEffectsDisabled.size === 0 && !(dcEffectLevelOverrides?.size)) return { aStats: origA, dStats: origD };
 
     // ── Potentials group disable ──────────────────────────────────────────────

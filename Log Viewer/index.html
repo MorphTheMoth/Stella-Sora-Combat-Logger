@@ -71,6 +71,31 @@
         .sidebar .dc-effects-panel {
             background: transparent; border: none; font-size: 11px;
         }
+        /* Per-character disable toggles */
+        #dcCharsList {
+            display: flex; flex-direction: column; gap: 2px;
+            margin-bottom: 6px;
+        }
+        .dc-char-row {
+            display: flex; align-items: center; gap: 6px;
+            padding: 3px 8px; border-radius: 3px; font-size: 11px;
+        }
+        .dc-char-row:hover { background: rgba(255,255,255,0.05); }
+        .dc-char-row.disabled { opacity: 0.55; }
+        .dc-char-row.disabled .dc-char-name { color: #777; text-decoration: line-through; }
+        .dc-char-name {
+            flex: 1; min-width: 0; overflow: hidden;
+            text-overflow: ellipsis; white-space: nowrap; color: #bbb;
+        }
+        .sidebar .dc-char-btn {
+            flex-shrink: 0; width: auto; min-width: 60px;
+            padding: 2px 8px; margin: 0;
+            border: 1px solid #3a3a3a; border-radius: 3px;
+            background: #2a2a2a; color: #888; font-size: 10px; cursor: pointer;
+        }
+        .sidebar .dc-char-btn:hover { background: #353535; color: #ccc; }
+        .sidebar .dc-char-btn.on { color: #b07070; border-color: #4a3030; }
+        .sidebar .dc-char-btn.on:hover { background: #2e2020; color: #cc8888; border-color: #5a3535; }
         .sidebar .dc-effects-body {
             padding: 4px 0;
         }
@@ -1060,6 +1085,10 @@
             <div class="sidebar-btn-row">
                 <button id="dcDisableAllBtn" onclick="dcDisableAllEffects()" title="Disable all effects in the Effects panel">Disable All</button>
                 <button id="dcEnableAllBtn" onclick="dcEnableAllEffects()" title="Enable all effects in the Effects panel">Enable All</button>
+            </div>
+            <div class="sidebar-label" style="margin-top:10px">Characters</div>
+            <div id="dcCharsList">
+                <!-- rendered by dcRenderCharList() -->
             </div>
             <div class="dc-effects-panel" id="dcEffectsPanel">
                 <!-- rendered by renderEffectsPanel() -->

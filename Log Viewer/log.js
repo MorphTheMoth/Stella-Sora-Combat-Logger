@@ -719,6 +719,8 @@ window.toggleTypeFilter = function(btn) {
 
 window.onCharFilterChange = function() {
     charFilter = document.getElementById('charFilter').value;
+    skillFilter = '';
+    document.getElementById('skillFilter').value = '';
     refilterAndRender(true);
 };
 

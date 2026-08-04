@@ -28,6 +28,8 @@ DC_FIELDS.forEach(f => { dcBonus[f.key] = 0; });
 // ─── DC effects panel state ───────────────────────────────────────────────────
 // Set of "side:configId:valueConfigId" keys for effects the user disabled
 const dcEffectsDisabled = new Set();
+// Set of attacker character names whose hits + effects are disabled
+const dcCharsDisabled = new Set();
 // Map<key, {newValueConfigId,newValue,newAttrType,newSubType}> for level-overridden effects
 const dcEffectLevelOverrides = new Map();
 // Whether the effects panel is open
@@ -206,7 +208,80 @@ function renderEffectsPanel() {
         html += `</div></div>`;
     }
     panel.innerHTML = html;
+    dcRenderCharList();
 }
+
+// ─── Per-character disable toggles ────────────────────────────────────────────
+// When a character is toggled off, all effects whose source belongs to that
+// character (e.g. "Tilia Skills", "Tilia Potentials") are added to
+// dcEffectsDisabled, regardless of which character's hits they appear on.
+const dcCharEffectKeys = new Map(); // charName -> Set<effectKey> added by this char
+
+function dcCharOwnsSource(charName, source) {
+    if (!charName || !source) return false;
+    return source === charName || source.startsWith(charName + ' ');
+}
+
+function dcSyncCharEffectKeys() {
+    for (const [charName, keys] of dcCharEffectKeys) {
+        const newKeys = new Set();
+        for (const ef of dcCollectAttrFixEffects(dcFiltered)) {
+            if (dcCharOwnsSource(charName, ef.source)) newKeys.add(ef.key);
+        }
+        for (const k of newKeys) dcEffectsDisabled.add(k);
+        for (const k of keys) {
+            if (!newKeys.has(k)) dcEffectsDisabled.delete(k);
+        }
+        dcCharEffectKeys.set(charName, newKeys);
+    }
+}
+
+function dcRenderCharList() {
+    const el = document.getElementById('dcCharsList');
+    if (!el) return;
+    const chars = new Set();
+    allEvents.filter(e => e.Type === 'Hit').forEach(e => {
+        const n = e.AttackerDisplay || e.Attacker;
+        if (n) chars.add(n);
+    });
+    const list = [...chars].sort();
+    if (list.length === 0) {
+        el.innerHTML = '<div class="dc-effects-empty">No characters loaded.</div>';
+        return;
+    }
+    el.innerHTML = list.map(name => {
+        const off = dcCharsDisabled.has(name);
+        const escName = name.replace(/'/g, "\\'");
+        return `<div class="dc-char-row${off ? ' disabled' : ''}">
+            <span class="dc-char-name" title="${esc(name)}">${esc(name)}</span>
+            <button class="dc-char-btn${off ? ' on' : ''}" onclick="dcToggleChar('${escName}')">${off ? 'Enable' : 'Disable'}</button>
+        </div>`;
+    }).join('');
+}
+
+window.dcToggleChar = function(name) {
+    const turningOff = !dcCharsDisabled.has(name);
+    if (turningOff) {
+        dcCharsDisabled.add(name);
+        const keys = new Set();
+        for (const ef of dcCollectAttrFixEffects(dcFiltered)) {
+            if (dcCharOwnsSource(name, ef.source)) keys.add(ef.key);
+        }
+        dcCharEffectKeys.set(name, keys);
+        keys.forEach(k => dcEffectsDisabled.add(k));
+    } else {
+        dcCharsDisabled.delete(name);
+        const keys = dcCharEffectKeys.get(name);
+        if (keys) {
+            keys.forEach(k => dcEffectsDisabled.delete(k));
+            dcCharEffectKeys.delete(name);
+        }
+    }
+    renderEffectsPanel();
+    renderFormulaBar();
+    dcRender();
+    dcRefreshEI();
+};
 
 window.dcDisableAllEffects = function() {
     const effects = dcCollectAttrFixEffects(dcFiltered);
@@ -220,6 +295,7 @@ window.dcDisableAllEffects = function() {
 
 window.dcEnableAllEffects = function() {
     dcEffectsDisabled.clear();
+    for (const keys of dcCharEffectKeys.values()) keys.forEach(k => dcEffectsDisabled.add(k));
     renderEffectsPanel();
     renderFormulaBar();
     dcRender();
@@ -868,6 +944,8 @@ function dcApplyFilters() {
 
 window.dcOnCharFilterChange = function() {
     dcCharFilter = document.getElementById('dcCharFilter').value;
+    dcSkillFilter = '';
+    document.getElementById('dcSkillFilter').value = '';
     dcRefilterAndRender(true, false);
 };
 window.dcOnSkillFilterChange = function() {
@@ -897,6 +975,7 @@ function dcRefilterAndRender(resetScroll = false, autoSelectDefender = true) {
         dcContainer.scrollTop = 0;
     }
     dcBuildFenwick();
+    dcSyncCharEffectKeys();
     renderFormulaBar();
     renderEffectsPanel();
     document.getElementById('stats').textContent = `${dcFiltered.length} hits`;
@@ -934,6 +1013,9 @@ window.dcRefreshIfVisible = function() {
         const overallDiff = totalGame > 0 ? ((totalCalc / totalGame) - 1) * 100 : null;
         const overallDiff2 = totalCalc > 0 ? ((totalGame / totalCalc) - 1) * 100 : null;
         dcRenderTotals();
+
+        // Keep char-disabled effect keys in sync as new effects appear
+        dcSyncCharEffectKeys();
 
         // Only re-render effects panel when new unique effects actually appear
         const newEffects = dcCollectAttrFixEffects(dcFiltered);
