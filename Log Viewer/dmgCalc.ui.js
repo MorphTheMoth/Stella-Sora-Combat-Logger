@@ -208,6 +208,24 @@ function renderEffectsPanel() {
     panel.innerHTML = html;
 }
 
+window.dcDisableAllEffects = function() {
+    const effects = dcCollectAttrFixEffects(dcFiltered);
+    if (effects.length === 0) return;
+    effects.forEach(ef => dcEffectsDisabled.add(ef.key));
+    renderEffectsPanel();
+    renderFormulaBar();
+    dcRender();
+    dcRefreshEI();
+};
+
+window.dcEnableAllEffects = function() {
+    dcEffectsDisabled.clear();
+    renderEffectsPanel();
+    renderFormulaBar();
+    dcRender();
+    dcRefreshEI();
+};
+
 window.dcToggleSourceSection = function(gkey) {
     dcSourceOpenStates[gkey] = !dcSourceOpenStates[gkey];
     renderEffectsPanel();
@@ -883,6 +901,7 @@ function dcRefilterAndRender(resetScroll = false, autoSelectDefender = true) {
     renderEffectsPanel();
     document.getElementById('stats').textContent = `${dcFiltered.length} hits`;
     dcRender();
+    dcRefreshEI();
 }
 
 // ─── Tab hook ─────────────────────────────────────────────────────────────────

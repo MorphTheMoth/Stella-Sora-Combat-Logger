@@ -53,6 +53,8 @@
         }
         .sidebar button.clear-btn { color: #b07070; border-color: #4a3030; }
         .sidebar button.clear-btn:hover { background: #2e2020; color: #cc8888; border-color: #5a3535; }
+        .sidebar button#dcDisableAllBtn { color: #b07070; border-color: #4a3030; }
+        .sidebar button#dcDisableAllBtn:hover { background: #2e2020; color: #cc8888; border-color: #5a3535; }
         .sidebar .sidebar-btn-row {
             display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 4px;
         }
@@ -1054,6 +1056,10 @@
             <div class="dc-formula-totals" id="dcSidebarTotals">
                 <span>Total Calc: <strong>0</strong></span>
                 <span style="display:block">Total In-Game: <strong>0</strong></span>
+            </div>
+            <div class="sidebar-btn-row">
+                <button id="dcDisableAllBtn" onclick="dcDisableAllEffects()" title="Disable all effects in the Effects panel">Disable All</button>
+                <button id="dcEnableAllBtn" onclick="dcEnableAllEffects()" title="Enable all effects in the Effects panel">Enable All</button>
             </div>
             <div class="dc-effects-panel" id="dcEffectsPanel">
                 <!-- rendered by renderEffectsPanel() -->
