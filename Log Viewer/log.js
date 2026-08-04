@@ -195,7 +195,7 @@ function hitBody(ev, oi) {
         <tr><th>Energy Charge</th><td>${hc.energyCharge!=null?hc.energyCharge:'?'}</td></tr>
         <tr><th>Hit Type</th><td>${htName(ev.HitType)}</td></tr>
         ${ev.SnapshotAt ? `<tr><th>Snapshot Age</th><td>${((parseTimeToMs(ev.Time)-parseTimeToMs(ev.SnapshotAt))/1000).toFixed(3)}s ago</td></tr>` : ''}
-        ${ev.SummonAttrType !== undefined ? `<tr><th>Summon Attr Type</th><td>${ev.SummonAttrType}</td></tr>` : ''}
+        ${ev.SummonAttrType !== undefined ? `<tr><th>Summon Attr Type</th><td>${ev.UseSummonHit ? 'Live' : ev.SummonAttrType === 1 ? 'inherit' : ev.SummonAttrType === 2 ? 'inheritByInitialSnapshot' : ev.SummonAttrType}</td></tr>` : ''}
     </table></div>`;
 
     h+=`<div class="section"><div class="collapsible-toggle${subOpenStates[`${oi}_dmg-${oi}`] ? ' open' : ''}" data-target="dmg-${oi}">Damage Calculation</div>

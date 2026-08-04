@@ -131,6 +131,9 @@ struct PlayerEffectSnapshot {
 struct MinionLink {
     std::string playerId;
     int32_t summonAttrType;
+    // useSummonHit=true: the minion's hits are re-attributed to the player-summoner
+    // and scale off the owner's LIVE stats, overriding the summonAttrType semantics.
+    bool useSummonHit;
     // Live-inherit path (summonAttrType=1) only: the player's effects/stats at
     // the moment the minion was summoned, since the engine copies the LIVE
     // attributeList on that path. Empty for the snapshot path, which instead

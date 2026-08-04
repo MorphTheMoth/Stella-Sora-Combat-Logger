@@ -645,10 +645,12 @@ static void __fastcall Hook_ParseSummonCfg(void* summonInfo, void* cfgData, void
     g_OrigParseSummonCfg(summonInfo, cfgData, spawnInfo, method);
     int32_t attrType = -1;
     int32_t perc = 0;
+    bool useSummonHit = false;
     if (cfgData) {
         auto* f = reinterpret_cast<SummonCfgFields*>(reinterpret_cast<uint8_t*>(cfgData) + 0x10); // skip klass+monitor
         attrType = f->summonAttrType;
         perc = f->attrPercent;
+        useSummonHit = f->useSummonHit;
     }
     // Summoner (owner) is MonsterSummonInfo._SummonActor_k__BackingField:
     // first field after LogicComponent (0x10) + klass/monitor (0x10) = +0x20.
@@ -660,9 +662,18 @@ static void __fastcall Hook_ParseSummonCfg(void* summonInfo, void* cfgData, void
             ownerId = summoner->fields._dataID_k__BackingField;
             ownerName = SummonerName(ownerId);
         }
+        // useSummonHit is copied onto the summoned monster's MonsterSummonInfo by
+        // ParseSummonCfg; also record it on the minion link so damage events from
+        // this minion can be labeled "Live". The minion is the LogicComponent
+        // entity: MonsterSummonInfo._Entity_k__BackingField @ +0x10.
+        AdventureActor_o* minion = *reinterpret_cast<AdventureActor_o**>(reinterpret_cast<uint8_t*>(summonInfo) + 0x10);
+        if (minion) {
+            std::lock_guard<std::mutex> lk(g_MinionLinkMutex);
+            g_MinionToPlayer[adventureActorId(minion)].useSummonHit = useSummonHit;
+        }
     }
-    log("[MINION] summonAttrType=%d attrPercent=%d owner=%s(%d) time=%s",
-        attrType, perc, ownerName, ownerId, gameTime().c_str());
+    log("[MINION] summonAttrType=%d attrPercent=%d useSummonHit=%d owner=%s(%d) time=%s",
+        attrType, perc, useSummonHit, ownerName, ownerId, gameTime().c_str());
 }
 
 using FnGetBothAllInfo = void(__fastcall*)(AdventureActor_o*, void*);

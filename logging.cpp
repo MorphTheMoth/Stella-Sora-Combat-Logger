@@ -1066,12 +1066,14 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
     }
     j["HitType"] = g_CurrentDamageTypeTemp;
 
-    // Add summonAttrType if the attacker is a minion
+    // Add summonAttrType + useSummonHit if the attacker is a minion
     if (fromActor) {
         std::lock_guard<std::mutex> mlk(g_MinionLinkMutex);
         auto mIt = g_MinionToPlayer.find(adventureActorId(fromActor));
-        if (mIt != g_MinionToPlayer.end())
+        if (mIt != g_MinionToPlayer.end()) {
             j["SummonAttrType"] = mIt->second.summonAttrType;
+            j["UseSummonHit"]   = mIt->second.useSummonHit;
+        }
     }
     json dmgParams;
     dmgParams["skillLevel"]              = skillLevel + 1;
