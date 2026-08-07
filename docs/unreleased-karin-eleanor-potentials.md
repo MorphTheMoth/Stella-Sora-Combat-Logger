@@ -13,7 +13,7 @@ Elements: Karin = Umbra (Dark), Eleanor = Ventus (Wind).
 ---
 
 # Karin (157, Umbra)
-Class guess: Vanguard — procs the Dark mark only (Main Skill, P4 chain tick); no apply path anywhere, all three commons are self/Ultimate buffs, and team-wide buff count (2) is far below Support's 5-15.
+Class guess: Vanguard — procs the Dark mark only (Main Skill, P4 chain tick); no apply path anywhere, all three commons are self/Ultimate buffs, and team-wide buff count (1, P31) is far below Support's 5-13.
 
 # Base skills
 - Normal Attack (`15710000`) — randomly picks one of 2 combo stages (`Atk1`/`Atk2`) and fires a fish bullet `Bullet_157_NrmAtk_1` from an offset; with P3 vs the Hunting target it becomes `Atk_P3` and fires up to 4 fish bullets scaled by stacks.
@@ -25,7 +25,7 @@ Class guess: Vanguard — procs the Dark mark only (Main Skill, P4 chain tick); 
 Build 1
 = P1 — on your own `"157FishAtk"`-tagged hits (internal CD via param `15701011`) triggers the AoE `AreaEffect_157_P1_FishAtk` at the target.
 = P2 — when the Main Skill ends, grants self buff `15702011`, which spawns the FishOverload companion (`157SkillMainP2FishObject`): it orbits Karin (radius 4, 180°/s), and every 1s darts out toward the target, spawning `AreaEffect_157_P2_FishAtk` after 0.4s, lingering 0.2s, then returning. Effect ends with the buff.
-- P5 — every 5th SKILL-type damage instance (CD via `15705011`) triggers `AreaEffect_157_P5_FishAtk` at a random point in a radius-3 circle around the target.
+- P5 — every 5th SKILL-type damage instance (CD via `15705011`) triggers `AreaEffect_157_P5_FishAtk` at a random point in a radius-3 ring around the target.
 - P6 — `"157FishAtk"`-tagged hits grant self buff `15706011`.
 - P7 — `"157FishAtk"`-tagged hits on a monster carrying the Dark Chain debuff (buffTag `"DarkAnSuo"`, buffs `5031`+`5041`) grant an AddAttr (`15707001`).
 Build 2
@@ -37,7 +37,7 @@ Build 2
 Generic
 - P11 — triggering any Dark mark grants self buff `15711011`.
 - P12 — +1 dodge charge via `SetSkillTotalSection(A, original+1)` and grants self buff `15712011` whenever the dodge skill is enabled (`:681078`, `:682057`).
-- P13 — all-Umbra squad → grants buff `15713011` on every Umbra ally.
+- P13 — gains self buff `15713011` for each Umbra trekker in the squad.
 
 # Support potentials
 Build 1
@@ -49,13 +49,13 @@ Build 1
 Build 2
 = P23 — support combo upgraded to `Skill_Sup_P23`, adding the extra chain FX `fx_15701_base_Skill_Sup_Line_*_P23_*`.
 = P24 — `"157SkillSupHuiWu"`-tagged hits trigger up to 4 extra `AreaEffect_157_P24_Boom` per support cast (counter resets on the `"157RestartP24"` event).
-- P28 — `"157HuiWu"`-tagged hits grant self buff `15728011`; each such hit then consumes its stacks to grant an AddAttr (`15728001` × stacks).
+- P28 — `"157HuiWu"`-tagged hits grant self buff `15728011`; each hit then grants an AddAttr (`15728001` × current stacks, without consuming them).
 - P29 — `"157HuiWu"`-tagged hits on Elite/Boss monsters grant an AddAttr (`15729001`).
-- P30 — an Umbra teammate casting their support skill (slot B) grants self buff `15730011`.
+- P30 — an Umbra teammate casting their main skill (slot B) grants self buff `15730011`.
 Generic
-- P31 — all-Umbra squad → grants buff `15731011` on every Umbra ally.
+- P31 — grants buff `15731011` on every Umbra trekker in the squad (no all-Umbra squad requirement).
 - P32 — self buff `15732011` while casting the support skill.
-- P33 — self buff `15733011`, stacked once per Umbra teammate.
+- P33 — self buff `15733011`, stacked once per Umbra trekker in the squad.
 
 # Common potentials
 - P41 — hits on Elite/Boss monsters tagged `"157UltraAtk"` grant an AddAttr (`15741001`).
@@ -65,7 +65,7 @@ Generic
 ---
 
 # Eleanor (137, Ventus)
-Class guess: Versatile — procs the Wind mark in the main slot (base `137WindTagTrigger` hits, P7, P11) and applies it in the support slot (jump attack, drones, P32).
+Class guess: Versatile — procs the Wind mark in the main slot (base `137WindTagTrigger` hits, P7, P11) and applies it in the support slot (jump attack, drones) and via the common P32.
 
 # Base skills
 - Normal Attack (`13710000`) — 5-hit combo (`Atk1`-`Atk5`); when Armed Energy reaches the threshold it is consumed for the special Cross-Slash (`Atk_Sp` family). Energy procs (+20, CD-gated) also lob grenades with P2.
@@ -76,20 +76,20 @@ Class guess: Versatile — procs the Wind mark in the main slot (base `137WindTa
 # Main-control potentials
 Build 1
 = P1 — while in Alert (State buff `13700011`), reduces the Armed-Energy proc CD by `13701011`; enables the special-attack variant `Atk_Sp_P1`; Cross-Slash-tagged (`"137ShiZiZhanAtk"`) hits grant an AddAttr (`13701011`).
-= P2 — keeps an Armed-Energy reserve (`13702011`), so the special attack triggers at `100 − reserve` energy; every energy proc also fires a grenade (`Bullet_137_P2_ShouLei`) at the target (scatter radius 3, or 4 forward if no target).
+= P2 — keeps an Armed-Energy reserve (`13702011`), so the special attack triggers at `100 − reserve` energy; energy procs (and the Cross-Slash itself) also fire a grenade (`Bullet_137_P2_ShouLei`) at the target (scatter radius 3, or 4 forward if no target).
 - P5 — enables the special-attack variants `Atk_Sp_P5` and `Atk_Sp_P1_P5`; Cross-Slash hits on Elite/Boss monsters grant an AddAttr (`13705001`).
 - P6 — performing the special attack grants self buff `13706011`.
 - P7 — your normal-attack 5th hit (`"137NrmAktEnd"`) triggers the Wind mark (AoE `AreaEffect_137_WindMark1_Bloom`, radius 1.5); casting the Main Skill also grants a buff (id not wired yet).
 Build 2
 = P3 — performing the special attack grants self buff `13703011`; changes the Alert ring to the P3 variants (`AreaEffect_137_MainSkill_Ring_In_P3` / `..._Ring_OutAtk_P3`, faster 0.66s cycle).
-= P4 — enables Alert spread: per-target `"137MainUavAtk"`+`"137Self"` hits are counted while Alert is up; 2 hits on the same target within 1s trigger a spread AoE at it (`AreaEffect_137_MainSkill_Ring_OutAtk_P4` family); casting the Main Skill grants self buff `13704011`.
+= P4 — enables Alert spread: per-target `"137MainUavAtk"`+`"137Self"` hits are counted while Alert is up; 2 hits on the same target (with a 1s CD between spread procs) trigger a spread AoE at it (`AreaEffect_137_MainSkill_Ring_OutAtk_P4` family); casting the Main Skill grants self buff `13704011`.
 - P8 — Alert-tagged hits grant an AddAttr (`13708001`); Alert spread uses the P8 key (`..._Ring_OutAtk_P8...`, combined `_P3P8` when P3 is also on).
 - P9 — casting the Main Skill searches enemies within radius 4 and grants self buff `13709011` per enemy found.
 - P10 — `"137NrmAtk"`-tagged hits grant self buff `13710011` (CD 1s).
 Generic
 - P11 — Ultimate hits (`"137UltraAtk"`) trigger the Wind mark.
-- P12 — on dodge end, reduces the dodge (slot A) cooldown resume time by `totalUseInterval × 13712011 / 100` percent — a dodge CD reduction, not an extra charge.
-- P13 — when any Wind trekker triggers a Wind mark, grants buff `13713011` on every Wind ally.
+- P12 — on dodge end, reduces the dodge (slot A) cooldown resume time by `totalUseInterval × 13712011 / 100` — a dodge CD reduction, not an extra charge.
+- P13 — when any Wind trekker triggers a Wind mark, grants buff `13713011` on every Wind trekker in the squad.
 
 # Support potentials
 Build 1
@@ -99,17 +99,17 @@ Build 1
 - P26 — jump-attack hits grant self buff (id not wired yet).
 - P27 — jump-attack hits grant a damage AddAttr and a toughness AddAttr (ids not wired yet).
 Build 2
-= P23 — spawning a drone resets the lifetime of all active drones; drone bullets scale from stacked self buffs; jump-attacks also grant a buff.
-= P24 — drone bullets (`"137_DroneBullet"`) hitting the main trekker's target accumulate; after 3 hits (0.5s CD) triggers the AoE `AreaEffect_137_Support_DroneAccumulate`; drones also gain an attack-speed self buff per active drone.
+= P23 — spawning a drone resets the lifetime of all active drones; drone bullets scale from stacked self buffs (ids not wired yet); jump-attacks also grant a buff (id not wired yet).
+= P24 — drone bullets (`"137_DroneBullet"`) hitting the main trekker's target accumulate; after 3 hits (0.5s CD) triggers the AoE `AreaEffect_137_Support_DroneAccumulate`; drones also gain an attack-speed self buff per active drone (id not wired yet).
 - P28 — drones use the upgraded attack combo `Atk1_513728`; drone hits grant an AddAttr (id not wired yet).
 - P29 — drone hits on toughness-broken monsters grant an AddAttr (id not wired yet).
 - P30 — drone hits grant an AddAttr (id not wired yet).
 Generic
 - P31 — when a Wind trekker triggers a Wind mark, grants a self buff (id not wired yet).
 - P32 — Ultimate hits apply the Wind mark (`2011`) to the target.
-- P33 — grants a buff on every Wind ally (id not wired yet).
+- P33 — on any of your hits, grants a buff on every Wind trekker in the squad (id not wired yet).
 
 # Common potentials
-- P41 — pressing the Ultimate grants a buff on every Wind ally (id not wired yet).
-- P42 — Ultimate hits stack debuff on the target (id not wired yet); subsequent Ultimate hits consume the stacks to grant an AddAttr (id not wired yet).
+- P41 — pressing the Ultimate grants a buff on every Wind trekker in the squad (id not wired yet).
+- P42 — Ultimate hits stack debuff on the target (id not wired yet); subsequent Ultimate hits grant an AddAttr scaled by the stacks (id not wired yet, stacks not consumed).
 - P43 — a Wind ally casting their skill/support (slot B or C) grants a self buff (id not wired yet).

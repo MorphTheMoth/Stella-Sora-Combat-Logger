@@ -6,13 +6,20 @@ hot-update assembly — it contains the actual C# implementation of the
 `SkillSimpleBase`, etc.). The enemy skill logic that the combat logger sees
 ("enemy hit X with skillId Y") is executed here.
 
-## Files
+## Versioned decompilations
+
+Each decompiled build lives in a versioned subfolder. Outputs per version:
 
 - `Hotfix.dec.dll` — the decrypted .NET assembly (load it in dnSpy / ILSpy /
   ilspycmd). Produced by `tools/cdph/cdph_dump.py`.
-- `Hotfix.decompiled.cs` — full decompiled C# (~21 MB, all ~4852 types,
-  0 IL errors, 4 residual type-resolution warnings). Produced with:
+- `Hotfix.decompiled.cs` — full decompiled C#. Produced with:
   `ilspycmd -r <Il2CppDumper>/out_new/DummyDll Hotfix.dec.dll -o .`.
+
+| Version | Source | Decompiled C# |
+|---------|--------|----------------|
+| `1.13/` | current game build (`Persistent_Store/Scripts/Hotfix.dll`) | ~21 MB, ~4852 types, 0 IL errors, 4 residual type-resolution warnings |
+| `0.5/`  | `/home/morph/Downloads/Hotfix.dll` | ~14.8 MB, decrypted with the 1.13 opcode table (key check OK); 123 residual `Unknown result type` comments — ILSpy stack-analysis edge cases on TrueSync/FP expressions (`iFP`/`TSVector2`), readable |
+
 - `scripts/` — everything needed to re-run after a game update (decryptor,
   opcode-table extractor, one-shot `rerun.sh`). See `scripts/README.md`.
 

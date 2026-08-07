@@ -82,12 +82,12 @@ In the output doc the guess is written as a one-line summary under the character
 
 The proc/apply pattern is the primary signal, but three more patterns from the released roster firm up the call when one side of it is unobservable (e.g. Karin's support-skill hit tags):
 
-1. Team-wide buff count (potentials mentioning squad / allies / main Trekker): Support 5-15 (avg ~11), Versatile 1-10 (avg ~3.3), Vanguard 0-7 (avg ~2.1). Cleanly isolates Support; Vanguard/Versatile overlap.
+1. Team-wide buff count (potentials that buff a *teammate* — squad stat, main-Trekker shield/energy, same-element allies): Support 5-13 (avg ~9.7), Versatile 0-5 (avg ~1.3), Vanguard 0-2 (avg ~0.4, most have none). Cleanly isolates Support. Do NOT count self-buffs that scale off squad composition or trigger off squadmate actions ("each Terra Trekker in the squad increases X's own stat", "when a squadmate casts...").
 2. Common potentials (P41-43): Vanguard = all self/Ultimate buffs ("I get stronger when I ult"); Support = main-Trekker/squad shields and buffs; Versatile = mixed, often with one main-Trekker/squad/summon common. A character with zero non-self commons and zero main-Trekker utility is not a Support.
 3. Support-core potentials (P21-24): Vanguard = pure self-damage/combo upgrades; Support = main-Trekker shields/utility; Versatile = self-damage with occasional main-Trekker utility (e.g. Minova's shield).
 4. Base support-skill mark language: in the Lux cluster, Versatile support skills apply the mark (Minova, Jinglin), Vanguard support skills trigger it (Laru, Shia).
 
-Applied here: Karin's zero apply paths, all-self commons, 2 team-wide buffs and all-self support-cores all agree on Vanguard. Eleanor's code-verified support-slot apply plus team-buff commons agree on Versatile.
+Applied here: Karin's zero apply paths, all-self commons, 1 team-wide buff (P31; P13 is a squad-gated self buff) and all-self support-cores all agree on Vanguard. Eleanor's code-verified support-slot apply, team-buff commons and 3 team-wide buffs (above the Vanguard max of 2) agree on Versatile.
 
 ---
 
