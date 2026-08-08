@@ -24,6 +24,8 @@ std::mutex          g_Mutex;
 LogConfig           g_Cfg;
 std::atomic<int64_t>          g_CombatStartTimeFP{0};
 std::atomic<int64_t>          g_GameTimeFP{0};
+std::atomic<int64_t>          g_CombatStartWallMs{0};
+static std::atomic<int64_t>   g_LastLogicTickWallMs{0};
 
 // Level map: configId → {levelTypeData, levelData, allValueConfigIds}
 // Written once per unique configId to a sidecar file to avoid repeating
@@ -38,10 +40,18 @@ static constexpr int64_t FP_ONE  = 4294967296LL;  // 2^32
 static constexpr int64_t FDP_ONE = 16777216LL;     // 2^24
 
 std::string gameTime() {
-    int64_t lockstepTime = g_GameTimeFP.load(std::memory_order_relaxed);
-    int64_t combatStart  = g_CombatStartTimeFP.load(std::memory_order_relaxed);
-    int64_t elapsedFP = combatStart != 0 ? lockstepTime - combatStart : 0;
-    int64_t totalMs  = (elapsedFP * 1000LL) / FP_ONE;
+    int64_t wallBase = g_CombatStartWallMs.load(std::memory_order_relaxed);
+    int64_t totalMs;
+    if (wallBase != 0) {
+        // Fallback clock: game-time accumulation is not advancing in this mode,
+        // so measure elapsed real time since the first combat event.
+        totalMs = (int64_t)GetTickCount64() - wallBase;
+    } else {
+        int64_t lockstepTime = g_GameTimeFP.load(std::memory_order_relaxed);
+        int64_t combatStart  = g_CombatStartTimeFP.load(std::memory_order_relaxed);
+        int64_t elapsedFP = combatStart != 0 ? lockstepTime - combatStart : 0;
+        totalMs = (elapsedFP * 1000LL) / FP_ONE;
+    }
     int     ms       = (int)(totalMs % 1000);
     int64_t totalSec = totalMs / 1000;
     int     sec      = (int)(totalSec % 60);
@@ -49,6 +59,60 @@ std::string gameTime() {
     char buf[32];
     snprintf(buf, sizeof(buf), "%02d:%02d.%03d", min, sec, ms);
     return buf;
+}
+
+// Called on the first combat event (skill cast / hit) of a battle.  Seeds the
+// combat-start baseline when ActorEffectManage$$OnBattleStart never fires —
+// some special modes (e.g. Forbidden Echoing) drive the battle through a
+// different controller, so the usual BattleStart hook is never reached while
+// every other hook (spawn-skill, buff, damage) still fires.
+void OnCombatEvent() {
+    if (g_CombatStartTimeFP.load(std::memory_order_relaxed) != 0) return;   // already started (game-time mode)
+    if (g_CombatStartWallMs.load(std::memory_order_relaxed) != 0) return;    // already on fallback clock
+
+    // Game time counts as live only if UpdateLogic has ticked within the last 2s.
+    // (A plain "fired once this session" flag would mis-seed from a stale frozen
+    // g_GameTimeFP after switching modes mid-session.)
+    int64_t lastTick = g_LastLogicTickWallMs.load(std::memory_order_relaxed);
+    if (lastTick != 0 && (int64_t)GetTickCount64() - lastTick < 2000) {
+        // Game time IS advancing (UpdateLogic fires) but BattleStart didn't —
+        // baseline at the current lockstep time so elapsed counts from here.
+        g_CombatStartTimeFP.store(g_GameTimeFP.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        log("[time] OnBattleStart never fired; seeded combat start from game time at %s", gameTime().c_str());
+    } else {
+        // Neither UpdateLogic nor BattleStart is firing — use wall-clock fallback.
+        g_CombatStartWallMs.store((int64_t)GetTickCount64(), std::memory_order_relaxed);
+        log("[time] no live game-time source (UpdateLogic/BattleStart hooks silent) — using wall clock");
+    }
+}
+
+// Called from AdventureLevelController$$UpdateLogic every logic tick (before the
+// delta is accumulated).  If the wall-clock fallback was seeded earlier in this
+// session, hand off to game time seamlessly so timestamps stay continuous.
+void OnUpdateLogicTick() {
+    int64_t nowMs = (int64_t)GetTickCount64();
+    g_LastLogicTickWallMs.store(nowMs, std::memory_order_relaxed);
+
+    int64_t wallBase = g_CombatStartWallMs.load(std::memory_order_relaxed);
+    if (wallBase != 0 && g_CombatStartTimeFP.load(std::memory_order_relaxed) == 0) {
+        int64_t elapsedMs = nowMs - wallBase;
+        int64_t nowFP     = g_GameTimeFP.load(std::memory_order_relaxed);
+        g_CombatStartTimeFP.store(nowFP - (elapsedMs * FP_ONE) / 1000LL, std::memory_order_relaxed);
+        g_CombatStartWallMs.store(0, std::memory_order_relaxed);
+        log("[time] game-time source resumed; switched from wall clock at %s", gameTime().c_str());
+    }
+}
+
+void OnBattleStart() {
+    g_CombatStartWallMs.store(0, std::memory_order_relaxed);
+    g_CombatStartTimeFP.store(g_GameTimeFP.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    log("[time] OnBattleStart fired; combat start=%s", gameTime().c_str());
+}
+
+void OnResetTime() {
+    g_CombatStartTimeFP.store(0, std::memory_order_relaxed);
+    g_CombatStartWallMs.store(0, std::memory_order_relaxed);
+    log("[time] combat time reset");
 }
 
 static inline double Round(double v, int decimals = 6) {
@@ -603,7 +667,8 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
                           FnGetValueConfigId GetValueConfigId,
                           FnGetOnceAdditionalAttributeValue GetAttrValue,
                           AdventureActor_o* resolveActor,
-                          const EffectSnapshot* effectSnapshot) {
+                          const EffectSnapshot* effectSnapshot,
+                          const std::unordered_set<int32_t>* appliedHittedAttrFix) {
     //ActorEffectManage has a list of Effects, each effect has a list of its derivative effects that are actually active
     json j;
     if (!effectManage) return j;
@@ -846,6 +911,20 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
                     if (!base) continue;
 
                     AdventureEffect_o* parentEffect = base->fields._effect;
+
+                    // HITTED_ADDITIONAL_ATTR_FIX (effectType 45) effects stay in the
+                    // effectsDict permanently, but their stat only actually lands in the
+                    // per-hit fromAdditionalAttrInfo when HittedAdditionalAttriFix_Execute
+                    // runs during that hit (it has no PostExecute; the whole snapshot is
+                    // cleared between hits). So a dict entry is NOT proof it is applied.
+                    // Only include it when the hook saw its Execute fire for this hit.
+                    if (parentEffect && parentEffect->fields._effectType == 45) {
+                        if (!appliedHittedAttrFix ||
+                            !appliedHittedAttrFix->count(baseConfigId)) {
+                            continue;
+                        }
+                    }
+
                     auto* ValueCfgPtr = parentEffect->fields._effectValueConfig_k__BackingField;
                     je["configId"] = baseConfigId;
                     je["valueConfigId"] = ValueCfgPtr ? ValueCfgPtr->fields.id_ : 0;
@@ -987,7 +1066,8 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
                   FnGetEffectValue GetEffectValue,
                   FnGetOnceAdditionalAttributeValue GetAttrValue,
                   const EffectSnapshot* effectSnapshot,
-                  const std::string* snapshotTime) {
+                  const std::string* snapshotTime,
+                  const std::unordered_set<int32_t>* appliedHittedAttrFix) {
     if (!g_Cfg.damage) return;
     // Build element/dmg dict overlays once — read-only, no game memory mutation
     std::vector<ElemDictEntry> fromRawOverlay = ReadElemDict(fromAdditionalAttrInfo);
@@ -1003,6 +1083,7 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
     }
     json j;
     j["Type"] = "Hit";
+    OnCombatEvent();
     j["Time"] = gameTime();
     if (snapshotTime && !snapshotTime->empty())
         j["SnapshotAt"] = *snapshotTime;
@@ -1103,7 +1184,7 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
 
     if (fromActor && g_Cfg.on_hit_effect_list) {
         ActorEffectManage_o* effectManage = fromActor->fields.effectManage;
-        json effects = BuildEffectListJson(effectManage, g_Cfg.on_hit_effect_list_information, gdc, GetEffectValue, GetOnceAttr, GetValueConfigId, GetAttrValue, fromActor, effectSnapshot);
+        json effects = BuildEffectListJson(effectManage, g_Cfg.on_hit_effect_list_information, gdc, GetEffectValue, GetOnceAttr, GetValueConfigId, GetAttrValue, fromActor, effectSnapshot, appliedHittedAttrFix);
         if (!effects.empty())
             j["AttackerEffects"] = effects;
     }
@@ -1133,6 +1214,7 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
 void BuildSkillCastJson(int32_t skillId) {
     json j;
     j["Type"] = "Skill Cast";
+    OnCombatEvent();
     j["Time"] = gameTime();
     j["SkillId"] = skillId;
 
@@ -1154,6 +1236,25 @@ std::mutex g_MinionLinkMutex;
 std::unordered_map<std::string, MinionLink> g_MinionToPlayer;
 
 int32_t g_CurrentDamageTypeTemp = 1;
+
+// =============================================================================
+//  HITTED_ADDITIONAL_ATTR_FIX applied tracking (see logging.h)
+// =============================================================================
+static std::mutex g_AppliedHittedMutex;
+static std::unordered_set<int32_t> g_AppliedHittedConfigIds;
+
+void MarkHittedAdditionalAttrFixApplied(int32_t configId) {
+    if (configId <= 0) return;
+    std::lock_guard<std::mutex> lk(g_AppliedHittedMutex);
+    g_AppliedHittedConfigIds.insert(configId);
+}
+
+std::unordered_set<int32_t> TakeAppliedHittedAttrFixSnapshot() {
+    std::lock_guard<std::mutex> lk(g_AppliedHittedMutex);
+    auto out = std::move(g_AppliedHittedConfigIds);
+    g_AppliedHittedConfigIds.clear();
+    return out;
+}
 
 // =============================================================================
 //  Effect instance tracking (used by area hit path in BuildEffectListJson)

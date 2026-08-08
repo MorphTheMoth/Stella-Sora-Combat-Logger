@@ -48,6 +48,7 @@ static constexpr uintptr_t RVA_BUFF_EFFECT_ON_INIT           = 0x16F6B80;
 static constexpr uintptr_t RVA_BUFF_ENTITY_INIT              = 0x16FB6A0;
 static constexpr uintptr_t RVA_BUFF_ENTITY_EXCUTE            = 0x16FA360;
 static constexpr uintptr_t RVA_CALC_NORMAL_DAMAGE            = 0x11213B0;
+static constexpr uintptr_t RVA_HITTED_ADDITIONAL_ATTR_FIX_EXECUTE = 0x114A730;  // HittedAdditionalAttriFix$$Execute
 static constexpr uintptr_t RVA_GET_ONCE_ATTR                      = 0x1298660;
 static constexpr uintptr_t RVA_GET_VALUE_CONFIG_ID                = 0x1126950;
 static constexpr uintptr_t RVA_GET_EFFECT_VALUE                   = 0x1296860;
@@ -111,7 +112,7 @@ static FnVoidVoid g_OrigModuleClearData = nullptr;
 
 static void __fastcall Hook_ModuleClearData(void* self, void* method) {
     BuildResetJson();
-    g_CombatStartTimeFP.store(0, std::memory_order_relaxed);
+    OnResetTime();
     g_HaveHitSnapshot = false;
     g_SnapshotTime.clear();
     g_OrigModuleClearData(self, method);
@@ -175,6 +176,14 @@ static int64_t __fastcall Hook_CalcNormalDamage(
             perkIntensityRatio, slotDmgRatio, fromEE, erAmend, defAmend, rcdSlotDmgRatio,
             toEERCD, skillIntensityRatio, toughnessBrokenDmgRatio, critRatio, envAmendRatio, method);
     };
+
+    // ── Step 0: drain the HITTED_ADDITIONAL_ATTR_FIX applied set for this hit ──
+    // HittedAdditionalAttriFix_Execute runs right before CalculateNormalDamage and
+    // records which configIds actually landed in the static fromAdditionalAttrInfo.
+    // Take (copy-and-clear) here so the logged effect list is scoped to this hit.
+    std::unordered_set<int32_t> appliedHitted = TakeAppliedHittedAttrFixSnapshot();
+    const std::unordered_set<int32_t>* pAppliedHitted =
+        appliedHitted.empty() ? nullptr : &appliedHitted;
 
     // ── Step 1: walk klass chain for static fields ───────────────────────────
     if (!fromActor)         { return callOriginal(); }
@@ -274,7 +283,8 @@ static int64_t __fastcall Hook_CalcNormalDamage(
         staticFields->fromAdditionalAttrDict,
         staticFields->toAdditionalAttrDict,
         gdc, GetOnceAttr, GetValueConfigId,
-        GetEffectValue, GetAttrValue, hitEffectSnapshot, pHitSnapshotTime);
+        GetEffectValue, GetAttrValue, hitEffectSnapshot, pHitSnapshotTime,
+        pAppliedHitted);
 
     return dmg;
 }
@@ -797,6 +807,23 @@ static void __fastcall Hook_EffectOnClear(AdventureEffectBase_o* effectBase, Met
     g_OrigEffectOnClear(effectBase, method);
 }
 
+// =============================================================================
+//  HittedAdditionalAttriFix::Execute — record that this HITTED effect was applied
+//  to the per-hit fromAdditionalAttrInfo snapshot for the in-flight hit.
+// =============================================================================
+using FnHittedAdditionalAttrFixExecute = void(__fastcall*)(AdventureEffectBase_o*, void*);
+static FnHittedAdditionalAttrFixExecute g_OrigHittedAdditionalAttrFixExecute = nullptr;
+
+static void __fastcall Hook_HittedAdditionalAttrFixExecute(AdventureEffectBase_o* effectBase, void* method)
+{
+    if (effectBase && effectBase->fields._effect) {
+        auto* effectCfg = effectBase->fields._effect->fields._effectConfig_k__BackingField;
+        if (effectCfg)
+            MarkHittedAdditionalAttrFixApplied(effectCfg->fields.id_);
+    }
+    g_OrigHittedAdditionalAttrFixExecute(effectBase, method);
+}
+
 
 // =============================================================================
 //  Battle start / timer / spawn
@@ -805,6 +832,7 @@ using FnUpdateLogic = void(__fastcall*)( void*, TrueSync_FP_o, void*);
 static FnUpdateLogic g_OrigUpdateLogic = nullptr;
 
 static void __fastcall Hook_UpdateLogic(void* self, TrueSync_FP_o logicDeltaTime, void* method) {
+    OnUpdateLogicTick();
     g_GameTimeFP.fetch_add(logicDeltaTime.fields._serializedValue, std::memory_order_relaxed);
 
     // Re-apply gizmo flags every tick — the engine clears them between frames,
@@ -894,7 +922,7 @@ using FnBattleStart = void(__fastcall*)( void*, void*, void*);
 static FnBattleStart g_OrigBattleStart = nullptr;
 
 static void __fastcall Hook_BattleStart(void* self, void* evt, void* method) {
-    g_CombatStartTimeFP.store(g_GameTimeFP.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    OnBattleStart();
     g_OrigBattleStart(self, evt, method);
 }
 
@@ -948,6 +976,7 @@ static DWORD WINAPI InitThread(LPVOID) {
 
     InstallHook(g_base + RVA_EFFECT_ON_INIT,         reinterpret_cast<void*>(&Hook_EffectOnInit),       (void**)&g_OrigEffectOnInit,       "AdventureEffect$$OnInit");
     InstallHook(g_base + RVA_EFFECT_ON_CLEAR,        reinterpret_cast<void*>(&Hook_EffectOnClear),      (void**)&g_OrigEffectOnClear,      "AdventureEffectBase$$OnClear");
+    InstallHook(g_base + RVA_HITTED_ADDITIONAL_ATTR_FIX_EXECUTE, reinterpret_cast<void*>(&Hook_HittedAdditionalAttrFixExecute), (void**)&g_OrigHittedAdditionalAttrFixExecute, "HittedAdditionalAttriFix$$Execute");
     InstallHook(g_base + RVA_UPDATE_LOGIC,           reinterpret_cast<void*>(&Hook_UpdateLogic),        (void**)&g_OrigUpdateLogic,        "AdventureLevelController$$UpdateLogic");
     InstallHook(g_base + RVA_BATTLE_START,           reinterpret_cast<void*>(&Hook_BattleStart),        (void**)&g_OrigBattleStart,        "ActorEffectManage$$OnBattleStart");
     InstallHook(g_base + RVA_SPAWN_SKILL,            reinterpret_cast<void*>(&Hook_SpawnSkill),         (void**)&g_OrigSpawnSkill,         "AdventureLevelController$$SpawnSkill");

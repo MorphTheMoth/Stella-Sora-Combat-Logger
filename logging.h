@@ -65,12 +65,24 @@ extern std::mutex           g_Mutex;
 extern LogConfig            g_Cfg;
 extern std::atomic<int64_t>            g_CombatStartTimeFP;
 extern std::atomic<int64_t>            g_GameTimeFP;
+extern std::atomic<int64_t>            g_CombatStartWallMs; // wall-clock fallback baseline (GetTickCount64), 0 = unused
 
 // Basic logging
 void log(const char* fmt, ...);
 void logJson(const json& j);
 std::string gameTime();
 void loadConfig(const std::string& dir);
+
+// Game-time plumbing (defined in logging.cpp)
+// OnCombatEvent: lazily seed the combat-start baseline from the first combat
+//   event when ActorEffectManage$$OnBattleStart never fires (special modes).
+// OnUpdateLogicTick: called every AdventureLevelController$$UpdateLogic tick;
+//   hands off from the wall-clock fallback to game time seamlessly.
+// OnBattleStart / OnResetTime: called from the corresponding hooks.
+void OnCombatEvent();
+void OnUpdateLogicTick();
+void OnBattleStart();
+void OnResetTime();
 
 // String helpers
 std::string Il2CppStringToStd(System_String_o* strObj);
@@ -154,7 +166,8 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
                           FnGetValueConfigId GetValueConfigId = nullptr,
                           FnGetOnceAdditionalAttributeValue GetAttrValue = nullptr,
                           AdventureActor_o* resolveActor = nullptr,
-                          const EffectSnapshot* effectSnapshot = nullptr);
+                          const EffectSnapshot* effectSnapshot = nullptr,
+                          const std::unordered_set<int32_t>* appliedHittedAttrFix = nullptr);
 json BuildAdditionalAttrDictJson(
     System_Collections_Generic_Dictionary_int__int__o* dict,
     AdventureActor_o*     fromActor,
@@ -183,13 +196,27 @@ void BuildHitJson(
     FnGetEffectValue GetEffectValue = nullptr,
     FnGetOnceAdditionalAttributeValue GetAttrValue = nullptr,
     const EffectSnapshot* effectSnapshot = nullptr,
-    const std::string* snapshotTime = nullptr);
+    const std::string* snapshotTime = nullptr,
+    const std::unordered_set<int32_t>* appliedHittedAttrFix = nullptr);
 void BuildSkillCastJson(int32_t skillId);
 void BuildResetJson();
 
 // Utility
 std::string GetLocalAppDataPath();
 void InitializeLogger();
+
+// HITTED_ADDITIONAL_ATTR_FIX (effectType 45) applied tracking.
+// These effects persist in the actor's effectsDict but only mutate the shared
+// per-hit static fromAdditionalAttrInfo when their Execute actually runs during
+// a hit. So "present in the dict" != "stat applied". The game calls
+// HittedAdditionalAttriFix_Execute (RVA 0x114A730) right before
+// CalculateNormalDamage folds that snapshot into damage, so we hook it and
+// record which configIds were actually applied for the in-flight hit, then
+// filter the logged AttackerEffects list to only those.
+//   MarkHittedAdditionalAttrFixApplied(configId)  — called from the Execute hook
+//   TakeAppliedHittedAttrFixSnapshot()             — copy-and-clear (start of a hit)
+void MarkHittedAdditionalAttrFixApplied(int32_t configId);
+std::unordered_set<int32_t> TakeAppliedHittedAttrFixSnapshot();
 
 // Resolve the AdventureModuleDebugHelper singleton (SceneSingleton<T>.
 // get_Instance chain — defined in proxy.cpp).  Used by EnableAllDebugGizmos
