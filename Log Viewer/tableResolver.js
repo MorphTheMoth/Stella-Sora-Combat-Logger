@@ -561,7 +561,7 @@ function buildEffectTable(dataFiles) {
         jFloorBuff, jSubNote, jAffinityLevel, jEffectValue,
         jAffix, jAffixLang, jGem, jBuffVal, jBuff, jBuffValue, 
         jWord, jWordLang, jTalent, jTalentLang, jSecSkill, 
-        jDisc, jScoreBoss, jScoreBossLang, jItemLangRoot,
+        jDisc, jScoreBoss, jScoreBossLang, jItemLangRoot, jItemRoot,
         jOnceAttr, jSecSkillLang, jSubNoteLang, jChar, jSkill, 
         jSkillLang, jPotential, jBlitz
     } = dataFiles;
@@ -633,13 +633,27 @@ function buildEffectTable(dataFiles) {
             const cname = charName(Math.trunc(configId / 100000));
             let label   = '?';
 
+            // levelTypeData enum (see docs/Enums.md):
+            //   Exclusive=1  -> LevelData points at an exclusive item (Potential / skill-strengthen)
+            //   SkillSlot=3  -> a character skill buff
+            let src;
             if (ldt === 1 && effEntry.LevelData) {
                 const iit = jItem?.[String(effEntry.LevelData)];
                 if (iit) label = resolveLocKey(iit, 'Title', jItemLang ?? {});
+                // The Exclusive LevelData item type decides whether this effect is a Potential
+                // or a skill: root item.json entries are typed 'Potential'/'SpecificPotential'.
+                const rootItem = jItemRoot?.[String(effEntry.LevelData)];
+                const isPotential = rootItem &&
+                    (rootItem.type === 'Potential' || rootItem.type === 'SpecificPotential');
+                src = isPotential
+                    ? (cname && cname !== '?' ? `${cname} Potentials` : 'Potentials')
+                    : (cname && cname !== '?' ? `${cname} Skills` : 'Skills');
             } else if (ldt === 3) {
                 label = buffIdToSkillTitle.get(configId) ?? '?';
+                src   = cname && cname !== '?' ? `${cname} Skills` : 'Skills';
+            } else {
+                src = cname && cname !== '?' ? `${cname} Skills` : 'Skills';
             }
-            const src = cname && cname !== '?' ? `${cname} Skills` : 'Skills';
             effectTable.set(configId, { charName: cname, label, levelTypeData: ldt, source: src });
         }
     }
