@@ -840,12 +840,12 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                 std::string errMsg;
                 if (SaveCurrentLog(save_name, errMsg)) {
                     ServerLog("Saved log as: %s", SavedLogPath(save_name).c_str());
-                    std::string ok = "{\"ok\":true,\"file\":\"" + SavedLogPath(save_name) + "\"}";
-                    mg_http_reply(c, 200, "Content-Type: application/json\r\nCache-Control: no-cache\r\n", "%s", ok.c_str());
+                    json ok = { {"ok", true}, {"file", SavedLogPath(save_name)} };
+                    mg_http_reply(c, 200, "Content-Type: application/json\r\nCache-Control: no-cache\r\n", "%s", ok.dump().c_str());
                     HttpLog(200, method, uri, query, remote);
                 } else {
-                    std::string err = "{\"error\":\"" + errMsg + "\"}";
-                    mg_http_reply(c, 500, "Content-Type: application/json\r\nCache-Control: no-cache\r\n", "%s", err.c_str());
+                    json err = { {"error", errMsg} };
+                    mg_http_reply(c, 500, "Content-Type: application/json\r\nCache-Control: no-cache\r\n", "%s", err.dump().c_str());
                     HttpLog(500, method, uri, query, remote);
                 }
             }
