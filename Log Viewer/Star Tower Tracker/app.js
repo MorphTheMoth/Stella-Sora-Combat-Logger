@@ -19,6 +19,16 @@ ST.allStrengthenEvents = [];
 ST.NOTE_IDS = [90011, 90012, 90013, 90014, 90015, 90016, 90017, 90018];
 ST.ELEMENT_DMG_NOTES = [90018, 90019, 90020, 90021, 90022, 90023];
 ST.ELEMENT_ID = 90018;
+ST._seedFields = function(run) {
+    var rolls = run._noteRolls || [];
+    var dynamicRolls = rolls.slice().reverse();
+    var fields = {};
+    for (var i = 0; i < 8; i++) {
+        fields['seed' + (i + 1)] = rolls[i] && rolls[i].tid;
+        if (i < 3) fields['dynSeed' + (i + 1)] = dynamicRolls[i] && dynamicRolls[i].tid;
+    }
+    return fields;
+};
 ST._ele = function(tid) { return ST.ELEMENT_DMG_NOTES.indexOf(tid) >= 0 ? ST.ELEMENT_ID : tid; };
 ST._collapseNoteCounts = function(counts) {
     var out = Object.assign({}, counts);
@@ -32,7 +42,7 @@ ST._collapseNoteCounts = function(counts) {
 ST.ROOM_NAMES = ['Battle','Elite','Boss','Final Boss','Danger','Horror','Shop','Event','','','','','','','','Unify'];
 
 ST.charPortrait = function(charId) {
-    return `https://raw.githubusercontent.com/AutumnVN/ssassets/main/export/assets/assetbundles/icon/head/head_${charId}02_XXL.webp`;
+    return `/api/ssassets/export/assets/assetbundles/icon/head/head_${charId}02_XXL.webp`;
 };
 
 ST.isNote = function(tid) { return tid >= 90011 && tid <= 90023; };
@@ -77,7 +87,7 @@ ST.detectStacks = function(infos) {
 // ── Data loading ──
 
 ST.fetchCharNames = function() {
-    return fetch('https://raw.githubusercontent.com/AutumnVN/StellaSoraData/refs/heads/main/EN/language/en_US/Character.json')
+    return fetch('/api/stella-data/EN/language/en_US/Character.json')
         .then(function(r) { return r.json(); })
         .then(function(data) {
             ST.charNames = {};
@@ -95,7 +105,7 @@ ST.fetchCharNames = function() {
 };
 
 ST.fetchNoteNames = function() {
-    return fetch('https://raw.githubusercontent.com/AutumnVN/StellaSoraData/refs/heads/main/EN/language/en_US/Item.json')
+    return fetch('/api/stella-data/EN/language/en_US/Item.json')
         .then(function(r) { return r.json(); })
         .then(function(data) {
             ST.noteNames = {};
@@ -107,10 +117,10 @@ ST.fetchNoteNames = function() {
 };
 
 ST.fetchDiscData = function() {
-    return fetch('https://raw.githubusercontent.com/AutumnVN/StellaSoraData/refs/heads/main/EN/bin/Disc.json')
+    return fetch('/api/stella-data/EN/bin/Disc.json')
         .then(function(r) { return r.json(); })
         .then(function(discData) {
-            return fetch('https://raw.githubusercontent.com/AutumnVN/StellaSoraData/refs/heads/main/EN/bin/SecondarySkill.json')
+            return fetch('/api/stella-data/EN/bin/SecondarySkill.json')
                 .then(function(r) { return r.json(); })
                 .then(function(secData) {
                     ST._buildDiscNoteLookup(discData, secData);
@@ -194,7 +204,7 @@ ST._initialLoadDone = false;
         var ev = events[i];
 
         if (ev.type === 'RUN') {
-            currentRun = { id: runIdx++, start: ev, events: [], end: null };
+            currentRun = { id: runIdx++, start: ev, events: [], end: null, _noteRolls: [] };
             ST.runs.push(currentRun);
         } else if (ev.type === 'END') {
             if (currentRun) currentRun.end = ev;
@@ -291,6 +301,7 @@ ST._processRun = function(run, runIdx) {
     if (startNoteGains.length > 0) {
         var startNoteCountsBefore = ST._collapseNoteCounts(state.bag.notes);
         startNoteGains.forEach(function(g) { startNoteCountsBefore[g.tid] = g.before; });
+        var startSeedFields = ST._seedFields(run);
         run._startCountsBefore = JSON.parse(JSON.stringify(startNoteCountsBefore));
         var startTotalBefore = 0;
         Object.keys(startNoteCountsBefore).forEach(function(k) { startTotalBefore += startNoteCountsBefore[k]; });
@@ -317,9 +328,12 @@ ST._processRun = function(run, runIdx) {
                     harmoniesNotes: run._harmoniesNotes,
                     discsNotes: run._discsNotes,
                     overallDiscNotes: run._overallDiscNotes,
+                    seed1: startSeedFields.seed1, seed2: startSeedFields.seed2, seed3: startSeedFields.seed3, seed4: startSeedFields.seed4, seed5: startSeedFields.seed5, seed6: startSeedFields.seed6, seed7: startSeedFields.seed7, seed8: startSeedFields.seed8,
+                    dynSeed1: startSeedFields.dynSeed1, dynSeed2: startSeedFields.dynSeed2, dynSeed3: startSeedFields.dynSeed3,
                 },
             });
         });
+        startNoteGains.forEach(function(g) { run._noteRolls.push({ tid: g.tid, source: 'start' }); });
     }
 
     // Process initial room cases from RUN
@@ -453,6 +467,8 @@ ST._processEvent = function(run, ev, state, pendingNpcEvents) {
             }
         });
 
+        var selectSeedFields = ST._seedFields(run);
+
         // Record select note gains (after battle drops are already in state.bag.notes)
         selectNoteGains.forEach(function(g) {
             if (g.qty > 0) {
@@ -477,10 +493,13 @@ ST._processEvent = function(run, ev, state, pendingNpcEvents) {
                         harmoniesNotes: run._harmoniesNotes,
                         discsNotes: run._discsNotes,
                         overallDiscNotes: run._overallDiscNotes,
+                        seed1: selectSeedFields.seed1, seed2: selectSeedFields.seed2, seed3: selectSeedFields.seed3, seed4: selectSeedFields.seed4, seed5: selectSeedFields.seed5, seed6: selectSeedFields.seed6, seed7: selectSeedFields.seed7, seed8: selectSeedFields.seed8,
+                        dynSeed1: selectSeedFields.dynSeed1, dynSeed2: selectSeedFields.dynSeed2, dynSeed3: selectSeedFields.dynSeed3,
                     },
                 });
             }
         });
+        selectNoteGains.forEach(function(g) { run._noteRolls.push({ tid: g.tid, source: ST.roomTypeSource(state.roomType) }); });
 
         // Resolve pending NPC event
         var pend = pendingNpcEvents[selCaseId];
@@ -531,6 +550,7 @@ ST._processEvent = function(run, ev, state, pendingNpcEvents) {
         var src = ST.roomTypeSource(state.roomType);
         if (state._shopPending) { src = 'shop'; state._shopPending = false; }
 
+        var noteSeedFields = ST._seedFields(run);
         noteGains.forEach(function(g) {
             if (g.qty > 0) {
                 var stack = ST.detectStacks([{tid: g.tid, qty: g.qty, luckyLevel: g.lucky, new: g.isNew}]);
@@ -555,10 +575,13 @@ ST._processEvent = function(run, ev, state, pendingNpcEvents) {
                         harmoniesNotes: run._harmoniesNotes,
                         discsNotes: run._discsNotes,
                         overallDiscNotes: run._overallDiscNotes,
+                        seed1: noteSeedFields.seed1, seed2: noteSeedFields.seed2, seed3: noteSeedFields.seed3, seed4: noteSeedFields.seed4, seed5: noteSeedFields.seed5, seed6: noteSeedFields.seed6, seed7: noteSeedFields.seed7, seed8: noteSeedFields.seed8,
+                        dynSeed1: noteSeedFields.dynSeed1, dynSeed2: noteSeedFields.dynSeed2, dynSeed3: noteSeedFields.dynSeed3,
                     },
                 });
             }
         });
+        noteGains.forEach(function(g) { if (g.qty > 0) run._noteRolls.push({ tid: g.tid, source: src }); });
     }
 };
 

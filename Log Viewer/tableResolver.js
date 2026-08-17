@@ -316,7 +316,7 @@ function enrichAttrDictList(attrDictList) {
 
 // ─── Table initialisation ─────────────────────────────────────────────────────
 
-let _dataRoot = 'https://raw.githubusercontent.com/AutumnVN/StellaSoraData/refs/heads/main/';
+let _dataRoot = '/api/stella-data/';
 
 const LOAD_TIMEOUT_MS = 3000;
 const CACHE_NAME = 'tableResolver-v1';

@@ -134,6 +134,12 @@ static std::string EMBLEM_LOG_PATH;
 static std::string ASCENSION_LOG_PATH;
 static const std::string EMBLEM_DIR = "Emblem Tracker";
 static const std::string ASCENSION_DIR = "Star Tower Tracker";
+static std::string g_stella_data_dir;
+static std::string g_ssassets_dir;
+static const char* STELLA_DATA_REMOTE_BASE =
+    "https://raw.githubusercontent.com/AutumnVN/StellaSoraData/refs/heads/main/";
+static const char* SSASSETS_REMOTE_BASE =
+    "https://raw.githubusercontent.com/AutumnVN/ssassets/main/";
 
 static const char* REMOTE_BASE =
     "https://raw.githubusercontent.com/MorphTheMoth/Stella-Sora-Combat-Logger/refs/heads/main/Log%20Viewer";
@@ -758,6 +764,59 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                     HttpLog(404, method, uri, query, remote);
                 }
             }
+        } else if (uri.find("/api/ssassets/") == 0) {
+            std::string relative = uri.substr(std::string("/api/ssassets/").size());
+            if (relative.empty() || relative.find("..") != std::string::npos ||
+                relative.find('\\') != std::string::npos) {
+                mg_http_reply(c, 400, "Content-Type: text/plain\r\n", "Invalid asset path");
+                HttpLog(400, method, uri, query, remote);
+            } else if (g_ssassets_dir.empty()) {
+                std::string location = std::string(SSASSETS_REMOTE_BASE) + relative;
+                mg_http_reply(c, 302, ("Location: " + location + "\r\n").c_str(), "");
+                HttpLog(302, method, uri, query, remote);
+            } else {
+                std::string filepath = g_ssassets_dir + "/" + relative;
+                std::ifstream file(filepath, std::ios::binary);
+                if (!file.good()) {
+                    mg_http_reply(c, 404, "Content-Type: text/plain\r\n", "Asset file not found");
+                    HttpLog(404, method, uri, query, remote);
+                } else {
+                    mg_http_serve_file(c, hm, filepath.c_str(), NULL);
+                    HttpLog(200, method, uri, query, remote);
+                }
+            }
+        } else if (uri.find("/api/stella-data/") == 0) {
+            std::string relative = uri.substr(std::string("/api/stella-data/").size());
+            if (relative.empty() || relative.find("..") != std::string::npos ||
+                relative.find('\\') != std::string::npos) {
+                mg_http_reply(c, 400, "Content-Type: text/plain\r\n", "Invalid data path");
+                HttpLog(400, method, uri, query, remote);
+            } else if (g_stella_data_dir.empty()) {
+                std::string body = FetchRemoteFile(std::string(STELLA_DATA_REMOTE_BASE) + relative);
+                if (body.empty()) {
+                    mg_http_reply(c, 502, "Content-Type: text/plain\r\n", "Failed to fetch data file");
+                    HttpLog(502, method, uri, query, remote);
+                } else {
+                    std::string ct_header = "Content-Type: " + GetContentType(relative) +
+                        "\r\nCache-Control: no-cache\r\n";
+                    mg_http_reply(c, 200, ct_header.c_str(), "%s", body.c_str());
+                    HttpLog(200, method, uri, query, remote);
+                }
+            } else {
+                std::ifstream file(g_stella_data_dir + "/" + relative, std::ios::binary);
+                if (!file.good()) {
+                    mg_http_reply(c, 404, "Content-Type: text/plain\r\n", "Data file not found");
+                    HttpLog(404, method, uri, query, remote);
+                } else {
+                    std::stringstream buffer;
+                    buffer << file.rdbuf();
+                    std::string body = buffer.str();
+                    std::string ct_header = "Content-Type: " + GetContentType(relative) +
+                        "\r\nCache-Control: no-cache\r\n";
+                    mg_http_reply(c, 200, ct_header.c_str(), "%s", body.c_str());
+                    HttpLog(200, method, uri, query, remote);
+                }
+            }
         } else if (uri.find("/api/log") == 0) {
             size_t after = 0;
             struct mg_str q = hm->query;
@@ -1225,7 +1284,9 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
 int main(int argc, char** argv) {
     // Scan all arguments: last arg that doesn't start with '-' is the log path;
     // '-local' anywhere enables local file serving mode.
-    // '-emblemlog <path>' and '-ascensionlog <path>' configure tracker logs.
+    // '-emblemlog <path>' and '-ascensionlog <path>' configure tracker logs;
+    // '-data <path>' opts into a local StellaSoraData directory;
+    // '-assets <path>' opts into a local ssassets repository.
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "-local")
@@ -1234,6 +1295,10 @@ int main(int argc, char** argv) {
             EMBLEM_LOG_PATH = argv[++i];
         else if (arg == "-ascensionlog" && i + 1 < argc)
             ASCENSION_LOG_PATH = argv[++i];
+        else if (arg == "-data" && i + 1 < argc)
+            g_stella_data_dir = argv[++i];
+        else if (arg == "-assets" && i + 1 < argc)
+            g_ssassets_dir = argv[++i];
         else
             LOG_FILE = argv[i];
     }
@@ -1282,6 +1347,14 @@ int main(int argc, char** argv) {
 
     if (!g_local_mode)
         ServerLog("Fetching files automatically from github, run with \"-local\" to use local files.");
+    if (!g_stella_data_dir.empty())
+        ServerLog("StellaSoraData: local (%s)", g_stella_data_dir.c_str());
+    else
+        ServerLog("StellaSoraData: remote (use -data <path> for local files)");
+    if (!g_ssassets_dir.empty())
+        ServerLog("ssassets: local (%s)", g_ssassets_dir.c_str());
+    else
+        ServerLog("ssassets: remote (use -assets <path> for local files)");
     ScanStaticFolder(".");
 
     {

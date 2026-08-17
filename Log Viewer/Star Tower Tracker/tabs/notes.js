@@ -1,7 +1,9 @@
 // tabs/notes.js — Weighted RNG model analysis for note drops
 
-ST.noteFilters = { note: 0, sources: { battle: true, elite: true, boss: true }, stack: 'all', k: 10, pow: 0.5, powK: 0.1, model: 'hn0_5' };
+ST.noteFilters = { note: 0, sources: { battle: true, elite: true, boss: true }, stack: 'all', runFloor: 0, runMinFloor: 0, k: 10, pow: 0.5, powK: 0.1, model: 'hn0_5' };
 ST._bestOdnK = null;
+ST._seedDParams = [0.05,0.1,0.2,0.3,0.4,0.5,0.6,0.75,0.9,1,1.1,1.25,1.4,1.5,1.6,1.75,1.9,2,2.25,2.5,3,4,5,6,8,10,15,20,30,50,100];
+ST._elemDParams = [2,3,4,5,6,8,10,12,15,20,25,30,40,50,75,100,150,200,300,500];
 
 ST.selectModel = function(key) {
     ST.noteFilters.model = key;
@@ -18,6 +20,14 @@ ST.toggleNoteSource = function(src) {
 // ── Model groups ──
 
 ST._weightFns = {};
+ST._bestOdnGroups = ['odncd', 'odncsbd', 'odned', 'odnsoft', 'seed12', 'seed123', 'seed1234', 'seed12345', 'seed123456', 'seed1234567', 'seed12345678', 'dynSeed1', 'dynSeed12', 'dynSeed123', 'odnscd', 'odncsd'];
+ST._usesBestOdnK = function(group) { return ST._bestOdnGroups.indexOf(group) >= 0; };
+ST._seedBonus = function(ctx, prefix, count, tid) {
+    for (var i = 1; i <= count; i++) {
+        if (ctx[prefix + i] === tid) return 1;
+    }
+    return 0;
+};
 
 ST._enc = function(v) { return String(v).replace('.', '_'); };
 
@@ -42,6 +52,17 @@ ST.modelGroups = [
         makeName: function(v) { return 'overallDiscNotes + ' + v; },
         makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + ' + v; },
         weight: function(nc, ctx, tid, v) { return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + v; }
+    },
+    { key: 'odnsoft', name: 'overallDiscNotes + ? with softcap at D', param: 'D',
+        params: [20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100],
+        makeKey: function(v) { return 'odnsoft' + ST._enc(v); },
+        makeName: function(v) { return 'overallDiscNotes + ? with softcap at ' + v; },
+        makeDesc: function(v) { return 'weight = (overallDiscNotes[tid] + bestOdnK) / (1 + max(0, count[tid] - ' + v + ') / ' + v + ')'; },
+        weight: function(nc, ctx, tid, v) {
+            var odn = ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + (ST._bestOdnK || 0);
+            var count = nc[tid] || 0;
+            return odn / (1 + Math.max(0, count - v) / v);
+        }
     },
 
     // — Composite models (odn + other terms) —
@@ -83,12 +104,121 @@ ST.modelGroups = [
         }
     },
     { key: 'odncd', name: 'overallDiscNotes + ? + count / D', param: 'D',
-        params: [0.5,1,2,3,4,5,6,7,8,9,10,12,15,20,25,30,40,50,60,80,100,150,200,300,500],
+        params: [1,10,25,50,100,150,200,225,250,275,300,325,350,375,400,425,450,475,500,600,750],
         makeKey: function(v) { return 'odncd' + ST._enc(v); },
         makeName: function(v) { return 'overallDiscNotes + ? + count / ' + v; },
         makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + bestOdnK + count[tid] / ' + v + ' \u2014 odn best-K baseline with count/D'; },
         weight: function(nc, ctx, tid, v) {
             return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + (nc[tid] || 0) / v + (ST._bestOdnK || 0);
+        }
+    },
+    { key: 'odncsbd', name: 'overallDiscNotes + ? + (count - suppNotes) / D', param: 'D',
+        params: [1,10,25,50,75,85,90,95,100,105,110,115,125,150,200,300,500],
+        makeKey: function(v) { return 'odncsbd' + ST._enc(v); },
+        makeName: function(v) { return 'overallDiscNotes + ? + (count - suppNotes) / ' + v; },
+        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + bestOdnK + (count[tid] - startCountsBefore[tid]) / ' + v + ' - odn best-K baseline with count minus suppNotes/D'; },
+        weight: function(nc, ctx, tid, v) {
+            var suppNotes = (ctx.startCountsBefore && ctx.startCountsBefore[tid]) || 0;
+            return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + ((nc[tid] || 0) - suppNotes) / v + (ST._bestOdnK || 0);
+        }
+    },
+    { key: 'odned', name: 'overallDiscNotes + ? + elemNote / D', param: 'D',
+        params: ST._elemDParams,
+        makeKey: function(v) { return 'odned' + ST._enc(v); },
+        makeName: function(v) { return 'overallDiscNotes + ? + elemNote / ' + v; },
+        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + bestOdnK + elemNote[tid] / ' + v; },
+        weight: function(nc, ctx, tid, v) {
+            return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + (tid === ST.ELEMENT_ID ? 1 / v : 0) + (ST._bestOdnK || 0);
+        }
+    },
+    { key: 'seed12', name: 'overallDiscNotes + ? + (seed1 + seed2) / D', param: 'D',
+        params: ST._seedDParams,
+        makeKey: function(v) { return 'seed12' + ST._enc(v); },
+        makeName: function(v) { return 'overallDiscNotes + ? + (seed1 + seed2) / ' + v; },
+        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + bestOdnK + 1/D for matching seed1 and seed2'; },
+        weight: function(nc, ctx, tid, v) {
+            return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + (ST._bestOdnK || 0) + ST._seedBonus(ctx, 'seed', 2, tid) / v;
+        }
+    },
+    { key: 'seed123', name: 'overallDiscNotes + ? + (seed1 + seed2 + seed3) / D', param: 'D',
+        params: ST._seedDParams,
+        makeKey: function(v) { return 'seed123' + ST._enc(v); },
+        makeName: function(v) { return 'overallDiscNotes + ? + (seed1 + seed2 + seed3) / ' + v; },
+        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + bestOdnK + 1/D for matching seed1, seed2, and seed3'; },
+        weight: function(nc, ctx, tid, v) {
+            return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + (ST._bestOdnK || 0) + ST._seedBonus(ctx, 'seed', 3, tid) / v;
+        }
+    },
+    { key: 'seed1234', name: 'overallDiscNotes + ? + (seed1 + seed2 + seed3 + seed4) / D', param: 'D',
+        params: ST._seedDParams,
+        makeKey: function(v) { return 'seed1234' + ST._enc(v); },
+        makeName: function(v) { return 'overallDiscNotes + ? + (seed1 + seed2 + seed3 + seed4) / ' + v; },
+        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + bestOdnK + 1/D for matching seed1 through seed4'; },
+        weight: function(nc, ctx, tid, v) {
+            return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + (ST._bestOdnK || 0) + ST._seedBonus(ctx, 'seed', 4, tid) / v;
+        }
+    },
+    { key: 'seed12345', name: 'overallDiscNotes + ? + (seed1 + seed2 + seed3 + seed4 + seed5) / D', param: 'D',
+        params: ST._seedDParams,
+        makeKey: function(v) { return 'seed12345' + ST._enc(v); },
+        makeName: function(v) { return 'overallDiscNotes + ? + (seed1 + seed2 + seed3 + seed4 + seed5) / ' + v; },
+        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + bestOdnK + 1/D for matching seed1 through seed5'; },
+        weight: function(nc, ctx, tid, v) {
+            return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + (ST._bestOdnK || 0) + ST._seedBonus(ctx, 'seed', 5, tid) / v;
+        }
+    },
+    { key: 'seed123456', name: 'overallDiscNotes + ? + (seed1 + ... + seed6) / D', param: 'D',
+        params: ST._seedDParams,
+        makeKey: function(v) { return 'seed123456' + ST._enc(v); },
+        makeName: function(v) { return 'overallDiscNotes + ? + (seed1 + ... + seed6) / ' + v; },
+        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + bestOdnK + 1/D for matching seed1 through seed6'; },
+        weight: function(nc, ctx, tid, v) {
+            return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + (ST._bestOdnK || 0) + ST._seedBonus(ctx, 'seed', 6, tid) / v;
+        }
+    },
+    { key: 'seed1234567', name: 'overallDiscNotes + ? + (seed1 + ... + seed7) / D', param: 'D',
+        params: ST._seedDParams,
+        makeKey: function(v) { return 'seed1234567' + ST._enc(v); },
+        makeName: function(v) { return 'overallDiscNotes + ? + (seed1 + ... + seed7) / ' + v; },
+        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + bestOdnK + 1/D for matching seed1 through seed7'; },
+        weight: function(nc, ctx, tid, v) {
+            return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + (ST._bestOdnK || 0) + ST._seedBonus(ctx, 'seed', 7, tid) / v;
+        }
+    },
+    { key: 'seed12345678', name: 'overallDiscNotes + ? + (seed1 + ... + seed8) / D', param: 'D',
+        params: ST._seedDParams,
+        makeKey: function(v) { return 'seed12345678' + ST._enc(v); },
+        makeName: function(v) { return 'overallDiscNotes + ? + (seed1 + ... + seed8) / ' + v; },
+        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + bestOdnK + 1/D for matching seed1 through seed8'; },
+        weight: function(nc, ctx, tid, v) {
+            return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + (ST._bestOdnK || 0) + ST._seedBonus(ctx, 'seed', 8, tid) / v;
+        }
+    },
+    { key: 'dynSeed1', name: 'overallDiscNotes + ? + dynSeed1 / D', param: 'D',
+        params: ST._seedDParams,
+        makeKey: function(v) { return 'dynSeed1' + ST._enc(v); },
+        makeName: function(v) { return 'overallDiscNotes + ? + dynSeed1 / ' + v; },
+        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + bestOdnK + 1/D for matching dynSeed1'; },
+        weight: function(nc, ctx, tid, v) {
+            return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + (ST._bestOdnK || 0) + ST._seedBonus(ctx, 'dynSeed', 1, tid) / v;
+        }
+    },
+    { key: 'dynSeed12', name: 'overallDiscNotes + ? + (dynSeed1 + dynSeed2) / D', param: 'D',
+        params: ST._seedDParams,
+        makeKey: function(v) { return 'dynSeed12' + ST._enc(v); },
+        makeName: function(v) { return 'overallDiscNotes + ? + (dynSeed1 + dynSeed2) / ' + v; },
+        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + bestOdnK + 1/D for matching dynSeed1 or dynSeed2'; },
+        weight: function(nc, ctx, tid, v) {
+            return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + (ST._bestOdnK || 0) + ST._seedBonus(ctx, 'dynSeed', 2, tid) / v;
+        }
+    },
+    { key: 'dynSeed123', name: 'overallDiscNotes + ? + (dynSeed1 + dynSeed2 + dynSeed3) / D', param: 'D',
+        params: ST._seedDParams,
+        makeKey: function(v) { return 'dynSeed123' + ST._enc(v); },
+        makeName: function(v) { return 'overallDiscNotes + ? + (dynSeed1 + dynSeed2 + dynSeed3) / ' + v; },
+        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + bestOdnK + 1/D for matching dynSeed1, dynSeed2, or dynSeed3'; },
+        weight: function(nc, ctx, tid, v) {
+            return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + (ST._bestOdnK || 0) + ST._seedBonus(ctx, 'dynSeed', 3, tid) / v;
         }
     },
     { key: 'odnscd', name: 'overallDiscNotes + ? + \u221acount / D', param: 'D',
@@ -283,7 +413,6 @@ ST.evalModel = function(events, modelKey, k) {
     if (ncEvents.length === 0) return null;
     var total = ncEvents.length;
     var nids = ST.NOTE_IDS;
-    var nNoteTypes = nids.length;
 
     var observed = {};
     nids.forEach(function(tid) { observed[tid] = 0; });
@@ -291,19 +420,15 @@ ST.evalModel = function(events, modelKey, k) {
     var ll = 0, expected = {};
     nids.forEach(function(tid) { expected[tid] = 0; });
 
-    var brierSum = 0;
     var top1Correct = 0;
     var rankSum = 0;
-    var perEventLoss = [];
     var calibPairs = [];
 
     ncEvents.forEach(function(e) {
         observed[e.tid]++;
         var probs = ST.computeNoteProbs(e.context.noteCounts, modelKey, k, e.context);
         var p = Math.max(probs[e.tid] || 0, 1e-9);
-        var loss = -Math.log(p);
         ll += Math.log(p);
-        perEventLoss.push(loss);
 
         var sorted = nids.slice().sort(function(a, b) { return (probs[b] || 0) - (probs[a] || 0); });
         if (sorted[0] === e.tid) top1Correct++;
@@ -312,13 +437,9 @@ ST.evalModel = function(events, modelKey, k) {
         nids.forEach(function(tid) {
             expected[tid] += probs[tid];
             var actual = tid === e.tid ? 1 : 0;
-            var pred = probs[tid];
-            brierSum += (actual - pred) * (actual - pred);
-            calibPairs.push({ pred: pred, actual: actual });
+            calibPairs.push({ pred: probs[tid], actual: actual });
         });
     });
-
-    var brier = brierSum / (total * nNoteTypes);
 
     var ece = 0;
     var nPairs = calibPairs.length;
@@ -344,15 +465,12 @@ ST.evalModel = function(events, modelKey, k) {
         ece = 0;
     }
 
-    var nll = -ll;
     var meanRank = rankSum / total;
     var top1Pct = (top1Correct / total) * 100;
-    var nllPer = nll / total;
 
     return {
-        logLik: ll, nll: nll, nllPer: nllPer, brier: brier, n: total,
+        logLik: ll, n: total,
         meanRank: meanRank, top1Pct: top1Pct, ece: ece, eceReliable: eceReliable,
-        perEventLoss: perEventLoss
     };
 };
 
@@ -379,6 +497,13 @@ ST.section = function(html) {
 // ── Build tables ──
 
 ST._modelGroupOpen = {};
+ST._modelRowHidden = {};
+
+ST.hideModelRow = function(key, button) {
+    ST._modelRowHidden[key] = true;
+    var row = button && button.closest ? button.closest('tr') : null;
+    if (row) row.style.display = 'none';
+};
 
 ST.toggleModelGroup = function(gkey) {
     ST._modelGroupOpen[gkey] = !ST._modelGroupOpen[gkey];
@@ -390,9 +515,9 @@ ST.buildModelComparison = function(events) {
     if (ncEvents.length < 5) return '';
 
     var results = [];
-    var bestCorrectP = -Infinity, bestNll = Infinity, bestBrier = Infinity;
+    var bestCorrectP = -Infinity;
     var bestTop1 = -Infinity, bestRank = Infinity, bestEce = Infinity;
-    var bestCorrectR = null, bestNllR = null, bestBrierR = null;
+    var bestCorrectR = null;
     var bestTop1R = null, bestRankR = null, bestEceR = null;
 
     var byGroup = {};
@@ -418,14 +543,12 @@ ST.buildModelComparison = function(events) {
         r.groupName = md.groupName;
         r.param = md.param;
         r.correctP = Math.exp(r.logLik / r.n) * 100;
-        // Show actual bestK in odncd/odnscd names
-        if ((r.group === 'odncd' || r.group === 'odnscd' || r.group === 'odncsd') && ST._bestOdnK !== null) {
+        // Show actual bestK in best-K composite model names
+        if (ST._usesBestOdnK(r.group) && ST._bestOdnK !== null) {
             r.name = r.name.replace('?', String(ST._bestOdnK));
             r.desc = r.desc.replace('bestOdnK', String(ST._bestOdnK));
         }
         if (r.correctP > bestCorrectP) { bestCorrectP = r.correctP; bestCorrectR = r; }
-        if (r.nll < bestNll) { bestNll = r.nll; bestNllR = r; }
-        if (r.brier < bestBrier) { bestBrier = r.brier; bestBrierR = r; }
         if (r.top1Pct > bestTop1) { bestTop1 = r.top1Pct; bestTop1R = r; }
         if (r.meanRank < bestRank) { bestRank = r.meanRank; bestRankR = r; }
         if (r.eceReliable && r.ece < bestEce) { bestEce = r.ece; bestEceR = r; }
@@ -443,11 +566,9 @@ ST.buildModelComparison = function(events) {
             'Each group shows the <strong>best</strong> Correct P% model within its family. Click to expand and see all ' +
             'variations. Rows highlighted green = best overall across all groups for that metric.<br>' +
             'Correct P%: geometric-mean probability assigned to the dropped note (higher = better) &middot; ' +
-            'NLL/n: per-event log-loss (lower = better) &middot; ' +
             'Top-1%: fraction where model\'s favorite won &middot; ' +
             'Mean Rank: avg rank model assigned to the dropped note &middot; ' +
-            'ECE: calibration error (10 equal-mass bins, "—" if fewer than 100 prediction pairs) &middot; ' +
-            'Brier: mean squared probability error' +
+            'Avg Error: calibration error as a percentage (10 equal-mass bins, "—" if fewer than 100 prediction pairs)' +
         '</div>' +
         '<div style="font-size:10px;color:#555;margin-bottom:8px;line-height:1.5">' +
             'Terms: <strong>harmoniesNotes</strong> = total harmony material copies needed across your 3 equipped discs &middot; ' +
@@ -457,7 +578,7 @@ ST.buildModelComparison = function(events) {
             '<strong>suppNotes</strong> = startCountsBefore (support discs you brought into the run) &middot; ' +
             '<strong>K, D</strong> = model parameters varied within the group' +
         '</div>' +
-        '<table class="data-table"><tr><th></th><th>Model</th><th class="pct">Correct P%</th><th class="num">NLL/n</th><th class="pct">Top-1%</th><th class="num">Mean Rank</th><th class="num">ECE</th><th class="num">Brier</th></tr>';
+        '<table class="data-table"><tr><th></th><th></th><th>Model</th><th class="pct">Correct P%</th><th class="pct">Top-1%</th><th class="num">Mean Rank</th><th class="pct">Avg Error</th></tr>';
 
     var groupsInOrder = ST.modelGroups.map(function(g) { return g.key; });
     groupsInOrder.forEach(function(gkey) {
@@ -484,28 +605,26 @@ ST.buildModelComparison = function(events) {
         headerStyle += '"';
 
         var correctStyle = best === bestCorrectR ? ' style="color:#9aba8a"' : '';
-        var nllStyle = best === bestNllR ? ' style="color:#9aba8a"' : '';
-        var brierStyle = best === bestBrierR ? ' style="color:#9aba8a"' : '';
         var top1Style = best === bestTop1R ? ' style="color:#9aba8a"' : '';
         var rankStyle = best === bestRankR ? ' style="color:#9aba8a"' : '';
         var eceStyle = best === bestEceR ? ' style="color:#9aba8a"' : '';
-        var eceCell = best.eceReliable ? best.ece.toFixed(4) : '—';
+        var eceCell = best.eceReliable ? (best.ece * 100).toFixed(2) + '%' : '—';
 
         var countLabel = grpResults.length > 1 ? ' <span style="font-size:9px;color:#555">(' + grpResults.length + ')</span>' : '';
         var groupName = groupDef.name;
-        if ((gkey === 'odncd' || gkey === 'odnscd' || gkey === 'odncsd') && ST._bestOdnK !== null) {
+        if (ST._usesBestOdnK(gkey) && ST._bestOdnK !== null) {
             groupName = groupName.replace('?', String(ST._bestOdnK));
         }
 
-        html += '<tr class="mg-header" onclick="ST.toggleModelGroup(\'' + gkey + '\')" data-mg="' + gkey + '"' + headerStyle + '>' +
+        if (!ST._modelRowHidden['group:' + gkey]) html += '<tr class="mg-header" onclick="ST.toggleModelGroup(\'' + gkey + '\')" data-mg="' + gkey + '"' + headerStyle + '>' +
+            '<td><button type="button" title="Hide row" onclick="event.stopPropagation();ST.hideModelRow(\'group:' + gkey + '\',this)" style="font-size:10px;padding:0 4px;cursor:pointer">x</button></td>' +
             '<td class="expand-btn" style="font-size:10px">' + toggleArrow + '</td>' +
             '<td><span style="font-weight:500">' + groupName + '</span>' + countLabel + '<br><span style="font-size:9px;color:#555">' + best.name + '</span></td>' +
             '<td class="pct"' + correctStyle + '>' + best.correctP.toFixed(2) + '%</td>' +
-            '<td class="num"' + nllStyle + '>' + best.nllPer.toFixed(4) + '</td>' +
             '<td class="pct"' + top1Style + '>' + best.top1Pct.toFixed(1) + '%</td>' +
             '<td class="num"' + rankStyle + '>' + best.meanRank.toFixed(2) + '</td>' +
             '<td class="num"' + eceStyle + '>' + eceCell + '</td>' +
-            '<td class="num"' + brierStyle + '>' + best.brier.toFixed(4) + '</td></tr>';
+            '</tr>';
 
         // Detail rows (all variations in the group)
         // Sort by name for easy scanning; group header still shows best Correct P%
@@ -517,26 +636,24 @@ ST.buildModelComparison = function(events) {
             var click = ' onclick="ST.selectModel(\'' + r.key + '\')"';
 
             var sc = r === bestCorrectR ? ' style="color:#9aba8a"' : '';
-            var sn = r === bestNllR ? ' style="color:#9aba8a"' : '';
-            var sb = r === bestBrierR ? ' style="color:#9aba8a"' : '';
             var st = r === bestTop1R ? ' style="color:#9aba8a"' : '';
             var sr = r === bestRankR ? ' style="color:#9aba8a"' : '';
             var se = r === bestEceR ? ' style="color:#9aba8a"' : '';
-            var ec = r.eceReliable ? r.ece.toFixed(4) : '—';
+            var ec = r.eceReliable ? (r.ece * 100).toFixed(2) + '%' : '—';
 
+            if (ST._modelRowHidden[r.key]) return;
             subRows += '<tr' + selStyle + click + '>' +
+                '<td><button type="button" title="Hide row" onclick="event.stopPropagation();ST.hideModelRow(\'' + r.key + '\',this)" style="font-size:10px;padding:0 4px;cursor:pointer">x</button></td>' +
                 '<td></td>' +
                 '<td style="padding-left:20px;font-size:11px">' + r.name + '<br><span style="font-size:9px;color:#555">' + r.desc + '</span></td>' +
                 '<td class="pct"' + sc + '>' + r.correctP.toFixed(2) + '%</td>' +
-                '<td class="num"' + sn + '>' + r.nllPer.toFixed(4) + '</td>' +
-                '<td class="pct"' + st + '>' + r.top1Pct.toFixed(1) + '%</td>' +
+                 '<td class="pct"' + st + '>' + r.top1Pct.toFixed(1) + '%</td>' +
                 '<td class="num"' + sr + '>' + r.meanRank.toFixed(2) + '</td>' +
-                '<td class="num"' + se + '>' + ec + '</td>' +
-                '<td class="num"' + sb + '>' + r.brier.toFixed(4) + '</td></tr>';
+                 '<td class="num"' + se + '>' + ec + '</td></tr>';
         });
 
-        html += '<tr class="mg-detail" data-mg="' + gkey + '"' + displayStyle + '><td colspan="8" style="padding:0">' +
-            '<table class="data-table" style="margin:0;border-top:1px solid #252525">' + subRows + '</table></td></tr>';
+         html += '<tr class="mg-detail" data-mg="' + gkey + '"' + displayStyle + '><td colspan="7" style="padding:0">' +
+             '<table class="data-table" style="margin:0;border-top:1px solid #252525">' + subRows + '</table></td></tr>';
     });
 
     html += '</table></div>';
@@ -842,6 +959,42 @@ ST.buildRecentDrops = function(events, limit) {
         rows + '</table></div>';
 };
 
+ST.buildPerRunNotes = function(events, floorFilter, minFloor) {
+    if (!ST.runs || ST.runs.length === 0) return '';
+    var rows = '';
+    ST.runs.slice().reverse().forEach(function(run) {
+        if (floorFilter > 0 && run.floorReached !== floorFilter) return;
+        if (minFloor > 0 && run.floorReached < minFloor) return;
+        var runEvents = events.filter(function(e) { return e.runId === run.id && e.context; });
+        var totalQty = 0, correctQty = 0;
+        runEvents.forEach(function(e) {
+            var qty = Math.max(0, e.qty || 0);
+            totalQty += qty;
+            if (e.context.overallDiscNotes && e.context.overallDiscNotes[e.tid]) correctQty += qty;
+        });
+        var overallCount = correctQty;
+        var correctPct = totalQty > 0 ? (correctQty / totalQty * 100).toFixed(1) + '%' : '—';
+        var chars = (run.start && run.start.data && run.start.data.chars) || [];
+        var charHtml = '';
+        chars.forEach(function(c) {
+            if (c && c.id) charHtml += '<img src="' + ST.charPortrait(c.id) + '" class="portrait-sm" title="' + ST.charName(c.id) + '" onerror="this.style.display=\'none\'">';
+        });
+        if (!charHtml) charHtml = '<span style="color:#555">—</span>';
+        rows += '<tr><td>' + (run.start && run.start.data.towerId || '—') + '</td>' +
+            '<td><div class="char-cell">' + charHtml + '</div></td>' +
+            '<td class="num">' + (run.floorReached != null ? run.floorReached : '—') + '</td>' +
+            '<td class="num">' + (run.potentialCnt || 0) + '</td>' +
+            '<td class="num">' + overallCount + '</td>' +
+            '<td class="pct">' + correctPct + '</td></tr>';
+    });
+    return '<div class="chart-card"><h3>Overall Disc Notes by Run</h3>' +
+        '<div style="margin-bottom:8px;font-size:11px">' +
+        '<label>Minimum ended floor: <input type="number" min="0" step="1" value="' + (minFloor || '') + '" onchange="ST.noteFilters.runMinFloor=parseInt(this.value)||0;ST.renderNotes()" style="width:70px;margin-left:4px"></label>' +
+        '</div>' +
+        '<div style="font-size:11px;color:#666;margin-bottom:8px">OverallDiscNotes = filtered note quantity whose type appears on any equipped disc. Correct % uses the same filtered drops.</div>' +
+        '<table class="data-table"><tr><th>Tower</th><th>Characters</th><th class="num">Floor</th><th class="num">Potentials</th><th class="num">OverallDiscNotes</th><th class="pct">Correct %</th></tr>' + rows + '</table></div>';
+};
+
 ST._selectedNoteDropIdx = null;
 
 ST.showNoteDropDetail = function(idx) {
@@ -906,6 +1059,12 @@ ST.renderNotes = function() {
     });
 
     var nameLabel = '<span style="margin-left:14px;font-size:11px;color:#555">model: ' + modelName + '</span>';
+    var runFloors = {};
+    ST.runs.forEach(function(run) { if (run.floorReached != null) runFloors[run.floorReached] = true; });
+    var runFloorOpts = '<option value="0">All End Floors</option>';
+    Object.keys(runFloors).map(Number).sort(function(a, b) { return a - b; }).forEach(function(floor) {
+        runFloorOpts += '<option value="' + floor + '"' + (ST.noteFilters.runFloor === floor ? ' selected' : '') + '>Ended at Floor ' + floor + '</option>';
+    });
 
     var sliderHtml = nameLabel;
 
@@ -919,6 +1078,7 @@ ST.renderNotes = function() {
         '<option value="stack"' + (ST.noteFilters.stack === 'stack' ? ' selected' : '') + '>Stacks (+9)</option>' +
         '<option value="base"' + (ST.noteFilters.stack === 'base' ? ' selected' : '') + '>Base Only</option>' +
         '</select>' +
+        '<select onchange="ST.noteFilters.runFloor=parseInt(this.value);ST.renderNotes()" style="margin-left:8px">' + runFloorOpts + '</select>' +
         '<span>' + sliderHtml + '</span>' +
         '</div><div class="scroll-panel" id="noteContent"></div>';
 
@@ -951,6 +1111,7 @@ ST.renderNotes = function() {
 
     var sections = [];
     sections.push(ST.buildModelComparison(filtered));
+    sections.push(ST.buildPerRunNotes(filtered, ST.noteFilters.runFloor, ST.noteFilters.runMinFloor));
     sections.push(ST.buildRecentDrops(filtered));
     sections.push(ST.buildDropDetail());
     sections.push(ST.buildPerNote(filtered, modelKey, k));
