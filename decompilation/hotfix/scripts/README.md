@@ -20,10 +20,26 @@ scripts/
 This decrypts `Hotfix.dll` and decompiles with `ilspycmd` against the
 `DummyDll` reference stubs. Output lands in `scripts/out/`.
 
+## First attempt for a new Hotfix.dll
+
+Use the current `opstable.json` and run the decryptor first:
+
+```bash
+./scripts/rerun.sh
+```
+
+The 256-byte decryption key is read from `Hotfix.dll` itself. The stable part
+of the `decompiled.c` code is the opcode-table lookup and the
+`"Hello, HybridCLR"` key check; it does not need to be regenerated for every
+Hotfix version. Only reread that relevant code and re-extract `opstable.json`
+if the current key check fails.
+
 ## After a game update (new GameAssembly.dll)
 
-The Obfuz VM's opcode table is **regenerated per build**, so `opstable.json`
-becomes stale and the key check (`"Hello, HybridCLR"`) will fail. Re-extract it:
+If the first attempt fails, the Obfuz VM's opcode table may have become stale
+after a `GameAssembly.dll` update, and the key check (`"Hello, HybridCLR"`)
+will fail. Reread the relevant opcode-table lookup in `decompiled.c` and
+re-extract it:
 
 1. **Find the jump-table RVA in the new `decompilation/decompiled.c`** (or the
    ghidra/IDA project used to make it):

@@ -67,6 +67,8 @@ The rest of this doc walks each step and explains how the ids connect.
 }
 ```
 
+If it is not present, check the unreleased.json, and the git history of both these files.
+
 This id is the root key of everything character-specific:
 
 - `character.json["103"]`

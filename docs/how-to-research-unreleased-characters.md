@@ -1,14 +1,13 @@
 # How Karin (157) & Eleanor (137) were researched
 
-A walkthrough of the session that produced `docs/unreleased-karin-eleanor-potentials.md`. The methods here are written generally so they apply to any unreleased character, but the evidence cited is specific to this research. Every fact taken from the datamine git history is dated.
+A walkthrough of the session that produced `docs/karin-eleanor-pots.md`. The methods here are written generally so they apply to any unreleased character, but the evidence cited is specific to this research. Every fact taken from the datamine git history is dated.
 
 ---
 
 ## The characters
 
-- **Karin (157), Umbra (Dark).** Unreleased. Full, fully-coded kit in the hotfix namespace `AIScript.Character._15701` (`Hotfix.decompiled.cs:680972-682838`). Lore (community wiki): NPC from the "Daring Adventure! The Ghost Ship Haunts the Deep" event, Sailstead resident, close friend of Shia, JP VA Yui Ogura.
+- **Karin (157), Umbra (Dark).** Unreleased. Full, fully-coded kit in the hotfix namespace `AIScript.Character._15701` (`Hotfix.decompiled.cs:680972-682838`).
 - **Eleanor (137), Ventus (Wind).** Unreleased. Full kit in `AIScript.Character._13701` (`Hotfix.decompiled.cs:708314-709935`). Lore: a rookie Trekker in Philae.
-- **id 162.** Unreleased and unnamed. Only a **stub** namespace `_16201` (`Hotfix.decompiled.cs:668062-669445`): every Config string is `""`, every id `0`, but perk ids (516201-516243), a "Sword Intent" resource and a Light-mark/Lucent (Type2) trigger are visible.
 
 Neither fully-coded character ships any datamine table entry, so kits were reconstructed entirely from the hotfix.
 
@@ -18,11 +17,10 @@ Neither fully-coded character ships any datamine table entry, so kits were recon
 
 | Source | Path | What it contributed |
 |---|---|---|
-| Hotfix decompile | `decompilation/hotfix/Hotfix.decompiled.cs` | The kit: skills, perks, buff/AddAttr/param ids, trigger tags, element-mark code. |
+| Hotfix decompile | The latest `decompilation/hotfix/<version>/Hotfix.decompiled.cs` | The kit: skills, perks, buff/AddAttr/param ids, trigger tags, element-mark code. Always use the latest hotfix decompile available in the repository; older versions are historical comparisons only. |
 | Il2Cpp dumps | `decompilation/old_out/dump.cs` | Enum values: `AdventureActorElementTriggerType` (Type1=31, Type2=32, `dump.cs:176985`), `characterJobClass` (Vanguard=1 / Balance=2 / Support=3, `dump.cs:175269`). |
 | Datamine language | `Link to StellaSoraData/EN/language/en_US/UIText.json` | Concept names: `LightMark_Trigger_Effect_01` = Lucent (#4028), `_02` = Thunderbolt (#4027). |
 | Datamine history | `StellaSoraData/.git` | The only raw data for unreleased chars (see dates below). |
-| Community wiki | `stellasora.miraheze.org` | NPC status, lore, VA (Karin, Eleanor, Greyhorn). |
 
 The datamine is auto-updated and strips unreleased content, so anything not in the current tables must be pulled from git history.
 
@@ -32,7 +30,7 @@ The datamine is auto-updated and strips unreleased content, so anything not in t
 
 - A character is "in development" when `namespace AIScript.Character._<id>01` exists in the hotfix but the id is missing from `characterid.json`, `character.json` and every `EN/bin/*.json` table.
 - Two flavours:
-  - **Stub** (162): empty Config, zero ids. You can describe mechanics but not numbers, and the name is usually unknown.
+  - **Stub** (162): empty Config, zero ids. You can describe mechanics.
   - **Fully coded** (157, 137): complete kit, but buff/AddAttr values may still be `0` stubs ("id not wired yet" in the output doc).
 - Check `unreleased.json` history: `character.js` writes unnamed characters (`???`) there as `"<id> <characterid-or-empty>"`.
 
@@ -46,6 +44,8 @@ Every `_<id>01` namespace has the same skeleton:
 - `ActionScript` (+ `_MainControl` / `_Support`) — button input, energy timers.
 - `ParallelScript` (+ variants) — event listeners and perk logic; most perks fire here (receive-damage, before-hit, element-mark trigger, skill-cast).
 - `SkillScript_*` — one per skill (`NormalAttack`, `Dodge`, `Rush`, `Skill_MainControl`, `Sciprt_Skill_Support`, `Ultra`).
+
+Always begin with the latest hotfix decompile available under `decompilation/hotfix/`. For this repository, that is currently `decompilation/hotfix/1.13/Hotfix.decompiled.cs`. Use an older decompile only when the latest one does not contain the relevant code or when comparing a mechanic's revisions. Do not cite an older file just because its line numbers match an existing note.
 
 Skill ids (e.g. Karin `15710000` normal, `15731000` main, `15732000` support, `15740000` ult) resolve via `EN/bin/Skill.json` — in the datamine history, since the current tables lack them (see Step 6).
 
@@ -156,6 +156,39 @@ The final reference doc (`docs/unreleased-karin-eleanor-potentials.md`) must fol
 - Include a `# Base skills` section (normal attack, main skill, ultimate, support skill) with the same per-skill mark annotations; no separate Dodge or Marks lines unless asked.
 - Class guess is one line under the character heading, e.g. `Class guess: Vanguard — procs the Dark mark (Main Skill, P4 chain tick) and never applies one.` No pattern explanation — the reader already knows it.
 - Mark unresolved values "id not wired yet".
+
+---
+
+## Add missing mechanics
+
+If a character has a persistent state machine, gauge, special target, summon, stance, or other mechanic that cannot be explained clearly as part of one skill, add a separate subsection after `# Base skills`. The subsection should explain the state, how it is filled or applied, the threshold or condition that changes state, what action consumes or clears it, and which skills or potentials interact with it. Do not infer a numeric maximum from the presence of a stack buff: resolve the buff definition if possible, and mark the maximum as unknown when only `HaveBuffNumMax(...)` is visible in the hotfix.
+
+### Example: Karin's energy gauge
+
+Karin's gauge is implemented as stacks of self-buff `15790011`, not as the generic `PlayerSkillCd` energy field. `Config_MainControl` names it `buffId_Energy`, sets the interval to `1` and the increment to `10` (`decompilation/hotfix/1.13/Hotfix.decompiled.cs:681562-681568`):
+
+```csharp
+public const int buffId_Energy = 15790011;
+public static readonly FP addBuffInterval_Energy = 1;
+public const int addBuffNum_Energy = 10;
+```
+
+The main-control action adds 10 stacks whenever its one-second timer expires (`decompilation/hotfix/1.13/Hotfix.decompiled.cs:681890-681929`):
+
+```csharp
+_actor.buffComponent.AddBuff(15790011, 10, _actor);
+```
+
+When the buff reaches its configured maximum, the buff-get listener binds the Normal button to special skill `15710001` (`decompilation/hotfix/1.13/Hotfix.decompiled.cs:682110-682123`). The hotfix does not show that maximum value at this point, so report the visible behavior as "fills by 10 stacks per second and activates at the buff's configured maximum," unless the corresponding `Buff` table entry is found.
+
+The special normal attack consumes the gauge at skill enable, restores the ordinary Normal skill `15710000`, and, if P4 is owned, applies `15704011` (`decompilation/hotfix/1.13/Hotfix.decompiled.cs:682393-682403`):
+
+```csharp
+_actor.buffComponent.RemoveBuffByBuffId(15790011);
+_actor.GetLogicComponent<PlayerSkillCd>()?.BindSkillIdToButton(ActionKey.Normal, 15710000);
+```
+
+This is the complete mechanic to describe: passive stack gain -> maximum-stack conversion to a special Normal Attack -> gauge consumption and button reset. P4 also adds 10 gauge stacks every second while its hunting-chain hit loop is active (`decompilation/hotfix/1.13/Hotfix.decompiled.cs:682193-682215`), so that interaction belongs in the gauge subsection rather than being left as an unexplained P4 number. The `15790012` hunting mark and `15790013` self-buff are related target/state markers, but they are separate from the gauge and should not be renamed as energy (`decompilation/hotfix/1.13/Hotfix.decompiled.cs:681570-681572`, `decompilation/hotfix/1.13/Hotfix.decompiled.cs:682009-682017`).
 
 ---
 

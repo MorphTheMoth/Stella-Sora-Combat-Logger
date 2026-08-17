@@ -31,6 +31,16 @@ game build** — extracted from the game's `GameAssembly.dll` into
 `tools/cdph/opstable.json` (see `tools/cdph/cdph_dump.py` for the full
 reconstruction: VM reverse, key check, stream/TypeDef/IL layers).
 
+## First attempt for a new Hotfix.dll
+
+Do not decompile `decompiled.c` just to decompile `Hotfix.dll`. The relevant
+part of that C output — the opcode-table lookup and the `"Hello, HybridCLR"`
+key check — is the same in every version. Start by running the current
+decryptor with the existing `scripts/opstable.json`; the 256-byte key is read
+from `Hotfix.dll` itself and the key check confirms whether the current table
+works. Only reread the relevant `decompiled.c` code and re-extract the table if
+that attempt fails.
+
 ## Reproduce
 
 ```
