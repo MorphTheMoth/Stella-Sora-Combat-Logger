@@ -318,66 +318,17 @@ function enrichAttrDictList(attrDictList) {
 
 let _dataRoot = '/api/stella-data/';
 
-const LOAD_TIMEOUT_MS = 3000;
-const CACHE_NAME = 'tableResolver-v1';
-
-async function _saveToCache(path, data, etag) {
-    try {
-        const cache = await caches.open(CACHE_NAME);
-        const headers = { 'Content-Type': 'application/json' };
-        if (etag) headers['x-cached-etag'] = etag;
-        await cache.put(path, new Response(JSON.stringify(data), { headers }));
-    } catch (e) {
-        console.warn(`[cache] failed to save ${path}:`, e);
-    }
-}
-
-async function _loadFromCache(path, tag) {
-    try {
-        const cache = await caches.open(CACHE_NAME);
-        const res = await cache.match(path);
-        if (res) {
-            const etag = res.headers.get('x-cached-etag');
-            return { data: await res.json(), etag };
-        }
-    } catch (e) {
-        console.warn(`[${tag}] cache read failed for ${path}:`, e);
-    }
-    return { data: null, etag: null };
-}
-
 async function loadJson(path, tag) {
-    const { data: cachedData, etag: cachedEtag } = await _loadFromCache(path, tag);
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), LOAD_TIMEOUT_MS);
-
     try {
-        const reqHeaders = {};
-        if (cachedEtag) reqHeaders['If-None-Match'] = cachedEtag;
-
-        const res = await fetch(path, { signal: controller.signal, headers: reqHeaders });
-        clearTimeout(timer);
-
-        if (res.status === 304) return cachedData;
-
+        const res = await fetch(path);
         if (!res.ok) {
-            console.warn(`[${tag}] ${path} HTTP ${res.status} — ${cachedData ? 'using cache' : 'no cache available'}`);
-            return cachedData;
+            console.warn(`[${tag}] ${path} HTTP ${res.status}`);
+            return null;
         }
-
-        const data = await res.json();
-        _saveToCache(path, data, res.headers.get('etag'));
-        return data;
-
+        return await res.json();
     } catch (e) {
-        clearTimeout(timer);
-        if (e.name === 'AbortError') {
-            console.warn(`[${tag}] ${path} timed out — ${cachedData ? 'using cache' : 'no cache available'}`);
-        } else {
-            console.warn(`[${tag}] failed to load ${path}:`, e);
-        }
-        return cachedData;
+        console.warn(`[${tag}] failed to load ${path}:`, e);
+        return null;
     }
 }
 
