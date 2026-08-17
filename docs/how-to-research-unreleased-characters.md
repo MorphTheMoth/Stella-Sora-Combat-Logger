@@ -120,6 +120,8 @@ Eleanor had **no hit data in any snapshot**, so her mark interactions were attri
 
 Grep the namespace for `SummonMonster|SummonCfg|IsPlayerSummoned` to decide. Result: Eleanor = **yes** (drones, summon id 13700011, max 3); Karin = **no** (fish is a special FX entity).
 
+After finding a real monster summon, inspect the complete `SummonCfg`, especially `useSummonHit` (`UseSummonHit` in `MonsterSummonInfo`). Treat `useSummonHit = false` as the normal case where the minion is the hit source; do not explain or highlight that behavior in the character output. If `useSummonHit = true`, do not add a minion explanation or overview either. Use `docs/minions_combat_analysis.md` as the internal reference when checking the flag: it explains that the flag changes weapon/area hit-source selection and is separate from the minion's inherited actor stats. `summonAttrType` and `summonFollowType` control stat initialization separately. The output may still mention a summon when it is part of a skill mechanic, such as "spawns up to 3 drones," but must not add a separate minion combat overview.
+
 ---
 
 ## Step 6 — potentials and build grouping
@@ -144,7 +146,7 @@ All unreleased raw data came from `StellaSoraData/.git`. Dates:
 
 ## Output document conventions
 
-The final reference doc (`docs/unreleased-karin-eleanor-potentials.md`) must follow these rules:
+The final reference doc (`docs/karin-eleanor-pots.md`) must follow these rules:
 
 - No `**` anywhere.
 - Titles use a single `#` (e.g. `# Karin (157, Umbra)`, `# Base skills`, `# Main-control potentials`).
@@ -156,6 +158,7 @@ The final reference doc (`docs/unreleased-karin-eleanor-potentials.md`) must fol
 - Include a `# Base skills` section (normal attack, main skill, ultimate, support skill) with the same per-skill mark annotations; no separate Dodge or Marks lines unless asked.
 - Class guess is one line under the character heading, e.g. `Class guess: Vanguard — procs the Dark mark (Main Skill, P4 chain tick) and never applies one.` No pattern explanation — the reader already knows it.
 - Mark unresolved values "id not wired yet".
+- Do not add a `# Minion combat overview`. Treat `useSummonHit = false` as ordinary minion-origin behavior and omit it; also omit any explanation when `useSummonHit = true`.
 
 ---
 
