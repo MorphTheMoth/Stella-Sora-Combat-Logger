@@ -8,7 +8,12 @@
 #include <vector>
 #include <algorithm>
 #include <set>
+#include <map>
 #include <filesystem>
+#include <cctype>
+#include <atomic>
+#include <thread>
+#include <chrono>
 
 #ifdef _WIN32
     #define WIN32_LEAN_AND_MEAN
@@ -129,6 +134,7 @@ std::string GetContentType(const std::string& filename) {
 std::string LOG_FILE;
 static std::string g_saved_logs_dir;  // non-empty overrides SavedLogsDir()
 static bool g_local_mode = false;
+static int  g_port = 9299;
 
 static std::string EMBLEM_LOG_PATH;
 static std::string ASCENSION_LOG_PATH;
@@ -202,6 +208,8 @@ static std::string FetchRemoteFile(const std::string& url) {
     }
 
     curl_easy_setopt(curl, CURLOPT_URL,            url.c_str());
+    curl_easy_setopt(curl, CURLOPT_USERAGENT,      "LogViewer/1.0");
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL,       1L);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION,  curl_write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA,      &result);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
@@ -224,6 +232,315 @@ static std::string FetchRemoteFile(const std::string& url) {
     return result;
 }
 #endif
+
+// =============================================================================
+//  mogsData — startup GitHub sync with change detection
+// =============================================================================
+// In remote mode (default) the web app files and StellaSoraData tables are
+// mirrored into "<exe dir>/mogsData" at startup. Each file's blob sha is stored
+// in ".mogsdata.json"; on later startups the repo trees are compared and only
+// changed/new files are re-fetched. Anything requested but not yet cached is
+// fetched on demand and stored (lazy ssassets live under mogsData/ssassets).
+
+static std::string g_mogs_data_dir;   // "<exe dir>/mogsData"
+static const char* MOGS_CACHE_REL = ".mogsdata.json";
+
+static std::string GetExeDir() {
+#ifdef _WIN32
+    char buf[MAX_PATH];
+    DWORD n = GetModuleFileNameA(NULL, buf, sizeof(buf));
+    std::string path = (n > 0) ? std::string(buf, n) : std::string();
+    size_t sep = path.find_last_of("\\/");
+    if (sep != std::string::npos) path.erase(sep + 1);
+    return path;
+#else
+    char buf[4096];
+    ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n > 0) {
+        buf[n] = '\0';
+        std::string path(buf);
+        size_t sep = path.find_last_of('/');
+        if (sep != std::string::npos) path.erase(sep + 1);
+        return path;
+    }
+    return std::string("./");
+#endif
+}
+
+static std::string UrlEncodePath(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (unsigned char c : s) {
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+            (c >= '0' && c <= '9') || c == '/' || c == '.' ||
+            c == '_' || c == '-' || c == '~') {
+            out += (char)c;
+        } else if (c == ' ') {
+            out += "%20";
+        } else {
+            char hex[4];
+            snprintf(hex, sizeof(hex), "%%%02X", c);
+            out += hex;
+        }
+    }
+    return out;
+}
+
+static void EnsureParentDirs(const std::string& filepath) {
+    std::filesystem::path parent = std::filesystem::path(filepath).parent_path();
+    if (parent.empty()) return;
+    std::error_code ec;
+    std::filesystem::create_directories(parent, ec);
+}
+
+static bool WriteFile(const std::string& filepath, const std::string& content) {
+    EnsureParentDirs(filepath);
+    std::ofstream out(filepath, std::ios::binary);
+    if (!out) return false;
+    out.write(content.data(), (std::streamsize)content.size());
+    return out.good();
+}
+
+// Request-time caching: write a fetched file into mogsData and log the save.
+static void CacheToMogsData(const std::string& filepath, const std::string& content) {
+    if (WriteFile(filepath, content))
+        ServerLog("Cached %zu bytes -> %s", content.size(), filepath.c_str());
+    else
+        ServerLog("Cache write FAILED -> %s", filepath.c_str());
+}
+
+static bool FileExists(const std::string& filepath) {
+    std::ifstream f(filepath, std::ios::binary);
+    return f.good();
+}
+
+static std::string FetchRemoteFileRetry(const std::string& url, int attempts = 3) {
+    std::string body;
+    for (int i = 0; i < attempts; ++i) {
+        body = FetchRemoteFile(url);
+        if (!body.empty()) return body;
+        if (i + 1 < attempts)
+            std::this_thread::sleep_for(std::chrono::milliseconds(600 * (i + 1)));
+    }
+    return body;
+}
+
+struct RepoSource {
+    const char* key;          // cache key, e.g. "AutumnVN/StellaSoraData"
+    const char* owner;
+    const char* repo;
+    const char* branch;
+    const char* subdir;       // remote subtree to mirror ("" = whole repo)
+    const char* local_root;   // local subfolder under mogsData ("" = mogsData root)
+    bool        strip_subdir; // strip subdir prefix from local paths
+    bool        is_app_files; // web app tree, skipped in -local mode
+    const char* const* include; // null-terminated allow-list of remote paths (nullptr = whole subdir)
+};
+
+static bool InFileList(const char* const* list, const std::string& path) {
+    for (const char* const* p = list; *p; ++p)
+        if (path == *p) return true;
+    return false;
+}
+
+// StellaSoraData files actually requested by the viewer:
+//   root:                tableResolver.js:969,973,996
+//   EN/bin:              tableResolver.js:970-995, Star Tower Tracker/app.js:120,123,
+//                        Emblem Tracker/gem_viewer.html:461
+//   EN/language/en_US:   tableResolver.js:970-995, Star Tower Tracker/app.js:90
+static const char* const kStellaDataFiles[] = {
+    "character.json",
+    "item.json",
+    "blitz.json",
+    "EN/bin/HitDamage.json",
+    "EN/bin/Skill.json",
+    "EN/bin/Effect.json",
+    "EN/bin/Item.json",
+    "EN/bin/SubNoteSkill.json",
+    "EN/bin/AffinityLevel.json",
+    "EN/bin/EffectValue.json",
+    "EN/bin/TravelerDuelChallengeAffix.json",
+    "EN/bin/Buff.json",
+    "EN/bin/BuffValue.json",
+    "EN/bin/Word.json",
+    "EN/bin/Talent.json",
+    "EN/bin/OnceAdditionalAttribute.json",
+    "EN/bin/OnceAdditionalAttributeValue.json",
+    "EN/bin/ScoreBossAbility.json",
+    "EN/bin/Potential.json",
+    "EN/bin/MonsterSkin.json",
+    "EN/bin/Disc.json",
+    "EN/bin/SecondarySkill.json",
+    "EN/bin/CharGemAttrValue.json",
+    "EN/language/en_US/Skill.json",
+    "EN/language/en_US/Item.json",
+    "EN/language/en_US/SubNoteSkill.json",
+    "EN/language/en_US/Word.json",
+    "EN/language/en_US/Talent.json",
+    "EN/language/en_US/ScoreBossAbility.json",
+    "EN/language/en_US/TravelerDuelChallengeAffix.json",
+    "EN/language/en_US/SecondarySkill.json",
+    "EN/language/en_US/Character.json",
+    nullptr
+};
+
+static const RepoSource kRepoSources[] = {
+    { "MorphTheMoth/Stella-Sora-Combat-Logger",
+      "MorphTheMoth", "Stella-Sora-Combat-Logger", "main",
+      "Log Viewer", "", true, true, nullptr },
+    { "AutumnVN/StellaSoraData",
+      "AutumnVN", "StellaSoraData", "main",
+      "EN", "data", false, false, kStellaDataFiles },
+};
+
+static bool SyncRepoSource(const RepoSource& src, json& cache) {
+    const std::string apiUrl =
+        "https://api.github.com/repos/" + std::string(src.owner) + "/" +
+        std::string(src.repo) + "/git/trees/" + src.branch + "?recursive=1";
+
+    std::string treeBody = FetchRemoteFile(apiUrl);
+    if (treeBody.empty()) {
+        ServerLog("Sync %s: could not reach GitHub, keeping cached files.", src.key);
+        return false;
+    }
+    json tree;
+    try { tree = json::parse(treeBody); } catch (...) {
+        ServerLog("Sync %s: bad tree response, keeping cached files.", src.key);
+        return false;
+    }
+    if (!tree.contains("tree") || !tree["tree"].is_array()) {
+        ServerLog("Sync %s: tree response has no 'tree' array.", src.key);
+        return false;
+    }
+
+    const std::string newTreeSha = tree.value("sha", "");
+    json& srcCache = cache["sources"][src.key];
+    if (!srcCache["files"].is_object())
+        srcCache["files"] = json::object();
+    const std::string oldTreeSha = srcCache.value("treeSha", "");
+
+    const std::string prefix = std::string(src.subdir) + "/";
+    std::map<std::string, std::string> remoteShas;
+    for (const auto& e : tree["tree"]) {
+        if (e.value("type", "") != "blob") continue;
+        const std::string path = e.value("path", "");
+        const bool allowed = src.include
+            ? InFileList(src.include, path)
+            : (!src.subdir[0] || path.compare(0, prefix.size(), prefix) == 0);
+        if (allowed)
+            remoteShas[path] = e.value("sha", "");
+    }
+
+    const auto localPathFor = [&](const std::string& remotePath) -> std::string {
+        std::string localRel = remotePath;
+        if (src.strip_subdir && src.subdir[0])
+            localRel = remotePath.substr(prefix.size());
+        std::string localPath = g_mogs_data_dir;
+        if (src.local_root[0]) localPath += "/" + std::string(src.local_root);
+        return localPath + "/" + localRel;
+    };
+
+    if (!oldTreeSha.empty() && oldTreeSha == newTreeSha) {
+        // Fast path: nothing changed on GitHub. Still repair anything that
+        // failed to download earlier (a 429/partial first sync leaves files
+        // both uncached and missing on disk).
+        int missingOnDisk = 0;
+        for (const auto& [path, sha] : srcCache["files"].items()) {
+            (void)sha;
+            if (!FileExists(localPathFor(path))) ++missingOnDisk;
+        }
+        const size_t cached = srcCache["files"].size();
+        const size_t expected = remoteShas.size();
+        if (missingOnDisk == 0 && cached == expected) {
+            ServerLog("Sync %s: up to date (tree %s).",
+                      src.key, newTreeSha.substr(0, 8).c_str());
+            return true;
+        }
+        ServerLog("Sync %s: tree unchanged, %zu/%zu files cached, %d missing on disk; repairing.",
+                  src.key, cached, expected, missingOnDisk);
+    }
+
+    struct Work { std::string path; std::string localPath; std::string url; std::string prevSha; };
+    std::vector<Work> work;
+    int skipped = 0;
+    for (const auto& [path, sha] : remoteShas) {
+        const std::string localPath = localPathFor(path);
+        const std::string prev = srcCache["files"].value(path, "");
+        if (!prev.empty() && prev == sha && FileExists(localPath)) { ++skipped; continue; }
+        const std::string url = "https://raw.githubusercontent.com/" +
+            std::string(src.owner) + "/" + std::string(src.repo) + "/" +
+            src.branch + "/" + UrlEncodePath(path);
+        work.push_back({ path, localPath, url, prev });
+    }
+
+    std::atomic<int> added{0}, updated{0}, failed{0};
+    std::vector<std::pair<std::string, std::string>> done; // path -> sha
+    {
+        std::mutex idx_mtx;
+        std::mutex res_mtx;
+        size_t next = 0;
+        auto worker = [&]() {
+            for (;;) {
+                size_t i;
+                { std::lock_guard<std::mutex> lk(idx_mtx); i = next++; }
+                if (i >= work.size()) break;
+                std::string content = FetchRemoteFileRetry(work[i].url);
+                if (content.empty()) { ++failed; continue; }
+                WriteFile(work[i].localPath, content);
+                { std::lock_guard<std::mutex> lk(res_mtx); done.push_back({ work[i].path, remoteShas[work[i].path] }); }
+                if (work[i].prevSha.empty()) ++added; else ++updated;
+            }
+        };
+        const unsigned nThreads = 6;
+        std::vector<std::thread> threads;
+        threads.reserve(nThreads);
+        for (unsigned t = 0; t < nThreads; ++t) threads.emplace_back(worker);
+        for (auto& th : threads) th.join();
+    }
+    for (const auto& [path, sha] : done)
+        srcCache["files"][path] = sha;
+
+    int removed = 0;
+    if (srcCache.contains("files")) {
+        for (auto it = srcCache["files"].begin(); it != srcCache["files"].end();) {
+            if (!remoteShas.count(it.key())) {
+                std::remove(localPathFor(it.key()).c_str());
+                it = srcCache["files"].erase(it);
+                ++removed;
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    srcCache["treeSha"] = newTreeSha;
+    ServerLog("Sync %s: +%d added, %d updated, %d removed, %d unchanged, %d failed.",
+              src.key, added.load(), updated.load(), removed, skipped, failed.load());
+    return true;
+}
+
+static void SyncMogsData(bool includeAppFiles = true) {
+    std::error_code ec;
+    std::filesystem::create_directories(g_mogs_data_dir, ec);
+
+    const std::string cachePath = g_mogs_data_dir + "/" + MOGS_CACHE_REL;
+    json cache;
+    {
+        std::ifstream in(cachePath);
+        if (in.good()) {
+            std::stringstream ss; ss << in.rdbuf();
+            try { cache = json::parse(ss.str()); } catch (...) { cache = json::object(); }
+        }
+    }
+
+    ServerLog("mogsData: checking for updates (tree compare + per-file blob shas)...");
+    for (const auto& src : kRepoSources) {
+        if (!includeAppFiles && src.is_app_files) continue;  // -local: skip web app tree
+        SyncRepoSource(src, cache);
+    }
+
+    WriteFile(cachePath, cache.dump(2));
+}
 
 std::string GetDefaultLogPath() {
 #ifdef _WIN32
@@ -732,13 +1049,26 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
 
         if (uri == "/" || g_static_files.count(uri.substr(1)) > 0) {
             std::string filename = (uri == "/") ? "index.html" : uri.substr(1);
-
-            if (!g_local_mode) {
-                // Remote mode – proxy from GitHub
+            std::string base = g_local_mode ? std::string(".") : g_mogs_data_dir;
+            std::string filepath = base + "/" + filename;
+            std::ifstream file(filepath);
+            if (file.good()) {
+                ServerLog("Serve %s from disk (%s)", filename.c_str(), filepath.c_str());
+                std::stringstream buffer;
+                buffer << file.rdbuf();
+                std::string body = buffer.str();
+                std::string ct_header = "Content-Type: " +
+                    GetContentType(filename) + "\r\n";
+                mg_http_reply(c, 200, ct_header.c_str(), "%s", body.c_str());
+                HttpLog(200, method, uri, query, remote);
+            } else if (!g_local_mode) {
+                // Remote mode – fetch from GitHub and cache into mogsData.
+                ServerLog("Not cached, fetching %s", filename.c_str());
                 std::string url = std::string(REMOTE_BASE);
                 url += (uri == "/") ? "/index.html" : uri;
                 std::string body = FetchRemoteFile(url);
                 if (!body.empty()) {
+                    CacheToMogsData(filepath, body);
                     std::string ct_header = "Content-Type: " +
                         GetContentType(filename) + "\r\n";
                     mg_http_reply(c, 200, ct_header.c_str(), "%s", body.c_str());
@@ -749,20 +1079,8 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                 }
             } else {
                 // Local mode – read from disk
-                std::string filepath = filename;
-                std::ifstream file(filepath);
-                if (file.good()) {
-                    std::stringstream buffer;
-                    buffer << file.rdbuf();
-                    std::string body = buffer.str();
-                    std::string ct_header = "Content-Type: " +
-                        GetContentType(filename) + "\r\n";
-                    mg_http_reply(c, 200, ct_header.c_str(), "%s", body.c_str());
-                    HttpLog(200, method, uri, query, remote);
-                } else {
-                    mg_http_reply(c, 404, "Content-Type: text/plain\r\n", "File not found");
-                    HttpLog(404, method, uri, query, remote);
-                }
+                mg_http_reply(c, 404, "Content-Type: text/plain\r\n", "File not found");
+                HttpLog(404, method, uri, query, remote);
             }
         } else if (uri.find("/api/ssassets/") == 0) {
             std::string relative = uri.substr(std::string("/api/ssassets/").size());
@@ -770,19 +1088,34 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                 relative.find('\\') != std::string::npos) {
                 mg_http_reply(c, 400, "Content-Type: text/plain\r\n", "Invalid asset path");
                 HttpLog(400, method, uri, query, remote);
-            } else if (g_ssassets_dir.empty()) {
+            } else if (g_local_mode && g_ssassets_dir.empty()) {
                 std::string location = std::string(SSASSETS_REMOTE_BASE) + relative;
                 mg_http_reply(c, 302, ("Location: " + location + "\r\n").c_str(), "");
                 HttpLog(302, method, uri, query, remote);
             } else {
-                std::string filepath = g_ssassets_dir + "/" + relative;
+                std::string base = g_ssassets_dir.empty()
+                    ? (g_mogs_data_dir + "/ssassets") : g_ssassets_dir;
+                std::string filepath = base + "/" + relative;
                 std::ifstream file(filepath, std::ios::binary);
-                if (!file.good()) {
-                    mg_http_reply(c, 404, "Content-Type: text/plain\r\n", "Asset file not found");
-                    HttpLog(404, method, uri, query, remote);
-                } else {
+                if (file.good()) {
+                    ServerLog("Serve asset from disk (%s)", filepath.c_str());
                     mg_http_serve_file(c, hm, filepath.c_str(), NULL);
                     HttpLog(200, method, uri, query, remote);
+                } else if (g_ssassets_dir.empty()) {
+                    // Lazy fetch from GitHub, cached into mogsData/ssassets.
+                    ServerLog("Asset not cached, fetching %s", relative.c_str());
+                    std::string body = FetchRemoteFile(std::string(SSASSETS_REMOTE_BASE) + relative);
+                    if (!body.empty()) {
+                        CacheToMogsData(filepath, body);
+                        mg_http_serve_file(c, hm, filepath.c_str(), NULL);
+                        HttpLog(200, method, uri, query, remote);
+                    } else {
+                        mg_http_reply(c, 502, "Content-Type: text/plain\r\n", "Failed to fetch asset");
+                        HttpLog(502, method, uri, query, remote);
+                    }
+                } else {
+                    mg_http_reply(c, 404, "Content-Type: text/plain\r\n", "Asset file not found");
+                    HttpLog(404, method, uri, query, remote);
                 }
             }
         } else if (uri.find("/api/stella-data/") == 0) {
@@ -791,23 +1124,13 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                 relative.find('\\') != std::string::npos) {
                 mg_http_reply(c, 400, "Content-Type: text/plain\r\n", "Invalid data path");
                 HttpLog(400, method, uri, query, remote);
-            } else if (g_stella_data_dir.empty()) {
-                std::string body = FetchRemoteFile(std::string(STELLA_DATA_REMOTE_BASE) + relative);
-                if (body.empty()) {
-                    mg_http_reply(c, 502, "Content-Type: text/plain\r\n", "Failed to fetch data file");
-                    HttpLog(502, method, uri, query, remote);
-                } else {
-                    std::string ct_header = "Content-Type: " + GetContentType(relative) +
-                        "\r\nCache-Control: no-cache\r\n";
-                    mg_http_reply(c, 200, ct_header.c_str(), "%s", body.c_str());
-                    HttpLog(200, method, uri, query, remote);
-                }
             } else {
-                std::ifstream file(g_stella_data_dir + "/" + relative, std::ios::binary);
-                if (!file.good()) {
-                    mg_http_reply(c, 404, "Content-Type: text/plain\r\n", "Data file not found");
-                    HttpLog(404, method, uri, query, remote);
-                } else {
+                std::string base = g_stella_data_dir.empty()
+                    ? (g_mogs_data_dir + "/data") : g_stella_data_dir;
+                std::string filepath = base + "/" + relative;
+                std::ifstream file(filepath, std::ios::binary);
+                if (file.good()) {
+                    ServerLog("Serve %s from disk (%s)", relative.c_str(), filepath.c_str());
                     std::stringstream buffer;
                     buffer << file.rdbuf();
                     std::string body = buffer.str();
@@ -815,6 +1138,23 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                         "\r\nCache-Control: no-cache\r\n";
                     mg_http_reply(c, 200, ct_header.c_str(), "%s", body.c_str());
                     HttpLog(200, method, uri, query, remote);
+                } else if (g_stella_data_dir.empty()) {
+                    // Fallback: fetch from GitHub and cache into mogsData/data.
+                    ServerLog("Data not cached, fetching %s", relative.c_str());
+                    std::string body = FetchRemoteFile(std::string(STELLA_DATA_REMOTE_BASE) + relative);
+                    if (body.empty()) {
+                        mg_http_reply(c, 502, "Content-Type: text/plain\r\n", "Failed to fetch data file");
+                        HttpLog(502, method, uri, query, remote);
+                    } else {
+                        CacheToMogsData(filepath, body);
+                        std::string ct_header = "Content-Type: " + GetContentType(relative) +
+                            "\r\nCache-Control: no-cache\r\n";
+                        mg_http_reply(c, 200, ct_header.c_str(), "%s", body.c_str());
+                        HttpLog(200, method, uri, query, remote);
+                    }
+                } else {
+                    mg_http_reply(c, 404, "Content-Type: text/plain\r\n", "Data file not found");
+                    HttpLog(404, method, uri, query, remote);
                 }
             }
         } else if (uri.find("/api/log") == 0) {
@@ -1063,10 +1403,19 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
             g_sse_clients.push_back(sc);
             HttpLog(200, method, uri, query, remote);
         } else if (uri == "/emblems" || uri == "/emblems/") {
-            if (!g_local_mode) {
+            std::string base = g_local_mode ? std::string(EMBLEM_DIR)
+                                            : (g_mogs_data_dir + "/" + EMBLEM_DIR);
+            std::string fp = base + "/gem_viewer.html";
+            std::ifstream file(fp);
+            if (file.good()) {
+                std::stringstream buf; buf << file.rdbuf();
+                mg_http_reply(c, 200, "Content-Type: text/html\r\n", "%s", buf.str().c_str());
+                HttpLog(200, method, uri, query, remote);
+            } else if (!g_local_mode) {
                 std::string url = std::string(REMOTE_BASE) + "/Emblem%20Tracker/gem_viewer.html";
                 std::string body = FetchRemoteFile(url);
                 if (!body.empty()) {
+                    CacheToMogsData(fp, body);
                     mg_http_reply(c, 200, "Content-Type: text/html\r\n", "%s", body.c_str());
                     HttpLog(200, method, uri, query, remote);
                 } else {
@@ -1074,16 +1423,8 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                     HttpLog(502, method, uri, query, remote);
                 }
             } else {
-                std::string fp = EMBLEM_DIR + "/gem_viewer.html";
-                std::ifstream file(fp);
-                if (file.good()) {
-                    std::stringstream buf; buf << file.rdbuf();
-                    mg_http_reply(c, 200, "Content-Type: text/html\r\n", "%s", buf.str().c_str());
-                    HttpLog(200, method, uri, query, remote);
-                } else {
-                    mg_http_reply(c, 404, "", "Not Found");
-                    HttpLog(404, method, uri, query, remote);
-                }
+                mg_http_reply(c, 404, "", "Not Found");
+                HttpLog(404, method, uri, query, remote);
             }
         } else if (uri.size() >= 9 && uri.compare(0, 9, "/emblems/") == 0) {
             std::string rest = uri.substr(9);
@@ -1136,25 +1477,28 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                 if (rest.find("..") != std::string::npos) {
                     mg_http_reply(c, 404, "", "Not Found");
                     HttpLog(404, method, uri, query, remote);
-                } else if (!g_local_mode) {
-                    std::string url = std::string(REMOTE_BASE) + "/Emblem%20Tracker/" + rest;
-                    std::string body = FetchRemoteFile(url);
-                    if (!body.empty()) {
-                        std::string ct = "Content-Type: " + GetContentType(rest) + "\r\n";
-                        mg_http_reply(c, 200, ct.c_str(), "%s", body.c_str());
-                        HttpLog(200, method, uri, query, remote);
-                    } else {
-                        mg_http_reply(c, 502, "Content-Type: text/plain\r\n", "Failed to fetch remote file");
-                        HttpLog(502, method, uri, query, remote);
-                    }
                 } else {
-                    std::string fp = EMBLEM_DIR + "/" + rest;
+                    std::string base = g_local_mode ? std::string(EMBLEM_DIR)
+                                                    : (g_mogs_data_dir + "/" + EMBLEM_DIR);
+                    std::string fp = base + "/" + rest;
                     std::ifstream file(fp);
                     if (file.good()) {
                         std::stringstream buf; buf << file.rdbuf();
                         std::string ct = "Content-Type: " + GetContentType(rest) + "\r\n";
                         mg_http_reply(c, 200, ct.c_str(), "%s", buf.str().c_str());
                         HttpLog(200, method, uri, query, remote);
+                    } else if (!g_local_mode) {
+                        std::string url = std::string(REMOTE_BASE) + "/Emblem%20Tracker/" + rest;
+                        std::string body = FetchRemoteFile(url);
+                        if (!body.empty()) {
+                            CacheToMogsData(fp, body);
+                            std::string ct = "Content-Type: " + GetContentType(rest) + "\r\n";
+                            mg_http_reply(c, 200, ct.c_str(), "%s", body.c_str());
+                            HttpLog(200, method, uri, query, remote);
+                        } else {
+                            mg_http_reply(c, 502, "Content-Type: text/plain\r\n", "Failed to fetch remote file");
+                            HttpLog(502, method, uri, query, remote);
+                        }
                     } else {
                         mg_http_reply(c, 404, "", "Not Found");
                         HttpLog(404, method, uri, query, remote);
@@ -1162,10 +1506,19 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                 }
             }
         } else if (uri == "/ascension" || uri == "/ascension/") {
-            if (!g_local_mode) {
+            std::string base = g_local_mode ? std::string(ASCENSION_DIR)
+                                            : (g_mogs_data_dir + "/" + ASCENSION_DIR);
+            std::string fp = base + "/index.html";
+            std::ifstream file(fp);
+            if (file.good()) {
+                std::stringstream buf; buf << file.rdbuf();
+                mg_http_reply(c, 200, "Content-Type: text/html\r\n", "%s", buf.str().c_str());
+                HttpLog(200, method, uri, query, remote);
+            } else if (!g_local_mode) {
                 std::string url = std::string(REMOTE_BASE) + "/Star%20Tower%20Tracker/index.html";
                 std::string body = FetchRemoteFile(url);
                 if (!body.empty()) {
+                    CacheToMogsData(fp, body);
                     mg_http_reply(c, 200, "Content-Type: text/html\r\n", "%s", body.c_str());
                     HttpLog(200, method, uri, query, remote);
                 } else {
@@ -1173,16 +1526,8 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                     HttpLog(502, method, uri, query, remote);
                 }
             } else {
-                std::string fp = ASCENSION_DIR + "/index.html";
-                std::ifstream file(fp);
-                if (file.good()) {
-                    std::stringstream buf; buf << file.rdbuf();
-                    mg_http_reply(c, 200, "Content-Type: text/html\r\n", "%s", buf.str().c_str());
-                    HttpLog(200, method, uri, query, remote);
-                } else {
-                    mg_http_reply(c, 404, "", "Not Found");
-                    HttpLog(404, method, uri, query, remote);
-                }
+                mg_http_reply(c, 404, "", "Not Found");
+                HttpLog(404, method, uri, query, remote);
             }
         } else if (uri.size() >= 11 && uri.compare(0, 11, "/ascension/") == 0) {
             std::string rest = uri.substr(11);
@@ -1235,25 +1580,28 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                 if (rest.find("..") != std::string::npos) {
                     mg_http_reply(c, 404, "", "Not Found");
                     HttpLog(404, method, uri, query, remote);
-                } else if (!g_local_mode) {
-                    std::string url = std::string(REMOTE_BASE) + "/Star%20Tower%20Tracker/" + rest;
-                    std::string body = FetchRemoteFile(url);
-                    if (!body.empty()) {
-                        std::string ct = "Content-Type: " + GetContentType(rest) + "\r\n";
-                        mg_http_reply(c, 200, ct.c_str(), "%s", body.c_str());
-                        HttpLog(200, method, uri, query, remote);
-                    } else {
-                        mg_http_reply(c, 502, "Content-Type: text/plain\r\n", "Failed to fetch remote file");
-                        HttpLog(502, method, uri, query, remote);
-                    }
                 } else {
-                    std::string fp = ASCENSION_DIR + "/" + rest;
+                    std::string base = g_local_mode ? std::string(ASCENSION_DIR)
+                                                    : (g_mogs_data_dir + "/" + ASCENSION_DIR);
+                    std::string fp = base + "/" + rest;
                     std::ifstream file(fp);
                     if (file.good()) {
                         std::stringstream buf; buf << file.rdbuf();
                         std::string ct = "Content-Type: " + GetContentType(rest) + "\r\n";
                         mg_http_reply(c, 200, ct.c_str(), "%s", buf.str().c_str());
                         HttpLog(200, method, uri, query, remote);
+                    } else if (!g_local_mode) {
+                        std::string url = std::string(REMOTE_BASE) + "/Star%20Tower%20Tracker/" + rest;
+                        std::string body = FetchRemoteFile(url);
+                        if (!body.empty()) {
+                            CacheToMogsData(fp, body);
+                            std::string ct = "Content-Type: " + GetContentType(rest) + "\r\n";
+                            mg_http_reply(c, 200, ct.c_str(), "%s", body.c_str());
+                            HttpLog(200, method, uri, query, remote);
+                        } else {
+                            mg_http_reply(c, 502, "Content-Type: text/plain\r\n", "Failed to fetch remote file");
+                            HttpLog(502, method, uri, query, remote);
+                        }
                     } else {
                         mg_http_reply(c, 404, "", "Not Found");
                         HttpLog(404, method, uri, query, remote);
@@ -1261,15 +1609,30 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                 }
             }
         } else if (!g_local_mode && !uri.empty() && uri[0] == '/') {
-            std::string url = std::string(REMOTE_BASE) + uri;
-            std::string body = FetchRemoteFile(url);
-            if (!body.empty()) {
+            // Any other file: serve from mogsData, falling back to a cached fetch.
+            std::string filepath = g_mogs_data_dir + uri;
+            std::ifstream file(filepath);
+            if (file.good()) {
+                ServerLog("Serve %s from disk (%s)", uri.c_str(), filepath.c_str());
+                std::stringstream buffer;
+                buffer << file.rdbuf();
+                std::string body = buffer.str();
                 std::string ct_header = "Content-Type: " + GetContentType(uri) + "\r\n";
                 mg_http_reply(c, 200, ct_header.c_str(), "%s", body.c_str());
                 HttpLog(200, method, uri, query, remote);
             } else {
-                mg_http_reply(c, 404, "", "Not Found");
-                HttpLog(404, method, uri, query, remote);
+                ServerLog("Not cached, fetching %s", uri.c_str());
+                std::string url = std::string(REMOTE_BASE) + uri;
+                std::string body = FetchRemoteFile(url);
+                if (!body.empty()) {
+                    CacheToMogsData(filepath, body);
+                    std::string ct_header = "Content-Type: " + GetContentType(uri) + "\r\n";
+                    mg_http_reply(c, 200, ct_header.c_str(), "%s", body.c_str());
+                    HttpLog(200, method, uri, query, remote);
+                } else {
+                    mg_http_reply(c, 404, "", "Not Found");
+                    HttpLog(404, method, uri, query, remote);
+                }
             }
         } else {
             mg_http_reply(c, 404, "", "Not Found");
@@ -1299,6 +1662,8 @@ int main(int argc, char** argv) {
             g_stella_data_dir = argv[++i];
         else if (arg == "-assets" && i + 1 < argc)
             g_ssassets_dir = argv[++i];
+        else if (arg == "-port" && i + 1 < argc)
+            g_port = std::max(1, atoi(argv[++i]));
         else
             LOG_FILE = argv[i];
     }
@@ -1345,17 +1710,28 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (!g_local_mode)
-        ServerLog("Fetching files automatically from github, run with \"-local\" to use local files.");
+    g_mogs_data_dir = GetExeDir() + "mogsData";
+    if (!g_local_mode) {
+        ServerLog("Fetching files from github into mogsData (run with \"-local\" to serve the web app from disk).");
+        SyncMogsData(true);
+        ScanStaticFolder(g_mogs_data_dir);
+    } else {
+        ServerLog("Mode: local (serving the web app from disk, data tables still synced into mogsData).");
+        SyncMogsData(false);
+        ScanStaticFolder(".");
+    }
     if (!g_stella_data_dir.empty())
         ServerLog("StellaSoraData: local (%s)", g_stella_data_dir.c_str());
     else
-        ServerLog("StellaSoraData: remote (use -data <path> for local files)");
+        ServerLog("StellaSoraData: %s (use -data <path> for a local folder)",
+                  g_mogs_data_dir.empty() ? "remote" : (g_mogs_data_dir + "/data").c_str());
     if (!g_ssassets_dir.empty())
         ServerLog("ssassets: local (%s)", g_ssassets_dir.c_str());
+    else if (!g_local_mode)
+        ServerLog("ssassets: lazily cached in %s/ssassets (use -assets <path> for a local folder)",
+                  g_mogs_data_dir.c_str());
     else
-        ServerLog("ssassets: remote (use -assets <path> for local files)");
-    ScanStaticFolder(".");
+        ServerLog("ssassets: remote (use -assets <path> for a local folder)");
 
     {
         std::ifstream ef(EMBLEM_LOG_PATH);
@@ -1408,27 +1784,28 @@ int main(int argc, char** argv) {
 #endif
 
     ServerLog("Reading log from: %s", LOG_FILE.c_str());
-    ServerLog("Mode: %s", g_local_mode ? "local (serving files from disk)" : "remote (serving files from GitHub)");
+    ServerLog("Mode: %s", g_local_mode ? "local (serving files from disk)"
+                                       : "remote (serving files from mogsData cache)");
     mg_log_set(MG_LL_NONE);
 
     struct mg_mgr mgr;
     mg_mgr_init(&mgr);
 
-    const char* url = "http://0.0.0.0:9299";
-    mg_http_listen(&mgr, url, fn, NULL);
+    std::string listen_url = "http://0.0.0.0:" + std::to_string(g_port);
+    mg_http_listen(&mgr, listen_url.c_str(), fn, NULL);
 
     mg_timer_add(&mgr, 500, MG_TIMER_REPEAT, sse_timer_cb, &mgr);
 
-    ServerLog("Listening on http://localhost:9299");
+    ServerLog("Listening on http://localhost:%d", g_port);
     ServerLog("Press Ctrl+C to stop.");
 
 #ifndef _WIN32
-    system("xdg-open http://localhost:9299 &");
+    system(("xdg-open http://localhost:" + std::to_string(g_port) + " &").c_str());
     printf("\n\033[2m%-10s %-6s  %-24s  %s\033[0m\n", "time", "code", "path", "remote");
     printf("\033[2m%.10s %.6s  %.24s  %.16s\033[0m\n",
            "----------","------","------------------------","----------------");
 #else
-    ShellExecuteA(NULL, "open", "http://localhost:9299", NULL, NULL, SW_SHOWNORMAL);
+    ShellExecuteA(NULL, "open", ("http://localhost:" + std::to_string(g_port)).c_str(), NULL, NULL, SW_SHOWNORMAL);
     printf("\n%-10s %-6s  %-24s  %s\n", "time", "code", "path", "remote");
 #endif
 

@@ -508,12 +508,11 @@ function buildEffectTable(dataFiles) {
     effectTable.clear();
 
     const {
-        jEffect, jItem, jItemLang, jMainSkill, jMainSkillLang,
-        jFloorBuff, jSubNote, jAffinityLevel, jEffectValue,
-        jAffix, jAffixLang, jGem, jBuffVal, jBuff, jBuffValue, 
-        jWord, jWordLang, jTalent, jTalentLang, jSecSkill, 
-        jDisc, jScoreBoss, jScoreBossLang, jItemLangRoot, jItemRoot,
-        jOnceAttr, jSecSkillLang, jSubNoteLang, jChar, jSkill, 
+        jEffect, jItem, jItemLang, jSubNote, jSubNoteLang,
+        jAffinityLevel, jEffectValue, jAffix, jAffixLang,
+        jBuff, jBuffValue, jWord, jWordLang, jTalent, jTalentLang,
+        jScoreBoss, jScoreBossLang, jItemLangRoot, jItemRoot,
+        jOnceAttr, jSecSkillLang, jChar, jSkill, 
         jSkillLang, jPotential, jBlitz
     } = dataFiles;
 
@@ -961,12 +960,11 @@ async function initTables(dataRoot) {
     // Load all files in parallel
     const [
         jChar, jHit, jSkill, jSkillLang, jItemRoot,
-        jEffect, jItem, jItemLang, jMainSkill, jMainSkillLang,
-        jFloorBuff, jSubNote, jSubNoteLang, jAffinityLevel, jEffectValue,
-        jAffix, jAffixLang, jGem, jBuffVal,
+        jEffect, jItem, jItemLang, jSubNote, jSubNoteLang,
+        jAffinityLevel, jEffectValue, jAffix, jAffixLang,
         jBuff, jBuffValue, jWord, jWordLang, jTalent, jTalentLang,
-        jSecSkill, jOnceAttr, jOnceAttrValue, jDisc, jScoreBoss, jScoreBossLang,
-        jPotential, jMonsterSkin, jItemLangRoot, jSecSkillLang, jBlitz,
+        jOnceAttr, jOnceAttrValue, jScoreBoss, jScoreBossLang,
+        jPotential, jMonsterSkin, jSecSkillLang, jBlitz,
     ] = await Promise.all([
         loadJson(`${_dataRoot}character.json`,               'char'),
         loadJson(`${bin}HitDamage.json`,                     'hit'),
@@ -976,35 +974,30 @@ async function initTables(dataRoot) {
         loadJson(`${bin}Effect.json`,                        'effect'),
         loadJson(`${bin}Item.json`,                          'item'),
         loadJson(`${lang}Item.json`,                         'itemLang'),
-        loadJson(`${bin}MainSkill.json`,                     'mainSkill'),
-        loadJson(`${lang}MainSkill.json`,                    'mainSkillLang'),
-        loadJson(`${bin}FloorBuff.json`,                     'floorBuff'),
         loadJson(`${bin}SubNoteSkill.json`,                  'subNote'),
         loadJson(`${lang}SubNoteSkill.json`,                 'subNoteLang'),
         loadJson(`${bin}AffinityLevel.json`,                 'affinity'),
         loadJson(`${bin}EffectValue.json`,                   'effectValue'),
         loadJson(`${bin}TravelerDuelChallengeAffix.json`,    'affix'),
         loadJson(`${lang}TravelerDuelChallengeAffix.json`,   'affixLang'),
-        loadJson(`${bin}CharGemAttrValue.json`,              'gem'),
-        loadJson(`${bin}BuffValue.json`,                     'buffVal'),
         loadJson(`${bin}Buff.json`,                          'buff'),
         loadJson(`${bin}BuffValue.json`,                     'buffValue'),
         loadJson(`${bin}Word.json`,                          'word'),
         loadJson(`${lang}Word.json`,                         'wordLang'),
         loadJson(`${bin}Talent.json`,                        'talent'),
         loadJson(`${lang}Talent.json`,                       'talentLang'),
-        loadJson(`${bin}SecondarySkill.json`,                'secSkill'),
         loadJson(`${bin}OnceAdditionalAttribute.json`,       'onceAttr'),
         loadJson(`${bin}OnceAdditionalAttributeValue.json`,  'onceAttrValue'),
-        loadJson(`${_dataRoot}disc.json`,                    'disc'),
         loadJson(`${bin}ScoreBossAbility.json`,              'scoreBoss'),
         loadJson(`${lang}ScoreBossAbility.json`,             'scoreBossLang'),
         loadJson(`${bin}Potential.json`,                     'potential'),
         loadJson(`${bin}MonsterSkin.json`,                   'monsterSkin'),
-        loadJson(`${lang}Item.json`,                         'itemLangRoot'),
         loadJson(`${lang}SecondarySkill.json`,               'secSkillLang'),
         loadJson(`${_dataRoot}blitz.json`,                   'blitz'),
     ]);
+
+    // lang/Item.json doubles as the item-language map used by disc/potential decoding
+    const jItemLangRoot = jItemLang;
 
     if (!jChar || !jSkill || !jSkillLang) {
         console.error('[tableResolver] Missing required data files — tables not built');
@@ -1021,11 +1014,10 @@ async function initTables(dataRoot) {
     }
 
     buildEffectTable({
-        jEffect, jItem, jItemLang, jMainSkill, jMainSkillLang,
-        jFloorBuff, jSubNote, jSubNoteLang, jAffinityLevel, jEffectValue,
-        jAffix, jAffixLang, jGem, jBuffVal,
+        jEffect, jItem, jItemLang, jSubNote, jSubNoteLang,
+        jAffinityLevel, jEffectValue, jAffix, jAffixLang,
         jBuff, jBuffValue, jWord, jWordLang, jTalent, jTalentLang,
-        jSecSkill, jOnceAttr, jDisc, jScoreBoss, jScoreBossLang,
+        jOnceAttr, jScoreBoss, jScoreBossLang,
         jItemRoot, jItemLangRoot, jSecSkillLang,
         jChar, jSkill, jSkillLang, jPotential, jBlitz
     });
