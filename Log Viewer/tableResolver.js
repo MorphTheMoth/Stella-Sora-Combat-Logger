@@ -179,15 +179,31 @@ function enrichHit(ev) {
     padStats(ev.DefenderStats?.attrs);
     enrichAttrList(ev.AttackerStats?.attrs);
     enrichAttrList(ev.AttackerSpecial?.specialAttrs);
-    enrichAttrList(ev.DefenderStats?.attrs);
     enrichAttrList(ev.DefenderSpecial?.specialAttrs);
 }
 
+// Pads an attr list so index i aligns with attr id i (fill gaps with defaults).
+// Faithful to the previous splice-based loop, but O(n) instead of O(n^2):
+// the splice loop kept the element at position i if it was present and its id
+// was <= i, otherwise it inserted a default at i (shifting later entries right).
 function padStats(attrList) {
   if (!attrList) return;
-  for (let i = 0; i <= 97; i++)
-    if (!attrList[i] || (attrList[i].id != null && attrList[i].id > i))
-      attrList.splice(i, 0, {origin: 0, base: 0, pct: 0, abs: 0, limPct: 0});
+  const out = [];
+  let s = 0;
+  for (let i = 0; i <= 97; i++) {
+    const cur = attrList[s];
+    if (cur !== undefined && cur !== null && !(cur.id != null && cur.id > i)) {
+      out.push(cur);
+      s++;
+    } else {
+      out.push({origin: 0, base: 0, pct: 0, abs: 0, limPct: 0});
+    }
+  }
+  for (; s < attrList.length; s++) out.push(attrList[s]);
+  if (out.length !== attrList.length) {
+    attrList.length = 0;
+    for (const e of out) attrList.push(e);
+  }
 }
 
 function enrichBuff(ev) {
@@ -225,9 +241,15 @@ function enrichBuffList(buffList) {
 function enrichEffectList(effectList) {
     if (!effectList?.effects) return;
     for (const e of effectList.effects) {
-        e.name = buffIdToName(e.configId);
         const ei = effectTable.get(e.configId);
-        if (ei) e.source = ei.source ?? 'Unknown';
+        if (ei) {
+            e.name = (ei.charName && ei.charName !== '?')
+                ? `${ei.charName} / ${ei.label}`
+                : ei.label;
+            e.source = ei.source ?? 'Unknown';
+        } else {
+            e.name = `configId=${e.configId} (unknown)`;
+        }
         const ev = effectValueTable.get(e.valueConfigId);
         if (ev) {
             if (ev.attrType != null) e.effectType  = ev.effectType;
@@ -256,10 +278,11 @@ function enrichAttrList(attrs) {
 
 function enrichAttrDictList(attrDictList) {
     if (!Array.isArray(attrDictList)) return;
-    let i = 0;
-    while (i < attrDictList.length) {
-        const entry = attrDictList[i];
-        if (entry._dictEnriched) { i++; continue; }
+    // Build a new list with push() instead of splice()-inserting extras,
+    // which avoided O(n^2) array shifting on large dict lists.
+    const out = [];
+    for (const entry of attrDictList) {
+        if (entry._dictEnriched) { out.push(entry); continue; }
 
         if (entry.attrId != null) {
             entry.configId = entry.attrId;
@@ -276,6 +299,7 @@ function enrichAttrDictList(attrDictList) {
                 entry.subType  = s1.subType;
                 entry.value    = s1.value;
                 entry._dictEnriched = true;
+                out.push(entry);
 
                 for (let sn = 1; sn < slots.length; sn++) {
                     const sx = slots[sn];
@@ -285,7 +309,7 @@ function enrichAttrDictList(attrDictList) {
                     extra.value    = sx.value;
                     extra.name     = (entry.name || String(entry.attrId || '')) + ' #' + (sn + 1);
                     extra._dictEnriched = true;
-                    attrDictList.splice(i + sn, 0, extra);
+                    out.push(extra);
                 }
                 // Retrocompat: extract old-format level data into levelMap
                 const cid0 = entry.configId ?? entry.attrId;
@@ -296,7 +320,6 @@ function enrichAttrDictList(attrDictList) {
                         vc: entry.allValueConfigIds.map(v => ({ l: v.level, v: v.valueConfigId }))
                     });
                 }
-                i += slots.length;
                 continue;
             }
         }
@@ -310,7 +333,11 @@ function enrichAttrDictList(attrDictList) {
                 vc: entry.allValueConfigIds.map(v => ({ l: v.level, v: v.valueConfigId }))
             });
         }
-        i++;
+        out.push(entry);
+    }
+    if (out.length !== attrDictList.length) {
+        attrDictList.length = 0;
+        for (const e of out) attrDictList.push(e);
     }
 }
 

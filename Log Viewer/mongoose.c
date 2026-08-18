@@ -11996,6 +11996,16 @@ static void setsockopts(struct mg_connection *c) {
   if (setsockopt(FD(c), SOL_SOCKET, SO_KEEPALIVE, (char *) &on, sizeof(on)) !=
       0)
     (void) 0;
+  // A large send buffer keeps the socket continuously writable while a big
+  // response (e.g. a multi-MB saved log) is streamed out. With the default
+  // ~16KB buffer, every window-full of data stalls for the peer's delayed
+  // ACK, throttling loopback transfers to a few hundred KB/s.
+  {
+    int sndbuf = 4 * 1024 * 1024;
+    if (setsockopt(FD(c), SOL_SOCKET, SO_SNDBUF, (char *) &sndbuf,
+                   sizeof(sndbuf)) != 0)
+      (void) 0;
+  }
 #endif
 }
 

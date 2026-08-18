@@ -622,14 +622,28 @@ static void InvalidateIndex() {
     g_index.eof_offset = 0;
 }
 
-// Returns { "events": [...], "totalLines": N, "nextAfter": N }.
-// After the first full scan the index is only extended by new bytes,
-// and each poll jumps straight to `after` via seekg - no full-file scan.
-std::string ReadJsonLog(size_t after = 0) {
+// Max logical lines delivered per read. The initial backlog of a large saved
+// log is streamed in SSE frames (kSseFrameLines each) as the socket drains, so
+// this cap only bounds how much we read from disk per call.
+static const size_t kMaxEventsPerSseBatch = 10000;
+
+// Raw NDJSON reader for the live log. Returns newline-joined logical lines from
+// [after, after+maxLines) with no JSON parsing — the file content IS the wire
+// format. `totalOut` receives the total logical line count and `nextAfterOut`
+// receives after + lines read. A "logical line" is any non-empty line that
+// doesn't start with '=' (matching the LineIndex semantics).
+// After the first full scan the index is only extended by new bytes, and each
+// poll jumps straight to `after` via seekg - no full-file scan.
+std::string ReadRawLines(size_t after, size_t maxLines,
+                         size_t* totalOut, size_t* nextAfterOut) {
     std::lock_guard<std::mutex> lock(file_mutex);
 
     std::ifstream file(LOG_FILE);
-    if (!file.is_open()) return "{\"events\":[],\"totalLines\":0}";
+    if (!file.is_open()) {
+        if (totalOut) *totalOut = 0;
+        if (nextAfterOut) *nextAfterOut = after;
+        return std::string();
+    }
 
     if (!g_index.valid)
         RebuildIndex(file);
@@ -639,11 +653,10 @@ std::string ReadJsonLog(size_t after = 0) {
     // ExtendIndex may have invalidated the index on truncation — rebuild if so.
     if (!g_index.valid) RebuildIndex(file);
 
-    size_t totalLines = g_index.offsets.size();
-
-    json arr = json::array();
+    size_t total = g_index.offsets.size();
+    std::string out;
     size_t nextAfter = after;
-    if (after < totalLines) {
+    if (after < total) {
         file.clear();
         file.seekg(g_index.offsets[after]);
         if (file.fail()) {
@@ -653,23 +666,102 @@ std::string ReadJsonLog(size_t after = 0) {
             g_index.eof_offset = 0;
         } else {
             std::string line;
-            int maxLines = 250, read = 0;
+            size_t read = 0;
             while (read < maxLines && std::getline(file, line)) {
-                if (line.empty() || line[0] == '=') continue;
-                try { arr.push_back(json::parse(line)); } catch (...) {}
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                out += line;
+                out += '\n';
                 ++read;
             }
             nextAfter = after + read;
         }
     } else {
-        nextAfter = totalLines;
+        nextAfter = total;
+    }
+    if (totalOut) *totalOut = total;
+    if (nextAfterOut) *nextAfterOut = nextAfter;
+    return out;
+}
+
+// Cached line-offset indexes for saved (static) log files. Saved logs don't
+// change on disk, so rebuilding the index on every 500ms SSE timer tick (a full
+// multi-MB file scan) would be wasted work; the cache is invalidated by size or
+// mtime changes. Guarded by file_mutex (single-threaded server anyway).
+struct SavedLogIndex {
+    std::vector<std::streampos> offsets;
+    std::filesystem::file_time_type mtime{};
+    uintmax_t size = 0;
+    bool valid = false;
+};
+static std::map<std::string, SavedLogIndex> g_saved_index_cache;
+
+// Builds (or returns the cached) line-offset index for a saved log file.
+// Scans from the stream's current position to EOF. Returns nullptr on error.
+static const SavedLogIndex* GetSavedLogIndex(const std::string& path,
+                                             std::ifstream& file) {
+    try {
+        auto mtime = std::filesystem::last_write_time(path);
+        uintmax_t size = std::filesystem::file_size(path);
+        auto it = g_saved_index_cache.find(path);
+        if (it != g_saved_index_cache.end() && it->second.valid &&
+            it->second.size == size && it->second.mtime == mtime)
+            return &it->second;
+
+        SavedLogIndex idx;
+        idx.mtime = mtime;
+        idx.size = size;
+        std::string line;
+        while (true) {
+            std::streampos pos = file.tellg();
+            if (!std::getline(file, line)) break;
+            if (line.empty() || line[0] == '=') continue;
+            idx.offsets.push_back(pos);
+        }
+        idx.valid = true;
+        g_saved_index_cache[path] = std::move(idx);
+        return &g_saved_index_cache[path];
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+// Like ReadRawLines but for a saved (static) file, using a cached line index so
+// it can seekg directly to `after` without scanning from the top each call.
+std::string ReadRawLinesFrom(const std::string& path, size_t after,
+                             size_t maxLines, size_t* totalOut,
+                             size_t* nextAfterOut) {
+    std::lock_guard<std::mutex> lock(file_mutex);
+    std::ifstream file(path);
+    if (!file.is_open()) {
+        if (totalOut) *totalOut = 0;
+        if (nextAfterOut) *nextAfterOut = after;
+        return std::string();
     }
 
-    json result;
-    result["events"]     = arr;
-    result["totalLines"] = totalLines;
-    result["nextAfter"]  = nextAfter;
-    return result.dump();
+    const SavedLogIndex* idx = GetSavedLogIndex(path, file);
+    size_t total = idx ? idx->offsets.size() : 0;
+    std::string out;
+    size_t nextAfter = after;
+    if (idx && after < total) {
+        file.clear();
+        file.seekg(idx->offsets[after]);
+        if (!file.fail()) {
+            std::string line;
+            size_t read = 0;
+            while (read < maxLines && std::getline(file, line)) {
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                out += line;
+                out += '\n';
+                ++read;
+            }
+            nextAfter = after + read;
+        }
+    } else if (idx) {
+        nextAfter = total;
+    }
+    if (totalOut) *totalOut = total;
+    if (nextAfterOut) *nextAfterOut = nextAfter;
+    return out;
 }
 
 // =============================================================================
@@ -849,48 +941,6 @@ static bool SaveCurrentLog(const std::string& name, std::string& errMsg) {
     return true;
 }
 
-// Like ReadJsonLog but for a saved (static) file - builds a local offset index
-// on each call so it can seekg directly to `after` without scanning from the top.
-std::string ReadJsonLogFrom(const std::string& path, size_t after = 0) {
-    std::lock_guard<std::mutex> lock(file_mutex);
-    std::ifstream file(path);
-    if (!file.is_open()) return "{\"events\":[],\"totalLines\":0}";
-
-    // Build a local line-offset index for this file.
-    std::vector<std::streampos> offsets;
-    std::string line;
-    while (true) {
-        std::streampos pos = file.tellg();
-        if (!std::getline(file, line)) break;
-        if (line.empty() || line[0] == '=') continue;
-        offsets.push_back(pos);
-    }
-
-    size_t totalLines = offsets.size();
-    json arr = json::array();
-    size_t nextAfter = after;
-
-    if (after < totalLines) {
-        file.clear();
-        file.seekg(offsets[after]);
-        int maxLines = 250, read = 0;
-        while (read < maxLines && std::getline(file, line)) {
-            if (line.empty() || line[0] == '=') continue;
-            try { arr.push_back(json::parse(line)); } catch (...) {}
-            ++read;
-        }
-        nextAfter = after + read;
-    } else {
-        nextAfter = totalLines;
-    }
-
-    json result;
-    result["events"]     = arr;
-    result["totalLines"] = totalLines;
-    result["nextAfter"]  = nextAfter;
-    return result.dump();
-}
-
 // =============================================================================
 //  RawByteTailer — tracks byte offset for raw-text log files
 // =============================================================================
@@ -991,10 +1041,132 @@ static const char SSE_HEADERS[] =
     "Connection: keep-alive\r\n"
     "\r\n";
 
+// Bodies larger than this are streamed to the client in small chunks instead
+// of being buffered into mongoose's send queue in one giant mg_send() call.
+// Buffering a 30-40MB payload at once makes mongoose shift the whole buffer
+// on every partial socket write (mg_iobuf_del memmove), which turns a local
+// transfer into a minutes-long O(n^2) slog. Streaming keeps c->send bounded.
+static const size_t kStreamThresholdBytes = 1 << 20;  // 1 MB
+
+// How much data we hand to mongoose's send queue per poll/write cycle. This is
+// the steady-state in-flight budget per cycle, so it is sized well above the
+// MG_IO_SIZE used by mongoose's own file-streaming path: the kernel socket
+// buffer is now large (SO_SNDBUF in setsockopts), and bigger chunks let each
+// poll cycle move much more data without triggering the O(n^2) buffer shifts
+// that plagued the single-giant-mg_send approach.
+static const size_t kStreamChunkBytes = 256 * 1024;  // 256 KB
+
+// The initial backlog of a large log is split into SSE frames of this many raw
+// lines each. Each frame is delivered to the browser as its own SSE message, so
+// the client can parse and render that batch while the next frame is still in
+// flight (progressive loading) instead of waiting for the whole multi-MB blob.
+static const size_t kSseFrameLines = 1000;
+
+// SSE meta frame: tells the client the server's total logical line count. The
+// client uses it to detect a truncated/cleared server log and to know when the
+// initial backlog has fully arrived.
+static std::string BuildMetaFrame(size_t total) {
+    return "event: meta\ndata: {\"total\":" + std::to_string(total) + "}\n\n";
+}
+
+// Wraps newline-joined raw log lines into one `event: log` SSE message.
+static std::string BuildLogFrame(const std::string& rawLines) {
+    std::string frame = "event: log\n";
+    size_t pos = 0;
+    while (pos < rawLines.size()) {
+        size_t nl = rawLines.find('\n', pos);
+        size_t end = (nl == std::string::npos) ? rawLines.size() : nl;
+        frame += "data: ";
+        frame.append(rawLines, pos, end - pos);
+        frame += '\n';
+        pos = end + 1;
+    }
+    frame += '\n';
+    return frame;
+}
+
+// A response queued for streaming to a connection. `frames` holds whole SSE
+// messages (or a single body) that the pump hands to the socket in bounded
+// chunks as it drains, keeping the mongoose send buffer small.
+// `clearIsRespOnDone` mirrors mg_http_reply: for a normal HTTP response we must
+// clear c->is_resp when the body is fully handed to mongoose so the HTTP state
+// machine can accept the next request; for an SSE stream the response never
+// completes, so it stays set.
+struct PendingBody {
+    std::vector<std::string> frames;
+    size_t frameIdx = 0;
+    size_t framePos = 0;
+    bool clearIsRespOnDone = true;
+};
+
+static std::map<struct mg_connection*, PendingBody> g_pending_body;
+
+// Queue a single body (e.g. a /api/log response) to be streamed to `c`.
+static void StreamBodyToClient(struct mg_connection* c, std::string body,
+                               bool clearIsRespOnDone = true) {
+    g_pending_body[c] = PendingBody{{std::move(body)}, 0, 0, clearIsRespOnDone};
+}
+
+// Queue a sequence of SSE frames (e.g. the initial backlog of a big log) to be
+// streamed to `c` in order, so the client receives them as separate SSE
+// messages and can render each batch progressively.
+static void StreamFramesToClient(struct mg_connection* c,
+                                 std::vector<std::string> frames,
+                                 bool clearIsRespOnDone = true) {
+    g_pending_body[c] = PendingBody{std::move(frames), 0, 0, clearIsRespOnDone};
+}
+
+// Called on every MG_EV_POLL / MG_EV_WRITE. Tops up the connection's send
+// buffer with the next chunk of a pending body/frame, but only when the buffer
+// has drained below kStreamChunkBytes (same rate-limiting approach mongoose
+// uses for static files in static_cb). Removing bytes from the buffer front
+// after each partial write is then a bounded memmove instead of a multi-MB one.
+static void PumpPendingBody(struct mg_connection* c) {
+    auto it = g_pending_body.find(c);
+    if (it == g_pending_body.end()) return;
+    PendingBody& pb = it->second;
+
+    if (pb.frameIdx >= pb.frames.size()) {
+        if (pb.clearIsRespOnDone) c->is_resp = 0;
+        g_pending_body.erase(it);
+        return;
+    }
+    if (c->send.size < kStreamChunkBytes) mg_iobuf_resize(&c->send, kStreamChunkBytes);
+    size_t space = std::min(c->send.size - c->send.len, kStreamChunkBytes);
+    if (space == 0) return;  // Socket not draining; try again next poll
+    while (space > 0 && pb.frameIdx < pb.frames.size()) {
+        const std::string& frame = pb.frames[pb.frameIdx];
+        size_t avail = frame.size() - pb.framePos;
+        if (avail == 0) {
+            pb.frameIdx++;
+            pb.framePos = 0;
+            continue;
+        }
+        size_t n = std::min(space, avail);
+        mg_send(c, frame.data() + pb.framePos, n);
+        pb.framePos += n;
+        space -= n;
+        if (pb.framePos >= frame.size()) {
+            pb.frameIdx++;
+            pb.framePos = 0;
+        }
+    }
+}
+
 static void sse_timer_cb(void* arg) {
     for (size_t i = 0; i < g_sse_clients.size(); ) {
         auto& client = g_sse_clients[i];
         bool advance = true;
+
+        // While the initial backlog is being streamed by the pump, the timer
+        // must not write to the connection: a heartbeat/meta frame landing
+        // between the pump's chunks would inject a "\n\n" boundary inside an
+        // in-flight SSE message and corrupt the framing. The pump's data keeps
+        // the connection alive, so skipping a few ticks is harmless.
+        if (g_pending_body.count(client.conn)) {
+            if (advance) ++i;
+            continue;
+        }
 
         if (client.type == SSE_EMBLEM && g_emblem_tailer.isConfigured()) {
             auto r = g_emblem_tailer.tail(client.lastOffset);
@@ -1013,14 +1185,15 @@ static void sse_timer_cb(void* arg) {
                 sendSseHeartbeat(client.conn);
             }
         } else if (client.type == SSE_MAIN) {
-            std::string body = client.savedLogPath.empty()
-                ? ReadJsonLog(client.lastOffset)
-                : ReadJsonLogFrom(client.savedLogPath, client.lastOffset);
-            json j;
-            try { j = json::parse(body); } catch (...) {}
-            size_t nextAfter = j.value("nextAfter", client.lastOffset);
+            size_t total = 0, nextAfter = client.lastOffset;
+            std::string raw = client.savedLogPath.empty()
+                ? ReadRawLines(client.lastOffset, kMaxEventsPerSseBatch, &total, &nextAfter)
+                : ReadRawLinesFrom(client.savedLogPath, client.lastOffset, kMaxEventsPerSseBatch, &total, &nextAfter);
+            std::string meta = BuildMetaFrame(total);
+            mg_send(client.conn, meta.c_str(), meta.size());
             if (nextAfter > client.lastOffset) {
-                sendJsonSse(client.conn, j);
+                std::string frame = BuildLogFrame(raw);
+                mg_send(client.conn, frame.c_str(), frame.size());
                 client.lastOffset = nextAfter;
             } else {
                 sendSseHeartbeat(client.conn);
@@ -1039,6 +1212,14 @@ static void sse_timer_cb(void* arg) {
 static void fn(struct mg_connection *c, int ev, void *ev_data) {
     if (ev == MG_EV_CLOSE) {
         RemoveSseClient(c);
+        g_pending_body.erase(c);
+    } else if (ev == MG_EV_WRITE || ev == MG_EV_POLL) {
+        // Stream any queued large response bodies (e.g. a full saved log)
+        // out in small chunks as the socket drains. MG_EV_WRITE fires right
+        // after each partial write, which keeps the socket in the poll write
+        // set and the flow continuous (same approach mongoose uses for static
+        // files in static_cb); MG_EV_POLL covers the initial fill.
+        PumpPendingBody(c);
     } else if (ev == MG_EV_HTTP_MSG) {
         struct mg_http_message *hm = (struct mg_http_message *) ev_data;
 
@@ -1173,8 +1354,13 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                 std::string saved_path = SavedLogPath(safe_name);
                 std::ifstream check(saved_path);
                 if (check.good()) {
-                    body = ReadJsonLogFrom(saved_path, after);
-                    mg_http_reply(c, 200, "Content-Type: application/json\r\nCache-Control: no-cache\r\n", "%s", body.c_str());
+                    body = ReadRawLinesFrom(saved_path, after, kMaxEventsPerSseBatch, nullptr, nullptr);
+                    if (body.size() > kStreamThresholdBytes) {
+                        mg_printf(c, "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nCache-Control: no-cache\r\nContent-Length: %lu\r\n\r\n", (unsigned long) body.size());
+                        StreamBodyToClient(c, std::move(body));
+                    } else {
+                        mg_http_reply(c, 200, "Content-Type: application/x-ndjson\r\nCache-Control: no-cache\r\n", "%s", body.c_str());
+                    }
                     HttpLog(200, method, uri, query, remote);
                 } else {
                     mg_http_reply(c, 404, "Content-Type: application/json\r\nCache-Control: no-cache\r\n",
@@ -1182,8 +1368,13 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                     HttpLog(404, method, uri, query, remote);
                 }
             } else {
-                body = ReadJsonLog(after);
-                mg_http_reply(c, 200, "Content-Type: application/json\r\nCache-Control: no-cache\r\n", "%s", body.c_str());
+                body = ReadRawLines(after, kMaxEventsPerSseBatch, nullptr, nullptr);
+                if (body.size() > kStreamThresholdBytes) {
+                    mg_printf(c, "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nCache-Control: no-cache\r\nContent-Length: %lu\r\n\r\n", (unsigned long) body.size());
+                    StreamBodyToClient(c, std::move(body));
+                } else {
+                    mg_http_reply(c, 200, "Content-Type: application/x-ndjson\r\nCache-Control: no-cache\r\n", "%s", body.c_str());
+                }
                 HttpLog(200, method, uri, query, remote);
             }
         } else if (uri == "/api/levelmap") {
@@ -1383,17 +1574,37 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
 
             mg_send(c, SSE_HEADERS, sizeof(SSE_HEADERS) - 1);
 
-            std::string body = savedLogPath.empty()
-                ? ReadJsonLog(after)
-                : ReadJsonLogFrom(savedLogPath, after);
-            json j;
-            try { j = json::parse(body); } catch (...) {}
-            size_t nextAfter = j.value("nextAfter", after);
+            size_t total = 0, nextAfter = after;
+            std::string raw = savedLogPath.empty()
+                ? ReadRawLines(after, kMaxEventsPerSseBatch, &total, &nextAfter)
+                : ReadRawLinesFrom(savedLogPath, after, kMaxEventsPerSseBatch, &total, &nextAfter);
 
-            if (after < nextAfter)
-                sendJsonSse(c, j);
-            else
+            if (after < nextAfter) {
+                // Send the backlog as [meta, log-batch1..N] SSE frames streamed
+                // through the pump, so the client renders each batch while the
+                // next is still in flight. The SSE response never completes, so
+                // is_resp stays set.
+                std::vector<std::string> frames;
+                frames.push_back(BuildMetaFrame(total));
+                size_t lineStart = 0;
+                size_t lineCount = 0;
+                for (size_t pos = 0; pos <= raw.size(); pos++) {
+                    if (pos == raw.size() || raw[pos] == '\n') {
+                        if (++lineCount >= kSseFrameLines) {
+                            frames.push_back(BuildLogFrame(raw.substr(lineStart, pos - lineStart + 1)));
+                            lineStart = pos + 1;
+                            lineCount = 0;
+                        }
+                    }
+                }
+                if (lineStart < raw.size())
+                    frames.push_back(BuildLogFrame(raw.substr(lineStart)));
+                StreamFramesToClient(c, std::move(frames), /*clearIsRespOnDone=*/false);
+            } else {
+                std::string meta = BuildMetaFrame(total);
+                mg_send(c, meta.c_str(), meta.size());
                 sendSseHeartbeat(c);
+            }
 
             SseClient sc;
             sc.conn = c;

@@ -41,6 +41,8 @@ let totalHeightCached = 0;
 let lastFetchCount = 0;
 let currentSavedLog = null;
 let pendingAutoClear = false;
+let serverTotal = Infinity; // server's total logical line count (from meta frames); Infinity = unknown yet
+let backlogDone = false;    // true once the initial backlog has been fully received
 
 // ─── Level map ────────────────────
 async function fetchLevelMap(savedLogName) {
@@ -85,9 +87,13 @@ class Fenwick {
     }
 }
 
-function buildFenwick() {
+function buildFenwick(minCapacity) {
     const spacer = document.getElementById('scrollSpacer');
-    fenwick = new Fenwick(filtered.length);
+    // Capacity grows geometrically (via minCapacity from the fold path) so
+    // appends are amortized O(1); a Fenwick can't be "grown by copy" once it
+    // has pending adds, so growth is always a full rebuild from `heights`.
+    const capacity = Math.max(minCapacity || 0, allEvents.length, 1);
+    fenwick = new Fenwick(capacity);
     heights = new Array(filtered.length);
     let sum = 0;
     for (let i = 0; i < filtered.length; i++) {
@@ -96,8 +102,14 @@ function buildFenwick() {
         const spacerH = spacerByOrig.get(orig) || 0;
         const h = eventH + spacerH;
         heights[i] = h;
-        fenwick.add(i, h);
+        fenwick.tree[i + 1] = h;
         sum += h;
+    }
+    // O(n) build: propagate children into parents across the full capacity so
+    // that cells beyond `filtered.length` are consistent for later appends.
+    for (let i = 1; i <= fenwick.size; i++) {
+        const p = i + (i & -i);
+        if (p <= fenwick.size) fenwick.tree[p] += fenwick.tree[i];
     }
     totalHeightCached = sum;
     spacer.style.height = totalHeightCached + 'px';
@@ -156,14 +168,11 @@ async function loadSavedLogsList() {
     }
 }
 
-window.onSavedLogChange = async function() {
-    pendingAutoClear = false;
-    const val = document.getElementById('savedLogFilter').value;
-    currentSavedLog = val || null;
-    stopLiveUpdates();
-
+// Wipe client-side log state (used by saved-log switch, clear, cut, resync).
+function resetClientState() {
     allEvents = [];
     filtered = [];
+    foldedCount = 0;
     lastFetchCount = 0;
     openStates = {};
     measuredHeights = {};
@@ -171,6 +180,15 @@ window.onSavedLogChange = async function() {
     spacerByOrig.clear();
     document.getElementById('scrollContent').innerHTML = '';
     closeSearch();
+}
+
+window.onSavedLogChange = async function() {
+    pendingAutoClear = false;
+    const val = document.getElementById('savedLogFilter').value;
+    currentSavedLog = val || null;
+    stopLiveUpdates();
+
+    resetClientState();
     refilterAndRender(true, true);
     await fetchLevelMap(currentSavedLog);
     startLiveUpdates();
@@ -218,15 +236,8 @@ window.clearLog = async function(skipConfirm) {
         const data = await res.json();
         if (data.ok) {
             stopLiveUpdates();
-            allEvents = [];
-            filtered = [];
-            lastFetchCount = 0;
-            openStates = {};
-            measuredHeights = {};
-            subOpenStates = {};
-            spacerByOrig.clear();
+            resetClientState();
             refilterAndRender(true, true);
-            closeSearch();
             if (currentSavedLog) {
                 loadSavedLogsList();
                 currentSavedLog = null;
@@ -274,15 +285,7 @@ window.lastRun = async function() {
         const data = await res.json();
         if (data.ok) {
             stopLiveUpdates();
-            allEvents = [];
-            filtered = [];
-            lastFetchCount = 0;
-            openStates = {};
-            measuredHeights = {};
-            subOpenStates = {};
-            spacerByOrig.clear();
-            document.getElementById('scrollContent').innerHTML = '';
-            closeSearch();
+            resetClientState();
             refilterAndRender(true, true);
             startLiveUpdates();
         } else {
@@ -311,6 +314,12 @@ function startLiveUpdates() {
     if (location.protocol === 'file:') return;
     stopLiveUpdates();
 
+    // A fresh connection (after=0) starts in "initial backlog" mode until the
+    // first meta frame reports a total and we've caught up to it; reconnects
+    // (after>0) just continue incrementally.
+    backlogDone = lastFetchCount > 0;
+    serverTotal = Infinity;
+
     const params = ['after=' + lastFetchCount];
     if (currentSavedLog) params.push('savedlog=' + encodeURIComponent(currentSavedLog));
     const newEs = new EventSource('/events?' + params.join('&'));
@@ -322,12 +331,24 @@ function startLiveUpdates() {
         if (dot) { dot.style.background = '#4a8a4a'; dot.title = 'live'; }
         if (_esFallbackTimer) { clearTimeout(_esFallbackTimer); _esFallbackTimer = null; }
     };
-    newEs.onmessage = e => {
+    // Raw log-line batches. Each message is one frame of raw NDJSON lines; the
+    // initial backlog arrives as several such frames streamed progressively.
+    newEs.addEventListener('log', e => {
         if (newEs !== _es) return;
         if (!e.data) return;
-        try { handleSseEvent(JSON.parse(e.data)); }
-        catch (err) { console.error('SSE parse error', err); }
-    };
+        try {
+            const { events, count } = parseRawBatch(e.data);
+            handleRawBatch(events, count);
+        } catch (err) { console.error('SSE parse error', err); }
+    });
+    // Metadata (server's total logical line count) — used to detect a
+    // truncated/cleared server log and to track the end of the initial backlog.
+    newEs.addEventListener('meta', e => {
+        if (newEs !== _es) return;
+        if (!e.data) return;
+        try { handleMeta(JSON.parse(e.data)); }
+        catch (err) { console.error('SSE meta parse error', err); }
+    });
     newEs.onerror = () => {
         if (newEs !== _es) return;
         if (dot) { dot.style.background = '#6a3a3a'; dot.title = 'disconnected'; }
@@ -347,25 +368,70 @@ function startLiveUpdates() {
     }
 }
 
-function handleSseEvent(data) {
-    const newEvents = data.events || [];
-    let nextAfter = data.nextAfter != null ? data.nextAfter : lastFetchCount + newEvents.length;
-
-    if (nextAfter < lastFetchCount) {
-        // Server reset (truncation / clear) — resync.
-        lastFetchCount = 0;
-        nextAfter = newEvents.length;
+function appendEvents(events) {
+    const startIdx = allEvents.length;
+    for (let i = 0; i < events.length; i++) {
+        const ev = events[i];
+        ev._origIndex = startIdx + i;
+        enrichEvent(ev);
+        allEvents.push(ev);
     }
+}
 
-    if (lastFetchCount > 0) {
-        // incremental
+// Splits a raw NDJSON batch (newline-joined lines, as sent by the server) into
+// events. `count` is the number of logical lines (non-empty, not starting with
+// '=') — this matches the server's line-offset accounting exactly, so the
+// client's position stays aligned with the server's `after` offsets even when a
+// malformed line is skipped.
+function parseRawBatch(text) {
+    const events = [];
+    let count = 0;
+    if (!text) return { events, count };
+    const lines = text.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (!line || line[0] === '=') continue;
+        count++;
+        try { events.push(JSON.parse(line)); }
+        catch (e) { /* skip malformed line; still counted for offsets */ }
+    }
+    return { events, count };
+}
+
+function handleMeta(data) {
+    const t = data && data.total;
+    if (t == null) return;
+    serverTotal = t;
+    if (t < lastFetchCount) {
+        // The server log was truncated/cleared externally — resync from scratch.
+        console.log('Server log truncated (total ' + t + ' < ' + lastFetchCount + '), resyncing');
+        resetClientState();
+        lastFetchCount = 0;
+        stopLiveUpdates();
+        startLiveUpdates();
+    }
+}
+
+function handleRawBatch(events, count) {
+    const newEvents = events || [];
+    const nextAfter = lastFetchCount + count;
+
+    if (lastFetchCount === 0) {
+        // Initial load (fresh page load or post-truncation resync): full render.
+        if (allEvents.length > 0) resetClientState();
         if (newEvents.length > 0) {
-            const startIdx = allEvents.length;
-            newEvents.forEach((ev, i) => {
-                ev._origIndex = startIdx + i;
-                enrichEvent(ev);
-                allEvents.push(ev);
-            });
+            appendEvents(newEvents);
+            filteredDirty = true;
+            pendingResetOpen = true;
+            scheduleLogRefresh();
+        }
+    } else if (newEvents.length > 0) {
+        // Subsequent backlog frames and live updates: incremental fold.
+        appendEvents(newEvents);
+        // Auto-clear only applies to events arriving after the initial backlog
+        // has been fully delivered (matches the pre-batching single-message
+        // behavior, where the whole backlog arrived as one initial load).
+        if (backlogDone) {
             if (autoClearOnRestart && !currentSavedLog && newEvents.some(e => e.Type === 'Reset')) {
                 pendingAutoClear = true;
             } else if (pendingAutoClear && newEvents.length > 0) {
@@ -373,19 +439,13 @@ function handleSseEvent(data) {
                 window.clearLog(true);
                 return;
             }
-            refilterAndRender(false, false);
         }
-    } else {
-        // initial load (or resync after truncation)
-        allEvents = newEvents;
-        allEvents.forEach((ev, i) => { ev._origIndex = i; enrichEvent(ev); });
-        refilterAndRender(true, true);
+        scheduleLogRefresh();
     }
     lastFetchCount = nextAfter;
-
+    if (!backlogDone && serverTotal !== Infinity && lastFetchCount >= serverTotal)
+        backlogDone = true;
     if (window.dcRefreshIfVisible) window.dcRefreshIfVisible();
-    buildCharFilter();
-    buildDefenderFilter();
 }
 
 // One-shot fetchLog kept for the SSE fallback path.
@@ -405,41 +465,34 @@ async function fetchLog(incremental = false) {
 
         const t = allEvents.length;
         const res = await fetch(url, { cache: 'no-cache' });
-        const data = await res.json();
+        const text = await res.text();
         if (allEvents.length != t) {
             console.log("Event count mismatch after fetching, dropping new events");
             return;
         }
 
-        const newEvents = data.events || [];
-        const nextAfter = data.nextAfter != null ? data.nextAfter : (incremental ? lastFetchCount + newEvents.length : newEvents.length);
-        if (incremental && lastFetchCount > 0) {
-            if (newEvents.length > 0) {
-                const startIdx = allEvents.length;
-                newEvents.forEach((ev, i) => {
-                    ev._origIndex = startIdx + i;
-                    enrichEvent(ev);
-                    allEvents.push(ev);
-                });
-                if (autoClearOnRestart && !currentSavedLog && newEvents.some(e => e.Type === 'Reset')) {
+        const { events, count } = parseRawBatch(text);
+        const nextAfter = incremental ? lastFetchCount + count : count;
+        if (events.length > 0) {
+            if (incremental && lastFetchCount > 0) {
+                appendEvents(events);
+                if (autoClearOnRestart && !currentSavedLog && events.some(e => e.Type === 'Reset')) {
                     pendingAutoClear = true;
-                } else if (pendingAutoClear && newEvents.length > 0) {
+                } else if (pendingAutoClear && events.length > 0) {
                     pendingAutoClear = false;
                     window.clearLog(true);
                     return;
                 }
-                refilterAndRender(false, false);
+            } else {
+                if (allEvents.length > 0) resetClientState();
+                appendEvents(events);
+                filteredDirty = true;
+                pendingResetOpen = true;
             }
-            lastFetchCount = nextAfter;
-        } else {
-            allEvents = newEvents;
-            allEvents.forEach((ev, i) => { ev._origIndex = i; enrichEvent(ev); });
-            lastFetchCount = nextAfter;
-            refilterAndRender(true, true);
+            scheduleLogRefresh();
         }
+        lastFetchCount = nextAfter;
         if (window.dcRefreshIfVisible) window.dcRefreshIfVisible();
-        buildCharFilter();
-        buildDefenderFilter();
     } catch (err) {
         console.error('fetch error', err);
     } finally {

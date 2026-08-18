@@ -4,139 +4,184 @@ function esc(s) {
     return String(s).replace(/[&<>"']/g, c => m[c]);
 }
 
+function effType(ev) {
+    if (ev._effType === undefined)
+        ev._effType = (ev.Type === 'Buff' && ev.SubType === 'Effect') ? 'Effect' : ev.Type;
+    return ev._effType;
+}
+
+// Derived fields are computed once per event and cached on it, so the filter
+// passes never re-derive string ops / allocate Sets for every event per pass.
 function getChars(ev) {
-    const s = new Set();
-    if (ev.Type==='Hit') { if(ev.AttackerDisplay) s.add(ev.AttackerDisplay); }
+    if (ev._chars !== undefined) return ev._chars;
+    const s = [];
+    if (ev.Type==='Hit') { if(ev.AttackerDisplay) s.push(ev.AttackerDisplay); }
     else if (ev.Type==='Buff') {
-        if(ev.OwnerDisplay||ev.Owner) s.add(cleanOwner(ev.OwnerDisplay||ev.Owner));
-        if(ev.SourceDisplay||ev.Source) s.add(cleanOwner(ev.SourceDisplay||ev.Source));
-    } else if (ev.Type==='Skill Cast') { if(ev.Owner) s.add(ev.Owner); }
+        if(ev.OwnerDisplay||ev.Owner) s.push(cleanOwner(ev.OwnerDisplay||ev.Owner));
+        if(ev.SourceDisplay||ev.Source) s.push(cleanOwner(ev.SourceDisplay||ev.Source));
+    } else if (ev.Type==='Skill Cast') { if(ev.Owner) s.push(ev.Owner); }
+    ev._chars = s;
     return s;
 }
 function getSkillName(ev) {
-    if (ev.Type==='Hit') return (ev.HitConfig||{}).skillTitle||null;
-    if (ev.Type==='Buff') return ev.Name||null;
-    if (ev.Type==='Skill Cast') return ev.Name||null;
-    return null;
+    if (ev._skillName !== undefined) return ev._skillName;
+    let n = null;
+    if (ev.Type==='Hit') n = (ev.HitConfig||{}).skillTitle||null;
+    else if (ev.Type==='Buff') n = ev.Name||null;
+    else if (ev.Type==='Skill Cast') n = ev.Name||null;
+    ev._skillName = n;
+    return n;
 }
 function getDefender(ev) {
+    if (ev._defenders !== undefined) return ev._defenders;
+    let d = [];
     if (ev.Type === 'Hit') {
         const name = ev.DefenderDisplay || ev.Defender;
-        if (name) return new Set([cleanOwner(name)]);
+        if (name) d = [cleanOwner(name)];
     }
-    return new Set();
+    ev._defenders = d;
+    return d;
 }
 
 // ─── Filter state ─────────────────
 let typeFilter = new Set(['Hit', 'Skill Cast']);
 let charFilter = '', skillFilter = '', damageTypeFilter = '', defenderFilter = '';
+let filteredDirty = false;
+let pendingResetOpen = false;
+let refreshTimer = null;
+// Number of allEvents entries already folded through the filter pipeline.
+let foldedCount = 0;
 
-function buildCharFilter() {
-    const all = new Set(); allEvents.forEach(e => getChars(e).forEach(c => all.add(c)));
-    const sel = document.getElementById('charFilter');
-    const prev = charFilter;
-    sel.innerHTML = '<option value="">All Characters</option>';
-    [...all].sort().forEach(c => { const o=document.createElement('option'); o.value=c; o.textContent=c; sel.appendChild(o); });
-    if ([...sel.options].some(o => o.value === prev)) {
-        sel.value = prev;
-        charFilter = prev;
-    } else if (!prev) {
-        sel.value = '';
-        charFilter = '';
-    }
-}
-function buildSkillFilter(evs) {
-    const all = new Set(); evs.forEach(e => { const n=getSkillName(e); if(n) all.add(n); });
-    const sel = document.getElementById('skillFilter');
-    const prev = skillFilter;
-    sel.innerHTML = '<option value="">All Skills</option>';
-    const MAX = 28;
-    [...all].sort().forEach(s => {
-        const o = document.createElement('option');
-        o.value = s;
-        o.textContent = s.length > MAX ? s.slice(0, MAX) + '…' : s;
-        o.title = s;
-        sel.appendChild(o);
-    });
-    if ([...sel.options].some(o => o.value === prev)) {
-        sel.value = prev;
-        skillFilter = prev;
-    } else if (!prev) {
-        sel.value = '';
-        skillFilter = '';
-    }
-}
-function buildDamageTypeFilter(evs) {
-    const all = new Set();
-    evs.forEach(e => {
-        if (e.Type === 'Hit' && e.HitConfig && e.HitConfig.damageType != null) {
-            all.add(e.HitConfig.damageType);
-        }
-    });
-    const sel = document.getElementById('damageTypeFilter');
-    const prev = damageTypeFilter;
-    sel.innerHTML = '<option value="">All Damage Types</option>';
-    const MAX = 28;
-    [...all].sort((a, b) => a - b).forEach(dt => {
-        const o = document.createElement('option');
-        o.value = dt;
-        const label = dtName(dt);
-        o.textContent = label.length > MAX ? label.slice(0, MAX) + '…' : label;
-        o.title = label;
-        sel.appendChild(o);
-    });
-    if ([...sel.options].some(o => o.value === prev)) {
-        sel.value = prev;
-        damageTypeFilter = prev;
-    } else if (!prev) {
-        sel.value = '';
-        damageTypeFilter = '';
-    }
+// Cached option sets for the sidebar dropdowns (grown incrementally while
+// live events stream in, recomputed wholesale when the filters change).
+const charOptionsSet = new Set();
+const skillOptionsSet = new Set();
+const dmgTypeOptionsSet = new Set();
+const defenderCounts = new Map();
+let defenderCountsComputed = false;
+const selectBuiltSizes = { char: -1, skill: -1, dmgtype: -1, defender: -1 };
+
+function valueInSet(set, val) {
+    if (val === undefined || val === null || val === '') return false;
+    for (const v of set) if (String(v) === String(val)) return true;
+    return false;
 }
 
-function buildDefenderFilter() {
-    const hitCounts = {};
-    allEvents.forEach(e => getDefender(e).forEach(d => { hitCounts[d] = (hitCounts[d] || 0) + 1; }));
-    const all = Object.keys(hitCounts);
-    const sel = document.getElementById('defenderFilter');
-    const prev = defenderFilter;
-    sel.innerHTML = '<option value="">All Defenders</option>';
-    const MAX = 28;
-    [...all].sort().forEach(c => {
-        const o = document.createElement('option');
-        o.value = c;
-        o.textContent = c.length > MAX ? c.slice(0, MAX) + '…' : c;
-        o.title = c;
-        sel.appendChild(o);
-    });
-    if (prev && [...sel.options].some(o => o.value === prev)) {
-        sel.value = prev;
-        defenderFilter = prev;
-    } else if (!prev) {
-        const top = all.sort((a, b) => hitCounts[b] - hitCounts[a])[0] || '';
-        sel.value = top;
-        defenderFilter = top;
+function rebuildSelect(selId, builtKey, opts) {
+    const { set, emptyLabel, format, sortFn, MAX, currentVal } = opts;
+    if (set.size === selectBuiltSizes[builtKey]) {
+        const sel = document.getElementById(selId);
+        if (sel && !valueInSet(set, sel.value)) sel.value = '';
+        return;
     }
+    selectBuiltSizes[builtKey] = set.size;
+    const sel = document.getElementById(selId);
+    if (!sel) return;
+    let html = `<option value="">${emptyLabel}</option>`;
+    const items = [...set].sort(sortFn);
+    for (const v of items) {
+        const text = String(format ? format(v) : v);
+        const disp = text.length > MAX ? text.slice(0, MAX) + '…' : text;
+        html += `<option value="${esc(String(v))}"${text.length > MAX ? ` title="${esc(text)}"` : ''}>${esc(disp)}</option>`;
+    }
+    sel.innerHTML = html;
+    sel.value = valueInSet(set, currentVal) ? String(currentVal) : '';
 }
 
-function applyFilters() {
-    let evs = allEvents.slice();
-    // Reset events are always shown regardless of filters
-    const resets = evs.filter(e => e.Type === 'Reset');
-    if (typeFilter.size > 0) {
-        evs = evs.filter(ev => {
-            if (ev.Type === 'Reset') return true;
-            const effectiveType = (ev.Type === 'Buff' && ev.SubType === 'Effect') ? 'Effect' : ev.Type;
-            return typeFilter.has(effectiveType);
-        });
+function sortNumeric(a, b) { return Number(a) - Number(b); }
+
+function refreshSelects(force) {
+    if (force) {
+        selectBuiltSizes.char = -1;
+        selectBuiltSizes.skill = -1;
+        selectBuiltSizes.dmgtype = -1;
+        selectBuiltSizes.defender = -1;
     }
-    if (charFilter) evs = evs.filter(e => e.Type === 'Reset' || getChars(e).has(charFilter));
-    buildSkillFilter(evs);
-    if (skillFilter) evs = evs.filter(e => e.Type === 'Reset' || getSkillName(e) === skillFilter);
-    buildDamageTypeFilter(evs);
-    if (damageTypeFilter) evs = evs.filter(e => e.Type === 'Reset' || (e.HitConfig && e.HitConfig.damageType != null && String(e.HitConfig.damageType) === damageTypeFilter));
-    if (defenderFilter) evs = evs.filter(e => e.Type === 'Reset' || (getDefender(e).has(defenderFilter) || getDefender(e).size === 0));
-    return evs;
+    rebuildSelect('charFilter', 'char', { set: charOptionsSet, emptyLabel: 'All Characters', MAX: 28, currentVal: charFilter });
+    rebuildSelect('skillFilter', 'skill', { set: skillOptionsSet, emptyLabel: 'All Skills', MAX: 28, currentVal: skillFilter });
+    rebuildSelect('damageTypeFilter', 'dmgtype', { set: dmgTypeOptionsSet, emptyLabel: 'All Damage Types', format: dtName, sortFn: sortNumeric, MAX: 28, currentVal: damageTypeFilter });
+    rebuildSelect('defenderFilter', 'defender', { set: new Set(defenderCounts.keys()), emptyLabel: 'All Defenders', MAX: 28, currentVal: defenderFilter });
+}
+
+// ─── Filter predicates ──────────────────────
+function matchesTypeChar(ev) {
+    if (ev.Type === 'Reset') return true;
+    if (typeFilter.size > 0 && !typeFilter.has(effType(ev))) return false;
+    if (charFilter && !getChars(ev).includes(charFilter)) return false;
+    return true;
+}
+function matchesSkill(ev) {
+    if (ev.Type === 'Reset') return true;
+    return !skillFilter || getSkillName(ev) === skillFilter;
+}
+function matchesDmgType(ev) {
+    if (ev.Type === 'Reset') return true;
+    if (!damageTypeFilter) return true;
+    return !!(ev.HitConfig && ev.HitConfig.damageType != null && String(ev.HitConfig.damageType) === damageTypeFilter);
+}
+function matchesDefender(ev) {
+    if (ev.Type === 'Reset') return true;
+    if (!defenderFilter) return true;
+    const d = getDefender(ev);
+    return d.includes(defenderFilter) || d.length === 0;
+}
+function matchesFilter(ev) {
+    return matchesTypeChar(ev) && matchesSkill(ev) && matchesDmgType(ev) && matchesDefender(ev);
+}
+
+function computeDefenderCounts() {
+    defenderCounts.clear();
+    for (let i = 0; i < allEvents.length; i++) {
+        const d = getDefender(allEvents[i]);
+        for (let k = 0; k < d.length; k++)
+            defenderCounts.set(d[k], (defenderCounts.get(d[k]) || 0) + 1);
+    }
+    defenderCountsComputed = true;
+}
+
+// Auto-select the most-hit defender when the user has never chosen one
+// (mirrors the old buildDefenderFilter() default). Returns true if selected.
+function ensureDefenderAutoDefault() {
+    if (defenderFilter !== '') return false;
+    if (!defenderCountsComputed) computeDefenderCounts();
+    let top = '', best = 0;
+    for (const [d, c] of defenderCounts) { if (c > best) { best = c; top = d; } }
+    if (!top) return false;
+    defenderFilter = top;
+    return true;
+}
+
+// Full filter recompute. Rebuilds the dropdown option sets from scratch,
+// preserving the old applyFilters() ordering (skill options come from the
+// type+char filtered list, damage-type options from the type+char+skill list).
+function computeFilteredFull() {
+    charOptionsSet.clear();
+    dmgTypeOptionsSet.clear();
+    defenderCounts.clear();
+    defenderCountsComputed = true;
+    const typeChar = [];
+    for (let i = 0; i < allEvents.length; i++) {
+        const ev = allEvents[i];
+        const chars = getChars(ev);
+        for (let k = 0; k < chars.length; k++) charOptionsSet.add(chars[k]);
+        const defs = getDefender(ev);
+        for (let k = 0; k < defs.length; k++) defenderCounts.set(defs[k], (defenderCounts.get(defs[k]) || 0) + 1);
+        if (matchesTypeChar(ev)) typeChar.push(ev);
+    }
+    skillOptionsSet.clear();
+    for (let i = 0; i < typeChar.length; i++) {
+        const n = getSkillName(typeChar[i]);
+        if (n) skillOptionsSet.add(n);
+    }
+    const out = [];
+    for (let i = 0; i < typeChar.length; i++) {
+        const ev = typeChar[i];
+        if (!matchesSkill(ev)) continue;
+        if (ev.Type === 'Hit' && ev.HitConfig && ev.HitConfig.damageType != null)
+            dmgTypeOptionsSet.add(String(ev.HitConfig.damageType));
+        if (matchesDmgType(ev) && matchesDefender(ev)) out.push(ev);
+    }
+    return out;
 }
 
 // ─── Search state ─────────────────
@@ -152,6 +197,13 @@ const container = document.getElementById('scrollContainer');
 const content = document.getElementById('scrollContent');
 
 // ─── Filter / Rerender ──────────────────────
+function updateStats() {
+    document.getElementById('stats').textContent = `${filtered.length} / ${allEvents.length} events`;
+}
+function fixSearchIdx() {
+    if (searchMatchIdx >= searchMatches.length) searchMatchIdx = searchMatches.length > 0 ? 0 : -1;
+}
+
 function refilterAndRender(resetScroll = false, resetOpen = true) {
     if (resetOpen) {
         openStates = {};
@@ -159,16 +211,98 @@ function refilterAndRender(resetScroll = false, resetOpen = true) {
         subOpenStates = {};
         content.innerHTML = '';
     }
-    filtered = applyFilters();
+    filtered = computeFilteredFull();
+    foldedCount = allEvents.length;
     buildFenwick();
     buildSearchMatches();
-    if (searchMatchIdx >= searchMatches.length) searchMatchIdx = searchMatches.length > 0 ? 0 : -1;
+    fixSearchIdx();
     updateSearchCount();
-    document.getElementById('stats').textContent = `${filtered.length} / ${allEvents.length} events`;
+    updateStats();
     if (resetScroll || resetOpen) {
         container.scrollTop = 0;
     }
+    refreshSelects(true);
     render();
+}
+
+// ─── Coalesced live updates ─────────────────
+// Streaming SSE messages are folded into a single trailing-debounced pass so
+// a burst of messages doesn't re-filter the whole log once per message.
+function scheduleLogRefresh() {
+    if (refreshTimer) return;
+    refreshTimer = setTimeout(() => {
+        refreshTimer = null;
+        flushLogRefresh();
+    }, 50);
+}
+
+function foldIncremental() {
+    const start = foldedCount;
+    if (start >= allEvents.length) { updateStats(); refreshSelects(false); return; }
+    // A Fenwick can't be grown by copy after adds; grow geometrically via a full
+    // rebuild from `heights` so appends stay amortized O(1). Rebuilds happen
+    // before any of this batch's appends, so all adds use the new capacity.
+    if (!fenwick || allEvents.length > fenwick.size)
+        buildFenwick(fenwick ? Math.max(fenwick.size * 2, allEvents.length) : allEvents.length);
+    const searchStartFi = filtered.length;
+    for (let i = start; i < allEvents.length; i++) {
+        const ev = allEvents[i];
+        foldedCount = i + 1;
+        const chars = getChars(ev);
+        for (let k = 0; k < chars.length; k++) charOptionsSet.add(chars[k]);
+        const defs = getDefender(ev);
+        for (let k = 0; k < defs.length; k++) defenderCounts.set(defs[k], (defenderCounts.get(defs[k]) || 0) + 1);
+        if (!matchesTypeChar(ev)) continue;
+        const sn = getSkillName(ev);
+        if (sn) skillOptionsSet.add(sn);
+        if (!matchesSkill(ev)) continue;
+        if (ev.Type === 'Hit' && ev.HitConfig && ev.HitConfig.damageType != null)
+            dmgTypeOptionsSet.add(String(ev.HitConfig.damageType));
+        if (!matchesDmgType(ev) || !matchesDefender(ev)) continue;
+        const fi = filtered.length;
+        filtered.push(ev);
+        const orig = ev._origIndex;
+        const eventH = (openStates[orig] && measuredHeights[orig]) ? measuredHeights[orig] : EST;
+        const spacerH = spacerByOrig.get(orig) || 0;
+        const h = eventH + spacerH;
+        heights.push(h);
+        totalHeightCached += h;
+        fenwick.add(fi, h);
+    }
+    document.getElementById('scrollSpacer').style.height = totalHeightCached + 'px';
+    if (searchQuery) {
+        const q = normalizeSearch(searchQuery.toLowerCase());
+        for (let fi = searchStartFi; fi < filtered.length; fi++) {
+            if (normalizeSearch(getEventSearchText(filtered[fi])).includes(q)) {
+                searchMatches.push(fi);
+            }
+        }
+        fixSearchIdx();
+        updateSearchCount();
+    }
+    updateStats();
+    refreshSelects(false);
+    render();
+}
+
+function flushLogRefresh() {
+    const resetOpen = pendingResetOpen;
+    pendingResetOpen = false;
+    if (resetOpen) filteredDirty = true;
+    if (ensureDefenderAutoDefault()) filteredDirty = true;
+    if (filteredDirty) {
+        filteredDirty = false;
+        refilterAndRender(resetOpen, resetOpen);
+    } else {
+        foldIncremental();
+        if (activeTab === 'analytics' && typeof Analytics !== 'undefined') Analytics.refresh();
+    }
+    // The auto defender default can only be picked once counts exist. If the
+    // pass above just populated them and the user still hasn't picked one,
+    // select the top defender now and re-filter once more.
+    if (ensureDefenderAutoDefault()) {
+        refilterAndRender(false, false);
+    }
 }
 
 // ─── Body builders ──────────────────────────
@@ -506,8 +640,8 @@ function render() {
     }
 
     for (const oi of neededOrig) {
-        const fi = filtered.findIndex(e => e._origIndex === oi);
-        if (fi === -1) continue;
+        const fi = origToFi.get(oi);
+        if (fi === undefined || fi === -1) continue;
         const ev = allEvents[oi];
         const div = createEventDiv(ev, fi);
         content.appendChild(div);
@@ -547,6 +681,7 @@ function normalizeSearch(s) {
 }
 
 function getEventSearchText(ev) {
+    if (ev._searchText !== undefined) return ev._searchText;
     let typeText = ev.Type || '';
     if (ev.Type === 'Buff') typeText = ev.SubType === 'Effect' ? 'Effect' : (ev.Action === 'Add' ? 'Buff Add' : 'Buff Remove');
     const parts = [typeText];
@@ -571,7 +706,7 @@ function getEventSearchText(ev) {
         parts.push(ev.Owner || '');
         parts.push(ev.Name || ev.SkillId || '');
     }
-    return parts.join(' ').toLowerCase();
+    return ev._searchText = parts.join(' ').toLowerCase();
 }
 
 function buildSearchMatches() {
