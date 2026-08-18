@@ -290,7 +290,7 @@ function eiRenderTable() {
     const panel = document.getElementById('eiPanel');
     if (!panel) return;
 
-    const rows = [...eiLastData];
+    let rows = [...eiLastData];
 
     const efLvlBadge = (ef) => {
         if (ef.isPotentialsGroup || !ef.allValueConfigIds || ef.currentLevelIdx < 0) return '';
@@ -320,21 +320,75 @@ function eiRenderTable() {
         }
     }
 
-    // Sort rows: source → side → chosen column
-    rows.sort((a, b) => {
-        const srcA = a.ef.source ?? 'Unknown';
-        const srcB = b.ef.source ?? 'Unknown';
-        if (srcA !== srcB) return srcA.localeCompare(srcB);
-        if (a.ef.side !== b.ef.side) return a.ef.side === 'attacker' ? -1 : 1;
-        if (eiSortCol === 'name') {
-            return eiSortDir * a.ef.name.localeCompare(b.ef.name);
+    // ── Sibling potentials grouping ───────────────────────────────────────────
+    // Effect rows from the same potential (same name + same source) are sorted as
+    // one unit: forced adjacent, ranked by the higher member's value — or by the
+    // summed gain% when the sort column is gain%.
+    const siblingGroups = new Map(); // key `${source}\u0000${name}` -> rows[]
+    const unitOf = new Map();        // row -> its sibling group (if any)
+    for (const r of rows) {
+        if (r.ef.isPotentialsGroup) continue;
+        const src = r.ef.source ?? '';
+        if (!src.includes('Potentials')) continue;
+        const key = `${src}\u0000${r.ef.name}`;
+        let g = siblingGroups.get(key);
+        if (!g) { g = []; siblingGroups.set(key, g); }
+        g.push(r);
+        unitOf.set(r, g);
+    }
+
+    const unitSortVal = (unit) => {
+        if (eiSortCol === 'pctImpact') {
+            let sum = 0, hasInf = false;
+            for (const r of unit) {
+                if (!isFinite(r.pctImpact)) hasInf = true;
+                else sum += r.pctImpact;
+            }
+            return hasInf ? Infinity : sum;
         }
-        let va = a[eiSortCol] ?? 0;
-        let vb = b[eiSortCol] ?? 0;
+        let v = -Infinity;
+        for (const r of unit) {
+            let x = r[eiSortCol] ?? 0;
+            if (!isFinite(x)) x = 1e18;
+            if (x > v) v = x;
+        }
+        return v;
+    };
+
+    // Collapse sibling groups into units, then flatten back into rows for render.
+    const units = [];
+    const used = new Set();
+    for (const r of rows) {
+        if (used.has(r)) continue;
+        const g = unitOf.get(r);
+        if (g) {
+            for (const m of g) used.add(m);
+            units.push(g);
+        } else {
+            units.push([r]);
+        }
+    }
+
+    // Sort units: source → side → chosen column
+    units.sort((a, b) => {
+        const rA = a[0], rB = b[0];
+        const srcA = rA.ef.source ?? 'Unknown';
+        const srcB = rB.ef.source ?? 'Unknown';
+        if (srcA !== srcB) return srcA.localeCompare(srcB);
+        if (rA.ef.side !== rB.ef.side) return rA.ef.side === 'attacker' ? -1 : 1;
+        if (eiSortCol === 'name') {
+            return eiSortDir * rA.ef.name.localeCompare(rB.ef.name);
+        }
+        let va = unitSortVal(a);
+        let vb = unitSortVal(b);
         if (!isFinite(va)) va = 1e18;
         if (!isFinite(vb)) vb = 1e18;
         return eiSortDir * (vb - va);
     });
+
+    const sortedRows = [];
+    for (const unit of units) sortedRows.push(...unit);
+    rows = sortedRows;
 
     const hitCountSample = rows[0]?.hitCount ?? 0;
 
