@@ -8,6 +8,8 @@ let eiSortDir   = -1;           // -1 = descending, 1 = ascending
 let eiLastData  = [];           // cached row data for re-sort without recompute
 // Which source groups are hidden (filter-checkboxes); default all visible
 const eiHiddenSources = new Set();
+// Free-text search query used to filter the effect-impact rows by effect name
+let eiSearchQuery = '';
 
 // ─── Core computation ─────────────────────────────────────────────────────────
 
@@ -292,6 +294,12 @@ function eiRenderTable() {
 
     let rows = [...eiLastData];
 
+    // Apply free-text search filter (matches effect name, case-insensitive)
+    const q = eiSearchQuery.trim().toLowerCase();
+    if (q) {
+        rows = rows.filter(r => (r.ef.name || '').toLowerCase().includes(q));
+    }
+
     const efLvlBadge = (ef) => {
         if (ef.isPotentialsGroup || !ef.allValueConfigIds || ef.currentLevelIdx < 0) return '';
         const override = dcEffectLevelOverrides?.get(ef.key);
@@ -533,6 +541,12 @@ window.eiToggleSourceFilter = function(srcKey) {
 
 window.eiShowAllSources = function() {
     eiHiddenSources.clear();
+    eiRenderTable();
+};
+
+window.eiOnSearchInput = function() {
+    const el = document.getElementById('eiSearchInput');
+    eiSearchQuery = el ? el.value : '';
     eiRenderTable();
 };
 

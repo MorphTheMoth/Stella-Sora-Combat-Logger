@@ -51,6 +51,13 @@
         .sidebar button.active {
             background: #303030; color: #ddd; border-color: #555;
         }
+        .sidebar input[type="text"] {
+            width: 100%; margin-bottom: 4px;
+            padding: 5px 12px; border: 1px solid #333; border-radius: 4px;
+            background: #242424; color: #ddd; font-size: 12px; outline: none;
+        }
+        .sidebar input[type="text"]:focus { border-color: #555; }
+        .sidebar input[type="text"]::placeholder { color: #555; }
         .sidebar button.clear-btn { color: #b07070; border-color: #4a3030; }
         .sidebar button.clear-btn:hover { background: #2e2020; color: #cc8888; border-color: #5a3535; }
         .sidebar button#dcDisableAllBtn { color: #b07070; border-color: #4a3030; }
@@ -839,6 +846,7 @@
         </div>
         <div class="sidebar-section hidden" id="sidebarDcFilters">
             <div class="sidebar-label">Filters</div>
+            <input type="text" id="eiSearchInput" placeholder="Search effects… (Effect Impact)" oninput="eiOnSearchInput()" autocomplete="off" spellcheck="false">
             <select id="dcCharFilter" onchange="dcOnCharFilterChange()">
                 <option value="">All Characters</option>
             </select>
@@ -1006,8 +1014,8 @@
                     <div class="chart-controls" style="flex-wrap:wrap; row-gap:6px;">
                         <label>View by:</label>
                         <select id="bpViewBy" onchange="Analytics.onBpViewByChange()">
+                            <option value="buff" selected>Buff / Effect</option>
                             <option value="skill">Skill Hit</option>
-                            <option value="buff">Buff / Effect</option>
                         </select>
 
                         <label style="margin-left:8px">Pick:</label>
