@@ -46,6 +46,10 @@ function getDefender(ev) {
 // ─── Filter state ─────────────────
 let typeFilter = new Set(['Hit', 'Skill Cast']);
 let charFilter = '', skillFilter = '', damageTypeFilter = '', defenderFilter = '';
+// Auto mode keeps the defender filter glued to the most-hit defender as new
+// events stream in. Disabled the moment the user picks a defender manually,
+// re-enabled only when the user switches to a different (saved) log.
+let defenderAuto = true;
 let filteredDirty = false;
 let pendingResetOpen = false;
 let refreshTimer = null;
@@ -139,16 +143,53 @@ function computeDefenderCounts() {
     defenderCountsComputed = true;
 }
 
-// Auto-select the most-hit defender when the user has never chosen one
-// (mirrors the old buildDefenderFilter() default). Returns true if selected.
-function ensureDefenderAutoDefault() {
-    if (defenderFilter !== '') return false;
+// In auto mode, keep the defender filter glued to the defender that has taken
+// the most hits so far. Returns true if the filter changed and needs a refilter.
+function followAutoDefender() {
+    if (!defenderAuto) return false;
     if (!defenderCountsComputed) computeDefenderCounts();
     let top = '', best = 0;
     for (const [d, c] of defenderCounts) { if (c > best) { best = c; top = d; } }
     if (!top) return false;
+    if (defenderFilter === top) return false;
     defenderFilter = top;
+    const sel = document.getElementById('defenderFilter');
+    if (sel) sel.value = top;
     return true;
+}
+
+// Re-enable defender auto mode (used when switching to a different log).
+function reenableDefenderAuto() {
+    defenderAuto = true;
+    defenderFilter = '';
+    defenderCountsComputed = false;
+    const sel = document.getElementById('defenderFilter');
+    if (sel) sel.value = '';
+}
+
+// Blank every filter back to its default (used when switching logs, so stale
+// values from the previous log don't carry over to the new one).
+function resetFilters() {
+    typeFilter = new Set(['Hit', 'Skill Cast']);
+    charFilter = '';
+    skillFilter = '';
+    damageTypeFilter = '';
+    document.querySelectorAll('.type-filter-btn').forEach(b => {
+        b.classList.toggle('active', typeFilter.has(b.dataset.type));
+    });
+    ['charFilter', 'skillFilter', 'damageTypeFilter'].forEach(id => {
+        const sel = document.getElementById(id);
+        if (sel) sel.value = '';
+    });
+    reenableDefenderAuto();
+    dcCharFilter = '';
+    dcSkillFilter = '';
+    dcDamageTypeFilter = '';
+    dcDefenderFilter = '';
+    ['dcCharFilter', 'dcSkillFilter', 'dcDamageTypeFilter', 'dcDefenderFilter'].forEach(id => {
+        const sel = document.getElementById(id);
+        if (sel) sel.value = '';
+    });
 }
 
 // Full filter recompute. Rebuilds the dropdown option sets from scratch,
@@ -198,7 +239,12 @@ const content = document.getElementById('scrollContent');
 
 // ─── Filter / Rerender ──────────────────────
 function updateStats() {
-    document.getElementById('stats').textContent = `${filtered.length} / ${allEvents.length} events`;
+    const el = document.getElementById('stats');
+    if (!backlogDone) {
+        el.textContent = `loading '${currentLogName}'...`;
+        return;
+    }
+    el.textContent = `${filtered.length} / ${allEvents.length} events`;
 }
 function fixSearchIdx() {
     if (searchMatchIdx >= searchMatches.length) searchMatchIdx = searchMatches.length > 0 ? 0 : -1;
@@ -289,7 +335,7 @@ function flushLogRefresh() {
     const resetOpen = pendingResetOpen;
     pendingResetOpen = false;
     if (resetOpen) filteredDirty = true;
-    if (ensureDefenderAutoDefault()) filteredDirty = true;
+    if (followAutoDefender()) filteredDirty = true;
     if (filteredDirty) {
         filteredDirty = false;
         refilterAndRender(resetOpen, resetOpen);
@@ -297,10 +343,9 @@ function flushLogRefresh() {
         foldIncremental();
         if (activeTab === 'analytics' && typeof Analytics !== 'undefined') Analytics.refresh();
     }
-    // The auto defender default can only be picked once counts exist. If the
-    // pass above just populated them and the user still hasn't picked one,
-    // select the top defender now and re-filter once more.
-    if (ensureDefenderAutoDefault()) {
+    // Auto mode can only pick a defender once counts exist. If the pass above
+    // just populated them, follow the top defender once more and re-filter.
+    if (followAutoDefender()) {
         refilterAndRender(false, false);
     }
 }
@@ -870,6 +915,7 @@ window.onDamageTypeFilterChange = function() {
 };
 
 window.onDefenderFilterChange = function() {
+    defenderAuto = false;
     defenderFilter = document.getElementById('defenderFilter').value;
     refilterAndRender(true);
 };

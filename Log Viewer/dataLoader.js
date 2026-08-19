@@ -40,6 +40,7 @@ let fenwick = null;
 let totalHeightCached = 0;
 let lastFetchCount = 0;
 let currentSavedLog = null;
+let currentLogName = 'Live'; // display name for the log currently being served
 let pendingAutoClear = false;
 let serverTotal = Infinity; // server's total logical line count (from meta frames); Infinity = unknown yet
 let backlogDone = false;    // true once the initial backlog has been fully received
@@ -174,6 +175,7 @@ function resetClientState() {
     filtered = [];
     foldedCount = 0;
     lastFetchCount = 0;
+    backlogDone = false;
     openStates = {};
     measuredHeights = {};
     subOpenStates = {};
@@ -186,8 +188,11 @@ window.onSavedLogChange = async function() {
     pendingAutoClear = false;
     const val = document.getElementById('savedLogFilter').value;
     currentSavedLog = val || null;
+    currentLogName = currentSavedLog || 'Live';
     stopLiveUpdates();
 
+    reenableDefenderAuto();
+    resetFilters();
     resetClientState();
     refilterAndRender(true, true);
     await fetchLevelMap(currentSavedLog);
@@ -241,6 +246,7 @@ window.clearLog = async function(skipConfirm) {
             if (currentSavedLog) {
                 loadSavedLogsList();
                 currentSavedLog = null;
+                currentLogName = 'Live';
             }
             startLiveUpdates();
         } else {
@@ -402,6 +408,10 @@ function handleMeta(data) {
     const t = data && data.total;
     if (t == null) return;
     serverTotal = t;
+    if (!backlogDone && t === lastFetchCount) {
+        backlogDone = true;
+        if (typeof updateStats === 'function') updateStats();
+    }
     if (t < lastFetchCount) {
         // The server log was truncated/cleared externally — resync from scratch.
         console.log('Server log truncated (total ' + t + ' < ' + lastFetchCount + '), resyncing');
@@ -492,6 +502,7 @@ async function fetchLog(incremental = false) {
             scheduleLogRefresh();
         }
         lastFetchCount = nextAfter;
+        if (!incremental) backlogDone = true;
         if (window.dcRefreshIfVisible) window.dcRefreshIfVisible();
     } catch (err) {
         console.error('fetch error', err);
@@ -512,6 +523,7 @@ function pollLevelMap() {
 initTables().then(() => {
     fetchLevelMap(currentSavedLog);
     startLiveUpdates();
+    if (typeof updateStats === 'function') updateStats();
     setInterval(pollLevelMap, 50);
     loadSavedLogsList();
 });
