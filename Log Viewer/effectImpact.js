@@ -544,6 +544,28 @@ window.eiShowAllSources = function() {
     eiRenderTable();
 };
 
+// Render the effect-source filter chips into the left sidebar (used by the
+// Analytics tab, which surfaces the Effect Impact source filters too).
+function eiRenderSidebarChips() {
+    const chipsEl = document.getElementById('eiFilterChips');
+    if (!chipsEl) return;
+    const effects = dcCollectAttrFixEffects(dcFiltered);
+    const seen = new Set();
+    const allSourceKeys = [];
+    for (const ef of effects) {
+        const srcKey = ef.source ?? 'Unknown';
+        if (!seen.has(srcKey)) { seen.add(srcKey); allSourceKeys.push({ srcKey, source: ef.source ?? 'Unknown' }); }
+    }
+    let html = '';
+    for (const { srcKey, source } of allSourceKeys) {
+        const active = !eiHiddenSources.has(srcKey);
+        const escapedKey = srcKey.replace(/'/g, "\\'");
+        html += `<button class="ei-src-chip ei-chip-src ${active ? 'ei-chip-active' : ''}" onclick="eiToggleSourceFilter('${escapedKey}')">${esc(source)}</button>`;
+    }
+    html += `<button class="ei-chip-all" onclick="eiShowAllSources()">All</button>`;
+    chipsEl.innerHTML = html;
+}
+
 window.eiOnSearchInput = function() {
     const el = document.getElementById('eiSearchInput');
     const v = el ? el.value : '';
@@ -553,6 +575,7 @@ window.eiOnSearchInput = function() {
     const eiVisible = document.getElementById('eiPanel').classList.contains('visible');
     if (dcVisible) dcRefilterAndRender(true, false);
     if (eiVisible) eiRenderTable();
+    if (typeof activeTab !== 'undefined' && activeTab === 'analytics' && typeof Analytics !== 'undefined') Analytics.refresh();
 };
 
 window.eiSetSort = function(col) {

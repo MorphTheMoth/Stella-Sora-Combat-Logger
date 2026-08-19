@@ -928,14 +928,20 @@ window.switchTab = function(tab) {
     document.getElementById('tabAnalytics').classList.toggle('active', tab === 'analytics');
     document.getElementById('logPanel').classList.toggle('hidden', tab !== 'log');
     document.getElementById('analyticsPanel').classList.toggle('visible', tab === 'analytics');
-    if (tab === 'analytics') Analytics.refresh();
+    if (tab === 'analytics') {
+        // Build the shared dmgCalc hit set so the right sidebar (totals, char
+        // list, effects panel) and the Analytics charts reflect the same data.
+        if (typeof dcRefilterAndRender === 'function') dcRefilterAndRender(false, false);
+        if (typeof eiRenderSidebarChips === 'function') eiRenderSidebarChips();
+        Analytics.refresh();
+    }
     // Toggle sidebar sections
     const sbFilters = document.getElementById('sidebarFilters');
     const sbDcFilters = document.getElementById('sidebarDcFilters');
     if (sbFilters) sbFilters.classList.toggle('hidden', tab !== 'log');
-    if (sbDcFilters) sbDcFilters.classList.toggle('hidden', tab !== 'dmgcalc' && tab !== 'effectimpact');
+    if (sbDcFilters) sbDcFilters.classList.toggle('hidden', tab !== 'dmgcalc' && tab !== 'effectimpact' && tab !== 'analytics');
     const sbEiFilters = document.getElementById('sidebarEiFilters');
     if (sbEiFilters) sbEiFilters.classList.toggle('hidden', tab !== 'effectimpact');
     const sbDcStats = document.getElementById('sidebarDcStats');
-    if (sbDcStats) sbDcStats.classList.toggle('hidden', tab !== 'dmgcalc' && tab !== 'effectimpact');
+    if (sbDcStats) sbDcStats.classList.toggle('hidden', tab !== 'dmgcalc' && tab !== 'effectimpact' && tab !== 'analytics');
 };

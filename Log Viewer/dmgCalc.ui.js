@@ -282,6 +282,7 @@ window.dcToggleChar = function(name) {
     renderFormulaBar();
     dcRender();
     dcRefreshEI();
+    dcNotifyAnalytics();
 };
 
 window.dcDisableAllEffects = function() {
@@ -292,6 +293,7 @@ window.dcDisableAllEffects = function() {
     renderFormulaBar();
     dcRender();
     dcRefreshEI();
+    dcNotifyAnalytics();
 };
 
 window.dcEnableAllEffects = function() {
@@ -301,6 +303,7 @@ window.dcEnableAllEffects = function() {
     renderFormulaBar();
     dcRender();
     dcRefreshEI();
+    dcNotifyAnalytics();
 };
 
 window.dcToggleSourceSection = function(gkey) {
@@ -315,6 +318,7 @@ window.dcToggleEffect = function(key) {
     renderFormulaBar();
     dcRender();
     dcRefreshEI();
+    dcNotifyAnalytics();
 };
 
 window.dcChangeEffectLevel = function(key, direction) {
@@ -374,6 +378,7 @@ window.dcChangeEffectLevel = function(key, direction) {
     renderFormulaBar();
     dcRender();
     dcRefreshEI();
+    dcNotifyAnalytics();
 };
 
 // ─── Dmg Calc totals (sidebar) ────────────────────────────────────────────────
@@ -404,6 +409,40 @@ function dcRefreshEI() {
     const el = document.getElementById('eiPanel');
     if (el && el.classList.contains('visible') && typeof eiRender === 'function') {
         eiRender();
+    }
+}
+
+// ── Shared processed hits for Analytics ────────────────────────────────────────
+// Returns the dmgCalc-filtered, effect-adjusted player hits as lightweight
+// records whose .DamageParams.finalDamage is replaced by the recalculated
+// damage (calcDamage), so Analytics aggregates the same numbers the Dmg Calc
+// tab shows. All other original fields (HitConfig, buffs, effects…) are kept by
+// reference so the buff/effect charts keep working unchanged.
+function getCalcHits() {
+    const evs = dcApplyFilters();
+    const out = [];
+    for (const ev of evs) {
+        const hc = ev.HitConfig || {};
+        if (hc.sourceType !== 1) continue; // player hits only
+        const fields = calcHitFields(ev, null, dcEffectsDisabled, dcEffectLevelOverrides);
+        const calcDmg = calcDamage(fields, dcBonus, dcDisabled);
+        out.push({
+            ...ev,
+            DamageParams: Object.assign({}, ev.DamageParams, { finalDamage: calcDmg }),
+            _fields: fields,
+            _calcDmg: calcDmg,
+        });
+    }
+    return out;
+}
+
+// Refresh the Analytics tab when a dmgCalc control changes while it's visible.
+function dcNotifyAnalytics() {
+    if (typeof activeTab !== 'undefined' && activeTab === 'analytics' && typeof Analytics !== 'undefined') {
+        Analytics.refresh();
+    }
+    if (typeof activeTab !== 'undefined' && activeTab === 'analytics' && typeof eiRenderSidebarChips === 'function') {
+        eiRenderSidebarChips();
     }
 }
 
@@ -520,6 +559,7 @@ window.dcToggleField = function(key) {
     renderFormulaBar();
     dcRender();
     dcRefreshEI();
+    dcNotifyAnalytics();
 };
 
 window.dcSetBonus = function(key, val) {
@@ -528,6 +568,7 @@ window.dcSetBonus = function(key, val) {
     renderFormulaBar();
     dcRender();
     dcRefreshEI();
+    dcNotifyAnalytics();
 };
 
 // ─── Per-hit event DOM ────────────────────────────────────────────────────────
@@ -970,19 +1011,23 @@ window.dcOnCharFilterChange = function() {
     dcSkillFilter = '';
     document.getElementById('dcSkillFilter').value = '';
     dcRefilterAndRender(true, false);
+    dcNotifyAnalytics();
 };
 window.dcOnSkillFilterChange = function() {
     dcSkillFilter = document.getElementById('dcSkillFilter').value;
     dcRefilterAndRender(true, false);
+    dcNotifyAnalytics();
 };
 window.dcOnDamageTypeFilterChange = function() {
     dcDamageTypeFilter = document.getElementById('dcDamageTypeFilter').value;
     dcRefilterAndRender(true, false);
+    dcNotifyAnalytics();
 };
 
 window.dcOnDefenderFilterChange = function() {
     dcDefenderFilter = document.getElementById('dcDefenderFilter').value;
     dcRefilterAndRender(true, false);
+    dcNotifyAnalytics();
 };
 
 // ─── Refilter / rebuild ───────────────────────────────────────────────────────
@@ -1050,5 +1095,18 @@ window.dcRefreshIfVisible = function() {
 
         document.getElementById('stats').textContent = `${dcFiltered.length} hits`;
         dcRender();
+    } else if (typeof activeTab !== 'undefined' && (activeTab === 'analytics' || activeTab === 'effectimpact')) {
+        // Keep the shared right sidebar (totals, char list, effects panel) and
+        // the effect-source chips fresh while the Dmg Calc panel itself is hidden.
+        dcFiltered = dcApplyFilters();
+        dcRenderTotals();
+        dcRenderCharList();
+        const newEffects = dcCollectAttrFixEffects(dcFiltered);
+        const newKeys = new Set(newEffects.map(e => e.key));
+        if (!_dcLastEffectKeys || _dcLastEffectKeys.size !== newKeys.size || ![...newKeys].every(k => _dcLastEffectKeys.has(k))) {
+            _dcLastEffectKeys = newKeys;
+            renderEffectsPanel();
+        }
+        if (typeof eiRenderSidebarChips === 'function') eiRenderSidebarChips();
     }
 };

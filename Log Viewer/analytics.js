@@ -136,10 +136,19 @@ const Analytics = (() => {
     let buffChartVersion = 0;
 
     // ── Shared helpers ────────────────────────────────────────────
+    // Cache of the processed (dmgCalc-filtered + effect-adjusted) hits, reset on
+    // every refresh so live updates and control changes are picked up.
+    let _calcHitsCache = null;
     function getPlayerHits() {
-        return allEvents.filter(ev =>
-            ev.Type === 'Hit' && (ev.HitConfig || {}).sourceType === 1
-        );
+        if (_calcHitsCache) return _calcHitsCache;
+        if (typeof getCalcHits === 'function') {
+            _calcHitsCache = getCalcHits();
+        } else {
+            _calcHitsCache = allEvents.filter(ev =>
+                ev.Type === 'Hit' && (ev.HitConfig || {}).sourceType === 1
+            );
+        }
+        return _calcHitsCache;
     }
     function getCharName(ev) {
         return (ev.HitConfig && ev.HitConfig.charName)
@@ -1022,6 +1031,7 @@ const Analytics = (() => {
 
     // ── Full refresh ──────────────────────────────────────────────
     function refresh() {
+        _calcHitsCache = null;
         updateDmgShareFilters();
         updateBuffPickDropdown();
         refreshDmgShareChart();
@@ -1056,24 +1066,21 @@ const Analytics = (() => {
             return;
         }
 
-        // Accumulate crit distribution stats
+        // Accumulate crit distribution stats. Each hit already carries its
+        // dmgCalc-processed fields (effect overrides, disabled effects, char
+        // disables applied) via the `_fields` property set in getCalcHits().
         let totalBaseDmg = 0;
         let expectedExtra = 0;
         let actualExtra = 0;
         let varianceSum = 0;
         let varianceSqSum = 0;
         let critHits = 0;
-        const emptySet = new Set();
-        const emptyBonus = { baseAtk:0, atkPct:0 };
-        // Ensure all dcBonus keys exist
-        DC_FIELDS.forEach(f => { emptyBonus[f.key] = 0; });
-        ['genDmg','intensity','finalDmg','genDmgRcd','toughnessBroken','pen','res','effectiveDef','critRate','critDmg','defAmend','baseAtk','atkPct'].forEach(k => { emptyBonus[k] = 0; });
 
         for (const ev of hits) {
-            const fields = calcHitFields(ev, null, emptySet);
+            const fields = ev._fields;
 
             // Base multiplier (same as dcCalcCritLuck without dcBonus/dcDisabled)
-            let bm = (fields.baseAtk + (emptyBonus.baseAtk || 0)) * (fields.atkPct + (emptyBonus.atkPct || 0)) + fields.atkAbs;
+            let bm = fields.baseAtk * fields.atkPct + fields.atkAbs;
             for (const key of DC_FORMULA_KEYS) {
                 if (key === 'atkMulti' || key === 'critDmg') continue;
                 let val;
