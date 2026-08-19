@@ -785,7 +785,7 @@ document.getElementById('searchInput').addEventListener('keydown', e => {
 });
 
 document.addEventListener('keydown', e => {
-    if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+    if (activeTab === 'log' && (e.ctrlKey || e.metaKey) && e.key === 'f') {
         e.preventDefault();
         openSearch();
     } else if (e.key === 'Escape' && document.getElementById('searchBar').classList.contains('visible')) {
