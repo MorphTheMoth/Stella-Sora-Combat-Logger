@@ -339,7 +339,7 @@
         /* keep log panel filling remaining space */
         #logPanel { display: flex; flex-direction: column; flex: 1; overflow: hidden; position: relative; }
         #logPanel.hidden { display: none; }
-    
+
         .event.event-reset .event-header { background: #1a1010; border-left: 3px solid #5a2020; }
         .event.event-reset .event-header h3 .type { color: #8a4040; }
         .event.event-reset .event-header h3 .desc { color: #6a3030; }
@@ -359,7 +359,7 @@
             background: #1a1a1a;
         }
         #dmgCalcPanel.visible { display: flex; }
-        
+
         /* Formula bar */
         .dc-formula-bar {
             flex-shrink: 0;
@@ -372,12 +372,12 @@
             color: #999; font-size: 12px; margin-bottom: 6px;
         }
         .dc-formula-totals strong { color: #ddd; }
-        
+
         .dc-formula-row {
             display: flex; align-items: flex-end; gap: 0; flex-wrap: nowrap;
             overflow-x: auto; padding-bottom: 2px;
         }
-        
+
         .dc-field-wrap {
             display: flex; flex-direction: column; align-items: center; gap: 2px;
             width: 60px; flex: 0 0 auto;
@@ -392,7 +392,7 @@
         .dc-bonus-input::-webkit-outer-spin-button,
         .dc-bonus-input::-webkit-inner-spin-button { -webkit-appearance: none; }
         .dc-bonus-input:focus { border-color: #555; }
-        
+
         .dc-field {
             display: inline-block; padding: 3px 6px;
             background: #2a2a2a; border: 1px solid #333; border-radius: 3px;
@@ -418,12 +418,12 @@
             color: #555; padding: 0 2px; align-self: flex-end;
             padding-bottom: 5px; flex-shrink: 0;
         }
-        
+
         /* DC scroll area */
         .dc-scroll-wrap {
             flex: 1; display: flex; flex-direction: column; overflow: hidden;
         }
-        
+
         /* DC event rows */
         .dc-event {
             background: #222; position: absolute; left: 0; right: 0;
@@ -438,7 +438,7 @@
         .dc-event-header:hover { background: #303030; }
         .dc-event.open .dc-event-header { background: #2e2e2e; }
         .dc-event.open .dc-event-header .arrow { transform: rotate(90deg); }
-        
+
         /* Top row: info text + arrow */
         .dc-header-top {
             display: flex; align-items: center; justify-content: space-between;
@@ -448,7 +448,7 @@
             display: flex; flex-direction: column; gap: 1px;
         }
         .dc-att-name { font-size: 11px; color: #777; font-weight: normal; }
-        
+
         /* Fields row — full width, below the top row */
         .dc-fields-row {
             display: flex; align-items: center; gap: 0;
@@ -460,7 +460,7 @@
         }
         .dc-field-cell.dc-disabled { color: #444; text-decoration: line-through; }
         .dc-field-cell.dc-display-only { color: #666; }
-        
+
         .dc-result-stack {
             position: absolute;
             right: 28px; /* leave room for arrow */
@@ -482,7 +482,7 @@
         .dc-diff-pos   { color: #4a7a55; }
         .dc-diff-neg   { color: #7a3838; }
         .dc-bonus-label { color: #6a9f6a; font-size: 10px; }
-        
+
         /* PenRes compound widget in formula bar */
         .dc-penres-wrap { min-width: 60px; }
         .dc-penres-inputs {
@@ -493,7 +493,7 @@
             font-size: 10px; color: #666; text-align: right;
             white-space: nowrap; user-select: none;
         }
-        
+
         /* Arrow reuse */
         .dc-event-header .arrow { color: #777; transition: transform 0.15s; flex-shrink: 0; }
 
@@ -846,7 +846,7 @@
         </div>
         <div class="sidebar-section hidden" id="sidebarDcFilters">
             <div class="sidebar-label">Filters</div>
-            <input type="text" id="eiSearchInput" placeholder="Search effects… (Effect Impact)" oninput="eiOnSearchInput()" autocomplete="off" spellcheck="false">
+            <input type="text" id="eiSearchInput" placeholder="Search" oninput="eiOnSearchInput()" autocomplete="off" spellcheck="false">
             <select id="dcCharFilter" onchange="dcOnCharFilterChange()">
                 <option value="">All Characters</option>
             </select>
@@ -1035,7 +1035,7 @@
                         <select id="bpFilterChar" onchange="Analytics.onBpViewByChange()">
                             <option value="">All</option>
                         </select>
-                        
+
                         <label style="margin-left:8px">Filter defender:</label>
                         <select id="bpFilterDefender" onchange="Analytics.onBpViewByChange()">
                             <option value="">All</option>

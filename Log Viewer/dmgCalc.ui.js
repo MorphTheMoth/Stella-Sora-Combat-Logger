@@ -19,6 +19,7 @@ let dcCharFilter = '';
 let dcSkillFilter = '';
 let dcDamageTypeFilter = '';
 let dcDefenderFilter = '';
+let dcSearchQuery = '';
 
 // Per-field bonus values (user-typed numbers added to all hits)
 const dcBonus = {};
@@ -924,6 +925,19 @@ function dcBuildDefenderFilter(autoSelect = false) {
     }
 }
 
+// Build a haystack for a hit matching the header title shown in the list,
+// e.g. "Flora - Flutter Flare (#1) [209.00%]".
+function dcHitSearchText(ev) {
+    const hc = ev.HitConfig || {};
+    const dp = ev.DamageParams || {};
+    const attName = ev.AttackerDisplay || ev.Attacker || '?';
+    const skillPart = hc.skillTitle ? hc.skillTitle : '';
+    const hitPart = hc.hitNum != null ? ` (#${hc.hitNum})` : '';
+    const skillStr = (skillPart || hitPart) ? ` - ${skillPart}${hitPart}` : '';
+    const baseMult = dp.skillPercentAmend != null ? ` [${(dp.skillPercentAmend / 10000).toFixed(2)}%]` : '';
+    return `${attName}${skillStr}${baseMult}`.toLowerCase();
+}
+
 function dcApplyFilters() {
     let evs = allEvents.filter(e => e.Type === 'Hit');
     if (dcCharFilter) evs = evs.filter(e => (e.AttackerDisplay || '') === dcCharFilter);
@@ -937,6 +951,15 @@ function dcApplyFilters() {
             if (!name) return true;
             const key = cleanOwner ? cleanOwner(name) : name;
             return key === dcDefenderFilter;
+        });
+    }
+    const q = dcSearchQuery.trim().toLowerCase();
+    if (q) {
+        const cached = new Map();
+        evs = evs.filter(e => {
+            let hay = cached.get(e);
+            if (hay === undefined) { hay = dcHitSearchText(e); cached.set(e, hay); }
+            return hay.includes(q);
         });
     }
     return evs;

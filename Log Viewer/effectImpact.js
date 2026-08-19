@@ -546,8 +546,13 @@ window.eiShowAllSources = function() {
 
 window.eiOnSearchInput = function() {
     const el = document.getElementById('eiSearchInput');
-    eiSearchQuery = el ? el.value : '';
-    eiRenderTable();
+    const v = el ? el.value : '';
+    eiSearchQuery = v;
+    dcSearchQuery = v;
+    const dcVisible = document.getElementById('dmgCalcPanel').classList.contains('visible');
+    const eiVisible = document.getElementById('eiPanel').classList.contains('visible');
+    if (dcVisible) dcRefilterAndRender(true, false);
+    if (eiVisible) eiRenderTable();
 };
 
 window.eiSetSort = function(col) {
