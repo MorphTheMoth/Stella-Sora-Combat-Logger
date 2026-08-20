@@ -471,13 +471,23 @@ function eiRenderTable() {
                 ? `<span class="ei-attr">Hit Damage</span><span class="ei-val">${ef.value.map(num => `${num}%`).join(', ')}</span>`
                 : (() => {
                     const override = dcEffectLevelOverrides?.get(ef.key);
-                    const subLabel = ef.subType === 1 ? 'base' : ef.subType === 2 ? 'pct' : ef.subType === 3 ? 'abs' : '?';
+                    // For ATTR_FIX effects subType is 1/2/3 (base/pct/abs); for
+                    // ELEMENTTYPE_*_FIX effects subType is the element id, so the
+                    // base/pct split is determined by effectType instead.
+                    const eiSubTypeLabel = (subType, effectType) => {
+                        if (effectType === ELEMENTTYPE_ATTR_FIX) return 'base';
+                        if (effectType === ELEMENTTYPE_ATTR_PERCENT_FIX) return 'pct';
+                        if (subType === 1) return 'base';
+                        if (subType === 2) return 'pct';
+                        if (subType === 3) return 'abs';
+                        return '?';
+                    };
                     const attrLabel = ef.attrType != null ? attrName(ef.attrType) : '?';
                     const raw = override ? override.newValue : ef.value;
                     const overrideSubType = override ? override.newSubType : ef.subType;
                     const overrideAttrType = override ? override.newAttrType : ef.attrType;
-                    const displaySubLabel = overrideSubType === 1 ? 'base' : overrideSubType === 2 ? 'pct' : overrideSubType === 3 ? 'abs' : '?';
-                    const displayAttrLabel = overrideAttrType != null ? attrName(overrideAttrType) : '?';
+                    const displaySubLabel = eiSubTypeLabel(overrideSubType, ef.effectType);
+                    const displayAttrLabel = overrideAttrType != null ? attrName(overrideAttrType) : attrName(ef.attrType);
                     const isSmall = raw != null && Math.abs(raw) < 15;
                     const valStr = raw != null ? (isSmall ? (raw * 100).toFixed(2) + '%' : String(raw)) : '?';
                     const maxStacksStr = maxStacks > 1 ? ` <span class="ei-stacks" title="Max stacks observed">×${maxStacks}</span>` : '';
