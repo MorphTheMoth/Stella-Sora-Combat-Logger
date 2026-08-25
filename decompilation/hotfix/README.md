@@ -64,6 +64,28 @@ is valid, only the referenced types can't be resolved. Passing
 (`ILRuntimeAPI.CalcDistanceBetweenMonsterAndPlayer`) — an ILSpy stack-analysis
 edge case on TrueSync structs, still readable.
 
+## Asset-bundle layer (hit timing / hitbox / weapons)
+
+`Skill.json` / `HitDamage.json` only say *which* `HitDamageId`s are involved.
+*When* they hit and with what shape lives in Unity asset bundles in the
+install (`StellaSora_Data/StreamingAssets/InstallResource/`; 7213 `.unity3d`,
+`manifest.json` index):
+
+- `AI.json:FCComboGroup = Character/<id>/Combos/ComboGroup_Char_<id>` →
+  `char_<id>_combos.unity3d` (`ComboGroup_Char_*` + `ComboClip_*` monoBehaviours
+  with `comboEventSkins[0].comboEvents[]`: `activeNormalizedTimeRange`,
+  `hitBoxShape/Width/Length/Radius/Angle/Offset`, `hitDamageId`, `hitFlags`
+  read at `decompiled.c:3425183` / `HitBox` tick  `decompiled.c:3551461`).
+  Summons: `char_<id>_combos_monster.unity3d`, weapons: `char_<id>_weapons*.unity3d`,
+  monster areas: `mons_*_areaeffect.unity3d`.
+
+Extracted immutably under `../CombatAssetsBundles/extracted/<charId>/`
+(`155` for Shia) via `../CombatAssetsBundles/extract_combat_bundles.py`
+(UnityPy) and decoded in `*_summary.json` by `summarize_combos.py`
+(`time = nTime * animationLength / playSpeed`). See that folder's
+`ExtractCombatAssetsBundles.md` for the full mapping, filtering rationale
+(combat-only, no models/textures/fx) and `//100` id grouping.
+
 ## What you can now read
 
 Monster attacks are driven by these tables (from `StellaSoraData .../CN/bin`):

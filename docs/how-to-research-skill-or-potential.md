@@ -37,6 +37,7 @@ Trust only the actual code, the descriptions are not reliable, in case the two d
 | 8 | `EN/bin/EffectValue.json` | **Per-effect data**: the actual effect numbers (effect type/subtype + up to 7 params) behind a skill/potential/buff. |
 | 9 | `EN/bin/Buff.json` | **Per-buff data**: buff id, tags, icon, whether it's visible/stacking. Buff *values* live in `BuffValue.json`. |
 | 10 | `characterid.json` | **Name → id resolver.** When you say a character's name, look the id up here (e.g. `Amber` → `103`) and use it everywhere below. |
+| 11 | `decompilation/CombatAssetsBundles/` | **Asset-bundle extraction:** `AI.json:FCComboGroup` → actual combo clips / hitbox timing (`activeNormalizedTimeRange`, `hitBoxShape…`, `hitDamageId`) from the install's `StreamingAssets/InstallResource/*.unity3d` (`char_*_combos.unity3d`, `char_*_weapons.unity3d` …). Use `extract_combat_bundles.py` + `summarize_combos.py` to get `extracted/<charId>/` JSON — the authoritative hit schedule, not the `Skill.json` `HitDamage` list alone. |
 
 > All paths under `/home/morph/StellaSoraData` may also be reached from inside
 > this repo via the symlink `Link to StellaSoraData`.
@@ -214,7 +215,28 @@ This is the *authoritative* source for what a skill does frame by frame.
 
 ---
 
-## Step 5 — Combat engine (C) & Il2Cpp dumps
+## Step 5 — Asset bundles (the other half of the implementation)
+
+`Skill.json` / `HitDamage.json` only say *which* `HitDamageId`s a skill may use.
+*When* they actually fire, the hitbox shape, active duration and projectile
+spawning live in Unity asset bundles in the install, not JSON:
+
+- `AI.json:FCComboGroup = Character/<id>/Combos/ComboGroup_Char_<id>` →
+  `char_<id>_combos.unity3d` (`ComboGroup_Char_*` + `ComboClip_*` monoBehaviours
+  with `comboEventSkins[0].comboEvents[]`: `activeNormalizedTimeRange`,
+  `hitBoxShape/Width/Length/Radius/Angle/Offset`, `hitDamageId`, `hitFlags`
+  — read at `decompiled.c:3425183` / ticked at `3551461`).
+  Summons: `char_<id>_combos_monster.unity3d` (same structure).
+- Weapon / bullet prefabs: `char_<id>_weapons.unity3d` (+ `weapons_monster`)
+  — `AdventureWeapon.Setup` / `ILRuntimeAPI.Shoot` spawn configs.
+- Monster area effects: `mons_*_areaeffect.unity3d`.
+
+Install on this box: `Link to YostarGames/StellaSora_EN/StellaSora_Data/StreamingAssets/InstallResource/` (7213 `.unity3d`, `manifest.json`/`file_versions.dat` index). See
+`decompilation/CombatAssetsBundles/ExtractCombatAssetsBundles.md` for the exact
+mapping and the allowed combat-only extraction (109 bundles → `extracted/<charId>/`, `155` for Shia). The scripts `extract_combat_bundles.py` (UnityPy) + `summarize_combos.py`
+decode FP (`_serializedValue / 2**32`) into `*_summary.json` (`time = nTime * animationLength / playSpeed`). Until these events drive `SimulationEngine` at `LockStep 1/30`, `HitRepeatCatalog` was the guess for normal-attack timing — now removed.
+
+## Step 6 — Combat engine (C) & Il2Cpp dumps
 
 When you need to know *how the damage/effect is computed* (not just what it is):
 
@@ -233,7 +255,7 @@ When you need to know *how the damage/effect is computed* (not just what it is):
 
 ---
 
-## Step 6 — Discs
+## Step 7 — Discs
 
 Discs are **not** character-specific; research them from the datamine:
 
