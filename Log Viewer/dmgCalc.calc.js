@@ -646,7 +646,14 @@ function calcHitFields(ev, statOverrides, dcEffectsDisabled, dcEffectLevelOverri
 // ─── Damage calculation ───────────────────────────────────────────────────────
 function calcDamage(fields, bonuses, disabled) {
     let v = 1;
-    fields.atkMulti = (fields.baseAtk + bonuses.baseAtk) * (fields.atkPct + bonuses.atkPct) + fields.atkAbs;
+    // Handle independent toggles for baseAtk / atkPct which are combined into atkMulti
+    if (disabled.has('baseAtk') && disabled.has('atkPct')) {
+        fields.atkMulti = 1;
+    } else {
+        const baseVal = disabled.has('baseAtk') ? 1 : (fields.baseAtk + (bonuses.baseAtk || 0));
+        const pctVal  = disabled.has('atkPct')  ? 1 : (fields.atkPct  + (bonuses.atkPct  || 0));
+        fields.atkMulti = baseVal * pctVal + fields.atkAbs;
+    }
 
     // Recompute defAmend live if an effectiveDef bonus is set
     const effDefBonus = bonuses['effectiveDef'] || 0;
