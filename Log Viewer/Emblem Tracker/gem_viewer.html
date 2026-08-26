@@ -230,6 +230,7 @@
                     <canvas id="chartAttr"></canvas>
                 </div>
                 <table class="legend-table" id="legendAttr"></table>
+                <table class="legend-table" id="skillTable" style="display:none;margin-top:12px;"></table>
             </div>
 
             <!-- Overall by-slot card -->
@@ -238,6 +239,39 @@
                 <div class="chart-canvas-wrap" style="height:220px;">
                     <canvas id="chartSlot"></canvas>
                 </div>
+            </div>
+
+            <!-- Potential correlation card (Lvl 90) -->
+            <div class="chart-card">
+                <h3>Multiple Potential Lvl+ Correlation</h3>
+                <div class="chart-controls">
+                    <label>Base Potential Lvl+ count:</label>
+                    <select id="potX" onchange="refreshPotTable()">
+                        <option value="0">0 Potential Lvl+</option>
+                        <option value="1">1 Potential Lvl+</option>
+                        <option value="2">2 Potential Lvl+</option>
+                        <option value="3">3 Potential Lvl+</option>
+                    </select>
+                    <label>Locked rolls:</label>
+                    <select id="potLockMode" onchange="refreshPotTable()">
+                        <option value="include">Include</option>
+                        <option value="exclude">Exclude</option>
+                        <option value="focus">Focus only</option>
+                    </select>
+                    <label>Lock slot:</label>
+                    <select id="potLockSlot" onchange="refreshPotTable()">
+                        <option value="">--</option>
+                        <option value="1">1</option>
+                        <option value="2">2</option>
+                        <option value="3">3</option>
+                        <option value="4">4</option>
+                    </select>
+                </div>
+                <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;gap:12px;">
+                    <div id="potSummary" style="font-size:12px;color:#888;"></div>
+                    <div id="potLockPct" style="font-size:12px;color:#888;white-space:nowrap;"></div>
+                </div>
+                <table class="legend-table" id="potTable"></table>
             </div>
 
         </div>
@@ -256,7 +290,7 @@ const ATTR_NAMES = [
     "Crit Damage", "Penetrate", "Def Ignore", "Wer", "Fer", "Ser",
     "Aer", "Ler", "Der", "Aqua Dmg", "Ignis Dmg", "Terra Dmg", "Ventus Dmg", "Lux Dmg",
     "Umbra Dmg", "Aqua Pen", "Ignis Pen", "Terra Pen", "Ventus Pen", "Lux Pen", "Umbra Pen", "Wei",
-    "Fei", "Sei", "Aei", "Lei", "Dei", "Rcd Aqua Dmg", "Rcd Ignis Dmg", 
+    "Fei", "Sei", "Aei", "Lei", "Dei", "Rcd Aqua Dmg", "Rcd Ignis Dmg",
     "Rcd Terra Dmg", "Rcd Ventus Dmg", "Rcd Lux Dmg", "Rcd Umbra Dmg", "Weight",
     "Toughness Max", "Toughness Damage Adjust", "Shield Max", "",
     "Move Speed", "Atk Spd P", "Intensity", "Gen Dmg", "Dmg Plus",
@@ -767,6 +801,93 @@ function selectSlotChart(n) {
 function refreshResultsCharts() {
     refreshAttrChart();
     refreshSlotChart();
+    refreshPotTable();
+}
+
+// Count potential attributes (attrType 99) in a roll, over its full attrs list
+// (the locked attribute, if it is a potential, is included).
+function countPotentials(roll) {
+    let n = 0;
+    for (const id of roll.attrs) {
+        const info = gemAttrTable[id];
+        if (info && info.attrType === 99) n++;
+        else if (!info) {
+            // Fallback when attr data not loaded: detect via statTypeKey
+            if (statTypeKey(id).key.startsWith('potential:')) n++;
+        }
+    }
+    return n;
+}
+
+// Return the 1-based slot position (1–4) of the single locked attribute in a
+// roll, or -1 if the roll does not have exactly one locked stat / it wasn't found.
+function lockSlotOf(roll) {
+    if (roll.lockAttrs.length !== 1) return -1;
+    const pos = roll.attrs.indexOf(roll.lockAttrs[0]);
+    return pos < 0 ? -1 : pos + 1;
+}
+
+function refreshPotTable() {
+    const tableEl = document.getElementById('potTable');
+    if (!tableEl) return;
+    const summaryEl = document.getElementById('potSummary');
+    const xSel = document.getElementById('potX');
+    if (!xSel) return;
+    const X = parseInt(xSel.value);
+    if (isNaN(X)) return;
+
+    // Locked-roll handling via droplist:
+    //   include → all Lvl 90 rolls
+    //   exclude → only rolls with 0 locked stats (fresh rolls)
+    //   focus   → only rolls with >= 1 locked stat (reroll sessions)
+    const lockMode = (document.getElementById('potLockMode')?.value) || 'include';
+    const lockOk = (r) => {
+        if (lockMode === 'exclude') return r.lockAttrs.length === 0;
+        if (lockMode === 'focus')   return r.lockAttrs.length >= 1;
+        return true; // include
+    };
+
+    // Optional lock-slot filter: restrict to rolls whose ONLY locked stat sits
+    // in the chosen 1-based slot (1–4). Requires exactly one lock.
+    const lockSlotSel = document.getElementById('potLockSlot');
+    const lockSlot = lockSlotSel ? parseInt(lockSlotSel.value) : NaN;
+    const lockSlotOk = (r) => isNaN(lockSlot) || lockSlotOf(r) === lockSlot;
+
+    // Analysis set: Lvl 90 (slot 3) rolls passing the lock filter AND whose
+    // locked-stat count is <= X (a roll may not have more locked stats than X).
+    // Potential count = number of potential attributes (tier irrelevant);
+    // base includes rolls with AT LEAST X potentials (countPotentials >= X).
+    const base = store.rolls.filter(r => r.slotId === 3 && lockOk(r) && r.lockAttrs.length <= X && lockSlotOk(r));
+    const baseCount = base.filter(r => countPotentials(r) >= X).length;
+
+    let rows = '';
+    const exactX = base.filter(r => countPotentials(r) === X).length;
+    const pctX = baseCount > 0 ? (exactX / baseCount * 100).toFixed(2) : '0.00';
+    rows += `<tr>
+        <td class="leg-name">${X} Total pot lvl+</td>
+        <td class="leg-val">${exactX}</td>
+        <td class="leg-pct">${pctX}%</td>
+    </tr>`;
+    for (let total = X + 1; total <= 4; total++) {
+        const c = base.filter(r => countPotentials(r) === total).length;
+        const pct = baseCount > 0 ? (c / baseCount * 100).toFixed(2) : '0.00';
+        rows += `<tr>
+            <td class="leg-name">${total} total pot lvl+</td>
+            <td class="leg-val">${c}</td>
+            <td class="leg-pct">${pct}%</td>
+        </tr>`;
+    }
+
+    const lockLabel = { include: 'include locked', exclude: 'exclude locked', focus: 'focus locked only' }[lockMode];
+    const slotLabel = isNaN(lockSlot) ? '' : `, lock slot ${lockSlot}`;
+    summaryEl.textContent =
+        `Lvl 90 rolls (${lockLabel}, locks ≤ ${X}${slotLabel}): ${base.length}  ·  with ≥ ${X} Potential Lvl+: ${baseCount}`;
+
+    // % of the current (filtered) analysis set that had at least one locked stat
+    const lockedRolls = base.filter(r => r.lockAttrs.length >= 1).length;
+    const lockPct = base.length ? (lockedRolls / base.length * 100).toFixed(1) : '0.0';
+    document.getElementById('potLockPct').textContent = `Locked rolls: ${lockPct}%`;
+    tableEl.innerHTML = rows;
 }
 
 function refreshAttrChart() {
@@ -835,8 +956,11 @@ function refreshAttrChart() {
         const bareLabels = [...new Set(Object.values(keyLabel).map(l => l.replace(/^\[\d+\]\s*/, '')))].sort();
         // Check if any potential entries exist to conditionally show the meta-option
         const hasPotentials = bareLabels.some(l => /^Potential \+/.test(l));
+        let hasSkills = false;
+        for (const id in gemAttrTable) { if (gemAttrTable[id].attrType === 7) { hasSkills = true; break; } }
         statFilterSel.innerHTML = '<option value="">All stats</option>' +
             (hasPotentials ? '<option value="__potentials__">Potentials</option>' : '') +
+            (hasSkills ? '<option value="__anyskills__">Any Skill</option>' : '') +
             bareLabels.map(l => `<option value="${escHtml(l)}"${l === currentVal ? ' selected' : ''}>${escHtml(l)}</option>`).join('');
         // Restore selection if it still exists
         if ([...statFilterSel.options].some(o => o.value === currentVal)) {
@@ -847,11 +971,41 @@ function refreshAttrChart() {
     // Apply stat filter — match against the bare stat name (strip slot prefix)
     const filterRaw = (statFilterSel?.value || '').trim();
     const allEntries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
-    const entries = filterRaw === '__potentials__'
-        ? allEntries.filter(([key]) => /^Potential \+/.test(keyLabel[key].replace(/^\[\d+\]\s*/, '')))
-        : filterRaw
-            ? allEntries.filter(([key]) => keyLabel[key].replace(/^\[\d+\]\s*/, '') === filterRaw)
-            : allEntries;
+
+    // An attrId belongs to a skill-level-up stat if its attrType is 7
+    // (subtypes 1=AA, 2=Skill, 3=Support Skill, 4=Ultimate — all grouped as "any skill").
+    const isSkillEntry = ([key]) => {
+        const ids = keyIds[key];
+        if (!ids) return false;
+        for (const id of ids) { const e = gemAttrTable[id]; if (e && e.attrType === 7) return true; }
+        return false;
+    };
+
+    let entries;
+    if (filterRaw === '__potentials__') {
+        entries = allEntries.filter(([key]) => /^Potential \+/.test(keyLabel[key].replace(/^\[\d+\]\s*/, '')));
+    } else if (filterRaw === '__anyskills__') {
+        // Merge every skill-level-up stat (AA/Skill/Support/Ultimate) into one "Any Skill" group
+        let sum = 0; const mergedIds = new Set(); const mergedBreak = {};
+        for (const [key, count] of allEntries) {
+            if (!isSkillEntry([key])) continue;
+            sum += count;
+            for (const id of keyIds[key]) {
+                mergedIds.add(id);
+                mergedBreak[id] = (mergedBreak[id] || 0) + (keyBreakdown[key] ? (keyBreakdown[key][id] || 0) : 0);
+            }
+        }
+        entries = sum ? [['Any Skill', sum]] : [];
+        if (sum) {
+            keyIds['Any Skill'] = mergedIds;
+            keyBreakdown['Any Skill'] = mergedBreak;
+            keyLabel['Any Skill'] = 'Any Skill';
+        }
+    } else if (filterRaw) {
+        entries = allEntries.filter(([key]) => keyLabel[key].replace(/^\[\d+\]\s*/, '') === filterRaw);
+    } else {
+        entries = allEntries;
+    }
 
     // ordered keys array so tooltip can look up breakdown by bar index
     const entryKeys = entries.map(([key]) => key);
@@ -928,6 +1082,50 @@ function refreshAttrChart() {
     }).join('') + (entries.length > 40
         ? `<tr><td colspan="5" style="color:#383838;font-style:italic;padding-top:6px">…${entries.length - 40} more</td></tr>`
         : '');
+
+    // Any Skill Lvl+ distribution table — shown only when "Any Skill" grouping is selected.
+    // Rows = +1 / +2 / +3 Lvl tiers; computed over every skill-level-up attr
+    // (attrType 7, all subtypes) in the current slot, skipping locked stats.
+    const skillTbl = document.getElementById('skillTable');
+    if (skillTbl) {
+        if (filterRaw === '__anyskills__') {
+            const tierCounts = { 1: 0, 2: 0, 3: 0 };
+            let skillAttrTotal = 0, rollsWithSkill = 0;
+            for (const r of rolls) {
+                const lockSet = new Set(r.lockAttrs);
+                let had = false;
+                for (const attrId of r.attrs) {
+                    if (lockSet.has(attrId)) continue;
+                    const e = gemAttrTable[attrId];
+                    if (e && e.attrType === 7) {
+                        const tier = Math.round(e.value);
+                        if (tier >= 1 && tier <= 3) { tierCounts[tier]++; skillAttrTotal++; had = true; }
+                    }
+                }
+                if (had) rollsWithSkill++;
+            }
+            const slotName = slot === 1 ? 'Lvl 70' : slot === 2 ? 'Lvl 80' : 'Lvl 90';
+            const rollPct = rolls.length ? (rollsWithSkill / rolls.length * 100).toFixed(1) : '0.0';
+            let rows = '';
+            for (let t = 1; t <= 3; t++) {
+                const c = tierCounts[t];
+                const pct = skillAttrTotal > 0 ? (c / skillAttrTotal * 100).toFixed(2) : '0.00';
+                rows += `<tr>
+                    <td class="leg-name">+${t} Lvl</td>
+                    <td class="leg-val">${c}</td>
+                    <td class="leg-pct">${pct}%</td>
+                </tr>`;
+            }
+            skillTbl.innerHTML =
+                `<tr><td colspan="3" style="color:#888;font-size:12px;padding-bottom:6px;">
+                    Any Skill Lvl+ — ${slotName} · ${skillAttrTotal} skill attrs across ${rollsWithSkill} rolls (${rollPct}% of rolls)
+                </td></tr>` + rows;
+            skillTbl.style.display = '';
+        } else {
+            skillTbl.style.display = 'none';
+            skillTbl.innerHTML = '';
+        }
+    }
 }
 
 function refreshSlotChart() {

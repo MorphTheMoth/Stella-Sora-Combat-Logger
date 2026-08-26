@@ -39,8 +39,6 @@ Trust only the actual code, the descriptions are not reliable, in case the two d
 | 10 | `characterid.json` | **Name → id resolver.** When you say a character's name, look the id up here (e.g. `Amber` → `103`) and use it everywhere below. |
 | 11 | `decompilation/CombatAssetsBundles/` | **Asset-bundle extraction:** `AI.json:FCComboGroup` → actual combo clips / hitbox timing (`activeNormalizedTimeRange`, `hitBoxShape…`, `hitDamageId`) from the install's `StreamingAssets/InstallResource/*.unity3d` (`char_*_combos.unity3d`, `char_*_weapons.unity3d` …). Use `extract_combat_bundles.py` + `summarize_combos.py` to get `extracted/<charId>/` JSON — the authoritative hit schedule, not the `Skill.json` `HitDamage` list alone. |
 
-> All paths under `/home/morph/StellaSoraData` may also be reached from inside
-> this repo via the symlink `Link to StellaSoraData`.
 
 ---
 
@@ -48,7 +46,7 @@ Trust only the actual code, the descriptions are not reliable, in case the two d
 
 1. **Resolve the character id** — look the name up in `characterid.json`.
 2. **Read the aggregated description** — open `character.json` → `[id]` and read `normalAtk`, `skill`, `supportSkill`, `ultimate`, `potential`.
-3. **Drill into the raw tables** for exact numbers.
+3. **Dig into the raw tables** for exact numbers.
 4. **Read the real implementation** in `Hotfix.decompiled.cs` under `AIScript.Character._[id]01`.
 5. **If you need combat math** — check docs/damage_flow_analysis.md grep `decompiled.c` / `old_out/dump.cs`.
 
