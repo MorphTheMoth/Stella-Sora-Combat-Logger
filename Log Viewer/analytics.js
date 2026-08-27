@@ -1066,39 +1066,31 @@ const Analytics = (() => {
             return;
         }
 
-        // Accumulate crit distribution stats. Each hit already carries its
-        // dmgCalc-processed fields (effect overrides, disabled effects, char
-        // disables applied) via the `_fields` property set in getCalcHits().
-        let totalBaseDmg = 0;
-        let expectedExtra = 0;
-        let actualExtra = 0;
+        // Accumulate crit distribution stats using logged damage as ground truth.
+        // Old code reconstructed base damage bm = atkMulti*multiplier*… from stats,
+        // which dropped additive terms (dmgPlus/dmgPlusRcd/finalDmgPlus/skillAbs),
+        // ignored floor(), and made "Your total" disagree with the Damage Share
+        // totals. Now we derive the non-crit base from the logged finalDamage so
+        // actualTotal is exact and expected/variance use the same base.
+        let totalBaseDmg = 0;      // Σ base_i  (non-crit damage per hit)
+        let expectedExtra = 0;    // Σ base_i*(cd_i-1)*cr_i
+        let actualExtra = 0;      // Σ base_i*(cd_i-1) where isCrit
+        let actualTotal = 0;      // Σ logged finalDamage (exact)
         let varianceSum = 0;
         let varianceSqSum = 0;
         let critHits = 0;
 
         for (const ev of hits) {
             const fields = ev._fields;
-
-            // Base multiplier (same as dcCalcCritLuck without dcBonus/dcDisabled)
-            let bm = fields.baseAtk * fields.atkPct + fields.atkAbs;
-            for (const key of DC_FORMULA_KEYS) {
-                if (key === 'atkMulti' || key === 'critDmg') continue;
-                let val;
-                if (key === 'penRes')
-                    val = calcPenRes(fields._aStats, fields._dStats, fields._el, 0, 0);
-                else if (key === 'defAmend') {
-                    val = fields.defAmend;
-                } else
-                    val = fields[key] != null ? fields[key] : 1;
-                bm *= val;
-            }
-
-            totalBaseDmg += bm;
-
             const cr = fields.critRate;
-            const cd = fields.critDmg;
-            const extra = bm * (cd - 1);
-
+            const cd = fields.critDmg != null ? fields.critDmg : 1;
+            const fd = Number((ev.DamageParams || {}).finalDamage) || 0;
+            actualTotal += fd;
+            // Recover non-crit base from logged damage: fd = base*cd if crit else base.
+            // This implicitly includes all additive/multiplicative terms and floor.
+            const base = (fields.isCrit && cd !== 0 && cd !== 1) ? fd / cd : fd;
+            totalBaseDmg += base;
+            const extra = base * (cd - 1); // 0 when cd==1
             expectedExtra += extra * cr;
             if (fields.isCrit) { actualExtra += extra; critHits++; }
             const p = cr, s = extra;
@@ -1108,34 +1100,110 @@ const Analytics = (() => {
         }
 
         if (expectedExtra === 0) {
-            container.innerHTML = '<div class="chart-empty">No crit-variable hits (crit rate is 0)</div>';
+            container.innerHTML = '<div class="chart-empty">No crit-variable hits (crit rate is 0 or crit damage is 1)</div>';
             return;
         }
 
         const stddev = Math.sqrt(Math.max(0, varianceSum));
         const nEff = varianceSum > 0 && varianceSqSum > 0 ? varianceSum * varianceSum / varianceSqSum : 0;
-        const zScore = stddev > 0 ? (actualExtra - expectedExtra) / stddev : 0;
-        const myPct = _normalCdf(zScore) * 100;
-
-        // Practical error estimate: ~95% coverage for weighted-Bernoulli distributions
-        const pracErr = nEff > 0 ? 0.15 / Math.sqrt(nEff) / (1 + zScore * zScore / 6) : 0;
-        const pracErrPct = Math.min(pracErr * 100, 10);
-        const pctLower = Math.max(0, myPct - pracErrPct);
-        const pctUpper = Math.min(100, myPct + pracErrPct);
-
         const expectedTotal = totalBaseDmg + expectedExtra;
-        const actualTotal = totalBaseDmg + actualExtra;
+        // actualTotal already Σ fd
 
-        // Build table
+        // ── Best-accuracy distribution: Monte Carlo over weighted Bernoulli sum ──
+        // Normal: total_p = expected + z_p*stddev assumes CLT. For small nEff,
+        // skewed s_i, or far tails it is too tight (underestimates variance if
+        // hits are correlated). Monte Carlo draws directly from Σ Bernoulli(cr_i)*s_i
+        // so heterogeneity is exact (sampling error only). We keep normal as fallback
+        // for huge N where simulation would be heavy.
         const PCTS = [99, 95, 90, 75, 50, 25, 10, 5, 1];
+        // ── Burst-aware Monte Carlo ──
+        // Thousands of hits but 50 dominate variance -> nEff≈50, Normal is too tight
+        // and full MC over 3k hits (3k*15k=45M draws) is heavy. We keep only the
+        // variance-dominant hits exactly and fold the long tail into a Normal.
+        const allEntries = [];
+        for (const ev of hits) {
+            const f = ev._fields;
+            const cr = f.critRate, cd = f.critDmg ?? 1;
+            if (!cr || cd === 1) continue;
+            const fd = Number((ev.DamageParams||{}).finalDamage)||0;
+            const base = (f.isCrit && cd!==1) ? fd/cd : fd;
+            const s = base*(cd-1);
+            if (!s) continue;
+            const varI = cr*(1-cr)*s*s;
+            allEntries.push({cr, s, varI, mean: s*cr});
+        }
+        allEntries.sort((a,b)=>b.varI-a.varI);
+        const totalVar = allEntries.reduce((a,e)=>a+e.varI,0);
+        // Keep hits covering 99.5% variance, cap at 400 (burst: ~50 kept, rest folded)
+        let keep = [], cumVar=0;
+        let remMean=0, remVar=0;
+        for (let i=0;i<allEntries.length;i++) {
+            const e=allEntries[i];
+            const wouldKeep = keep.length<400 && (cumVar/totalVar<0.995 || e.varI/totalVar>2e-4);
+            if (wouldKeep) { keep.push(e); cumVar+=e.varI; }
+            else { remMean+=e.mean; remVar+=e.varI; }
+        }
+        // If we pruned nothing, keep is allEntries
+        const simEntries = keep.length? keep : allEntries;
+        const keptVarFrac = totalVar? cumVar/totalVar : 1;
+        // Adaptive trials based on kept size (not raw N) — burst keeps ~50 -> 30k cheap
+        let trials = 30000;
+        if (simEntries.length > 300) trials = 20000;
+        if (simEntries.length > 800) trials = 12000;
+        if (simEntries.length > 1500) trials = 8000;
+        // Never fallback to pure Normal when burst-pruned; remainder handled analytically
+        let totalsMC = null, myPct, zScore, pctLower, pctUpper, pracErrPct;
+        let percentileTotals = {};
+        if (simEntries.length) {
+            // Box-Muller cached Gaussian for remainder tail
+            let spare=null;
+            function randn(){ if(spare!==null){const v=spare; spare=null; return v;} let u=0,v=0; while(u===0) u=Math.random(); while(v===0) v=Math.random(); const m=Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v); spare=Math.sqrt(-2*Math.log(u))*Math.sin(2*Math.PI*v); return m; }
+            const remStd = Math.sqrt(Math.max(0,remVar));
+            const remIsNormal = remVar>0 && (allEntries.length - simEntries.length) > 30;
+            totalsMC = new Float64Array(trials);
+            for (let t = 0; t < trials; t++) {
+                let extra = 0;
+                for (let i = 0; i < simEntries.length; i++) if (Math.random() < simEntries[i].cr) extra += simEntries[i].s;
+                if (remIsNormal) extra += remMean + randn()*remStd;
+                else if (remVar) { // tiny tail but not normal-eligible: add mean only (var <0.5% total)
+                    extra += remMean; // variance contribution <0.5% -> <0.25% stddev error
+                }
+                totalsMC[t] = totalBaseDmg + extra;
+            }
+            totalsMC = Array.from(totalsMC).sort((a,b)=>a-b);
+            for (const p of PCTS) {
+                const rank = (p/100)*(trials-1);
+                const lo = Math.floor(rank), hi = Math.ceil(rank);
+                const v = lo===hi ? totalsMC[lo] : totalsMC[lo]*(hi-rank)+totalsMC[hi]*(rank-lo);
+                percentileTotals[p] = v;
+            }
+            let less=0, equal=0;
+            for (const v of totalsMC) { if (v < actualTotal) less++; else if (v===actualTotal) equal++; }
+            myPct = (less + equal*0.5)/trials*100;
+            zScore = stddev>0 ? (actualExtra-expectedExtra)/stddev : 0;
+            const se = Math.sqrt(myPct*(100-myPct)/trials);
+            pracErrPct = 1.96*se; // MC sampling 95% CI
+            pctLower = Math.max(0, myPct - pracErrPct);
+            pctUpper = Math.min(100, myPct + pracErrPct);
+            // annotate how much variance was pruned (for tooltip/debug)
+            // console.log(`[critDist] N=${allEntries.length} kept=${simEntries.length} varKept=${(keptVarFrac*100).toFixed(1)}% trials=${trials}`);
+        } else {
+            zScore = stddev>0 ? (actualExtra-expectedExtra)/stddev : 0;
+            myPct = _normalCdf(zScore)*100;
+            const pracErr = nEff>0 ? 0.15/Math.sqrt(nEff)/(1+zScore*zScore/6) : 0;
+            pracErrPct = Math.min(pracErr*100,10);
+            pctLower = Math.max(0, myPct - pracErrPct);
+            pctUpper = Math.min(100, myPct + pracErrPct);
+            for (const p of PCTS) percentileTotals[p] = expectedTotal + _normalQuantile(p/100)*stddev;
+        }
+
         const myCls = myPct >= 50 ? 'ei-pos' : 'ei-neg';
         const actualVsExp = actualTotal / expectedTotal * 100;
 
         // Build all rows (PCTS + user) into an array, sorted by percentile descending
         const rows = [];
         for (const p of PCTS) {
-            const z = _normalQuantile(p / 100);
-            const totalAtP = expectedTotal + z * stddev;
+            const totalAtP = percentileTotals[p];
             const vsExp = totalAtP / expectedTotal * 100;
             rows.push({
                 sortKey: p, label: p + 'th', dmg: totalAtP,
