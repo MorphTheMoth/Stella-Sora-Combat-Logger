@@ -685,6 +685,7 @@ ST.switchTab = function(tab) {
     });
 
     if (tab === 'runs' && typeof ST.renderRuns === 'function') ST.renderRuns();
+    if (tab === 'stats' && typeof ST.renderStats === 'function') ST.renderStats();
     if (tab === 'potentials' && typeof ST.renderPotentials === 'function') ST.renderPotentials();
     if (tab === 'notes' && typeof ST.renderNotes === 'function') ST.renderNotes();
     if (tab === 'events' && typeof ST.renderEvents === 'function') ST.renderEvents();
