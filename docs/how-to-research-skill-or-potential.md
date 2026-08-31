@@ -27,9 +27,9 @@ Trust only the actual code, the descriptions are not reliable, in case the two d
 
 | # | Resource | What it gives you |
 |---|----------|-------------------|
-| 1 | `decompilation/hotfix/Hotfix.decompiled.cs` | The actual **C# implementation of each character's skills**. Each character's code lives in a namespace named `AIScript.Character._[characterid]01` (e.g. Amber → `AIScript.Character._10301`). This is the hot-update (HybridCLR) assembly, fully decompiled. |
+| 1 | `decompilation/hotfix/<version>/Hotfix.decompiled.cs` (default `1.14/` — see `decompilation/hotfix/README.md` and `docs/how-to-research-unreleased-characters.md` version table; `1.13/` previous, `0.5/` oldest) | The actual **C# implementation of each character's skills**. Each character's code lives in a namespace named `AIScript.Character._[characterid]01` (e.g. Amber → `AIScript.Character._10301`). This is the hot-update (HybridCLR) assembly, fully decompiled — always use `1.14/Hotfix.decompiled.cs` unless you need to match an existing citation or prove historical absence. |
 | 2 | `decompilation/decompiled.c` | Ghidra **C decompile of the combat engine** (the AOT `GameAssembly.dll`): damage math (`CalculateNormalDamage`, `GetBothAllInfo`), effect lifecycle, attribute lists. For when you need to know *how* numbers are computed. |
-| 3 | `decompilation/old_out` | **Il2CppDumper output** (`dump.cs` with every type, `DummyDll` stubs, `script.json`, `il2cpp.h`, `stringliteral.json`). Use it to resolve the C# names of the engine types, protobuf messages (e.g. `HitDamage`), and RVAs. |
+| 3 | `decompilation/out_new` | **Il2CppDumper output** (`dump.cs` with every type, `DummyDll` stubs, `script.json`, `il2cpp.h`, `stringliteral.json`). Use it to resolve the C# names of the engine types, protobuf messages (e.g. `HitDamage`), and RVAs. |
 | 4 | `/home/morph/StellaSoraData` | A separate **datamine project** that dumps and aggregates the game's config tables (`EN/bin/*.json`, `CN/bin/*.json`, ... + translated language files under `EN/language/en_US/`). A lot of useful information here, if you find an id, searching in here will give you the raw data tables. |
 | 5 | `character.json` | **Aggregated description of every character**: their skills, potentials, talents, and fixed stats, with EN/CN/JP/KR text and the effect params already resolved to tooltips. Start here. |
 | 6 | `disc.js` | **Aggregated description of every disc** and its effects. Run it (`node disc.js`) to regenerate `disc.json`; the raw tables are `EN/bin/Disc*.json`. |
@@ -48,7 +48,7 @@ Trust only the actual code, the descriptions are not reliable, in case the two d
 2. **Read the aggregated description** — open `character.json` → `[id]` and read `normalAtk`, `skill`, `supportSkill`, `ultimate`, `potential`.
 3. **Dig into the raw tables** for exact numbers.
 4. **Read the real implementation** in `Hotfix.decompiled.cs` under `AIScript.Character._[id]01`.
-5. **If you need combat math** — check docs/damage_flow_analysis.md grep `decompiled.c` / `old_out/dump.cs`.
+5. **If you need combat math** — check docs/damage_flow_analysis.md grep `decompiled.c` / `out_new/dump.cs`.
 
 The rest of this doc walks each step and explains how the ids connect.
 
@@ -243,7 +243,7 @@ When you need to know *how the damage/effect is computed* (not just what it is):
   `CommonHelper__CalculateNormalDamage`, `AdventureActor__GetBothAllInfo`, ...).
   Line numbers / RVAs for the current binary are listed in
   `docs/damage_flow_analysis.md` §7–8.
-- **`decompilation/old_out`** — Il2CppDumper output:
+- **`decompilation/out_new`** — Il2CppDumper output:
   - `dump.cs` — every type from every assembly (`Game.dll`, `GameFramework.dll`,
     ...) with their field layout and protobuf messages (e.g. the `HitDamage`
     protobuf). Use it to name the structs behind `decompiled.c`.
@@ -291,7 +291,7 @@ Discs are **not** character-specific; research them from the datamine:
    sweeps, the reload mechanic, the buff application.
 6. **Damage math**: if needed, `decompiled.c` →
    `CommonHelper__CalculateNormalDamage` / `AdventureActor__GetBothAllInfo` with
-   types from `old_out/dump.cs`.
+   types from `out_new/dump.cs`.
 
 ---
 
