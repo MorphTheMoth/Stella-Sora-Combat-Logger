@@ -58,7 +58,7 @@ function effectSubTypeName(v, mainType = 12) {
     console.log(`Weird effect type: ${effectTypeName(mainType)}, subType: ${v}`)
   if (mainType == 52) return 'Base';
   if (mainType == 54) return 'Pct';
-  return v != null ? (EFFECT_SUBTYPE_NAMES[v] || v + ' (?)') : ''; 
+  return v != null ? (EFFECT_SUBTYPE_NAMES[v] || v + ' (?)') : '';
 }
 
 function effectTypeHasAttr(et) {
@@ -90,22 +90,22 @@ const ATTR_NAMES = [
     "Crit Damage", "Penetrate", "Def Ignore", "Wer", "Fer", "Ser",
     "Aer", "Ler", "Der", "Aqua Dmg", "Ignis Dmg", "Terra Dmg", "Ventus Dmg", "Lux Dmg",
     "Umbra Dmg", "Aqua Pen", "Ignis Pen", "Terra Pen", "Ventus Pen", "Lux Pen", "Umbra Pen", "Wei",
-    "Fei", "Sei", "Aei", "Lei", "Dei", "Rcd Aqua Dmg", "Rcd Ignis Dmg", 
+    "Fei", "Sei", "Aei", "Lei", "Dei", "Rcd Aqua Dmg", "Rcd Ignis Dmg",
     "Rcd Terra Dmg", "Rcd Ventus Dmg", "Rcd Lux Dmg", "Rcd Umbra Dmg", "Weight",
     "Toughness Max", "Toughness Damage Adjust", "Shield Max", "",
     "Move Speed", "Atk Spd P", "Intensity", "Gen Dmg", "Dmg Plus",
     "Final Dmg", "Final Dmg Plus", "Gen Dmg Rcd", "Dmg Plus Rcd",
-    "Suppress", "Normal Dmg", "Skill Dmg", "Ultra Dmg", "Other Dmg",
-    "Rcd Normal Dmg", "Rcd Skill Dmg", "Rcd Ultra Dmg", "Rcd Other Dmg",
+    "Suppress", "Normal Dmg", "Skill Dmg", "Ult Dmg", "Other Dmg",
+    "Rcd Normal Dmg", "Rcd Skill Dmg", "Rcd Ult Dmg", "Rcd Other Dmg",
     "Mark Dmg", "Rcd Mark Dmg", "Minion Dmg", "Rcd Minion Dmg",
     "Derivative Dmg", "Rcd Derivative Dmg", "Normal Crit Rate",
-    "Skill Crit Rate", "Ultra Crit Rate", "Mark Crit Rate", "Minion Crit Rate",
+    "Skill Crit Rate", "Ult Crit Rate", "Mark Crit Rate", "Minion Crit Rate",
     "Derivative Crit Rate", "Other Crit Rate", "Normal Crit Damage",
-    "Skill Crit Damage", "Ultra Crit Damage", "Mark Crit Damage",
+    "Skill Crit Damage", "Ult Crit Damage", "Mark Crit Damage",
     "Minion Crit Damage", "Derivative Crit Damage", "Other Crit Damage",
     "Energy Max", "Skill Intensity", "Toughness Broken Dmg",
     "Add Shield Strengthen", "Be Add Shield Strengthen", "Normal Suppress",
-    "Skill Suppress", "Ultra Suppress", "Mark Suppress", "Minion Suppress",
+    "Skill Suppress", "Ult Suppress", "Mark Suppress", "Minion Suppress",
     "Derivative Suppress", "Other Suppress", "Env Amend",
 ];
 
@@ -486,6 +486,18 @@ function buildHitTable(jHit, jSkill, jLang, jChar, jPotential, jItemRoot) {
             }
         }
         const src = charName && charName !== '?' ? `${charName} Skills` : 'Skills';
+        // Mark hits: xxx000001 pattern => "<Element> Mark" (e.g. Ignis Mark) - only for DamageType 5
+        if (hitEntry.DamageType === 5 && hitId % 1000000 === 1) {
+            const derivedCharId = Math.trunc(hitId / 1000000);
+            if (derivedCharId === charId && charName !== '?') {
+                const elemMap = {1:'Aqua',2:'Ignis',3:'Terra',4:'Ventus',5:'Lux',6:'Umbra'};
+                const elemName = elemMap[hitEntry.ElementType] ?? charMap[charId]?.element ?? '?';
+                if (elemName !== '?') {
+                    skillTitle = `${elemName} Mark`;
+                    if (!hitNum) hitNum = 1;
+                }
+            }
+        }
         hitTable.set(hitId, { charName, skillTitle, hitNum, source: src  });
     }
 
@@ -524,6 +536,20 @@ function buildHitTable(jHit, jSkill, jLang, jChar, jPotential, jItemRoot) {
         [114504001, 'Chaton', 'Dark Mark', 2, 'Skills'],
         [114504002, 'Chaton', 'Dark Mark', 3, 'Skills'],
         [114504003, 'Chaton', 'Dark Mark', 4, 'Skills'],
+        // Marks that don't follow xxx000001 pattern or where xxx000001 is not the Mark (game calls it Dark Burn)
+        // Firenze: Param3=Umbra Mark (110000000), Param4=Dark Burn (110000001) - Skill.json 11031000/11032000/11040000, character.json 110 skill/supportSkill/ultimate
+        [110000000, 'Firenze', 'Umbra Mark', 1, 'Skills'],
+        [110000001, 'Firenze', 'Dark Burn', 1, 'Skills'],
+        // Mistique: Param3=Umbra Mark (135000000), Param4=Dark Burn (135000001) - Skill.json 13531000
+        [135000000, 'Mistique', 'Umbra Mark', 1, 'Skills'],
+        [135000001, 'Mistique', 'Dark Burn', 1, 'Skills'],
+        // Caramel: Param5=Umbra Mark (147100000), Param6=Dark Burn (147000001) - Skill.json 14731000/14732000/14740000
+        [147100000, 'Caramel', 'Umbra Mark', 1, 'Skills'],
+        [147000001, 'Caramel', 'Dark Burn', 1, 'Skills'],
+        // Noya: Ventus Mark is 112100000 (no 112000001 in HitDamage.json) - Skill.json 11231001/11232000/11240000
+        [112100000, 'Noya', 'Ventus Mark', 1, 'Skills'],
+        // Karin: Umbra Mark 157000001 via pattern, Dark Burn 157000002 via Word 4051 / BuffEffect
+        [157000002, 'Karin', 'Dark Burn', 1, 'Skills'],
     ];
     for (const [hitId, charName, skillTitle, hitNum, src] of hardcoded)
         hitTable.set(hitId, { charName, skillTitle, hitNum, source: `${charName} ${src}` });
@@ -539,7 +565,7 @@ function buildEffectTable(dataFiles) {
         jAffinityLevel, jEffectValue, jAffix, jAffixLang,
         jBuff, jBuffValue, jWord, jWordLang, jTalent, jTalentLang,
         jScoreBoss, jScoreBossLang, jItemLangRoot, jItemRoot,
-        jOnceAttr, jSecSkillLang, jChar, jSkill, 
+        jOnceAttr, jSecSkillLang, jChar, jSkill,
         jSkillLang, jPotential, jBlitz
     } = dataFiles;
 
