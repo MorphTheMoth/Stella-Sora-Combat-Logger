@@ -378,6 +378,7 @@ const Analytics = (() => {
         hits:         'Hit Count',
         energyCharge: 'Total Energy',
         singleec:     'Hit Energy',
+        mvTypePerSec: 'MV * type / s',
     };
 
     // Sort state: { key, dir } where key is a metric id, 'name', or 'metric:<id>'
@@ -388,12 +389,13 @@ const Analytics = (() => {
     }
 
     function isFloatMetric(m) {
-        return m === 'multiplier' || m === 'singlemv';
+        return m === 'multiplier' || m === 'singlemv' || m === 'mvTypePerSec';
     }
 
     function formatMetricValue(m, v) {
         if (m === 'hits') return Number(v).toLocaleString();
         if (m === 'multiplier' || m === 'singlemv') return v.toFixed(2) + '%';
+        if (m === 'mvTypePerSec') return v.toFixed(2) + '%/s';
         return Number(v).toLocaleString();
     }
 
@@ -405,18 +407,43 @@ const Analytics = (() => {
         const filterDef   = document.getElementById('mtFilterDefender').value;
         const metrics     = getSelectedMetrics();
 
+        // First collect filtered hits so we can compute global duration once
+        const allHits = getPlayerHits();
+        const filtered = [];
+        for (const ev of allHits) {
+            const char    = getCharName(ev);
+            const dmgtype = getDmgTypeName(ev);
+            const def     = getDefenderName(ev);
+            if (filterChar && char !== filterChar) continue;
+            if (filterType && dmgtype !== filterType) continue;
+            if (filterDef  && def   !== filterDef)   continue;
+            filtered.push(ev);
+        }
+
+        // Global fight duration (seconds) from filtered hits' Time fields
+        let durationSec = 0;
+        if (filtered.length) {
+            let minMs = Infinity, maxMs = -Infinity;
+            for (const ev of filtered) {
+                const ms = typeof parseTimeToMs === 'function' ? parseTimeToMs(ev.Time) : 0;
+                if (ms < minMs) minMs = ms;
+                if (ms > maxMs) maxMs = ms;
+            }
+            if (isFinite(minMs) && isFinite(maxMs) && maxMs > minMs) {
+                durationSec = (maxMs - minMs) / 1000;
+            }
+            if (durationSec < 0.001) durationSec = 1;
+        } else {
+            durationSec = 1;
+        }
+
         const map = {};
         const hitCounts = {};
-        getPlayerHits().forEach(ev => {
+        filtered.forEach(ev => {
             const hc      = ev.HitConfig || {};
             const dp      = ev.DamageParams || {};
             const char    = getCharName(ev);
             const dmgtype = getDmgTypeName(ev);
-            const def     = getDefenderName(ev);
-
-            if (filterChar && char !== filterChar) return;
-            if (filterType && dmgtype !== filterType) return;
-            if (filterDef  && def   !== filterDef)   return;
 
             const groupName = groupBy === 'char' ? char : dmgtype;
 
@@ -437,7 +464,7 @@ const Analytics = (() => {
                 map[key] = {
                     groupName, char, dmgtype,
                     skillTitle: hc.skillTitle || '?',
-                    values: { dmg: 0, multiplier: 0, singlemv: 0, hits: 0, energyCharge: 0, singleec: 0 }
+                    values: { dmg: 0, multiplier: 0, singlemv: 0, hits: 0, energyCharge: 0, singleec: 0, mvTypePerSec: 0 }
                 };
                 hitCounts[key] = 0;
             }
@@ -450,6 +477,19 @@ const Analytics = (() => {
             map[key].values.hits         += 1;
             map[key].values.energyCharge += energy;
             map[key].values.singleec     += energy;
+            // MV * Type% * TypeR%  (Type% = dmgTypePct, TypeR% = dmgTypeTakenPct)
+            let tPct = 1, tR = 1;
+            if (ev._fields) {
+                tPct = ev._fields.dmgTypePct != null ? ev._fields.dmgTypePct : 1;
+                tR   = ev._fields.dmgTypeTakenPct != null ? ev._fields.dmgTypeTakenPct : 1;
+            } else if (typeof calcHitFields === 'function') {
+                try {
+                    const f = calcHitFields(ev);
+                    tPct = f.dmgTypePct != null ? f.dmgTypePct : 1;
+                    tR   = f.dmgTypeTakenPct != null ? f.dmgTypeTakenPct : 1;
+                } catch {}
+            }
+            map[key].values.mvTypePerSec += mult * tPct * tR;
             hitCounts[key]++;
         });
 
@@ -459,6 +499,8 @@ const Analytics = (() => {
                 d.values.singlemv = d.values.singlemv / hits;
                 d.values.singleec = d.values.singleec / hits;
             }
+            // Convert summed weighted MV to per-second
+            d.values.mvTypePerSec = durationSec > 0 ? d.values.mvTypePerSec / durationSec : 0;
             return { key, ...d };
         });
     }
