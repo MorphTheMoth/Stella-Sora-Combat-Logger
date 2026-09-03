@@ -550,6 +550,9 @@ function buildHitTable(jHit, jSkill, jLang, jChar, jPotential, jItemRoot) {
         [112100000, 'Noya', 'Ventus Mark', 1, 'Skills'],
         // Karin: Umbra Mark 157000001 via pattern, Dark Burn 157000002 via Word 4051 / BuffEffect
         [157000002, 'Karin', 'Dark Burn', 1, 'Skills'],
+        // Suntide Willow: Prismatic Bubbles variants (SkillSlotType 2, PerkId 516030)
+        [160530001, 'Suntide Willow', 'Prismatic Bubbles (blue)', 1, 'Potentials'],
+        [160530002, 'Suntide Willow', 'Prismatic Bubbles (red)', 2, 'Potentials'],
     ];
     for (const [hitId, charName, skillTitle, hitNum, src] of hardcoded)
         hitTable.set(hitId, { charName, skillTitle, hitNum, source: `${charName} ${src}` });
