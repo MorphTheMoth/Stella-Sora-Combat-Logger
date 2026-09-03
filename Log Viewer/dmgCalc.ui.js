@@ -386,11 +386,17 @@ function dcRenderTotals() {
     const el = document.getElementById('dcSidebarTotals');
     if (!el) return;
     let totalCalc = 0, totalGame = 0;
+    let minMs = Infinity, maxMs = -Infinity;
     dcFiltered.forEach(ev => {
         const f = calcHitFields(ev, null, dcEffectsDisabled, dcEffectLevelOverrides);
         totalCalc += calcDamage(f, dcBonus, dcDisabled);
         totalGame += f.finalDamage;
+        const ms = parseTimeToMs(ev.Time);
+        if (ms < minMs) minMs = ms;
+        if (ms > maxMs) maxMs = ms;
     });
+    const secs = (minMs !== Infinity && maxMs > minMs) ? (maxMs - minMs) / 1000 : 0;
+    const dps = secs > 0 ? Math.floor(totalGame / secs) : Math.floor(totalGame);
     const overallDiff = totalGame > 0 ? ((totalCalc / totalGame) - 1) * 100 : null;
     const d1 = overallDiff != null
         ? `<span class="${Math.abs(overallDiff) < 0.05 ? 'dc-diff-close' : overallDiff < 0 ? 'dc-diff-neg' : 'dc-diff-pos'}" style="margin-left:4px">(${overallDiff >= 0 ? '+' : ''}${overallDiff.toFixed(1)}%)</span>`
@@ -402,6 +408,8 @@ function dcRenderTotals() {
     el.innerHTML = `
         <span>Total Calc: <strong>${Math.round(totalCalc).toLocaleString()}</strong>${d1}</span>
         <span style="display:block">Total In-Game: <strong>${Math.round(totalGame).toLocaleString()}</strong>${d2}</span>
+        <span style="display:block">Time: <strong>${secs.toFixed(1)}s</strong></span>
+        <span style="display:block">DPS: <strong>${dps.toLocaleString()}</strong></span>
     `;
 }
 
@@ -874,6 +882,14 @@ function dcBuildCharFilter() {
     } else if (!prev) {
         sel.value = '';
         dcCharFilter = '';
+    } else {
+        // prev has no hits under the other active filters — keep it in the
+        // list so it stays visible and can be changed back to All instead
+        // of leaving the filter stuck on a value with no matching option.
+        const o = document.createElement('option');
+        o.value = prev; o.textContent = prev;
+        sel.appendChild(o);
+        sel.value = prev;
     }
 }
 
@@ -900,6 +916,16 @@ function dcBuildSkillFilter(evs) {
     } else if (!prev) {
         sel.value = '';
         dcSkillFilter = '';
+    } else {
+        // prev skill has no hits under the other active filters (e.g. char
+        // switched) — keep it in the list so it stays visible and can be
+        // changed back to All instead of leaving the filter stuck.
+        const o = document.createElement('option');
+        o.value = prev;
+        o.textContent = prev.length > MAX ? prev.slice(0, MAX) + '…' : prev;
+        o.title = prev;
+        sel.appendChild(o);
+        sel.value = prev;
     }
 }
 
@@ -928,6 +954,18 @@ function dcBuildDamageTypeFilter(evs) {
     } else if (!prev) {
         sel.value = '';
         dcDamageTypeFilter = '';
+    } else {
+        // prev damage type has no hits under the other active filters (e.g.
+        // AA picked for Chitose, then switched to a char with no AA hits) —
+        // keep it in the list so it stays visible and can be changed back
+        // to All instead of leaving the filter stuck.
+        const o = document.createElement('option');
+        o.value = prev;
+        const prevLabel = dtName(prev);
+        o.textContent = prevLabel.length > MAX ? prevLabel.slice(0, MAX) + '…' : prevLabel;
+        o.title = prevLabel;
+        sel.appendChild(o);
+        sel.value = prev;
     }
 }
 
