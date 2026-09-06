@@ -12,8 +12,7 @@ ST.allNoteEvents = [];
 ST.allEventRng = [];
 ST.allShopOffers = [];
 ST.allShopItems = [];
-ST.allFloorEvents = [];
-ST.allStrengthenEvents = [];
+ST.allRoomVisits = [];
 
 // ── Constants ──
 ST.NOTE_IDS = [90011, 90012, 90013, 90014, 90015, 90016, 90017, 90018];
@@ -193,8 +192,7 @@ ST.processRuns = function(events) {
     ST.allEventRng = [];
     ST.allShopOffers = [];
 ST.allShopItems = [];
-    ST.allFloorEvents = [];
-ST.allStrengthenEvents = [];
+ST.allRoomVisits = [];
 ST._initialLoadDone = false;
  
      var currentRun = null;
@@ -342,6 +340,7 @@ ST._processRun = function(run, runIdx) {
     if (initCases.length > 0) {
         ST._processCases(run, state, pendingNpcEvents, initCases);
     }
+    ST.allRoomVisits.push({ runId: run.id, floor: state.floor, roomType: state.roomType });
     // Walk through timeline
     for (var i = 0; i < run.events.length; i++) {
         ST._processEvent(run, run.events[i], state, pendingNpcEvents);
@@ -369,9 +368,12 @@ ST._processRun = function(run, runIdx) {
         run.npcInteraction = 0;
     }
 
-    // Flush unresolved
+    // Flush unresolved (never answered) NPC events.
+    // Skip resolved ones — they were already pushed when answered; pushing again
+    // would double-count them (with any selectedIdx corruption).
     for (var caseId in pendingNpcEvents) {
-        ST.allEventRng.push(pendingNpcEvents[caseId]);
+        var pend2 = pendingNpcEvents[caseId];
+        if (!pend2.resolved) ST.allEventRng.push(pend2);
     }
 };
 
@@ -379,10 +381,14 @@ ST._processEvent = function(run, ev, state, pendingNpcEvents) {
     var json = ev.data;
 
     // ── SEND: record NPC event selection ──
+    // Only touch UNRESOLVED NPC event pends: potential/hawker/fate-card selects can
+    // reuse the same numeric case id (ids restart per room) and would otherwise
+    // corrupt already-resolved or still-pending NPC events.
     if (ev.type === 'SEND' && json.action === 'select' && json.caseId) {
         var pend = pendingNpcEvents[json.caseId];
-        if (pend) {
+        if (pend && !pend.resolved) {
             pend.selectedIdx = (json.select && json.select.index != null) ? json.select.index : -1;
+            pend.expecting = true;
             pend.reRollUsed = !!(json.select && json.select.reRoll);
         }
     }
@@ -397,14 +403,7 @@ ST._processEvent = function(run, ev, state, pendingNpcEvents) {
         var rd = json.room.data;
         if (rd.floor !== undefined) state.floor = rd.floor;
         if (rd.roomType !== undefined) state.roomType = rd.roomType;
-        // Record floor events
-        var floorCaseTypes = (json.room.cases || []).map(function(c) { return c.caseType; }).filter(function(t) { return t != null; });
-        ST.allFloorEvents.push({
-            runId: run.id,
-            floor: rd.floor,
-            roomType: rd.roomType,
-            caseTypes: floorCaseTypes,
-        });
+        ST.allRoomVisits.push({ runId: run.id, floor: rd.floor, roomType: rd.roomType });
     }
 
     // Update team level from battle
@@ -501,38 +500,22 @@ ST._processEvent = function(run, ev, state, pendingNpcEvents) {
         });
         selectNoteGains.forEach(function(g) { run._noteRolls.push({ tid: g.tid, source: ST.roomTypeSource(state.roomType) }); });
 
-        // Resolve pending NPC event
+        // Resolve pending NPC event — only if our own SEND targeted this NPC case
+        // (potential/hawker selects reuse case ids and have no optionsResult field)
         var pend = pendingNpcEvents[selCaseId];
-        if (pend && !pend.resolved) {
+        if (pend && !pend.resolved && pend.expecting && resp.optionsResult !== undefined) {
             pend.optionsResult = resp.optionsResult;
             pend.items = resp.items || [];
             pend.affinityChange = resp.affinityChange || [];
             pend.subNoteSkills = resp.subNoteSkills || [];
+            // Potential-selector cases spawned by this event choice (caseType 3 = normal, 7 = rare)
+            pend.potSelectors = (json.cases || []).filter(function(c) { return c.caseType === 3 || c.caseType === 7; })
+                .map(function(c) {
+                    var tids = (c.infos || []).map(function(p) { return p.tid; }).concat(c.ids || []);
+                    return { rare: c.caseType === 7, tids: tids };
+                });
             pend.resolved = true;
             ST.allEventRng.push(pend);
-        }
-    }
-
-    // Track strengthen events (Enhancement Machine)
-    if (json.action === 'strengthen') {
-        var offers = (json.cases || [])[0];
-        if (offers && offers.infos) {
-            var luckies = offers.luckyIds || [];
-            ST.allStrengthenEvents.push({
-                runId: run.id,
-                floor: state.floor,
-                attemptId: offers.id,
-                caseId: json.caseId,
-                offers: offers.infos.map(function(p) {
-                    return { tid: p.tid, level: p.level, lucky: luckies.indexOf(p.tid) >= 0 };
-                }),
-                success: json.buySucceed,
-            });
-            // Update state: potential enhanced
-            var picked = (json.change && json.change.props && json.change.props.length > 0);
-            if (picked && offers.infos.length > 0) {
-                // Something was enhanced — update bag
-            }
         }
     }
 
@@ -690,9 +673,6 @@ ST.switchTab = function(tab) {
     if (tab === 'notes' && typeof ST.renderNotes === 'function') ST.renderNotes();
     if (tab === 'events' && typeof ST.renderEvents === 'function') ST.renderEvents();
     if (tab === 'shop' && typeof ST.renderShop === 'function') ST.renderShop();
-    if (tab === 'floors' && typeof ST.renderFloors === 'function') ST.renderFloors();
-    if (tab === 'rng' && typeof ST.renderRng === 'function') ST.renderRng();
-    if (tab === 'enhance' && typeof ST.renderEnhance === 'function') ST.renderEnhance();
 };
 
 // ── Fetch log ──
