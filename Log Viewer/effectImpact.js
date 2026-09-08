@@ -388,13 +388,12 @@ function eiRenderTable() {
         }
     }
 
-    // Sort units: source → side → chosen column
+    // Sort units: source → chosen column (side/ATK-DEF is ignored for ordering)
     units.sort((a, b) => {
         const rA = a[0], rB = b[0];
         const srcA = rA.ef.source ?? 'Unknown';
         const srcB = rB.ef.source ?? 'Unknown';
         if (srcA !== srcB) return srcA.localeCompare(srcB);
-        if (rA.ef.side !== rB.ef.side) return rA.ef.side === 'attacker' ? -1 : 1;
         if (eiSortCol === 'name') {
             return eiSortDir * rA.ef.name.localeCompare(rB.ef.name);
         }
