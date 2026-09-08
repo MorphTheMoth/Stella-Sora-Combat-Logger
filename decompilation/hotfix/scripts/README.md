@@ -1,7 +1,6 @@
 # Re-running the Hotfix.dll decompilation after a game update
 
-Everything needed to regenerate the decrypted DLL and the decompiled C# from a
-new game build lives in `scripts/`.
+Everything needed to regenerate the decrypted DLL and the decompiled C# from a new game build lives in `scripts/`.
 
 ```
 scripts/
@@ -17,8 +16,7 @@ scripts/
 ./scripts/rerun.sh
 ```
 
-This decrypts `Hotfix.dll` and decompiles with `ilspycmd` against the
-`DummyDll` reference stubs. Output lands in `scripts/out/`.
+This decrypts `Hotfix.dll` and decompiles with `ilspycmd` against the `DummyDll` reference stubs. Output lands in `scripts/out/`.
 
 ## First attempt for a new Hotfix.dll
 
@@ -28,32 +26,21 @@ Use the current `opstable.json` and run the decryptor first:
 ./scripts/rerun.sh
 ```
 
-The 256-byte decryption key is read from `Hotfix.dll` itself. The stable part
-of the `decompiled.c` code is the opcode-table lookup and the
-`"Hello, HybridCLR"` key check; it does not need to be regenerated for every
-Hotfix version. Only reread that relevant code and re-extract `opstable.json`
-if the current key check fails.
+The 256-byte decryption key is read from `Hotfix.dll` itself. The stable part of the `decompiled.c` code is the opcode-table lookup and the `"Hello, HybridCLR"` key check; it does not need to be regenerated for every Hotfix version. Only reread that relevant code and re-extract `opstable.json` if the current key check fails.
 
 ## After a game update (new GameAssembly.dll)
 
-If the first attempt fails, the Obfuz VM's opcode table may have become stale
-after a `GameAssembly.dll` update, and the key check (`"Hello, HybridCLR"`)
-will fail. Reread the relevant opcode-table lookup in `decompiled.c` and
-re-extract it:
+If the first attempt fails, the Obfuz VM's opcode table may have become stale after a `GameAssembly.dll` update, and the key check (`"Hello, HybridCLR"`) will fail. Reread the relevant opcode-table lookup in `decompiled.c` and re-extract it:
 
-1. **Find the jump-table RVA in the new `decompilation/decompiled.c`** (or the
-   ghidra/IDA project used to make it):
-   - grep for `Hello, HybridCLR` → the `LoadCDPHHeader` function (the one that
-     does the 16-byte key check). It calls the **VM dispatcher** (`DecryptBlock`)
-     to decrypt that check.
+1. **Find the jump-table RVA in the new `decompilation/decompiled.c`** (or the ghidra/IDA project used to make it):
+   - grep for `Hello, HybridCLR` → the `LoadCDPHHeader` function (the one that does the 16-byte key check). It calls the **VM dispatcher** (`DecryptBlock`) to decrypt that check.
    - open the VM dispatcher body and find the jump-table lookup, e.g.:
 
      ```c
      (*(code *)((ulonglong)*(uint *)(&DAT_1805757b8 + (ulonglong)*opcode * 4) + 0x180000000))();
      ```
 
-     `DAT_1805757b8` means the 256-entry table sits at **RVA `0x5757b8`**
-     (the symbol is `image_base + rva`, image base is `0x180000000`).
+     `DAT_1805757b8` means the 256-entry table sits at **RVA `0x5757b8`** (the symbol is `image_base + rva`, image base is `0x180000000`).
    - if you are working from raw disassembly instead, the dispatcher looks like:
 
      ```asm
@@ -82,12 +69,6 @@ re-extract it:
 
 ## Notes
 
-- If the decompiled.c RVA layout changed such that `extract_opstable.py` can't
-  find the table, pass the new image base with a manual edit to
-  `DEFAULT_IMAGE_BASE` in the script, or point it at the RVA directly.
-- The game's own assemblies (`Game`, `GameFramework`, `TrueSync`, `spine-*`, …)
-  are IL2CPP-compiled and only exist as `DummyDll` stubs; they give ILSpy type
-  names but not implementations. The IL/metadata decrypts exactly; the C# is a
-  semantic reconstruction (see the top-level README).
-- `ilspycmd` needs the `DummyDll` folder as a reference path, otherwise you get
-  ~70k `//IL_xxxx: Unknown result type (missing references)` comments.
+- If the decompiled.c RVA layout changed such that `extract_opstable.py` can't find the table, pass the new image base with a manual edit to `DEFAULT_IMAGE_BASE` in the script, or point it at the RVA directly.
+- The game's own assemblies (`Game`, `GameFramework`, `TrueSync`, `spine-*`, …) are IL2CPP-compiled and only exist as `DummyDll` stubs; they give ILSpy type names but not implementations. The IL/metadata decrypts exactly; the C# is a semantic reconstruction (see the top-level README).
+- `ilspycmd` needs the `DummyDll` folder as a reference path, otherwise you get ~70k `//IL_xxxx: Unknown result type (missing references)` comments.

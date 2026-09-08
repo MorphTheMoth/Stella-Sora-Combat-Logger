@@ -89,8 +89,7 @@ Builds `_targets` list based on config, then for each target:
 BaseAttriFix__Process(__this, actor, value, post=false, method);
 ```
 
-`Process` (when `post=false`) modifies the target's **`attributeList`** (in the
-old build this was `specialAttributeList`):
+`Process` (when `post=false`) modifies the target's **`attributeList`** (in the old build this was `specialAttributeList`):
 
 ```c
 // decompiled.c line ~3637312
@@ -125,8 +124,7 @@ Each `AttributeEntry` is **0x20 (32) bytes**, with fields at offsets:
 
 (`AttributeEntry_ChangeValue`, decompiled.c line 4105627.)
 
-The **collapsed** value used for damage is
-`GetAttributeValue(type)` (decompiled.c line 4106539):
+The **collapsed** value used for damage is `GetAttributeValue(type)` (decompiled.c line 4106539):
 
 ```
 (origin + baseAmend) * (1 + percentAmend) + absAmend
@@ -154,9 +152,7 @@ ActorAdditionalAttrInfo__AddFrom(
     method);
 ```
 
-Reads the attacker's **live** `attributeList` on every hit. `BaseAttriFix`
-changes are immediately visible. (Old build: `specialAttributeList` +
-`actorElementInfo->attributeList`.)
+Reads the attacker's **live** `attributeList` on every hit. `BaseAttriFix` changes are immediately visible. (Old build: `specialAttributeList` + `actorElementInfo->attributeList`.)
 
 ### Weapon hits (`damageTypeTemp == 2`)
 
@@ -173,9 +169,7 @@ ActorAdditionalAttrInfo__AddFrom(
     method);
 ```
 
-Reads from the WEAPON's cached copies — NOT from the actor's live
-`attributeList`. The weapon's `attributeList` / dict were populated at
-`Setup` time.
+Reads from the WEAPON's cached copies — NOT from the actor's live `attributeList`. The weapon's `attributeList` / dict were populated at `Setup` time.
 
 ### Area hits (`damageTypeTemp == 5`)
 
@@ -192,8 +186,7 @@ ActorAdditionalAttrInfo__AddFrom(
     method);
 ```
 
-Same pattern as weapon: reads from the AREA's cached copies, populated at
-`CopyBattleData` time.
+Same pattern as weapon: reads from the AREA's cached copies, populated at `CopyBattleData` time.
 
 ### Defender (`toAdditionalAttrInfo`)
 
@@ -209,10 +202,7 @@ ActorAdditionalAttrInfo__AddFrom(
     method);
 ```
 
-`AddFrom` (decompiled.c line 3421999) merges `list` into
-`this->_attributeList_k__BackingField` (`AttributeList_AddValueFrom`) and then
-copies every key of the dict into `this->attributeWithElementOrDamageTypeDict`
-(key format: `CommonHelper_ConvertAttributeTypeAndElementOrDamageTypeToKey`).
+`AddFrom` (decompiled.c line 3421999) merges `list` into `this->_attributeList_k__BackingField` (`AttributeList_AddValueFrom`) and then copies every key of the dict into `this->attributeWithElementOrDamageTypeDict` (key format: `CommonHelper_ConvertAttributeTypeAndElementOrDamageTypeToKey`).
 
 ---
 
@@ -227,8 +217,7 @@ RVA: 0x1727CC0
 
 Called when the weapon spawns/activates. Takes `(weapon, owner, ...)`.
 
-Resolves the stat source with `ActorHelper_IsUseHitFromSummon(owner)` → the
-summoner when the owner is a minion, then copies:
+Resolves the stat source with `ActorHelper_IsUseHitFromSummon(owner)` → the summoner when the owner is a minion, then copies:
 
 ```c
 // 1. attributeList ← source->attributeList
@@ -243,8 +232,7 @@ SkillSlotLevelInfo__CopyValueFrom(weapon->bindSkillSlotLevelInfo, skillCd, metho
 //    (clears weapon dict, then Add() every key/value)
 ```
 
-(Old build: copied `owner->specialAttributeList` → `attributeWithElementOrDamageTypeDict`,
-`PlayerSkillCd` → `attributeList`, and the element dict → `_DefaultWeaponTag_k__BackingField`.)
+(Old build: copied `owner->specialAttributeList` → `attributeWithElementOrDamageTypeDict`, `PlayerSkillCd` → `attributeList`, and the element dict → `_DefaultWeaponTag_k__BackingField`.)
 
 ### `AreaEffectEntity::CopyBattleData`
 
@@ -253,9 +241,7 @@ decompiled.c line 4669674
 RVA: 0x16AADA0
 ```
 
-Three independently gated copies (each runs on `force` or its own dirty flag,
-set by `OnAttributeListChange` / `OnAttributeWithElementOrDamageTypeChange` /
-`OnSkillSlotLevelInfoChange` events from the owner):
+Three independently gated copies (each runs on `force` or its own dirty flag, set by `OnAttributeListChange` / `OnAttributeWithElementOrDamageTypeChange` / `OnSkillSlotLevelInfoChange` events from the owner):
 
 ```c
 // 1. _attributeListHasChanged || force
@@ -270,10 +256,7 @@ AreaEffectEntity_CopyAttributeWithElementOrDamageType(area);
 SkillSlotLevelInfo__CopyValueFrom(area->bindSkillSlotLevelInfo, source->PlayerSkillCd);
 ```
 
-**Important:** the source is `_owner_k__BackingField` — NOT `_fxPlayer_k__BackingField`.
-Since the update, `_fxPlayer` holds a real `AdventureFXPlayer` (MonoBehaviour,
-not an AdventureActor); only the owner has an `attributeList`. (Old build used
-`_fxPlayer`, which used to point at the owner actor.)
+**Important:** the source is `_owner_k__BackingField` — NOT `_fxPlayer_k__BackingField`. Since the update, `_fxPlayer` holds a real `AdventureFXPlayer` (MonoBehaviour, not an AdventureActor); only the owner has an `attributeList`. (Old build used `_fxPlayer`, which used to point at the owner actor.)
 
 ---
 
@@ -285,9 +268,7 @@ not an AdventureActor); only the owner has an `attributeList`. (Old build used
 | **Weapon** (`2`) | `fromWeaponTemp->attributeList` + `attributeWithElementOrDamageTypeDict` | **At `Setup` time** — when weapon spawns/activates |
 | **Area** (`5`) | `fromAreaTemp->attributeList` + `attributeWithElementOrDamageTypeDict` | **At `CopyBattleData` time** — on owner-change events or `copyBattleDataBeforeAttack` |
 
-Actor hits always get the latest stats. Weapon and area hits get a **cached
-snapshot** from the moment the entity was created or refreshed. If the owner's
-stats change between those moments and the hit, the cached copy is stale.
+Actor hits always get the latest stats. Weapon and area hits get a **cached snapshot** from the moment the entity was created or refreshed. If the owner's stats change between those moments and the hit, the cached copy is stale.
 
 ---
 

@@ -2,8 +2,6 @@
 
 A walkthrough of the session that produced `docs/karin-eleanor-pots.md`. The methods here are written generally so they apply to any unreleased character, but the evidence cited is specific to this research. Every fact taken from the datamine git history is dated.
 
-Line numbers below cite `decompilation/hotfix/1.13/Hotfix.decompiled.cs` when they refer to the original `karin-eleanor-pots.md` research, and `decompilation/hotfix/1.14/Hotfix.decompiled.cs` for the current build — always re-resolve in `1.14` for new work (see version table).
-
 ---
 
 ## The characters
@@ -19,7 +17,7 @@ Neither fully-coded character ships any datamine table entry, so kits were recon
 
 | Source | Path | What it contributed |
 |---|---|---|
-| Hotfix decompile | `decompilation/hotfix/<version>/Hotfix.decompiled.cs` (see version table below — default is `1.14/`, the latest) | The kit: skills, perks, buff/AddAttr/param ids, trigger tags, element-mark code. Older folders are historical comparisons; always use the latest unless you need to match an existing citation. |
+| Hotfix decompile | `decompilation/hotfix/<version>/Hotfix.decompiled.cs` (see version table below — default is `1.14/`, the latest) | The kit: skills, perks, buff/AddAttr/param ids, trigger tags, element-mark code. Older folders are historical comparisons; always use the latest. |
 | Il2Cpp dumps | `decompilation/out_new/dump.cs` | Enum values: `AdventureActorElementTriggerType` (Type1=31, Type2=32, `dump.cs:176985`), `characterJobClass` (Vanguard=1 / Balance=2 / Support=3, `dump.cs:175269`). |
 | Datamine language | `Link to StellaSoraData/EN/language/en_US/UIText.json` | Concept names: `LightMark_Trigger_Effect_01` = Lucent (#4028), `_02` = Thunderbolt (#4027). |
 | Datamine history | `StellaSoraData/.git` | The only raw data for unreleased chars (see dates below). |
@@ -33,10 +31,10 @@ The datamine is auto-updated and strips unreleased content, so anything not in t
 | Folder | Game build / provenance | Size / lines | Commit | What it contains |
 |---|---|---|---|---|
 | `0.5/` | Old build from `/home/morph/Downloads/Hotfix.dll` (predates the two current builds) | 14.8 MB, 533,576 lines, `Hotfix.dec.dll` 8.1 MB, 123 residual `Unknown result type` comments | `f2d36af` (2026-08-07) | Smallest. Only 37 `AIScript.Character` namespaces (`_10101` ... `_15901`/`_15801`/`_99701`); **no** `_15701` (Karin), `_13701` (Eleanor), `_16201`, `_16001`, `_14001`, `_99901` (compare 43 in `1.13`/`1.14`). Decrypted with the `1.13` opcode table (key check `Hello, HybridCLR` OK) — 123 ILSpy stack-analysis edge cases on TrueSync/`FP` (`iFP`/`TSVector2`), still readable (vs 4 warnings in the newer builds). Useful only to prove absence: "character did not exist in the old build". |
-| `1.13/` | Previous game build (`Persistent_Store/Scripts/Hotfix.dll`) | 21 MB, 761,729 lines, `Hotfix.dec.dll` 12 MB, ~4852 types, 0 IL errors, 4 residual warnings (`FP <= FP` in `ILRuntimeAPI.CalcDistanceBetweenMonsterAndPlayer`) | `f77d312` (2026-08-02) moved to `1.13/` in `f2d36af` | First version with the full unreleased kits: Karin `_15701` at `1.13/Hotfix.decompiled.cs:680972-682838` (1866 lines), Eleanor `_13701` at `708314-709935` (1621 lines), plus stubs/full kits for `_16201:668062`, `_16001:669446`, `_14001:705314` — 43 character namespaces total. This is the version cited in `docs/karin-eleanor-pots.md` and in the gauge example below. Retained for citation stability; superseded by `1.14` for new work. |
+| `1.13/` | Previous game build (`Persistent_Store/Scripts/Hotfix.dll`) | 21 MB, 761,729 lines, `Hotfix.dec.dll` 12 MB, ~4852 types, 0 IL errors, 4 residual warnings (`FP <= FP` in `ILRuntimeAPI.CalcDistanceBetweenMonsterAndPlayer`) | `f77d312` (2026-08-02) moved to `1.13/` in `f2d36af` | First version with the full unreleased kits: Karin `_15701` at `1.13/Hotfix.decompiled.cs:680972-682838` (1866 lines), Eleanor `_13701` at `708314-709935` (1621 lines), plus stubs/full kits for `_16201:668062`, `_16001:669446`, `_14001:705314` — 43 character namespaces total. Retained for historical comparison; superseded by `1.14` for new work. |
 | `1.14/` | Current game build (`Persistent_Store/Scripts/Hotfix.dll`, Aug 14; decompiled Aug 26) | 21 MB, 767,585 lines (+5,856 vs `1.13`), `Hotfix.dec.dll` 12.4 MB, 11032 TypeDefs, 0 IL errors, 4 residual warnings (same pattern) | `d4ea061` (2026-08-18) | **Default for all new research.** Same 43 character namespaces as `1.13`. Eleanor `_13701` at `1.14/Hotfix.decompiled.cs:714170-715791` is byte-for-byte identical to `1.13`. Karin `_15701` moved to `686781-688694` (1913 lines, +47) and was patched — see below. Stubs `_16201:673871`, `_16001:675255`, `_14001:711170` are identical to `1.13`. |
 
-Version choice: always start with `1.14/Hotfix.decompiled.cs`. Fall back to `1.13` only when you need to match an existing citation (`karin-eleanor-pots.md` was written against `1.13`) or to document a pre-patch mechanic, and to `0.5` only when you need to show a character/kit did not exist yet. Do not cite an older file just because its line numbers match an existing note — re-resolve the symbol in `1.14` and cite that line instead.
+Version choice: always start with `1.14/Hotfix.decompiled.cs`. Fall back to `1.13` only to document a pre-patch mechanic, and to `0.5` only when you need to show a character/kit did not exist yet.
 
 Karin `1.13` -> `1.14` patch (full namespace diff: `decompilation/hotfix/1.13/Hotfix.decompiled.cs` vs `1.14/Hotfix.decompiled.cs`, or `git show d4ea061 --stat` + namespace grep): Eleanor unchanged; Karin received five talent passives `D1-D5` (`15796111`/`15796211`/`15796311`/`15796411`/`15796511` in `Config`, `Hotfix.decompiled.cs:687470` in `1.14`), Dark-mark trigger rewritten (`AnSuo` `5031/5041`/`DarkAnSuo`/`DarkMark_Trigger_Effect_05` -> `DarkAnZhuo` `15700001`/`DarkAnZhuo`/`DarkMark_Trigger_Effect_03`, `TriggerType2` -> `Type1`), P1 tag `157FishAtk` -> `157P1Trigger`, P3 normal-attack shoot `shootOffsetDic_P3` -> `shootBulletKeyList_P3` (`Bullet_157_NrmAtk_1_Num2/3/4`), `randomRadius_NormalAttack_P3` `1` -> `3`, P4 FX `Actor/Character/13701/...` -> `fx_15701_hit_01`, P6/P13 split into self+other buffs (`15706011` -> `15706011+15706012` for Balance Dark teammates, `15713011` -> `15713011+15713012` with `GetPlayerActorCountByElement`), P9 trigger narrowed to `157P9Trigger` + `DarkAnZhuo` + `CheckAllPlayerActorAreSameElement(DE)` + CD check, P5 `damageType.SKILL` -> `ULTIMATE`, plus gauge init `100` stacks at `ActorStatus.Special` and buff `15790013` re-timed. `docs/karin-1.14-changes.md` (if present) has the annotated diff.
 
@@ -61,7 +59,7 @@ Every `_<id>01` namespace has the same skeleton:
 - `ParallelScript` (+ variants) — event listeners and perk logic; most perks fire here (receive-damage, before-hit, element-mark trigger, skill-cast).
 - `SkillScript_*` — one per skill (`NormalAttack`, `Dodge`, `Rush`, `Skill_MainControl`, `Sciprt_Skill_Support`, `Ultra`).
 
-Always begin with the latest hotfix decompile available under `decompilation/hotfix/`. For this repository, that is currently `decompilation/hotfix/1.14/Hotfix.decompiled.cs` (previous is `1.13/`, oldest is `0.5/` — see version table above). Use an older decompile only when the latest one does not contain the relevant code or when comparing a mechanic's revisions. Do not cite `1.13` (or `0.5`) just because its line numbers match an existing note — re-resolve the symbol in `1.14` and cite that line.
+Always begin with the latest hotfix decompile available under `decompilation/hotfix/`. For this repository, that is currently `decompilation/hotfix/1.14/Hotfix.decompiled.cs` (previous is `1.13/`, oldest is `0.5/` — see version table above). Use an older decompile only when the latest one does not contain the relevant code or when comparing a mechanic's revisions.
 
 Skill ids (e.g. Karin `15710000` normal, `15731000` main, `15732000` support, `15740000` ult) resolve via `EN/bin/Skill.json` — in the datamine history, since the current tables lack them (see Step 6).
 
@@ -210,9 +208,3 @@ _actor.GetLogicComponent<PlayerSkillCd>()?.BindSkillIdToButton(ActionKey.Normal,
 ```
 
 This is the complete mechanic to describe: passive stack gain -> maximum-stack conversion to a special Normal Attack -> gauge consumption and button reset. P4 also adds 10 gauge stacks every second while its hunting-chain hit loop is active (`1.13/Hotfix.decompiled.cs:682213` = `1.14/Hotfix.decompiled.cs:688055`), so that interaction belongs in the gauge subsection rather than being left as an unexplained P4 number. The `15790012` hunting mark and `15790013` self-buff are related target/state markers, but they are separate from the gauge and should not be renamed as energy (`1.13/Hotfix.decompiled.cs:681570-681572`/`682009-682017` = `1.14/Hotfix.decompiled.cs:687414-687416`/`687825-687833`).
-
----
-
-## Verification style
-
-Ground every claim: `file_path:line_number` for the hotfix, table + key for the datamine, commit hash + date for git-history data, and quote the relevant line so it can be checked. When something is inferred (element, missing data, unresolved tags, lore), say so explicitly instead of asserting it.
