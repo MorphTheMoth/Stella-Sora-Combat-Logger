@@ -942,6 +942,8 @@ window.switchTab = function(tab) {
     if (sbDcFilters) sbDcFilters.classList.toggle('hidden', tab !== 'dmgcalc' && tab !== 'effectimpact' && tab !== 'analytics');
     const sbEiFilters = document.getElementById('sidebarEiFilters');
     if (sbEiFilters) sbEiFilters.classList.toggle('hidden', tab !== 'effectimpact');
+    const eiZeroGainWrap = document.getElementById('eiZeroGainWrap');
+    if (eiZeroGainWrap) eiZeroGainWrap.classList.toggle('hidden', tab !== 'effectimpact');
     const sbDcStats = document.getElementById('sidebarDcStats');
     if (sbDcStats) sbDcStats.classList.toggle('hidden', tab !== 'dmgcalc' && tab !== 'effectimpact' && tab !== 'analytics');
 };

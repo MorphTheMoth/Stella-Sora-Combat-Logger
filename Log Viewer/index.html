@@ -75,6 +75,35 @@
         .sidebar .dc-formula-totals .dc-diff-close { color: #555; }
         .sidebar .dc-formula-totals .dc-diff-pos { color: #4a7a55; }
         .sidebar .dc-formula-totals .dc-diff-neg { color: #7a3838; }
+        .sidebar .dc-compare-btn {
+            width: auto; margin-bottom: 0; height: auto;
+            padding: 1px 7px; font-size: 9px; cursor: pointer;
+            border: 1px solid #333; border-radius: 3px;
+            background: #242424; color: #777; vertical-align: middle;
+            line-height: 1.5; flex-shrink: 0;
+        }
+        .sidebar .dc-compare-btn:hover { background: #2e2e2e; color: #bbb; border-color: #444; }
+        .sidebar .dc-compare-row {
+            display: flex; align-items: center; gap: 4px;
+        }
+        .sidebar .dc-compare-name { cursor: pointer; text-decoration: underline dotted #555; }
+        .sidebar .dc-compare-name:hover { color: #ddd; }
+        .sidebar .dc-compare-name-input {
+            width: 100px; font-size: 11px; padding: 1px 4px;
+            border: 1px solid #555; border-radius: 3px;
+            background: #242424; color: #ddd; outline: none;
+        }
+        .sidebar .dc-compare-del {
+            width: auto; margin-bottom: 0; height: auto;
+            padding: 0 4px; font-size: 9px; cursor: pointer;
+            border: 1px solid #333; border-radius: 3px;
+            background: #242424; color: #666; vertical-align: middle;
+            line-height: 1.5; flex-shrink: 0;
+        }
+        .sidebar .dc-compare-del:hover { background: #2e2020; color: #cc8888; border-color: #5a3535; }
+        .sidebar .dc-compare-sep {
+            display: block; border-top: 1px solid #333; margin: 4px 0 2px;
+        }
         .sidebar .dc-effects-panel {
             background: transparent; border: none; font-size: 11px;
         }
@@ -107,8 +136,10 @@
             padding: 4px 0;
         }
         .sidebar .sidebar-ei-chips {
-            display: flex; flex-direction: column; align-items: center; gap: 3px;
+            display: flex; flex-direction: column; align-items: stretch; gap: 3px;
+            margin-bottom: 4px;
         }
+        .sidebar-ei-chips.hidden { display: none; }
         .sidebar .sidebar-ei-chips .ei-src-chip,
         .sidebar .sidebar-ei-chips .ei-chip-all {
             width: 100%; text-align: center; box-sizing: border-box;
@@ -124,6 +155,7 @@
         .sidebar .sidebar-ei-chips .ei-chip-all:hover {
             background: #282828; border-color: #3a3a3a;
         }
+        #eiZeroGainBtn { text-align: left; }
 
         /* ── Main content area ── */
         .main-area {
@@ -847,6 +879,9 @@
         <div class="sidebar-section hidden" id="sidebarDcFilters">
             <div class="sidebar-label">Filters</div>
             <input type="text" id="eiSearchInput" placeholder="Search" oninput="eiOnSearchInput()" autocomplete="off" spellcheck="false">
+            <div class="sidebar-ei-chips hidden" id="eiZeroGainWrap">
+                <button class="ei-src-chip ei-chip-src" id="eiZeroGainBtn" onclick="eiToggleZeroGain()" title="Show/hide effects that contribute 0% damage gain">Show 0% gain effects</button>
+            </div>
             <select id="dcCharFilter" onchange="dcOnCharFilterChange()">
                 <option value="">All Characters</option>
             </select>

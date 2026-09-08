@@ -10,6 +10,10 @@ let eiLastData  = [];           // cached row data for re-sort without recompute
 const eiHiddenSources = new Set();
 // Free-text search query used to filter the effect-impact rows by effect name
 let eiSearchQuery = '';
+// When true, effects whose dmg gain is exactly 0% are hidden from the table.
+// Default true = the "Show 0% gain effects" chip in the Filters sidebar starts
+// off (dimmed), so zero-gain effects are hidden until the chip is enabled.
+let eiHideZeroGain = true;
 
 // ─── Core computation ─────────────────────────────────────────────────────────
 
@@ -300,6 +304,12 @@ function eiRenderTable() {
         rows = rows.filter(r => (r.ef.name || '').toLowerCase().includes(q));
     }
 
+    // Hide effects that contribute exactly 0% damage gain when toggled off.
+    // (+∞ and negative gains are always kept; baseVal=0 rows resolve to 0 here.)
+    if (eiHideZeroGain) {
+        rows = rows.filter(r => r.pctImpact !== 0);
+    }
+
     const efLvlBadge = (ef) => {
         if (ef.isPotentialsGroup || !ef.allValueConfigIds || ef.currentLevelIdx < 0) return '';
         const override = dcEffectLevelOverrides?.get(ef.key);
@@ -552,6 +562,17 @@ window.eiToggleSourceFilter = function(srcKey) {
 window.eiShowAllSources = function() {
     eiHiddenSources.clear();
     eiRenderTable();
+};
+
+// Toggle the "0% gain effects" chip in the Filters sidebar. Active chip =
+// zero-gain effects are shown (default). Toggling off filters them from the
+// table using the cached eiLastData — no recompute needed.
+window.eiToggleZeroGain = function() {
+    eiHideZeroGain = !eiHideZeroGain;
+    const btn = document.getElementById('eiZeroGainBtn');
+    if (btn) btn.classList.toggle('ei-chip-active', !eiHideZeroGain);
+    const panel = document.getElementById('eiPanel');
+    if (panel && panel.classList.contains('visible') && eiLastData.length) eiRenderTable();
 };
 
 // Render the effect-source filter chips into the left sidebar (used by the

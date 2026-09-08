@@ -15,6 +15,54 @@ let dcTotalHeight = 0;
 const dcDisabled = new Set();
 
 // ─── DC filter state ──────────────────────────────────────────────────────────
+// ─── DC compare state ────────────────────────────────────────────────────────
+// Each compare snapshots the Total Calc at click time; its row then shows the
+// live difference between the current Total Calc and that snapshot.
+let _dcCompareSeq = 0;
+const dcCompares = []; // { id, name, value }
+let _dcLastTotalCalc = 0;
+
+window.dcAddCompare = function() {
+    _dcCompareSeq++;
+    dcCompares.push({ id: _dcCompareSeq, name: `Test ${_dcCompareSeq}`, value: _dcLastTotalCalc });
+    dcRenderTotals();
+};
+
+window.dcDeleteCompare = function(id) {
+    const idx = dcCompares.findIndex(c => c.id === id);
+    if (idx >= 0) dcCompares.splice(idx, 1);
+    dcRenderTotals();
+};
+
+// Click on the "Compare N" label → swap it for an inline text input.
+// Enter/blur commits, Esc cancels.
+window.dcRenameCompare = function(id) {
+    const c = dcCompares.find(x => x.id === id);
+    const el = document.getElementById('dcCmpName' + id);
+    if (!c || !el) return;
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = c.name;
+    input.className = 'dc-compare-name-input';
+    input.maxLength = 40;
+    el.replaceWith(input);
+    input.focus();
+    input.select();
+    const commit = () => {
+        const v = input.value.trim();
+        if (v) c.name = v;
+        dcRenderTotals();
+    };
+    input.addEventListener('blur', commit);
+    input.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+        else if (e.key === 'Escape') {
+            input.removeEventListener('blur', commit);
+            dcRenderTotals();
+        }
+    });
+};
+
 let dcCharFilter = '';
 let dcSkillFilter = '';
 let dcDamageTypeFilter = '';
@@ -405,8 +453,30 @@ function dcRenderTotals() {
     const d2 = overallDiff2 != null
         ? `<span class="${Math.abs(overallDiff2) < 0.05 ? 'dc-diff-close' : overallDiff2 < 0 ? 'dc-diff-neg' : 'dc-diff-pos'}" style="margin-left:4px">(${overallDiff2 >= 0 ? '+' : ''}${overallDiff2.toFixed(1)}%)</span>`
         : '';
+    _dcLastTotalCalc = totalCalc;
+
+    // Compare rows: the snapshotted Total Calc value + its % difference vs the
+    // current Total Calc, with a small ✕ on the left
+    let compareRows = '';
+    for (const c of dcCompares) {
+        const pct = c.value > 0 ? ((totalCalc / c.value) - 1) * 100 : null;
+        const pctStr = pct != null
+            ? ` <span class="${Math.abs(pct) < 0.05 ? 'dc-diff-close' : pct < 0 ? 'dc-diff-neg' : 'dc-diff-pos'}" style="margin-left:4px">(${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%)</span>`
+            : '';
+        compareRows +=
+            `<span class="dc-compare-row">` +
+            `<button class="dc-compare-del" onclick="dcDeleteCompare(${c.id})" title="Remove this compare">✕</button>` +
+            `<span class="dc-compare-name" id="dcCmpName${c.id}" title="Click to rename" onclick="dcRenameCompare(${c.id})">${esc(c.name)}</span>` +
+            `: <strong>${Math.round(c.value).toLocaleString()}</strong>${pctStr}` +
+            `</span>`;
+    }
+    // Separator line above Total In-Game, only when compare rows are present
+    const compareSep = dcCompares.length ? `<span class="dc-compare-sep"></span>` : '';
+
     el.innerHTML = `
-        <span>Total Calc: <strong>${Math.round(totalCalc).toLocaleString()}</strong>${d1}</span>
+        <span style="display:flex;align-items:center;justify-content:space-between"><span>Total Calc: <strong>${Math.round(totalCalc).toLocaleString()}</strong>${d1}</span><button class="dc-compare-btn" onclick="dcAddCompare()" title="Save the current Total Calc as a compare entry">Save to Compare</button></span>
+        ${compareRows}
+        ${compareSep}
         <span style="display:block">Total In-Game: <strong>${Math.round(totalGame).toLocaleString()}</strong>${d2}</span>
         <span style="display:block">Time: <strong>${secs.toFixed(1)}s</strong></span>
         <span style="display:block">DPS: <strong>${dps.toLocaleString()}</strong></span>
