@@ -555,6 +555,8 @@ function buildHitTable(jHit, jSkill, jLang, jChar, jPotential, jItemRoot) {
         // Suntide Willow: Prismatic Bubbles variants (SkillSlotType 2, PerkId 516030)
         [160530001, 'Suntide Willow', 'Prismatic Bubbles (blue)', 1, 'Potentials'],
         [160530002, 'Suntide Willow', 'Prismatic Bubbles (red)', 2, 'Potentials'],
+        // Eleanor: extra jump-slam explosion from exclusive perk 513721 "Chain Detonation" (Item.json 513721, Potential.json 513721 - no HitDamage Param, only 13721011 OnceAdditionalAttributeValue)
+        [137300012, 'Eleanor', 'Chain Detonation', 1, 'Potentials'],
     ];
     for (const [hitId, charName, skillTitle, hitNum, src] of hardcoded)
         hitTable.set(hitId, { charName, skillTitle, hitNum, source: `${charName} ${src}` });
