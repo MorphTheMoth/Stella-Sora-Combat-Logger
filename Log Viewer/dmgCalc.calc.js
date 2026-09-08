@@ -218,7 +218,7 @@ function dcCollectAttrFixEffects(dcFiltered) {
                     const cid = e.configId ?? e.attrId;
                     if (cid == null) continue;
                     const vcid = e.valueConfigId ?? '';
-                    const key = `${side}:dict:${cid}:${vcid}`;
+                    const key = `${side}:dict:${cid}:${vcid}:${e.slotNum ?? 0}`;
                     if (seenInHit.has(key)) continue;
                     seenInHit.add(key);
                     const stacks = e.stacks != null ? e.stacks : 1;
@@ -230,10 +230,27 @@ function dcCollectAttrFixEffects(dcFiltered) {
                             const derived = deriveLevelCandidates(cid, e.valueConfigId, true);
                             if (derived) { allVcIds = derived.vc; curIdx = derived.curIdx; }
                         }
+                        // Drop level candidates whose value-table slot has a different
+                        // attrType than this row. Cross-family disc progressions
+                        // (e.g. attrId 4059111 → value 4059121 Normal/Skill Dmg, with
+                        // candidate 4059131 = Skill Crit Dmg) resolve by the game's
+                        // baseId + skillLevel*10 walk, but in-game leveling swaps the
+                        // attrId instead — so a stat change via level buttons is never
+                        // meaningful. Fewer than 2 candidates remain → no level buttons.
+                        if (e.attrType != null && allVcIds.length) {
+                            allVcIds = allVcIds.filter(v => {
+                                const slots = onceAttrValueTable.get(v.valueConfigId);
+                                if (!slots || !slots.length) return true; // unknown value id — keep
+                                const slot = slots.find(s => (s.slotNum ?? 1) === (e.slotNum ?? 0)) ?? slots[0];
+                                return slot.attrType === e.attrType;
+                            });
+                            curIdx = allVcIds.findIndex(v => v.valueConfigId === e.valueConfigId);
+                        }
                         seen.set(key, {
                             key, side,
                             configId: cid,
                             valueConfigId: vcid || null,
+                            slotNum: e.slotNum ?? 0,
                             name: e.name || String(cid),
                             attrType: e.attrType,
                             subType: e.subType,
@@ -411,7 +428,7 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides) {
                 const cid = e.configId ?? e.attrId;
                 if (cid == null) continue;
                 const vcid = e.valueConfigId ?? '';
-                const key = `${side}:dict:${cid}:${vcid}`;
+                const key = `${side}:dict:${cid}:${vcid}:${e.slotNum ?? 0}`;
                 if (seenInHit.has(key)) continue;
                 seenInHit.add(key);
                 if (!dcEffectsDisabled.has(key)) continue;
@@ -499,7 +516,7 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides) {
                     const cid = e.configId ?? e.attrId;
                     if (cid == null) continue;
                     const vcid = e.valueConfigId ?? '';
-                    const key = `${side}:dict:${cid}:${vcid}`;
+                    const key = `${side}:dict:${cid}:${vcid}:${e.slotNum ?? 0}`;
                     if (seenInHit.has(key)) continue;
                     seenInHit.add(key);
                     if (dcEffectsDisabled.has(key)) continue;

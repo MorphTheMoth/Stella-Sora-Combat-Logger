@@ -298,6 +298,7 @@ function enrichAttrDictList(attrDictList) {
                 entry.attrType = s1.attrType;
                 entry.subType  = s1.subType;
                 entry.value    = s1.value;
+                entry.slotNum  = s1.slotNum;
                 entry._dictEnriched = true;
                 out.push(entry);
 
@@ -307,6 +308,7 @@ function enrichAttrDictList(attrDictList) {
                     extra.attrType = sx.attrType;
                     extra.subType  = sx.subType;
                     extra.value    = sx.value;
+                    extra.slotNum  = sx.slotNum;
                     extra.name     = (entry.name || String(entry.attrId || '')) + ' #' + (sn + 1);
                     extra._dictEnriched = true;
                     out.push(extra);

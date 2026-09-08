@@ -26,7 +26,8 @@ function eiResolveEffectDelta(ev, ef) {
         for (const e of attrDict) {
             const cid  = e.configId ?? e.attrId;
             const vcid = e.valueConfigId ?? '';
-            if (cid === ef.configId && String(vcid) === String(ef.valueConfigId ?? '')) {
+            if (cid === ef.configId && String(vcid) === String(ef.valueConfigId ?? '')
+                && (e.slotNum ?? 0) === (ef.slotNum ?? 0)) {
                 if (e.attrType == null || e.value == null) return null;
                 const stacks = e.stacks || 1;
                 const override = dcEffectLevelOverrides?.get(ef.key);

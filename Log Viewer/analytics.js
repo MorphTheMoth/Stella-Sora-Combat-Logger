@@ -659,7 +659,7 @@ const Analytics = (() => {
         if (src === 'attackerAttrDict' && ev.AttackerAttrDict?.length) {
             const m = new Map();
             ev.AttackerAttrDict.forEach(a => {
-                const id = String(a.attrId);
+                const id = String(a.attrId) + ':' + (a.slotNum ?? 0);
                 if (!m.has(id)) m.set(id, { name: a.name || id, stacks: 0 });
                 m.get(id).stacks += a.stacks ?? 1;
             });
@@ -668,7 +668,7 @@ const Analytics = (() => {
         if (src === 'defenderAttrDict' && ev.DefenderAttrDict?.length) {
             const m = new Map();
             ev.DefenderAttrDict.forEach(a => {
-                const id = String(a.attrId);
+                const id = String(a.attrId) + ':' + (a.slotNum ?? 0);
                 if (!m.has(id)) m.set(id, { name: a.name || id, stacks: 0 });
                 m.get(id).stacks += a.stacks ?? 1;
             });

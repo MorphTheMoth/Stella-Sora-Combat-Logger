@@ -305,9 +305,10 @@ function dcResolveLevelEntry(ef, newIdx) {
     if (ef.fromAttrDict) {
         const slots = onceAttrValueTable.get(newVcId);
         if (!slots || slots.length === 0) return null;
-        newValue    = slots[0].value;
-        newAttrType = slots[0].attrType;
-        newSubType  = slots[0].subType;
+        const slot = slots.find(s => (s.slotNum ?? 1) === (ef.slotNum ?? 0)) ?? slots[0];
+        newValue    = slot.value;
+        newAttrType = slot.attrType;
+        newSubType  = slot.subType;
     } else {
         const ev = effectValueTable.get(newVcId);
         if (!ev || ev.value == null) return null;
@@ -600,9 +601,10 @@ window.dcChangeEffectLevel = function(key, direction) {
     if (ef.fromAttrDict) {
         const slots = onceAttrValueTable.get(newVcId);
         if (slots && slots.length > 0) {
-            newAttrType = slots[0].attrType;
-            newSubType  = slots[0].subType;
-            newValue    = slots[0].value;
+            const slot = slots.find(s => (s.slotNum ?? 1) === (ef.slotNum ?? 0)) ?? slots[0];
+            newAttrType = slot.attrType;
+            newSubType  = slot.subType;
+            newValue    = slot.value;
         } else {
             return;
         }
