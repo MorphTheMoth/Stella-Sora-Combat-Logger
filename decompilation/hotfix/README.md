@@ -17,7 +17,8 @@ Each decompiled build lives in a versioned subfolder. Outputs per version:
 
 | Version | Source | Decompiled C# |
 |---------|--------|----------------|
-| `1.14.1/` | current game build (`Persistent_Store/Scripts/Hotfix.dll`, Aug 28, `GAME_VER 1.14.1` `RES_VER 2608281349`) | ~21 MB, 11035 TypeDefs, 0 IL errors, 4 residual type-resolution warnings |
+| `1.15/` | current game build (`Persistent_Store/Scripts/Hotfix.dll`, Sep 7; version string not embedded in the DLL this build — dated file, key check OK with the Jul 21 `GameAssembly.dll` opcode table) | ~22 MB, 11579 TypeDef rows, 5202 decompiled types, 0 IL errors, 4 residual type-resolution warnings |
+| `1.14.1/` | previous game build (`Persistent_Store/Scripts/Hotfix.dll`, Aug 28, `GAME_VER 1.14.1` `RES_VER 2608281349`) | ~21 MB, 11035 TypeDefs, 0 IL errors, 4 residual type-resolution warnings |
 | `1.14/` | previous game build (`Persistent_Store/Scripts/Hotfix.dll`, Aug 14) | ~21 MB, 11032 TypeDefs, 0 IL errors, 4 residual type-resolution warnings |
 | `1.13/` | previous game build (`Persistent_Store/Scripts/Hotfix.dll`) | ~21 MB, ~4852 types, 0 IL errors, 4 residual type-resolution warnings |
 | `0.5/`  | `/home/morph/Downloads/Hotfix.dll` | ~14.8 MB, decrypted with the 1.13 opcode table (key check OK); 123 residual `Unknown result type` comments — ILSpy stack-analysis edge cases on TrueSync/FP expressions (`iFP`/`TSVector2`), readable |
