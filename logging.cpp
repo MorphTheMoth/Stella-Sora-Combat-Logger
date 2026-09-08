@@ -364,6 +364,187 @@ const char* AttrName(int i) {
 }
 
 // =============================================================================
+//  Effect activation gate
+// =============================================================================// The game only ever executes an effect when its Effect config's trigger
+// conditions pass (AdventureEffect$$PreExecute, decompiled.c:3635284) and its
+// take-effect conditions pass (AdventureEffect$$TakeConditionExcute,
+// decompiled.c:3635442). The dump below lists registered / stacked effects
+// regardless of that gate, so dormant effects leak into the log — e.g.
+// "Daylight Garden" (4028003/4028023, +19.6% Normal/Skill Dmg to the main
+// Ventus Trekker) is gated on 'owner element == Ventus (4)' AND 'owner is main
+// control' yet stays registered on every team member while inactive.
+//
+// EvalEffectCondition mirrors AdventureEffect$$ExecuteCondition
+// (decompiled.c:3632929) for the condition types that are pure actor state —
+// they need no skill/hit/buff event info, which the dump does not have:
+//   0 / 1 / 29  NONE / DEFAULT / TIME_INTERVAL → true (decompiled.c:3633139)
+//   10  ACTORELEMENTTYPE    → element == param1, else hitElementTypeExtension
+//                             contains param1 (decompiled.c:3633298)
+//   18  HAVE_SHIELD         → actorShield._shieldValue > 0 (decompiled.c:3633430)
+//   19  NO_SHIELD           → actorShield._shieldValue < 1 (decompiled.c:3633446)
+//   41  SELF_BE_MIANCONTROL → effect owner's isAssist == false (decompiled.c:3634069)
+//   42  SELF_BE_ASSISTANT   → effect owner's isAssist == true  (decompiled.c:3634080)
+//   52  BE_MIANCONTROL      → impact actor's isAssist == false (decompiled.c:3634317)
+//   53  BE_ASSISTANT        → impact actor's isAssist == true  (decompiled.c:3634326)
+// Any other condition type depends on event info → unknown (-1): the entry is
+// kept, matching the previous behaviour.
+static bool TryParseIntParam(System_String_o* s, bool allowEmpty, int32_t& out) {    // Mirrors AdventureEffect$$TryParseStringParamToInt: empty parses to 0 when
+    // allowEmpty; otherwise a strict full-string int parse (like int.TryParse —
+    // "0.196" and other non-integers fail).
+    if (!s) { if (allowEmpty) { out = 0; return true; } return false; }
+    int32_t len = s->fields._stringLength;
+    if (len <= 0) { if (allowEmpty) { out = 0; return true; } return false; }
+    const uint16_t* chars = &s->fields._firstChar;
+    int i = 0;
+    bool neg = false;
+    if (chars[0] == u'-') { neg = true; i = 1; }
+    else if (chars[0] == u'+') { i = 1; }
+    if (i >= len) return false;
+    int64_t acc = 0;
+    for (; i < len; ++i) {
+        uint16_t c = chars[i];
+        if (c < u'0' || c > u'9') return false;
+        acc = acc * 10 + (c - u'0');
+        if (acc > 2147483647LL) return false;
+    }
+    out = (int32_t)(neg ? -acc : acc);
+    return true;
+}
+
+static bool ActorIsA(const void* klass, const char* className) {
+    // Walk the il2cpp parent chain comparing class names. Il2CppClass starts
+    // with Il2CppClass_1 (name / namespaze / parent, game_structs.h:38).
+    const Il2CppClass_1* k = reinterpret_cast<const Il2CppClass_1*>(klass);
+    while (k) {
+        if (k->name && strcmp(k->name, className) == 0) return true;
+        k = reinterpret_cast<const Il2CppClass_1*>(k->parent);
+    }
+    return false;
+}
+
+// Returns 1 = pass, 0 = definitively fail (inactive), -1 = unknown.
+static int EvalEffectCondition(AdventureActor_o* impact, AdventureActor_o* owner,
+                               int32_t cond, System_String_o* p1, System_String_o* p2) {
+    switch (cond) {
+    case 0:
+    case 1:
+    case 29:
+        return 1;
+    case 10: {  // ACTORELEMENTTYPE
+        int32_t v;
+        if (!TryParseIntParam(p1, false, v)) return 0;
+        if (!impact) return 0;
+        auto* ei = impact->fields.actorElementInfo;
+        if (!ei) return 0;
+        if (ei->fields._elementType_k__BackingField == v) return 1;
+        auto* ext = ei->fields.hitElementTypeExtension;
+        if (!ext || !ext->fields._items) return 0;
+        int32_t n = ext->fields._size;
+        if (n > (int32_t)ext->fields._items->max_length) n = (int32_t)ext->fields._items->max_length;
+        for (int32_t i = 0; i < n; ++i)
+            if (ext->fields._items->m_Items[i] == v) return 1;
+        return 0;
+    }
+    case 18: {  // HAVE_SHIELD
+        if (!impact) return 0;
+        auto* sh = impact->fields.actorShield;
+        if (!sh) return 0;
+        return sh->fields._shieldValue > 0 ? 1 : 0;
+    }
+    case 19: {  // NO_SHIELD
+        if (!impact) return 0;
+        auto* sh = impact->fields.actorShield;
+        if (!sh) return 0;
+        return sh->fields._shieldValue < 1 ? 1 : 0;
+    }
+    case 41: {  // SELF_BE_MIANCONTROL — the effect owner must be main control
+        if (!owner) return 0;
+        if (!ActorIsA(owner->klass, "PlayerAdventureActor")) return 0;
+        return !reinterpret_cast<PlayerAdventureActor_o*>(owner)->fields.isAssist ? 1 : 0;
+    }
+    case 42: {  // SELF_BE_ASSISTANT
+        if (!owner) return 0;
+        if (!ActorIsA(owner->klass, "PlayerAdventureActor")) return 0;
+        return reinterpret_cast<PlayerAdventureActor_o*>(owner)->fields.isAssist ? 1 : 0;
+    }
+    case 52: {  // BE_MIANCONTROL — the impact actor must be main control
+        if (!impact) return 0;
+        if (!ActorIsA(impact->klass, "PlayerAdventureActor")) return 0;
+        return !reinterpret_cast<PlayerAdventureActor_o*>(impact)->fields.isAssist ? 1 : 0;
+    }
+    case 53: {  // BE_ASSISTANT
+        if (!impact) return 0;
+        if (!ActorIsA(impact->klass, "PlayerAdventureActor")) return 0;
+        return reinterpret_cast<PlayerAdventureActor_o*>(impact)->fields.isAssist ? 1 : 0;
+    }
+    default:
+        return -1;
+    }
+}
+
+// One condition group. Target 0 → pass (AdventureEffect$$CheckCondition,
+// decompiled.c:3632790). Target 1 = self → the effect owner (GetGoals case 1,
+// decompiled.c:3634640); other goals (enemy / all players / faction) need
+// actor enumeration the dump cannot do → unknown. Every impact actor must
+// pass (decompiled.c:3632800 loop).
+static int EvalConditionGroup(AdventureActor_o* owner, int32_t target, int32_t cond,
+                              System_String_o* p1, System_String_o* p2,
+                              System_String_o* p3, System_String_o* p4) {
+    if (target == 0) return 1;
+    if (target != 1) return -1;
+    if (!owner) return 0;   // null impact actor throws in-game → treated as fail
+    (void)p3; (void)p4;
+    return EvalEffectCondition(owner, owner, cond, p1, p2);
+}
+
+// Combine two groups with a logic type: 1 = AND, 2 = OR; any other value fails
+// in the game itself (decompiled.c:3635305 trigger / 3635516 take-effect).
+static int CombineConditionGroups(int g1, int g2, int32_t logicType) {
+    if (logicType == 1) {  // AND
+        if (g1 == 0 || g2 == 0) return 0;
+        if (g1 == 1 && g2 == 1) return 1;
+        return -1;
+    }
+    if (logicType == 2) {  // OR
+        if (g1 == 1 || g2 == 1) return 1;
+        if (g1 == 0 && g2 == 0) return 0;
+        return -1;
+    }
+    return 0;
+}
+
+// Full activation gate for a live AdventureEffect: trigger conditions AND
+// take-effect conditions must both pass. Returns 1 = active, 0 = definitively
+// inactive (skip in the dump), -1 = unknown (keep, previous behaviour).
+static int EffectActivationGate(const AdventureEffect_o* effect) {
+    if (!effect) return -1;
+    auto* cfg = effect->fields._effectConfig_k__BackingField;
+    if (!cfg) return -1;
+    AdventureActor_o* owner = effect->fields._owner;
+
+    int trig = CombineConditionGroups(
+        EvalConditionGroup(owner, cfg->fields.triggerTarget_, cfg->fields.triggerCondition1_,
+                           cfg->fields.triggerParam1_, cfg->fields.triggerParam2_,
+                           cfg->fields.triggerParam3_, cfg->fields.triggerParam4_),
+        EvalConditionGroup(owner, cfg->fields.triggerTarget2_, cfg->fields.triggerCondition2_,
+                           cfg->fields.trigger2Param1_, cfg->fields.trigger2Param2_,
+                           cfg->fields.trigger2Param3_, cfg->fields.trigger2Param4_),
+        cfg->fields.triggerLogicType_);
+    int take = CombineConditionGroups(
+        EvalConditionGroup(owner, cfg->fields.takeEffectTarget1_, cfg->fields.takeEffectCondition1_,
+                           cfg->fields.takeEffectParam1_, cfg->fields.takeEffectParam2_,
+                           cfg->fields.takeEffectParam3_, cfg->fields.takeEffectParam4_),
+        EvalConditionGroup(owner, cfg->fields.takeEffectTarget2_, cfg->fields.takeEffectCondition2_,
+                           cfg->fields.takeEffect2Param1_, cfg->fields.takeEffect2Param2_,
+                           cfg->fields.takeEffect2Param3_, cfg->fields.takeEffect2Param4_),
+        cfg->fields.takeEffectLogicType_);
+
+    if (trig == 0 || take == 0) return 0;
+    if (trig == 1 && take == 1) return 1;
+    return -1;
+}
+
+// =============================================================================
 //  Actor logging utilities
 // =============================================================================
 
@@ -789,6 +970,14 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
                     AdventureEffect_o* effect = reinterpret_cast<AdventureEffect_o*>(e.value);
                     if (!effect || effect->fields.removed) continue;
                     if (effect->fields.id != instId) continue;
+                    if (EffectActivationGate(effect) == 0) {
+                        // Trigger/take-effect conditions definitively fail right
+                        // now — the effect is dormant (e.g. "Daylight Garden"
+                        // while its owner is not the main Ventus Trekker). Skip
+                        // the entry and the instance-snapshot fallback below.
+                        usedLive = true;
+                        break;
+                    }
                     auto* effectCfg = effect->fields._effectConfig_k__BackingField;
                     int32_t baseConfigId = effectCfg ? effectCfg->fields.id_ : 0;
                     int32_t ltd = effectCfg ? effectCfg->fields.levelTypeData_ : 0;
@@ -866,6 +1055,7 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
             AdventureEffect_o* effect = reinterpret_cast<AdventureEffect_o*>(e.value);
             if (!effect) continue;
             if (effect->fields.removed) continue;
+            if (EffectActivationGate(effect) == 0) continue; // inactive — dormant registered effect
 
             // Pre-compute level config data for this effect (shared by all stack items)
             auto* effectCfg = effect->fields._effectConfig_k__BackingField;
@@ -957,6 +1147,7 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
                 auto* trigCfg = effect->fields._effectConfig_k__BackingField;
                 if (trigCfg && (trigCfg->fields.trigger_ == 3 || trigCfg->fields.trigger_ == 5)) continue;
                 if (effectSnapshot && !effectSnapshot->count(effect->fields.id)) continue;
+                if (EffectActivationGate(effect) == 0) continue; // inactive — skip
                 json te;
                 te["id"]         = effect->fields.id;   // unique effect id (key in effectsDict)
                 auto* cfgPtr = effect->fields._effectConfig_k__BackingField;
@@ -973,17 +1164,18 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
     return j;
 }
 
-// Build a JSON array from a Dictionary<int,int> (attrId -> stackCount).
-// When gdc and the three function pointers are provided, each entry is fully
-// resolved through GetOnceAttr -> GetValueConfigId -> GetOnceAttrValue so that
-// attrType/value/elem/dmgType/levelTypeData/levelData/paramType are all emitted.
+// Build a JSON array from a Dictionary<int,int> (attrId -> stackCount),
+// resolving each entry's valueConfigId through GetOnceAttr -> GetValueConfigId
+// and skipping entries whose value the damage calc would never consume (see
+// the applied check below).
 json BuildAdditionalAttrDictJson(
     System_Collections_Generic_Dictionary_int__int__o* dict,
     AdventureActor_o*                    fromActor,
     GameDataController_o*                gdc,
     FnGetOnceAttr                        GetOnceAttr,
     FnGetValueConfigId                   GetValueConfigId,
-    FnGetOnceAdditionalAttributeValue    GetAttrValue)
+    FnGetOnceAdditionalAttributeValue    GetAttrValue,
+    int32_t                              hitElementType)
 {
     json arr = json::array();
     if (!dict || !dict->klass || !dict->fields._entries) return arr;
@@ -1035,6 +1227,46 @@ json BuildAdditionalAttrDictJson(
                     }
                 }
                 WriteLevelMapEntry(baseId, lt, ld, allValueOptions);
+
+                // ── Applied check (data-driven, mirrors the game's gating) ──
+                // The melody value rows are ELEMENT-KEYED: e.g. "Wings of
+                // Dream" (disc 214059) OnceAdditionalAttributeValue 4059121 /
+                // 4059131 carry ElementType = 4 (Ventus) — "+5% Normal/Skill
+                // Dmg" and "+1.5%/stack Skill Crit Dmg" are implemented as
+                // bonuses on Ventus-element damage. ActorAdditionalAttrInfo$$
+                // AddAttr_2 (decompiled.c:3421741) routes elementType != 0
+                // values into the overlay's element-keyed dict under
+                // (attributeType, elementType), and the damage calc reads each
+                // attribute keyed by THE HIT'S element (e.g. SKILLCRITPOWER for
+                // skill crits, decompiled.c:3613344). A Ventus-keyed entry is
+                // therefore consumed only by Ventus-element hits — on any other
+                // element the element-keyed probe misses and the contribution
+                // never reaches the calc (observed: skill crits at stacks=10
+                // keep the base-only critRatio because every hit in that log
+                // was element 1 while the entry is keyed to 4). That is the
+                // whole gate — there is no explicit element/main-control check
+                // in the melody code; the filtering is data-driven.
+                bool applied = true;
+                if (GetAttrValue && gdc) {
+                    auto* oav = GetAttrValue(gdc, currentValueConfigId, nullptr);
+                    if (oav && oav->klass) {
+                        const int32_t attrTypes[3] = { oav->fields.attributeType1_, oav->fields.attributeType2_, oav->fields.attributeType3_ };
+                        const int32_t values[3]    = { oav->fields.value1_, oav->fields.value2_, oav->fields.value3_ };
+                        const int32_t elemTypes[3] = { oav->fields.elementType1_, oav->fields.elementType2_, oav->fields.elementType3_ };
+                        for (int s = 0; s < 3; ++s) {
+                            if (attrTypes[s] == 0 || values[s] == 0) continue;
+                            // An element-keyed slot is consumable only by hits of
+                            // that same element: the calc reads (attr, hitElement),
+                            // so a value keyed to another element can never match
+                            // the probe.
+                            if (elemTypes[s] != 0 && elemTypes[s] != hitElementType) {
+                                applied = false; // element mismatch — never consumable by this hit
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (!applied) continue; // inactive — the game never applied this entry
             }
         }
 
@@ -1197,13 +1429,15 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
     }
 
     if (g_Cfg.on_hit_attacker_attr_dict) {
-        json attrDict = BuildAdditionalAttrDictJson(fromAttrDict, fromActor, gdc, GetOnceAttr, GetValueConfigId, GetAttrValue);
+        json attrDict = BuildAdditionalAttrDictJson(fromAttrDict, fromActor, gdc, GetOnceAttr, GetValueConfigId, GetAttrValue,
+                                                    hitDamageConfig ? hitDamageConfig->fields.elementType_ : 0);
         if (!attrDict.empty())
             j["AttackerAttrDict"] = attrDict;
     }
 
     if (g_Cfg.on_hit_defender_attr_dict) {
-        json attrDict = BuildAdditionalAttrDictJson(toAttrDict, fromActor, gdc, GetOnceAttr, GetValueConfigId, GetAttrValue);
+        json attrDict = BuildAdditionalAttrDictJson(toAttrDict, fromActor, gdc, GetOnceAttr, GetValueConfigId, GetAttrValue,
+                                                    hitDamageConfig ? hitDamageConfig->fields.elementType_ : 0);
         if (!attrDict.empty())
             j["DefenderAttrDict"] = attrDict;
     }

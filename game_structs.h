@@ -2443,6 +2443,53 @@ struct LogicComponent_o {
 	LogicComponent_Fields fields;
 };
 
+// ── ActorElementInfo (element type + hit-element extension list) ────────────
+// Used by the effect activation gate in logging.cpp (trigger condition 10,
+// ACTORELEMENTTYPE). Layout from decompilation/out_new/il2cpp.h:90732.
+struct ActorElementInfo_Fields : LogicComponent_Fields {
+	int32_t _originElementType_k__BackingField;
+	int32_t _elementType_k__BackingField;
+	struct System_Collections_Generic_HashSet_int__o* _weakElementType_k__BackingField;
+	struct AttributeList_o* attributeList;
+	struct System_Collections_Generic_List_int__o* hitElementTypeExtension;
+};
+struct ActorElementInfo_c {
+	Il2CppClass_1 _1;
+	void* static_fields;
+	Il2CppRGCTXData* rgctx_data;
+	Il2CppClass_2 _2;
+	struct { VirtualInvokeData _0; } vtable; // layout only — vtable unused
+};
+struct ActorElementInfo_o {
+	ActorElementInfo_c *klass;
+	void *monitor;
+	ActorElementInfo_Fields fields;
+};
+
+// ── ActorShield (shield value; trigger conditions 18/19 HAVE/NO_SHIELD) ─────
+// Layout from decompilation/out_new/il2cpp.h:128941.
+struct ActorShield_Fields : LogicMonoComponent_Fields {
+	void* shieldChangedEvent;                       // ActorShield_ShieldChangedHandle_o*
+	struct System_Collections_Generic_List_ShieldEntity__o* _shieldList_k__BackingField;
+	struct AdventureActor_o* _OwnerActor_k__BackingField;
+	struct AdventureActor_o* damageFrom;
+	int64_t _shieldValue;
+	int64_t _maxShildValue;
+	int32_t normalFxIndex;
+};
+struct ActorShield_c {
+	Il2CppClass_1 _1;
+	void* static_fields;
+	Il2CppRGCTXData* rgctx_data;
+	Il2CppClass_2 _2;
+	struct { VirtualInvokeData _0; } vtable; // layout only — vtable unused
+};
+struct ActorShield_o {
+	ActorShield_c *klass;
+	void *monitor;
+	ActorShield_Fields fields;
+};
+
 struct MonsterSummonInfo_Fields : LogicComponent_Fields {
 	struct AdventureActor_o* _SummonActor_k__BackingField;
 	struct SummonCfg_o* _SummonCfg_k__BackingField;

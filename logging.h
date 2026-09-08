@@ -174,7 +174,8 @@ json BuildAdditionalAttrDictJson(
     GameDataController_o* gdc,
     FnGetOnceAttr         GetOnceAttr,
     FnGetValueConfigId    GetValueConfigId,
-    FnGetOnceAdditionalAttributeValue GetAttrValue = nullptr);
+    FnGetOnceAdditionalAttributeValue GetAttrValue = nullptr,
+    int32_t hitElementType = 0);
 void BuildHitJson(
     AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_Client_HitDamage_o* hitDamageConfig,
     int32_t skillLevel, bool isCrit, bool isDot,
