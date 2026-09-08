@@ -129,10 +129,10 @@ Eleanor had **no hit data in any snapshot**, so her mark interactions were attri
 
 ## Step 5 — minions vs special entities
 
-- **Minion/summon** = `ILRuntimeAPI.SummonMonster(...)` with a `SummonCfg`, queryable via `GetAllSummonsById(...)` / `IsPlayerSummoned(...)`; the summoned unit is a `MonsterAdventureActor` with its own AI (shared drone AI: `Config_Drone` + `class Parallel`, `1.13/Hotfix.decompiled.cs:664994-665123` = `1.14/Hotfix.decompiled.cs:670803-670932`; no drone code in `0.5`).
+- **Minion/summon** = `ILRuntimeAPI.SummonMonster(...)` with a `SummonCfg`, queryable via `GetAllSummonsById(...)` / `IsPlayerSummoned(...)`; the summoned unit is a `MonsterAdventureActor` with its own AI, Make sure to mention if summonType = SummonType.Minion, this means its a Real minion, summonType = SummonType.None means its a fake minion that uses the owner's stats on hit, now his own.
 - **Not a minion** = `PlaySpecialProcess(...)` on a `CustomHotFixEntityBase` (e.g. Karin's FishOverload companion, `:682441`); it has no `MonsterSummonInfo` and never appears in summon queries.
 
-Grep the namespace for `SummonMonster|SummonCfg|IsPlayerSummoned` to decide. Result: Eleanor = **yes** (drones, summon id 13700011, max 3); Karin = **no** (fish is a special FX entity).
+Grep the namespace for `SummonMonster|SummonCfg|IsPlayerSummoned` to decide. Result: Eleanor = **no** (drones, summon id 13700011, max 3, but are fake minions); Karin = **no** (fish is a special FX entity).
 
 After finding a real monster summon, inspect the complete `SummonCfg`, especially `useSummonHit` (`UseSummonHit` in `MonsterSummonInfo`). Treat `useSummonHit = false` as the normal case where the minion is the hit source; do not explain or highlight that behavior in the character output. If `useSummonHit = true`, do not add a minion explanation or overview either. Use `docs/minions_combat_analysis.md` as the internal reference when checking the flag: it explains that the flag changes weapon/area hit-source selection and is separate from the minion's inherited actor stats. `summonAttrType` and `summonFollowType` control stat initialization separately. The output may still mention a summon when it is part of a skill mechanic, such as "spawns up to 3 drones," but must not add a separate minion combat overview.
 
@@ -160,7 +160,7 @@ All unreleased raw data came from `StellaSoraData/.git`. Dates:
 
 ## Output document conventions
 
-The final reference doc (`docs/karin-eleanor-pots.md`) must follow these rules:
+Every final character reference doc (`docs/karin-eleanor-pots.md`, `docs/allie-139-kit.md`, `docs/162-1.15-kit.md`, ...) must follow these rules:
 
 - No `**` anywhere.
 - Titles use a single `#` (e.g. `# Karin (157, Umbra)`, `# Base skills`, `# Main-control potentials`).
@@ -168,13 +168,19 @@ The final reference doc (`docs/karin-eleanor-pots.md`) must follow these rules:
 - Write "AddAttr" for `OnceAdditionalAttribute` grants — never "extra attribute".
 - Write "self buff" for buffs that apply only to the character herself.
 - Label potentials as `P1`, `P2`, ... (no `513701 (P1)`). The core potentials `P1`, `P2`, `P3`, `P4`, `P21`, `P22`, `P23`, `P24` use `= P#` as the bullet marker (they are "special"); the rest use `- P#`.
-- Include everything knowable per potential: trigger tags, buff ids, AddAttr ids, param ids, area-effect keys, cooldowns, and apply/proc mark notes.
-- Include a `# Base skills` section (normal attack, main skill, ultimate, support skill) with the same per-skill mark annotations; no separate Dodge or Marks lines unless asked.
+- Include everything knowable per potential (trigger tags, buff ids, AddAttr ids, param ids, area-effect keys, cooldowns, apply/proc mark notes) but keep each potential to one line — the whole doc must fit one screen. If it does not, compress the prose, not the ids.
+- No line numbers anywhere. Never cite `file.cs:123` or inline ranges — after the doc is written, strip them. Keep file-level references (`decompilation/hotfix/1.15/Hotfix.decompiled.cs`, `EN/bin/Skill.json`) and backticked variable/function names so every claim can still be re-located by searching the named symbol.
+- Do not manually wrap lines. Every paragraph and bullet is one source line, however long.
+- Base skills are one line each and describe only the mechanic. Omit boilerplate states (invincibility, super armor, immune control, model-hide) unless the state itself is the mechanic.
+- Follow every coined name or object with the game variable that produced the interpretation, in backticks: "two-part rapier combo (`comboTag_Rapier_Skill`, second part from `OnRapierActivationEnd`)". Do not attach function names to plain behavior claims ("holding dodge casts the bound Special skill" needs no `OnActivationEnd` citation) — only names and objects.
+- Element marks are shared per element, not per character. Cite the mark buff id (Water `4011`, Light `3011`), the official trigger name from `UIText.json` ("Lucent", "Chill"), and note the cross-character interaction with the element's released mark-applier (162 procs the same mark Firefly applies; `CheckElementMark(CommonDefine.Light)` is element-keyed, not owner-keyed).
+- When a behavior depends on data outside the namespace (`Character.json` `SpecialSkillId`, a `Buff.json` stack maximum, `Skill.json` combos), say the data row is missing instead of guessing. Prefer code over stale table entries and say when they disagree (e.g. 162's `unreleased.json` element "Ventus" vs Light in code).
+- Include a `# Base skills` section covering normal attack, dodge, main skill, ultimate and support skill, one short line each, with the same per-skill mark annotations. Mechanics that need more than one line (gauges, marks, second stages) get their own subsection after it (see "Add missing mechanics").
 - Class guess is one line under the character heading, e.g. `Class guess: Vanguard — procs the Dark mark (Main Skill, P4 chain tick) and never applies one.` No pattern explanation — the reader already knows it.
 - Mark unresolved values "id not wired yet".
 - Do not add a `# Minion combat overview`. Treat `useSummonHit = false` as ordinary minion-origin behavior and omit it; also omit any explanation when `useSummonHit = true`.
-- Don't be overly technical, only refer to the code to offer additional informations, for example variable names or strings that can help to understand the objective of the code.|
-- This needs to be a short document, don't overexplain things.
+- Don't be overly technical — refer to the code only to offer additional information, e.g. variable names or strings that clarify what the code does. When the kit was reworked between hotfix versions, describe the latest one and point to the older doc (e.g. "1.14's Sword Intent kit, see `docs/162-pots.md`") instead of documenting both in full.
+- This needs to be a short document, don't overexplain things — one screen, no long explanations.
 
 ---
 
@@ -184,7 +190,7 @@ If a character has a persistent state machine, gauge, special target, summon, st
 
 ### Example: Karin's energy gauge
 
-Karin's gauge is implemented as stacks of self-buff `15790011`, not as the generic `PlayerSkillCd` energy field. `Config_MainControl` names it `buffId_Energy`, sets the interval to `1` and the increment to `10` (`1.13/Hotfix.decompiled.cs:681562-681568` = `1.14/Hotfix.decompiled.cs:687406-687411`; absent in `0.5/`):
+Karin's gauge is implemented as stacks of self-buff `15790011`, not as the generic `PlayerSkillCd` energy field. `Config_MainControl` names it `buffId_Energy`, sets the interval to `1` and the increment to `10`;):
 
 ```csharp
 public const int buffId_Energy = 15790011;
@@ -198,13 +204,13 @@ The main-control action adds 10 stacks whenever its one-second timer expires (`1
 _actor.buffComponent.AddBuffNum(15790011, 10, _actor);
 ```
 
-When the buff reaches its configured maximum, the buff-get listener binds the Normal button to special skill `15710001` (`1.13/Hotfix.decompiled.cs:682119` `HaveBuffNumMax(15790011)` = `1.14/Hotfix.decompiled.cs:687891`; the maximum itself lives in the `Buff` table, not in the hotfix). In `1.14` the gauge also seeds `100` stacks at enable when `ActorStatus.Default` (`1.14/Hotfix.decompiled.cs:687890-687891`), which `1.13` does not do. Report the visible behavior as "fills by 10 stacks per second and activates at the buff's configured maximum," unless the `Buff` entry for `15790011` is found.
+When the buff reaches its configured maximum, the buff-get listener binds the Normal button to special skill `15710001`; the maximum itself lives in the `Buff` table, not in the hotfix). In `1.14` the gauge also seeds `100` stacks at enable when `ActorStatus.Default`, which `1.13` does not do. Report the visible behavior as "fills by 10 stacks per second and activates at the buff's configured maximum," unless the `Buff` entry for `15790011` is found.
 
-The special normal attack consumes the gauge at skill enable, restores the ordinary Normal skill `15710000`, and, if P4 is owned, applies `15704011` (`1.13/Hotfix.decompiled.cs:682398` `RemoveBuffByBuffId(15790011)` = `1.14/Hotfix.decompiled.cs:688254`):
+The special normal attack consumes the gauge at skill enable, restores the ordinary Normal skill `15710000`, and, if P4 is owned, applies `15704011`.
 
 ```csharp
 _actor.buffComponent.RemoveBuffByBuffId(15790011);
 _actor.GetLogicComponent<PlayerSkillCd>()?.BindSkillIdToButton(ActionKey.Normal, 15710000);
 ```
 
-This is the complete mechanic to describe: passive stack gain -> maximum-stack conversion to a special Normal Attack -> gauge consumption and button reset. P4 also adds 10 gauge stacks every second while its hunting-chain hit loop is active (`1.13/Hotfix.decompiled.cs:682213` = `1.14/Hotfix.decompiled.cs:688055`), so that interaction belongs in the gauge subsection rather than being left as an unexplained P4 number. The `15790012` hunting mark and `15790013` self-buff are related target/state markers, but they are separate from the gauge and should not be renamed as energy (`1.13/Hotfix.decompiled.cs:681570-681572`/`682009-682017` = `1.14/Hotfix.decompiled.cs:687414-687416`/`687825-687833`).
+This is the complete mechanic to describe: passive stack gain -> maximum-stack conversion to a special Normal Attack -> gauge consumption and button reset. P4 also adds 10 gauge stacks every second while its hunting-chain hit loop is active, so that interaction belongs in the gauge subsection rather than being left as an unexplained P4 number. The `15790012` hunting mark and `15790013` self-buff are related target/state markers, but they are separate from the gauge and should not be renamed as energy.
