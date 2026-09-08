@@ -569,7 +569,7 @@ function buildEffectTable(dataFiles) {
         jBuff, jBuffValue, jWord, jWordLang, jTalent, jTalentLang,
         jScoreBoss, jScoreBossLang, jItemLangRoot, jItemRoot,
         jOnceAttr, jSecSkillLang, jChar, jSkill,
-        jSkillLang, jPotential, jBlitz
+        jSkillLang, jPotential, jBlitz, jDiscIP
     } = dataFiles;
 
     const charMap = {};
@@ -843,6 +843,9 @@ function buildEffectTable(dataFiles) {
     //   Digits 1-4: discId
     //   Digit 5:    0 = Melody, 1 = Harmony 1, 2 = Harmony 2
     //   Digits 6-7: ignored for naming
+    // Label format: "<disc name>: Melody|Harmony N - <melody/harmony name>"
+    //   Melody name comes from DiscIP.21<discId>.2, harmony name from
+    //   SecondarySkill.<discId><N>01.1
     if (jItemLangRoot) {
         const tryDecodeDisc = (buffId) => {
             if (buffId < 1000000 || buffId > 9999999) return false;
@@ -853,14 +856,18 @@ function buildEffectTable(dataFiles) {
             if (!discName) return false;
             let label;
             if (digit5 === 0) {
-                label = `Disc Melody: ${discName}`;
+                const melodyName = jDiscIP?.[`DiscIP.21${discId}.2`];
+                label = melodyName
+                    ? `${discName}: Melody - ${melodyName}`
+                    : `${discName}: Melody`;
             } else {
                 const harmonyNum  = digit5;
                 const secSkillKey = `SecondarySkill.${discId}${digit5}01.1`;
-                const harmonyName = jSecSkillLang?.[secSkillKey];
+                let harmonyName = jSecSkillLang?.[secSkillKey];
+                if (harmonyName === 'None' || harmonyName === '?') harmonyName = undefined;
                 label = harmonyName
-                    ? `Disc Harmony ${harmonyNum}: ${discName} - ${harmonyName}`
-                    : `Disc Harmony ${harmonyNum}: ${discName}`;
+                    ? `${discName}: Harmony ${harmonyNum} - ${harmonyName}`
+                    : `${discName}: Harmony ${harmonyNum}`;
             }
             effectTable.set(buffId, { charName: '?', label, levelTypeData: -1, source: 'Discs' });
             return true;
@@ -1020,7 +1027,7 @@ async function initTables(dataRoot) {
         jAffinityLevel, jEffectValue, jAffix, jAffixLang,
         jBuff, jBuffValue, jWord, jWordLang, jTalent, jTalentLang,
         jOnceAttr, jOnceAttrValue, jScoreBoss, jScoreBossLang,
-        jPotential, jMonsterSkin, jSecSkillLang, jBlitz,
+        jPotential, jMonsterSkin, jSecSkillLang, jBlitz, jDiscIP,
     ] = await Promise.all([
         loadJson(`${_dataRoot}character.json`,               'char'),
         loadJson(`${bin}HitDamage.json`,                     'hit'),
@@ -1050,6 +1057,7 @@ async function initTables(dataRoot) {
         loadJson(`${bin}MonsterSkin.json`,                   'monsterSkin'),
         loadJson(`${lang}SecondarySkill.json`,               'secSkillLang'),
         loadJson(`${_dataRoot}blitz.json`,                   'blitz'),
+        loadJson(`${lang}DiscIP.json`,                       'discIP'),
     ]);
 
     // lang/Item.json doubles as the item-language map used by disc/potential decoding
@@ -1075,7 +1083,7 @@ async function initTables(dataRoot) {
         jBuff, jBuffValue, jWord, jWordLang, jTalent, jTalentLang,
         jOnceAttr, jScoreBoss, jScoreBossLang,
         jItemRoot, jItemLangRoot, jSecSkillLang,
-        jChar, jSkill, jSkillLang, jPotential, jBlitz
+        jChar, jSkill, jSkillLang, jPotential, jBlitz, jDiscIP
     });
 
     buildSkillTable(jChar, jSkill, jSkillLang);

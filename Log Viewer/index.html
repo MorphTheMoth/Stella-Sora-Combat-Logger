@@ -132,6 +132,10 @@
         .sidebar .dc-char-btn:hover { background: #353535; color: #ccc; }
         .sidebar .dc-char-btn.on { color: #b07070; border-color: #4a3030; }
         .sidebar .dc-char-btn.on:hover { background: #2e2020; color: #cc8888; border-color: #5a3535; }
+        .sidebar .dc-quick-sep {
+            border-top: 1px solid #2c2c2c;
+            margin: 6px 0;
+        }
         .sidebar .dc-effects-body {
             padding: 4px 0;
         }
@@ -1132,7 +1136,7 @@
                 <button id="dcDisableAllBtn" onclick="dcDisableAllEffects()" title="Disable all effects in the Effects panel">Disable All</button>
                 <button id="dcEnableAllBtn" onclick="dcEnableAllEffects()" title="Enable all effects in the Effects panel">Enable All</button>
             </div>
-            <div class="sidebar-label" style="margin-top:10px">Characters</div>
+            <div class="sidebar-label" style="margin-top:10px">Quick Toggles</div>
             <div id="dcCharsList">
                 <!-- rendered by dcRenderCharList() -->
             </div>

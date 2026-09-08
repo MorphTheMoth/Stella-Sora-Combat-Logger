@@ -271,6 +271,199 @@ function dcCharOwnsSource(charName, source) {
     return source === charName || source.startsWith(charName + ' ');
 }
 
+// ─── Quick toggles ───────────────────────────────────────────────────────────
+// Extra toggles under the character list:
+//   - 'Pots Max Lvl 6' / 'Pots All Lvl 6': force Potentials-source effects to
+//     level 6 via dcEffectLevelOverrides (enable-style buttons)
+//   - 'Boss Blitz' / 'Talents': bulk-disable effects by source
+const POT_LEVEL_IDX = 5; // level 6 = index 5 in allValueConfigIds
+
+// groupKey ('bossblitz'|'talents') -> Set<effectKey> disabled by this toggle
+const dcGroupEffectKeys = new Map();
+// Each pots toggle remembers the previous override state per key so it can
+// revert cleanly (undefined = there was no override before)
+const dcPotsMaxLvl6 = { active: false, prev: new Map() };
+const dcPotsAllLvl6 = { active: false, prev: new Map() };
+
+function dcIsPotentialSource(src) {
+    return typeof src === 'string' && src.includes('Potentials');
+}
+
+function dcGroupSourceMatcher(groupKey) {
+    return groupKey === 'bossblitz'
+        ? (src) => src === 'Boss Blitz'
+        : (src) => typeof src === 'string' && src.includes('Talents');
+}
+
+// Resolve the valueConfigId/attrType/subType/value at a given level index.
+// Mirrors the resolution logic of dcChangeEffectLevel.
+function dcResolveLevelEntry(ef, newIdx) {
+    const newEntry = ef.allValueConfigIds[newIdx];
+    if (!newEntry) return null;
+    const newVcId = newEntry.valueConfigId;
+    let newValue, newAttrType, newSubType;
+    if (ef.fromAttrDict) {
+        const slots = onceAttrValueTable.get(newVcId);
+        if (!slots || slots.length === 0) return null;
+        newValue    = slots[0].value;
+        newAttrType = slots[0].attrType;
+        newSubType  = slots[0].subType;
+    } else {
+        const ev = effectValueTable.get(newVcId);
+        if (!ev || ev.value == null) return null;
+        newValue    = ev.value;
+        newAttrType = ev.attrType != null ? ev.attrType : ef.attrType;
+        newSubType  = ev.subType  != null ? ev.subType  : ef.subType;
+    }
+    if (newValue == null) return null;
+    return { newVcId, newValue, newAttrType, newSubType };
+}
+
+// Apply a pots-level toggle: override Potentials-source effects to level 6.
+// Only level-scaling potentials with a max level of exactly 9 are touched.
+// Non-scaling / differently-capped effects in the Potentials section are
+// skipped. onlyAboveMax=true clamps levels above 6 down, leaving lower levels.
+function dcPotsApply(state, onlyAboveMax) {
+    for (const ef of dcCollectAttrFixEffects(dcFiltered)) {
+        if (ef.isPotentialsGroup || !dcIsPotentialSource(ef.source)) continue;
+        if (!ef.allValueConfigIds || ef.allValueConfigIds.length < 2 || ef.currentLevelIdx < 0) continue;
+        // Only effects whose max level is exactly 9 (9 levels => length 9)
+        if (ef.allValueConfigIds.length !== 9) continue;
+        // Current effective level index: an existing override wins over the raw level
+        let curIdx = ef.currentLevelIdx;
+        const existing = dcEffectLevelOverrides.get(ef.key);
+        if (existing) {
+            const oi = ef.allValueConfigIds.findIndex(v => v.valueConfigId === existing.newValueConfigId);
+            if (oi >= 0) curIdx = oi;
+        }
+        const targetIdx = Math.min(POT_LEVEL_IDX, ef.allValueConfigIds.length - 1);
+        if (onlyAboveMax && curIdx <= targetIdx) continue;
+        if (curIdx === targetIdx && !dcEffectLevelOverrides.has(ef.key)) continue;
+        // Record the previous override state once so revert restores it
+        if (!state.prev.has(ef.key)) {
+            state.prev.set(ef.key, dcEffectLevelOverrides.has(ef.key) ? dcEffectLevelOverrides.get(ef.key) : undefined);
+        }
+        const resolved = dcResolveLevelEntry(ef, targetIdx);
+        if (!resolved) continue;
+        if (resolved.newVcId === ef.valueConfigId) {
+            dcEffectLevelOverrides.delete(ef.key);
+        } else {
+            dcEffectLevelOverrides.set(ef.key, {
+                newValueConfigId: resolved.newVcId,
+                newValue: resolved.newValue,
+                newAttrType: resolved.newAttrType != null ? resolved.newAttrType : ef.attrType,
+                newSubType:  resolved.newSubType  != null ? resolved.newSubType  : ef.subType,
+            });
+        }
+    }
+}
+
+function dcPotsRevert(state) {
+    for (const [key, prev] of state.prev) {
+        if (prev === undefined) dcEffectLevelOverrides.delete(key);
+        else dcEffectLevelOverrides.set(key, prev);
+    }
+    state.prev.clear();
+}
+
+// Re-sync quick toggles as new effects appear (poll/refilter):
+// add newly matching keys, drop vanished ones, re-apply active pots overrides.
+function dcSyncQuickToggles() {
+    for (const [groupKey, keys] of dcGroupEffectKeys) {
+        const matcher = dcGroupSourceMatcher(groupKey);
+        const newKeys = new Set();
+        for (const ef of dcCollectAttrFixEffects(dcFiltered)) {
+            if (matcher(ef.source)) newKeys.add(ef.key);
+        }
+        for (const k of newKeys) dcEffectsDisabled.add(k);
+        for (const k of keys) {
+            if (!newKeys.has(k)) dcEffectsDisabled.delete(k);
+        }
+        dcGroupEffectKeys.set(groupKey, newKeys);
+    }
+    if (dcPotsMaxLvl6.active) dcPotsApply(dcPotsMaxLvl6, true);
+    if (dcPotsAllLvl6.active) dcPotsApply(dcPotsAllLvl6, false);
+}
+
+window.dcToggleGroupDisable = function(groupKey) {
+    if (!dcGroupEffectKeys.has(groupKey)) {
+        const matcher = dcGroupSourceMatcher(groupKey);
+        const keys = new Set();
+        for (const ef of dcCollectAttrFixEffects(dcFiltered)) {
+            if (matcher(ef.source)) keys.add(ef.key);
+        }
+        dcGroupEffectKeys.set(groupKey, keys);
+        keys.forEach(k => dcEffectsDisabled.add(k));
+    } else {
+        const keys = dcGroupEffectKeys.get(groupKey);
+        if (keys) keys.forEach(k => dcEffectsDisabled.delete(k));
+        dcGroupEffectKeys.delete(groupKey);
+    }
+    renderEffectsPanel();
+    renderFormulaBar();
+    dcRender();
+    dcRefreshEI();
+    dcNotifyAnalytics();
+};
+
+window.dcTogglePotsMaxLvl6 = function() {
+    dcPotsMaxLvl6.active = !dcPotsMaxLvl6.active;
+    if (dcPotsMaxLvl6.active) dcPotsApply(dcPotsMaxLvl6, true);
+    else dcPotsRevert(dcPotsMaxLvl6);
+    renderEffectsPanel();
+    renderFormulaBar();
+    dcRender();
+    dcRefreshEI();
+    dcNotifyAnalytics();
+};
+
+window.dcTogglePotsAllLvl6 = function() {
+    dcPotsAllLvl6.active = !dcPotsAllLvl6.active;
+    if (dcPotsAllLvl6.active) dcPotsApply(dcPotsAllLvl6, false);
+    else dcPotsRevert(dcPotsAllLvl6);
+    renderEffectsPanel();
+    renderFormulaBar();
+    dcRender();
+    dcRefreshEI();
+    dcNotifyAnalytics();
+};
+
+// Descriptors for the quick-toggle rows rendered under the character list
+const DC_QUICK_TOGGLES = [
+    {
+        label: 'Pots Max Lvl 6',
+        title: 'Force every Potentials above level 6 to level 6',
+        enableStyle: true,           // shows 'Enable' when off
+        strikeWhenActive: false,
+        isActive: () => dcPotsMaxLvl6.active,
+        onclick: 'dcTogglePotsMaxLvl6()',
+    },
+    {
+        label: 'Pots All Lvl 6',
+        title: 'Force every Potentials to level 6',
+        enableStyle: true,
+        strikeWhenActive: false,
+        isActive: () => dcPotsAllLvl6.active,
+        onclick: 'dcTogglePotsAllLvl6()',
+    },
+    {
+        label: 'Boss Blitz',
+        title: 'Disable all Boss Blitz effects',
+        enableStyle: false,
+        strikeWhenActive: true,
+        isActive: () => dcGroupEffectKeys.has('bossblitz'),
+        onclick: "dcToggleGroupDisable('bossblitz')",
+    },
+    {
+        label: 'Talents',
+        title: 'Disable all Talent effects',
+        enableStyle: false,
+        strikeWhenActive: true,
+        isActive: () => dcGroupEffectKeys.has('talents'),
+        onclick: "dcToggleGroupDisable('talents')",
+    },
+];
+
 function dcSyncCharEffectKeys() {
     for (const [charName, keys] of dcCharEffectKeys) {
         const newKeys = new Set();
@@ -298,7 +491,7 @@ function dcRenderCharList() {
         el.innerHTML = '<div class="dc-effects-empty">No characters loaded.</div>';
         return;
     }
-    el.innerHTML = list.map(name => {
+    let html = list.map(name => {
         const off = dcCharsDisabled.has(name);
         const escName = name.replace(/'/g, "\\'");
         return `<div class="dc-char-row${off ? ' disabled' : ''}">
@@ -306,6 +499,21 @@ function dcRenderCharList() {
             <button class="dc-char-btn${off ? ' on' : ''}" onclick="dcToggleChar('${escName}')">${off ? 'Enable' : 'Disable'}</button>
         </div>`;
     }).join('');
+
+    // ── Quick toggles ──
+    html += `<div class="dc-quick-sep"></div>`;
+    for (const t of DC_QUICK_TOGGLES) {
+        const active = t.isActive();
+        const strike = t.strikeWhenActive && active;
+        const label = t.enableStyle
+            ? (active ? 'Disable' : 'Enable')
+            : (active ? 'Enable' : 'Disable');
+        html += `<div class="dc-char-row${strike ? ' disabled' : ''}">
+            <span class="dc-char-name" title="${esc(t.title)}">${esc(t.label)}</span>
+            <button class="dc-char-btn${active ? ' on' : ''}" onclick="${t.onclick}" title="${esc(t.title)}">${label}</button>
+        </div>`;
+    }
+    el.innerHTML = html;
 }
 
 window.dcToggleChar = function(name) {
@@ -347,6 +555,7 @@ window.dcDisableAllEffects = function() {
 window.dcEnableAllEffects = function() {
     dcEffectsDisabled.clear();
     for (const keys of dcCharEffectKeys.values()) keys.forEach(k => dcEffectsDisabled.add(k));
+    for (const keys of dcGroupEffectKeys.values()) keys.forEach(k => dcEffectsDisabled.add(k));
     renderEffectsPanel();
     renderFormulaBar();
     dcRender();
@@ -1152,6 +1361,7 @@ function dcRefilterAndRender(resetScroll = false, autoSelectDefender = true) {
     }
     dcBuildFenwick();
     dcSyncCharEffectKeys();
+    dcSyncQuickToggles();
     renderFormulaBar();
     renderEffectsPanel();
     document.getElementById('stats').textContent = `${dcFiltered.length} hits`;
@@ -1192,6 +1402,7 @@ window.dcRefreshIfVisible = function() {
 
         // Keep char-disabled effect keys in sync as new effects appear
         dcSyncCharEffectKeys();
+        dcSyncQuickToggles();
 
         // Only re-render effects panel when new unique effects actually appear
         const newEffects = dcCollectAttrFixEffects(dcFiltered);

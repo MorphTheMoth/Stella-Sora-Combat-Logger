@@ -380,6 +380,7 @@ static const char* const kStellaDataFiles[] = {
     "EN/language/en_US/ScoreBossAbility.json",
     "EN/language/en_US/TravelerDuelChallengeAffix.json",
     "EN/language/en_US/SecondarySkill.json",
+    "EN/language/en_US/DiscIP.json",
     "EN/language/en_US/Character.json",
     nullptr
 };
