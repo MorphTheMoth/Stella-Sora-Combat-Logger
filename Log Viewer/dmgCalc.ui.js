@@ -465,6 +465,63 @@ const DC_QUICK_TOGGLES = [
     },
 ];
 
+// Effect keys dcToggleChar would disable for this char: the memoized set if
+// the char was toggled before, otherwise computed the same way (source owned
+// by the char via dcCharOwnsSource).
+function dcCharOwnedEffectKeys(name) {
+    if (dcCharEffectKeys.has(name)) return dcCharEffectKeys.get(name);
+    const keys = new Set();
+    for (const ef of dcCollectAttrFixEffects(dcFiltered)) {
+        if (dcCharOwnsSource(name, ef.source)) keys.add(ef.key);
+    }
+    return keys;
+}
+
+// For each character, compute (Total Calc) − (Total Calc with that character
+// disabled), faithfully simulating dcToggleChar: the char's own hits are zeroed
+// (dcCharsDisabled check in dcApplyEffectOverrides) and its owned effect keys
+// are added to the disabled set, which also affects other characters' hits.
+function dcComputeCharDeltas(list) {
+    const deltas = {};
+    let baseTotal = 0;
+    list.forEach(n => { deltas[n] = 0; });
+    if (!dcFiltered.length || !list.length) return { baseTotal, deltas };
+
+    // Base pass: current Total Calc + per-attacker contribution under the
+    // current state (a currently-disabled char contributes 0 here).
+    const sums = new Map();
+    for (const ev of dcFiltered) {
+        const f = calcHitFields(ev, null, dcEffectsDisabled, dcEffectLevelOverrides);
+        const d = calcDamage(f, dcBonus, dcDisabled);
+        baseTotal += d;
+        const att = ev.AttackerDisplay || ev.Attacker || '';
+        sums.set(att, (sums.get(att) || 0) + d);
+    }
+
+    for (const name of list) {
+        // Zeroing the char's own hits:
+        let totalIf = baseTotal - (sums.get(name) || 0);
+        // Its owned effects also get disabled (may affect other hits):
+        const owned = dcCharOwnedEffectKeys(name);
+        if (owned.size) {
+            const merged = new Set(dcEffectsDisabled);
+            for (const k of owned) merged.add(k);
+            if (merged.size !== dcEffectsDisabled.size) {
+                let t = 0;
+                for (const ev of dcFiltered) {
+                    const att = ev.AttackerDisplay || ev.Attacker || '';
+                    if (att === name) continue;
+                    const f = calcHitFields(ev, null, merged, dcEffectLevelOverrides);
+                    t += calcDamage(f, dcBonus, dcDisabled);
+                }
+                totalIf = t;
+            }
+        }
+        deltas[name] = baseTotal - totalIf;
+    }
+    return { baseTotal, deltas };
+}
+
 function dcSyncCharEffectKeys() {
     for (const [charName, keys] of dcCharEffectKeys) {
         const newKeys = new Set();
@@ -482,8 +539,11 @@ function dcSyncCharEffectKeys() {
 function dcRenderCharList() {
     const el = document.getElementById('dcCharsList');
     if (!el) return;
+    // Only attackers that actually deal Source Type = 'Player' hits
+    // (sourceType 1 == 'Player', see damageSourceNames in dataLoader.js).
+    // This hides enemy/monster actors like "..._Actor (skinId=...)".
     const chars = new Set();
-    allEvents.filter(e => e.Type === 'Hit').forEach(e => {
+    allEvents.filter(e => e.Type === 'Hit' && (e.HitConfig || {}).sourceType === 1).forEach(e => {
         const n = e.AttackerDisplay || e.Attacker;
         if (n) chars.add(n);
     });
@@ -492,11 +552,26 @@ function dcRenderCharList() {
         el.innerHTML = '<div class="dc-effects-empty">No characters loaded.</div>';
         return;
     }
+
+    // Live per-character delta: Total Calc minus Total Calc if that row were
+    // disabled (only for these character rows, not the quick toggles below),
+    // shown as a % of the current Total Calc, left-aligned next to the name.
+    const { baseTotal, deltas } = dcComputeCharDeltas(list);
+
     let html = list.map(name => {
         const off = dcCharsDisabled.has(name);
         const escName = name.replace(/'/g, "\\'");
+        const delta = deltas[name] || 0;
+        // Same convention as the sidebar Compare rows: how much larger the
+        // current Total Calc is than the Total Calc with this char disabled.
+        const pct = (baseTotal - delta) > 0 ? ((baseTotal / (baseTotal - delta)) - 1) * 100 : null;
+        const deltaStr = pct != null
+            ? `<span class="dc-char-delta" title="Total Calc minus Total Calc with this character disabled (its hits zeroed + its owned effects disabled): ${delta >= 0 ? '+' : ''}${Math.round(delta).toLocaleString()}">${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%</span>`
+            : '';
         return `<div class="dc-char-row${off ? ' disabled' : ''}">
             <span class="dc-char-name" title="${esc(name)}">${esc(name)}</span>
+            ${deltaStr}
+            <span class="dc-char-spacer"></span>
             <button class="dc-char-btn${off ? ' on' : ''}" onclick="dcToggleChar('${escName}')">${off ? 'Enable' : 'Disable'}</button>
         </div>`;
     }).join('');
@@ -511,6 +586,7 @@ function dcRenderCharList() {
             : (active ? 'Enable' : 'Disable');
         html += `<div class="dc-char-row${strike ? ' disabled' : ''}">
             <span class="dc-char-name" title="${esc(t.title)}">${esc(t.label)}</span>
+            <span class="dc-char-spacer"></span>
             <button class="dc-char-btn${active ? ' on' : ''}" onclick="${t.onclick}" title="${esc(t.title)}">${label}</button>
         </div>`;
     }
@@ -740,6 +816,9 @@ function renderFormulaBar() {
     const bar = document.getElementById('dcFormulaBar');
     if (!bar) return;
     dcRenderTotals();
+    // Keep the per-character Total Calc deltas live (bonuses/field toggles
+    // change Total Calc without going through renderEffectsPanel).
+    dcRenderCharList();
     let html = `<div class="dc-formula-row">`;
 
 

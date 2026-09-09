@@ -120,9 +120,16 @@
         .dc-char-row.disabled { opacity: 0.55; }
         .dc-char-row.disabled .dc-char-name { color: #777; text-decoration: line-through; }
         .dc-char-name {
-            flex: 1; min-width: 0; overflow: hidden;
+            flex: 0 1 auto; min-width: 0; overflow: hidden;
             text-overflow: ellipsis; white-space: nowrap; color: #bbb;
         }
+        .dc-char-delta {
+            flex-shrink: 0; white-space: nowrap;
+            font-size: 10px; font-variant-numeric: tabular-nums;
+            color: #7fb069;
+        }
+        .dc-char-row.disabled .dc-char-delta { color: #555; }
+        .dc-char-spacer { flex: 1; }
         .sidebar .dc-char-btn {
             flex-shrink: 0; width: auto; min-width: 60px;
             padding: 2px 8px; margin: 0;
