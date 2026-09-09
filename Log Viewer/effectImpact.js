@@ -481,7 +481,11 @@ function eiRenderTable() {
             const sideLabel = ef.side === 'attacker' ? 'ATK' : ef.side === 'defender' ? 'DEF' : 'POT';
             const sideClass = ef.side === 'attacker' ? 'ei-side-atk' : ef.side === 'defender' ? 'ei-side-def' : 'ei-side-pot';
 
-            const statCellContent = ef.isPotentialsGroup
+            const statCellContent = ef.isPotRow
+                ? `<span class="ei-attr"></span><span class="ei-val">lvl+${ef.linkPotential.addLv}</span>`
+                : ef.displayOnly
+                ? `<span class="ei-attr"></span><span class="ei-val"></span>`
+                : ef.isPotentialsGroup
                 ? `<span class="ei-attr">Hit Damage</span><span class="ei-val">${ef.value.map(num => `${num}%`).join(', ')}</span>`
                 : (() => {
                     const override = dcEffectLevelOverrides?.get(ef.key);

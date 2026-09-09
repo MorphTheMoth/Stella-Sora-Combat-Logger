@@ -422,10 +422,21 @@ function hitBody(ev, oi) {
         h+=`</table></div>`;
     }
     if(ev.AttackerRecord?.effects?.length) {
-        h+=`<div class="collapsible-toggle${subOpenStates[`${oi}_arecord-${oi}`] ? ' open' : ''}" data-target="arecord-${oi}">Attacker Record (${ev.AttackerRecord.effects.length})</div>
-        <div class="collapsible-content" id="arecord-${oi}" style="${subOpenStates[`${oi}_arecord-${oi}`] ? 'display:block' : ''}"><table class="wide-name"><tr><th>Name</th><th>Attr</th><th>Value</th></tr>`;
-        ev.AttackerRecord.effects.forEach(e=>{ const atName=e.attrType!=null?attrName(e.attrType):'?'; const raw=e.value; const val=raw!=null?(Math.abs(raw)<15?(raw*100).toFixed(2)+'%':raw.toLocaleString()):''; h+=`<tr><td>${esc(e.name)}</td><td>${esc(atName)}</td><td>${val}</td></tr>`; });
-        h+=`</table></div>`;
+        const recRows  = ev.AttackerRecord.effects.filter(e=>e.source==='Discs');
+        const embRows  = ev.AttackerRecord.effects.filter(e=>e.source!=='Discs');
+        const recRowHtml = (e)=>{ const atName=e.attrType!=null?attrName(e.attrType):'\u2014'; const raw=e.value; const val=raw!=null?(Math.abs(raw)<15?(raw*100).toFixed(2)+'%':raw.toLocaleString()):''; return `<tr><td>${esc(e.name)}</td><td>${esc(atName)}</td><td>${val}</td></tr>`; };
+        if(recRows.length) {
+            h+=`<div class="collapsible-toggle${subOpenStates[`${oi}_arecord-${oi}`] ? ' open' : ''}" data-target="arecord-${oi}">Attacker Record (${recRows.length})</div>
+            <div class="collapsible-content" id="arecord-${oi}" style="${subOpenStates[`${oi}_arecord-${oi}`] ? 'display:block' : ''}"><table class="wide-name"><tr><th>Name</th><th>Attr</th><th>Value</th></tr>`;
+            recRows.forEach(e=>{ h+=recRowHtml(e); });
+            h+=`</table></div>`;
+        }
+        if(embRows.length) {
+            h+=`<div class="collapsible-toggle${subOpenStates[`${oi}_aemb-${oi}`] ? ' open' : ''}" data-target="aemb-${oi}">Emblems (${embRows.length})</div>
+            <div class="collapsible-content" id="aemb-${oi}" style="${subOpenStates[`${oi}_aemb-${oi}`] ? 'display:block' : ''}"><table class="wide-name"><tr><th>Name</th><th>Attr</th><th>Value</th></tr>`;
+            embRows.forEach(e=>{ h+=recRowHtml(e); });
+            h+=`</table></div>`;
+        }
     }
     if(ev.AttackerAttrDict?.length) {
         h+=`<div class="collapsible-toggle${subOpenStates[`${oi}_aattrdict-${oi}`] ? ' open' : ''}" data-target="aattrdict-${oi}">Attacker Attr Dict (${ev.AttackerAttrDict.length})</div>

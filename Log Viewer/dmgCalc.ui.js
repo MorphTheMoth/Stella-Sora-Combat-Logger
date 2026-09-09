@@ -183,6 +183,10 @@ function renderEffectsPanel() {
                     let valStr;
                     if (ef.isPotentialsGroup) {
                         valStr = `${ef.count} hit${ef.count !== 1 ? 's' : ''}`;
+                    } else if (ef.isPotRow) {
+                        valStr = `lvl+${ef.linkPotential.addLv}`;
+                    } else if (ef.displayOnly) {
+                        valStr = '';
                     } else {
                         const override = dcEffectLevelOverrides.get(ef.key);
                         const raw = override ? override.newValue : ef.value;

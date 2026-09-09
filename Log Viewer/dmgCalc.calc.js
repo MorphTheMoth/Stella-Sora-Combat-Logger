@@ -169,21 +169,26 @@ function dcCollectAttrFixEffects(dcFiltered) {
             if (list?.length) {
                 const countMap = new Map();
                 for (const e of list) {
-                    if (!allowedEffectTypes.includes(e.effectType)) continue;
+                    // record display/pot rows (effectType null) are admitted so
+                    // they render as shortcut rows in the panel
+                    if (!allowedEffectTypes.includes(e.effectType) && !e.isRecordEffect) continue;
                     const id = e.configId;
                     countMap.set(id, (countMap.get(id) || 0) + 1);
                 }
                 const seenInHit = new Set();
                 for (const e of list) {
-                    if (!allowedEffectTypes.includes(e.effectType)) continue;
+                    if (!allowedEffectTypes.includes(e.effectType) && !e.isRecordEffect) continue;
                     if (seenInHit.has(e.configId)) continue;
                     seenInHit.add(e.configId);
                     const key = `${side}:${e.configId}:${e.valueConfigId ?? ''}`;
                     if (!seen.has(key)) {
                         const lm = resolveLevelMap(e.configId);
-                        let allVcIds = lm.allValueConfigIds;
+                        // Record rows (emblem pots) carry their own level ladder
+                        // (the potential's marginal levels) — keep it as-is.
+                        let allVcIds = (e.allValueConfigIds && e.allValueConfigIds.length)
+                            ? e.allValueConfigIds : lm.allValueConfigIds;
                         let curIdx = allVcIds.findIndex(v => v.valueConfigId === e.valueConfigId);
-                        if (curIdx < 0) {
+                        if (curIdx < 0 && !(e.allValueConfigIds && e.allValueConfigIds.length)) {
                             const derived = deriveLevelCandidates(e.configId, e.valueConfigId, false);
                             if (derived) { allVcIds = derived.vc; curIdx = derived.curIdx; }
                         }
@@ -418,6 +423,46 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides) {
                     if (ev.HitConfig.elementType === e.subType) stat.base = (stat.base || 0) - e.value * count;
                 } else if (e.effectType === ELEMENTTYPE_ATTR_PERCENT_FIX) {
                     if (ev.HitConfig.elementType === e.subType) stat.pct = (stat.pct || 0) - e.value * count;
+                }
+            }
+        }
+
+        // ── Record pot shortcuts ─────────────────────────────────────
+        // Disabling an emblem-pot row lowers ALL of that potential's effect
+        // entries down to the record's own base level (multi-stat safe):
+        // per entry, remove valueAt(currentLevel) - valueAt(baseLevel).
+        if (list?.length) {
+            for (const pr of list) {
+                if (!pr.isPotRow || !pr.linkPotential) continue;
+                const pkey = `${side}:${pr.configId}:${pr.valueConfigId ?? ''}`;
+                if (!dcEffectsDisabled.has(pkey)) continue;
+                const { gid, base, variant } = pr.linkPotential;
+                const lo = gid * 1000;
+                // the potential's battle effects live in the hit's own effect
+                // lists — scan both the record rows and the effects list
+                const family = [
+                    ...(list || []),
+                    ...(side === 'attacker' ? (ev.AttackerEffects?.effects || [])
+                                            : (ev.DefenderEffects?.effects || [])),
+                ];
+                for (const e of family) {
+                    if (e.configId == null || e.configId < lo || e.configId > lo + 999) continue;
+                    if (e.attrType == null || e.value == null) continue;
+                    let toV = 0;
+                    if (base > 0) {
+                        // entry's own build variant when decodable, else the row's
+                        let entryVar = variant;
+                        if (e.valueConfigId != null && e.valueConfigId > lo) entryVar = (e.valueConfigId - lo) % 10;
+                        const st = effectValueTable.get(lo + base * 10 + entryVar);
+                        toV = st && st.value != null ? st.value : 0;
+                    }
+                    const delta = e.value - toV;
+                    if (!delta) continue;
+                    let stat = statMap.get(e.attrType);
+                    if (!stat) { stat = { origin: 0, base: 0, pct: 0, abs: 0 }; statMap.set(e.attrType, stat); }
+                    if (e.subType === 1) stat.base = (stat.base || 0) - delta;
+                    else if (e.subType === 2) stat.pct = (stat.pct || 0) - delta;
+                    else if (e.subType === 3) stat.abs = (stat.abs || 0) - delta;
                 }
             }
         }

@@ -176,6 +176,13 @@ let originRecord = null;   // latest Origin event — carries across rooms until
 // "Item.<discId>.1" (raw disc-table id, e.g. Item.214024.1) and
 // "Item.21<discId>.1" (item-tid style, as used by the disc-buff decoder).
 const discLangNames = new Map();
+// Emblem (gem) parse tables — filled inside initTables:
+//   gemAttrValueById: CharGemAttrValue id -> {attrType, first, second, value}
+//   potentialById:    potential id  -> Potential.json row (MaxLevel/EffectGroupId/Build)
+const gemAttrValueById = new Map();
+const potentialById = new Map();
+const EMBLEM_SLOT_NAMES = { 1: 'Emblem 70', 2: 'Emblem 80', 3: 'Emblem 90' };
+const GEM_SKILL_SLOT_NAMES = { 1: 'Normal Atk', 2: 'Skill', 3: 'Assist Skill I', 4: 'Ultimate' };
 
 function getOriginRecord() { return originRecord; }
 
@@ -219,6 +226,130 @@ function buildRecordDiscEffects(origin) {
         }
     });
     origin._discRows = rows;
+    return rows;
+}
+
+// Convert a record char's gems (emblems) into effect-like rows:
+//   flat rolls  — resolved via CharGemAttrValue (Type 12; Type 37 player-attrs
+//                 have no numeric attr id → attrType null)
+//   percent rolls — the gem's Effect ids, resolved via effectValueTable
+//   pots       — levellable rows linked to the potential's own level ladder
+//                (<EffectGroupId><level><buildVariant> ids in EffectValue);
+//                the ladder segment is the gem's marginal levels:
+//                potBase+1 .. potBase+addLv (capped at MaxLevel). Disabling
+//                the row drops the whole segment; the level buttons step it.
+//   skills     — display-only rows (no numeric effect → excluded from calc)
+function buildRecordEmblemEffects(origin, charId) {
+    origin._emblemRows = origin._emblemRows || {};
+    if (origin._emblemRows[charId]) return origin._emblemRows[charId];
+    const rows = [];
+    const ch = (origin.chars || []).find(c => String(c.charId) === String(charId));
+    if (ch) {
+        // Per-unit source group → the dmgcalc sidebar renders one section per
+        // unit ("<char name> Emblems"), and the effect-impact chips match.
+        const emblemSource = `${resolveActorKey('p:' + charId)} Emblems`;
+        const potBase = ch.potBase || {};
+        (ch.gems || []).forEach((g, gi) => {
+            const slot = g.slot || (gi + 1);
+            const emblemName = EMBLEM_SLOT_NAMES[slot] || `Emblem Slot ${slot}`;
+            let statIdx = 0;
+            // flat rolls: [CharGemAttrValueId, CfgValue, rawValue]
+            (g.attrs || []).forEach(roll => {
+                statIdx++;
+                const id = roll[0], raw = roll[2];
+                const gv = gemAttrValueById.get(Number(id));
+                let attrType = null, subType = 1, value = raw;
+                if (gv) {
+                    if (gv.attrType === 12) attrType = gv.first;   // ATTR_FIX → attr id
+                    // Type 37 (PLAYER_ATTR_FIX, energy family) — no numeric attr id
+                    subType = gv.second || 1;
+                    value = gv.value ?? raw;
+                }
+                rows.push({
+                    configId: 930000000 + gi * 1000 + statIdx,
+                    valueConfigId: 0,
+                    name: `${emblemName} : Stat ${statIdx}`,
+                    attrType, subType, value,
+                    source: emblemSource, effectType: 12, count: 1,
+                    isRecordEffect: true, allValueConfigIds: [],
+                    _charId: Number(charId),
+                    _charName: resolveActorKey('p:' + charId),
+                });
+            });
+            // percent rolls: Effect ids → EffectValue (Second=2 PERCENT)
+            (g.effects || []).forEach(eid => {
+                statIdx++;
+                const ev = effectValueTable.get(Number(eid));
+                rows.push({
+                    configId: 930000000 + gi * 1000 + statIdx,
+                    valueConfigId: 0,
+                    name: `${emblemName} : Stat ${statIdx}`,
+                    attrType: ev?.attrType ?? null,
+                    subType: ev?.subType ?? 2,
+                    value: ev?.value ?? null,
+                    source: emblemSource, effectType: 12, count: 1,
+                    isRecordEffect: true, allValueConfigIds: [],
+                    _charId: Number(charId),
+                    _charName: resolveActorKey('p:' + charId),
+                });
+            });
+            // pots: [potIdx, +levels] — levellable, linked to the potential ladder
+            (g.pots || []).forEach(pot => {
+                const potIdx = pot[0], addLv = pot[1] || 0;
+                const potId = 500000 + Number(charId) * 100 + Number(potIdx);
+                const potEntry = potentialById.get(potId);
+                const potName = discLangNames.get(String(potId)) || `Potential ${potIdx}`;
+                const gid = potEntry?.EffectGroupId;
+                const maxLv = potEntry?.MaxLevel || 0;
+                const build = potEntry?.Build || 1;
+                const base = Number(potBase[String(potId)] ?? potBase[potId] ?? 0);
+                // ladder variant: the potential's Build column picks the column
+                // of per-level values (…<level><variant> in EffectValue). Builds
+                // >2 fall back to the variant whose level-1 value is nonzero.
+                let variant = 1;
+                // ladder ids: <EffectGroupId>0<level><variant> (e.g. 16009012)
+                const v1 = gid ? effectValueTable.get(Number(`${gid}011`)) : null;
+                const v2 = gid ? effectValueTable.get(Number(`${gid}012`)) : null;
+                if (v2 && v2.value && (!v1 || !v1.value || build === 2)) variant = 2;
+                const ladder = [];
+                for (let L = base + 1; L <= Math.min(base + addLv, maxLv); L++) {
+                    const vcId = Number(`${gid}0${L}${variant}`);
+                    if (effectValueTable.get(vcId)) ladder.push({ level: L - base, valueConfigId: vcId });
+                }
+                // Shortcut row: no stat of its own — disabling it lowers ALL
+                // of the potential's effect entries by the granted levels
+                // (handled in dcApplyEffectOverrides via linkPotential).
+                rows.push({
+                    configId: 940000000 + gi * 100 + Number(potIdx),
+                    valueConfigId: 0,
+                    name: `${emblemName} : ${potName}`,
+                    attrType: null, subType: null, value: null,
+                    count: 1, source: emblemSource, effectType: 12,
+                    isRecordEffect: true, isPotRow: true,
+                    linkPotential: { gid, base, addLv, maxLv, variant },
+                    allValueConfigIds: [],
+                    _charId: Number(charId),
+                    _charName: resolveActorKey('p:' + charId),
+                });
+            });
+            // skills: [slot, +levels] — display-only (excluded from calc by
+            // the allowedEffectTypes gate; effectType left null)
+            (g.skills || []).forEach(sk => {
+                const slotIdx = sk[0], lv = sk[1] || 0;
+                rows.push({
+                    configId: 950000000 + gi * 100 + Number(slotIdx),
+                    valueConfigId: 0,
+                    name: `${emblemName} : ${GEM_SKILL_SLOT_NAMES[slotIdx] || ('Skill ' + slotIdx)} +${lv} lv`,
+                    attrType: null, subType: null, value: null,
+                    source: emblemSource, effectType: null, count: 1,
+                    isRecordEffect: true, displayOnly: true, allValueConfigIds: [],
+                    _charId: Number(charId),
+                    _charName: resolveActorKey('p:' + charId),
+                });
+            });
+        });
+    }
+    origin._emblemRows[charId] = rows;
     return rows;
 }
 
@@ -269,7 +400,12 @@ function enrichHit(ev) {
         const team = originRecord.team;
         const onTeam = team.includes(attackerId) || team.includes(String(attackerId));
         if (attackerId > 0 && onTeam) {
-            ev.AttackerRecord = { effects: buildRecordDiscEffects(originRecord) };
+            // effects: discs + the attacker's OWN emblems (calc path — per-hit
+            // correct; toggles only touch the attacker's own contributions).
+            ev.AttackerRecord = { effects: [
+                ...buildRecordDiscEffects(originRecord),
+                ...buildRecordEmblemEffects(originRecord, String(attackerId)),
+            ] };
         }
     }
 
@@ -1131,6 +1267,7 @@ async function initTables(dataRoot) {
         jBuff, jBuffValue, jWord, jWordLang, jTalent, jTalentLang,
         jOnceAttr, jOnceAttrValue, jScoreBoss, jScoreBossLang,
         jPotential, jMonsterSkin, jSecSkillLang, jBlitz, jDiscIP,
+        jGemAttrValue,
     ] = await Promise.all([
         loadJson(`${_dataRoot}character.json`,               'char'),
         loadJson(`${bin}HitDamage.json`,                     'hit'),
@@ -1161,6 +1298,7 @@ async function initTables(dataRoot) {
         loadJson(`${lang}SecondarySkill.json`,               'secSkillLang'),
         loadJson(`${_dataRoot}blitz.json`,                   'blitz'),
         loadJson(`${lang}DiscIP.json`,                       'discIP'),
+        loadJson(`${bin}CharGemAttrValue.json`,              'gemAttrValue'),
     ]);
 
     // lang/Item.json doubles as the item-language map used by disc/potential decoding
@@ -1180,6 +1318,29 @@ async function initTables(dataRoot) {
                 discLangNames.set(digits.slice(2), jItemLangRoot[k]);
         }
         console.log(`[tableResolver] disc names: ${discLangNames.size}`);
+    }
+
+    // Emblem parse tables
+    gemAttrValueById.clear();
+    if (jGemAttrValue) {
+        for (const [k, v] of Object.entries(jGemAttrValue)) {
+            const id = parseInt(k, 10);
+            if (!id || !v || v.AttrType == null) continue;
+            gemAttrValueById.set(id, {
+                attrType: parseInt(v.AttrType, 10),
+                first:    v.AttrTypeFirstSubtype != null ? parseInt(v.AttrTypeFirstSubtype, 10) : null,
+                second:   v.AttrTypeSecondSubtype != null ? parseInt(v.AttrTypeSecondSubtype, 10) : null,
+                value:    v.Value != null && v.Value !== '' ? parseFloat(v.Value) : null,
+            });
+        }
+    }
+    potentialById.clear();
+    if (jPotential) {
+        for (const [k, v] of Object.entries(jPotential)) {
+            const id = parseInt(k, 10);
+            if (!id || !v) continue;
+            potentialById.set(id, v);
+        }
     }
 
     if (!jChar || !jSkill || !jSkillLang) {

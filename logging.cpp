@@ -1521,6 +1521,18 @@ local ok, res = pcall(function()
       local mc = PlayerData.Char._mapChar[cid]
       if mc then charData[cid] = { nLevel = mc.nLevel or 1, nAdvance = mc.nAdvance or 0 } end
     end)
+    -- record's own (base) potential levels, for computing the gems' marginal
+    -- potential ladder segment — mapBuildData.tbPotentials[charId][i].nLevel
+    pcall(function()
+      local bp = CL.mapBuildData.tbPotentials and CL.mapBuildData.tbPotentials[cid] or nil
+      if bp then
+        local pb = {}
+        for _, pv in ipairs(bp) do
+          pb[tostring(pv.nPotentialId)] = tonumber(pv.nLevel) or 0
+        end
+        charData[cid].potBase = pb
+      end
+    end)
   end
 
   -- discs: per-disc stat breakdown + sum (DiscData.mapAttrBase, the same
@@ -1630,6 +1642,15 @@ local ok, res = pcall(function()
     local okG, eG2 = pcall(function() gems = gemOf(cid) end)
     if not okG then eGem = eG2 end
 
+    local potBaseParts = {}
+    pcall(function()
+      local pb = mc and mc.potBase or nil
+      if pb then
+        for pid, lvl in pairs(pb) do
+          potBaseParts[#potBaseParts+1] = '"'..pid..'":'..tostring(lvl)
+        end
+      end
+    end)
     local parts = {
       '"charId":'..tostring(cid),
       '"level":'..tostring(nLevel),
@@ -1637,6 +1658,7 @@ local ok, res = pcall(function()
       '"base":{'..table.concat(baseParts, ',')..'}',
       '"disc":{'..table.concat(discParts, ',')..'}',
       '"build":{'..table.concat(buildParts, ',')..'}',
+      '"potBase":{'..table.concat(potBaseParts, ',')..'}',
       '"gems":['..table.concat(gems, ',')..']',
     }
     if eBase then parts[#parts+1] = '"errBase":"'..sq(eBase)..'"' end
