@@ -91,7 +91,7 @@ function eiPatchStats(withOverrides, ef, ev, delta, coeff) {
         found = true;
         const copy = Object.assign({}, s);
         if (ef.fromAttrDict || [ATTR_FIX, HITTED_ADDITIONAL_ATTR_FIX, PLAYER_ATTR_FIX].includes(ef.effectType)) {
-          if (delta.subType === 1)      copy.base = (copy.base || 0) + delta.amount * coeff;
+          if (delta.subType === 1)      { if (ef.isRecordEffect) copy.origin = (copy.origin || 0) + delta.amount * coeff; else copy.base = (copy.base || 0) + delta.amount * coeff; }
           else if (delta.subType === 2) copy.pct  = (copy.pct  || 0) + delta.amount * coeff;
           else if (delta.subType === 3) copy.abs  = (copy.abs  || 0) + delta.amount * coeff;
         } else if (ef.effectType === ELEMENTTYPE_ATTR_FIX) {
@@ -106,7 +106,7 @@ function eiPatchStats(withOverrides, ef, ev, delta, coeff) {
     if (!found) {
         const fresh = { origin: 0, base: 0, pct: 0, abs: 0 };
         if (ef.fromAttrDict || [ATTR_FIX, HITTED_ADDITIONAL_ATTR_FIX, PLAYER_ATTR_FIX].includes(ef.effectType)) {
-          if (delta.subType === 1)      fresh.base = delta.amount * coeff;
+          if (delta.subType === 1)      { if (ef.isRecordEffect) fresh.origin = delta.amount * coeff; else fresh.base = delta.amount * coeff; }
           else if (delta.subType === 2) fresh.pct  = delta.amount * coeff;
           else if (delta.subType === 3) fresh.abs  = delta.amount * coeff;
         } else if (ef.effectType === ELEMENTTYPE_ATTR_FIX) {
@@ -504,7 +504,9 @@ function eiRenderTable() {
                     const raw = override ? override.newValue : ef.value;
                     const overrideSubType = override ? override.newSubType : ef.subType;
                     const overrideAttrType = override ? override.newAttrType : ef.attrType;
-                    const displaySubLabel = eiSubTypeLabel(overrideSubType, ef.effectType);
+                    const displaySubLabel = ef.isRecordEffect
+                        ? (overrideSubType === 1 ? 'Origin' : eiSubTypeLabel(overrideSubType, null))
+                        : eiSubTypeLabel(overrideSubType, ef.effectType);
                     const displayAttrLabel = overrideAttrType != null ? attrName(overrideAttrType) : attrName(ef.attrType);
                     const isSmall = raw != null && Math.abs(raw) < 15;
                     const valStr = raw != null ? (isSmall ? (raw * 100).toFixed(2) + '%' : String(raw)) : '?';

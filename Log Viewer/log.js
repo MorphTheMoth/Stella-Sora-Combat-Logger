@@ -422,8 +422,8 @@ function hitBody(ev, oi) {
         h+=`</table></div>`;
     }
     if(ev.AttackerRecord?.effects?.length) {
-        const recRows  = ev.AttackerRecord.effects.filter(e=>e.source==='Discs');
-        const embRows  = ev.AttackerRecord.effects.filter(e=>e.source!=='Discs');
+        const recRows  = ev.AttackerRecord.effects.filter(e=>e.source==='Discs'||e.source==='Record Stats');
+        const embRows  = ev.AttackerRecord.effects.filter(e=>e.source!=='Discs'&&e.source!=='Record Stats');
         const recRowHtml = (e)=>{ const atName=e.attrType!=null?attrName(e.attrType):'\u2014'; const raw=e.value; const val=raw!=null?(Math.abs(raw)<15?(raw*100).toFixed(2)+'%':raw.toLocaleString()):''; return `<tr><td>${esc(e.name)}</td><td>${esc(atName)}</td><td>${val}</td></tr>`; };
         if(recRows.length) {
             h+=`<div class="collapsible-toggle${subOpenStates[`${oi}_arecord-${oi}`] ? ' open' : ''}" data-target="arecord-${oi}">Attacker Record (${recRows.length})</div>

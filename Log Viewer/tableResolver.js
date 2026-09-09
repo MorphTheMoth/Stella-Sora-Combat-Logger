@@ -229,6 +229,41 @@ function buildRecordDiscEffects(origin) {
     return rows;
 }
 
+// Convert the record's build stats (GetBuildAttrBase, e.g. Atk 3136 /
+// Hp 29270) into effect-like rows. The build is identical for every unit,
+// so ONE shared set of rows is attached to everyone's record (a single
+// toggle applies to all chars). Origin-domain flat values; attr ids come
+// from the ATTR_NAMES index table ("Atk"→1, "Hp"→"Max Hp"→3).
+function buildRecordBuildEffects(origin) {
+    if (origin._buildRows) return origin._buildRows;
+    const rows = [];
+    const builds = (origin.chars || []).map(c => c.build || {}).filter(b => Object.keys(b).length);
+    const build = builds[0] || {};
+    // build keys are display names ("Atk", "Hp") — map to ATTR_NAMES indices
+    const nameIdx = new Map(ATTR_NAMES.map((n, i) => [n.toLowerCase(), i]));
+    const attrIdFor = (statName) => {
+        const k = statName.toLowerCase();
+        if (nameIdx.has(k)) return nameIdx.get(k);
+        if (k === 'hp') return nameIdx.get('max hp');   // build key "Hp" = Max Hp
+        return null;
+    };
+    let statIdx = 0;
+    for (const [statName, val] of Object.entries(build)) {
+        if (!val) continue;
+        statIdx++;
+        rows.push({
+            configId: 910000000 + statIdx,   // synthetic, collision-free
+            valueConfigId: 0,
+            name: `Build : ${statName}`,
+            attrType: attrIdFor(statName), subType: 1, value: val,
+            source: 'Record Stats', effectType: 12, count: 1,
+            isRecordEffect: true, allValueConfigIds: [],
+        });
+    }
+    origin._buildRows = rows;
+    return rows;
+}
+
 // Convert a record char's gems (emblems) into effect-like rows:
 //   flat rolls  — resolved via CharGemAttrValue (Type 12; Type 37 player-attrs
 //                 have no numeric attr id → attrType null)
@@ -400,10 +435,12 @@ function enrichHit(ev) {
         const team = originRecord.team;
         const onTeam = team.includes(attackerId) || team.includes(String(attackerId));
         if (attackerId > 0 && onTeam) {
-            // effects: discs + the attacker's OWN emblems (calc path — per-hit
-            // correct; toggles only touch the attacker's own contributions).
+            // effects: discs + the attacker's OWN build stats and emblems
+            // (calc path — per-hit correct; toggles only touch the attacker's
+            // own contributions).
             ev.AttackerRecord = { effects: [
                 ...buildRecordDiscEffects(originRecord),
+                ...buildRecordBuildEffects(originRecord),
                 ...buildRecordEmblemEffects(originRecord, String(attackerId)),
             ] };
         }

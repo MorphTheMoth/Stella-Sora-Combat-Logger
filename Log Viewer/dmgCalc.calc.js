@@ -210,7 +210,13 @@ function dcCollectAttrFixEffects(dcFiltered) {
                             allValueConfigIds: allVcIds,
                             levelTypeData: lm.levelTypeData,
                             levelData: lm.levelData,
-                            currentLevelIdx: curIdx >= 0 ? curIdx : -1
+                            currentLevelIdx: curIdx >= 0 ? curIdx : -1,
+                            // record rows: keep their identity so EI labels them
+                            // Origin and the pot shortcuts stay intact
+                            isRecordEffect: !!e.isRecordEffect,
+                            isPotRow: !!e.isPotRow,
+                            linkPotential: e.linkPotential,
+                            displayOnly: !!e.displayOnly
                         });
                     }
                 }
@@ -416,7 +422,7 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides) {
                 }
                 // subType: 1=Base, 2=Pct, 3=Abs
                 if ([ATTR_FIX, HITTED_ADDITIONAL_ATTR_FIX, PLAYER_ATTR_FIX].includes(e.effectType)) {
-                    if (e.subType === 1) stat.base = (stat.base || 0) - e.value * count;
+                    if (e.subType === 1) { if (e.isRecordEffect) stat.origin = (stat.origin || 0) - e.value * count; else stat.base = (stat.base || 0) - e.value * count; }
                     else if (e.subType === 2) stat.pct = (stat.pct || 0) - e.value * count;
                     else if (e.subType === 3) stat.abs = (stat.abs || 0) - e.value * count;
                 } else if (e.effectType === ELEMENTTYPE_ATTR_FIX) {
@@ -460,7 +466,7 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides) {
                     if (!delta) continue;
                     let stat = statMap.get(e.attrType);
                     if (!stat) { stat = { origin: 0, base: 0, pct: 0, abs: 0 }; statMap.set(e.attrType, stat); }
-                    if (e.subType === 1) stat.base = (stat.base || 0) - delta;
+                    if (e.subType === 1) stat.origin = (stat.origin || 0) - delta;
                     else if (e.subType === 2) stat.pct = (stat.pct || 0) - delta;
                     else if (e.subType === 3) stat.abs = (stat.abs || 0) - delta;
                 }
@@ -528,7 +534,7 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides) {
                     let stat = statMap.get(attrId);
                     if (!stat) { stat = { origin: 0, base: 0, pct: 0, abs: 0 }; statMap.set(attrId, stat); }
                     if ([ATTR_FIX, HITTED_ADDITIONAL_ATTR_FIX, PLAYER_ATTR_FIX].includes(e.effectType)) {
-                        if (e.subType === 1) stat.base = (stat.base || 0) - e.value * count;
+                        if (e.subType === 1) { if (e.isRecordEffect) stat.origin = (stat.origin || 0) - e.value * count; else stat.base = (stat.base || 0) - e.value * count; }
                         else if (e.subType === 2) stat.pct = (stat.pct || 0) - e.value * count;
                         else if (e.subType === 3) stat.abs = (stat.abs || 0) - e.value * count;
                     } else if (e.effectType === ELEMENTTYPE_ATTR_FIX) {
@@ -544,7 +550,7 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides) {
                     const ns = override.newSubType != null ? override.newSubType : e.subType;
                     const nv = override.newValue;
                     if ([ATTR_FIX, HITTED_ADDITIONAL_ATTR_FIX, PLAYER_ATTR_FIX].includes(e.effectType)) {
-                        if (ns === 1) newStat.base = (newStat.base || 0) + nv * count;
+                        if (ns === 1) { if (e.isRecordEffect) newStat.origin = (newStat.origin || 0) + nv * count; else newStat.base = (newStat.base || 0) + nv * count; }
                         else if (ns === 2) newStat.pct = (newStat.pct || 0) + nv * count;
                         else if (ns === 3) newStat.abs = (newStat.abs || 0) + nv * count;
                     } else if (e.effectType === ELEMENTTYPE_ATTR_FIX) {
