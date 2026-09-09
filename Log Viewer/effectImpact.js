@@ -39,7 +39,11 @@ function eiResolveEffectDelta(ev, ef) {
         }
         return null;
     } else {
-        const sideList = ef.side === 'attacker' ? ev.AttackerEffects?.effects : ev.DefenderEffects?.effects;
+        // Record disc effects (Boss Blitz record) live in ev.AttackerRecord —
+        // merge them so their deltas resolve like any other effect row.
+        const sideList = ef.side === 'attacker'
+            ? (ev.AttackerEffects?.effects || []).concat(ev.AttackerRecord?.effects || [])
+            : ev.DefenderEffects?.effects;
         if (!sideList?.length) return null;
         let count = 0;
         let first = null;

@@ -161,6 +161,7 @@ function dcCollectAttrFixEffects(dcFiltered) {
     for (const ev of dcFiltered) {
         const sides = [
             { side: 'attacker', list: ev.AttackerEffects?.effects, attrDict: ev.AttackerAttrDict },
+            { side: 'attacker', list: ev.AttackerRecord?.effects, attrDict: null },
             { side: 'defender', list: ev.DefenderEffects?.effects, attrDict: ev.DefenderAttrDict },
         ];
         for (const { side, list, attrDict } of sides) {
@@ -343,6 +344,7 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides) {
 
     const sides = [
         { side: 'attacker', list: ev.AttackerEffects?.effects, attrDict: ev.AttackerAttrDict, statMap: aMap },
+        { side: 'attacker', list: ev.AttackerRecord?.effects, attrDict: null, statMap: aMap },
         { side: 'defender', list: ev.DefenderEffects?.effects, attrDict: ev.DefenderAttrDict, statMap: dMap },
     ];
     for (const { side, list, attrDict, statMap } of sides) {

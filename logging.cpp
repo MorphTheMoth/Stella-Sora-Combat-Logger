@@ -1820,7 +1820,7 @@ void RefreshOriginCatalog() {
     // this nesting has no inversion).
     if (!team.empty()) {
         json out = g_OriginCatalog;
-        out["Type"] = "Origin";
+        out["Type"] = "Record";
         out["Time"] = gameTime();
         g_OriginPending = false;
         logJson(out);
@@ -1870,7 +1870,7 @@ void MaybeEmitOriginCatalog(AdventureActor_o* fromActor, AdventureActor_o* toAct
                 g_OriginPending = false;   // everything emitted
         }
     }
-    out["Type"] = "Origin";
+    out["Type"] = "Record";
     out["Time"] = gameTime();
     logJson(out);
 }

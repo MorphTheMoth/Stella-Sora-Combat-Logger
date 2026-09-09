@@ -109,22 +109,22 @@ function refreshSelects(force) {
 
 // ─── Filter predicates ──────────────────────
 function matchesTypeChar(ev) {
-    if (ev.Type === 'Reset') return true;
+    if (ev.Type === 'Reset' || ev.Type === 'Record') return true;
     if (typeFilter.size > 0 && !typeFilter.has(effType(ev))) return false;
     if (charFilter && !getChars(ev).includes(charFilter)) return false;
     return true;
 }
 function matchesSkill(ev) {
-    if (ev.Type === 'Reset') return true;
+    if (ev.Type === 'Reset' || ev.Type === 'Record') return true;
     return !skillFilter || getSkillName(ev) === skillFilter;
 }
 function matchesDmgType(ev) {
-    if (ev.Type === 'Reset') return true;
+    if (ev.Type === 'Reset' || ev.Type === 'Record') return true;
     if (!damageTypeFilter) return true;
     return !!(ev.HitConfig && ev.HitConfig.damageType != null && String(ev.HitConfig.damageType) === damageTypeFilter);
 }
 function matchesDefender(ev) {
-    if (ev.Type === 'Reset') return true;
+    if (ev.Type === 'Reset' || ev.Type === 'Record') return true;
     if (!defenderFilter) return true;
     const d = getDefender(ev);
     return d.includes(defenderFilter) || d.length === 0;
@@ -357,6 +357,21 @@ function buildEventBody(ev) {
     if (ev.Type === 'Buff') return buffBody(ev);
     if (ev.Type === 'Skill Cast') return skillBody(ev);
     if (ev.Type === 'Reset') return '<div class="section" style="text-align:center;color:#5a3030;padding:10px 0;">battle restarted</div>';
+    if (ev.Type === 'Record' || ev.Type === 'Origin') {
+        let h = `<div class="section"><h4>Record</h4><table class="kv">
+            <tr><th>Mode</th><td>${esc(ev.mode||'')}</td></tr>
+            <tr><th>Team</th><td>${esc((ev.team||[]).join(', '))}</td></tr>`;
+        (ev.discStats||[]).forEach(d=>{
+            const name = (typeof resolveRecordDiscName === 'function') ? resolveRecordDiscName(d.id) : ('Disc '+d.id);
+            const attrs = Object.entries(d.attrs||{}).map(([k,v])=>{
+                if (ev.pct?.[k]) return `${k} +${(v*(ev.ifp||1e-4)*100).toFixed(2)}%`;
+                return `${k} +${v}`;
+            }).join(', ');
+            h += `<tr><th>${esc(name)}</th><td>${esc(attrs||'(no stats)')}</td></tr>`;
+        });
+        h += `</table></div>`;
+        return h;
+    }
     return `<pre>${esc(JSON.stringify(ev,null,2))}</pre>`;
 }
 
@@ -404,6 +419,12 @@ function hitBody(ev, oi) {
         <div class="collapsible-content" id="aeffects-${oi}" style="${subOpenStates[`${oi}_aeffects-${oi}`] ? 'display:block' : ''}"><table class="wide-name"><tr><th>Name</th><th>Count</th><th>Type</th><th>Attr</th><th>SubType</th><th>Value</th><th>ID</th></tr>`;
         const m=new Map(); ev.AttackerEffects.effects.forEach(e=>{ const id=e.configId; if(!m.has(id)) m.set(id,{e,count:0}); m.get(id).count++; });
         m.forEach((v,id)=>{ const e=v.e; const etName=e.effectType!=null?effectTypeName(e.effectType):''; const atName=e.attrType!=null?attrName(e.attrType):''; const stName=e.subType!=null?effectSubTypeName(e.subType, e.effectType):''; const raw=e.value; const val=raw!=null?(Math.abs(raw)<15?(raw*100).toFixed(2)+'%':raw):''; const inherited=e.fromOwnerSnapshot?' style="background:#2a2a2a"':''; h+=`<tr${inherited}><td>${esc(e.name)}</td><td>${v.count}</td><td>${esc(etName)}</td><td>${esc(atName)}</td><td>${esc(stName)}</td><td>${val}</td><td>${id}</td></tr>`; });
+        h+=`</table></div>`;
+    }
+    if(ev.AttackerRecord?.effects?.length) {
+        h+=`<div class="collapsible-toggle${subOpenStates[`${oi}_arecord-${oi}`] ? ' open' : ''}" data-target="arecord-${oi}">Attacker Record (${ev.AttackerRecord.effects.length})</div>
+        <div class="collapsible-content" id="arecord-${oi}" style="${subOpenStates[`${oi}_arecord-${oi}`] ? 'display:block' : ''}"><table class="wide-name"><tr><th>Name</th><th>Attr</th><th>Value</th></tr>`;
+        ev.AttackerRecord.effects.forEach(e=>{ const atName=e.attrType!=null?attrName(e.attrType):'?'; const raw=e.value; const val=raw!=null?(Math.abs(raw)<15?(raw*100).toFixed(2)+'%':raw.toLocaleString()):''; h+=`<tr><td>${esc(e.name)}</td><td>${esc(atName)}</td><td>${val}</td></tr>`; });
         h+=`</table></div>`;
     }
     if(ev.AttackerAttrDict?.length) {
@@ -477,7 +498,7 @@ function createEventDiv(ev, filteredIdx) {
     const oi = ev._origIndex;
     const isOpen = openStates[oi] || false;
     const div = document.createElement('div');
-    div.className = 'event' + (isOpen ? ' open' : '') + (ev.Type === 'Reset' ? ' event-reset' : '');
+    div.className = 'event' + (isOpen ? ' open' : '') + (ev.Type === 'Reset' || ev.Type === 'Record' ? ' event-reset' : '');
     div.style.top = fenwick.prefixSum(filteredIdx - 1) + 'px';
     div.dataset.origIndex = oi;
     div.dataset.filteredIndex = filteredIdx;
@@ -509,6 +530,8 @@ function createEventDiv(ev, filteredIdx) {
         desc = `${esc(ev.Owner||'')} / ${esc(ev.Name||ev.SkillId)}`;
     } else if (ev.Type === 'Reset') {
         desc = 'battle restarted';
+    } else if (ev.Type === 'Record') {
+        desc = `record entered — team ${(ev.team||[]).join(', ')}`;
     }
     h3.innerHTML += `<span class="desc">${desc}</span>`;
     header.appendChild(h3);

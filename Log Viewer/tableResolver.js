@@ -140,11 +140,97 @@ function buffIdToName(configId) {
 // ─── Event enrichment (called from dataLoader.js after fetch) ─────────────────
 // Mutates the event object in place, adding display-friendly fields.
 
+// ─── Origin record (Boss Blitz record: discs/build → pseudo-effect rows) ─────
+// The DLL emits one Type:"Origin" event per room (right after the Reset). It
+// carries the record's team, per-disc stats (discStats), per-char base/build
+// sums and equipped-gem rolls (CharGemAttrValue ids). The disc stats are
+// surfaced as effect-like rows (source 'Discs') so they reuse the effects UI:
+// the "Attacker Record" hit section, the effects panel and the effect-impact
+// tab — all grouped under the existing Discs source.
+const RECORD_SKEY_TO_ATTR = {
+    Hp: 3, Atk: 1, Def: 2, CritRate: 6, CritResistance: 7, CritPower: 8,
+    HitRate: 4, Evd: 5, DefPierce: 9, DefIgnore: 10,
+    WEE: 17, WEP: 23, WEI: 29, WER: 11,
+    FEE: 18, FEP: 24, FEI: 30, FER: 12,
+    SEE: 19, SEP: 25, SEI: 31, SER: 13,
+    AEE: 20, AEP: 26, AEI: 32, AER: 14,
+    LEE: 21, LEP: 27, LEI: 33, LER: 15,
+    DEE: 22, DEP: 28, DEI: 34, DER: 16,
+    Toughness: 42, ToughnessDamageAdjust: 43, Suppress: 55,
+    NORMALDMG: 56, SKILLDMG: 57, ULTRADMG: 58, OTHERDMG: 59,
+    RCDNORMALDMG: 60, RCDSKILLDMG: 61, RCDULTRADMG: 62, RCDOTHERDMG: 63,
+    MARKDMG: 64, SUMMONDMG: 66, PROJECTILEDMG: 68,
+    GENDMG: 49, DMGPLUS: 50, FINALDMG: 51, FINALDMGPLUS: 52,
+    GENDMGRCD: 53, DMGPLUSRCD: 54,
+    WEERCD: 35, FEERCD: 36, SEERCD: 37, AEERCD: 38, LEERCD: 39, DEERCD: 40,
+    NormalCritRate: 70, SkillCritRate: 71, UltraCritRate: 72, MarkCritRate: 73,
+    SummonCritRate: 74, ProjectileCritRate: 75, OtherCritRate: 76,
+    NormalCritPower: 77, SkillCritPower: 78, UltraCritPower: 79,
+    MarkCritPower: 80, SummonCritPower: 81, ProjectileCritPower: 82,
+    OtherCritPower: 83,
+};
+
+let originRecord = null;   // latest Origin event — carries across rooms until replaced
+// Disc id -> display name, filled from the Item lang map inside initTables
+// (jItemLangRoot is a local there). Disc ids appear in two forms:
+// "Item.<discId>.1" (raw disc-table id, e.g. Item.214024.1) and
+// "Item.21<discId>.1" (item-tid style, as used by the disc-buff decoder).
+const discLangNames = new Map();
+
+function getOriginRecord() { return originRecord; }
+
+function resolveRecordDiscName(discId) {
+    const id = String(discId);
+    return discLangNames.get(id) || discLangNames.get('21' + id) || `Disc ${id}`;
+}
+
+// Convert the origin's discStats into effect-like rows, one per changed stat:
+// "[disc name] : Stat [n]". Cached on the origin event itself.
+function buildRecordDiscEffects(origin) {
+    if (origin._discRows) return origin._discRows;
+    const rows = [];
+    const ifp = origin.ifp || 1e-4;
+    (origin.discStats || []).forEach((d, di) => {
+        const discName = resolveRecordDiscName(d.id);
+        let statIdx = 0;
+        const attrs = d.attrs || {};
+        for (const sKey of Object.keys(attrs)) {
+            statIdx++;
+            const cfg = attrs[sKey];
+            const attrType = RECORD_SKEY_TO_ATTR[sKey] ?? null;
+            const isPct = !!(origin.pct?.[sKey]);
+            // Percent CfgValues arrive in the game's ×1e-4 domain (700 = 7%);
+            // true fractions (≤ ~2) pass through. Flat values stay as-is —
+            // matching the standard effect-value display formatter.
+            const val = isPct ? (Math.abs(cfg) > 2 ? cfg * ifp : cfg) : cfg;
+            rows.push({
+                configId: 920000000 + di * 1000 + statIdx,   // synthetic, collision-free
+                valueConfigId: 0,
+                name: `${discName} : Stat ${statIdx}`,
+                attrType,
+                subType: 1,               // BASE_VALUE
+                value: val,
+                source: 'Discs',
+                effectType: 12,           // ATTR_FIX — in allowedEffectTypes
+                count: 1,
+                isRecordEffect: true,
+                allValueConfigIds: [],
+            });
+        }
+    });
+    origin._discRows = rows;
+    return rows;
+}
+
 function enrichEvent(ev) {
     switch (ev.Type) {
         case 'Hit':        enrichHit(ev);       break;
         case 'Buff':       enrichBuff(ev);      break;
         case 'Skill Cast': enrichSkillCast(ev); break;
+        case 'Record':          // current name (DLL)
+        case 'Origin':          // legacy name in older logs
+            originRecord = ev;
+            break;
     }
 }
 
@@ -173,6 +259,19 @@ function enrichHit(ev) {
     enrichEffectList(ev.DefenderEffects);
     enrichAttrDictList(ev.AttackerAttrDict);
     enrichAttrDictList(ev.DefenderAttrDict);
+
+    // Record disc stats: if the attacker is one of the record's characters,
+    // attach the record's disc effects for the "Attacker Record" section and
+    // the effects/effect-impact pipelines.
+    if (originRecord?.team?.length) {
+        const attackerId = parseInt((ev.Attacker || '').split(':')[1], 10);
+        // Team members may be numbers or strings depending on the DLL build.
+        const team = originRecord.team;
+        const onTeam = team.includes(attackerId) || team.includes(String(attackerId));
+        if (attackerId > 0 && onTeam) {
+            ev.AttackerRecord = { effects: buildRecordDiscEffects(originRecord) };
+        }
+    }
 
     // Attr name injection
     padStats(ev.AttackerStats?.attrs);
@@ -1066,6 +1165,22 @@ async function initTables(dataRoot) {
 
     // lang/Item.json doubles as the item-language map used by disc/potential decoding
     const jItemLangRoot = jItemLang;
+
+    // Cache disc display names for the origin-record rows. Both key styles:
+    // "Item.<discId>.1" (raw ids from the record) and "Item.21<discId>.1".
+    discLangNames.clear();
+    if (jItemLangRoot) {
+        for (const k in jItemLangRoot) {
+            const m = /^Item\.(\d+)\.1$/.exec(k);
+            if (!m || typeof jItemLangRoot[k] !== 'string') continue;
+            const digits = m[1];
+            if (!discLangNames.has(digits)) discLangNames.set(digits, jItemLangRoot[k]);
+            // 8-digit item tids carry the "21" disc prefix — also index the raw id
+            if (digits.length === 8 && digits.startsWith('21') && !discLangNames.has(digits.slice(2)))
+                discLangNames.set(digits.slice(2), jItemLangRoot[k]);
+        }
+        console.log(`[tableResolver] disc names: ${discLangNames.size}`);
+    }
 
     if (!jChar || !jSkill || !jSkillLang) {
         console.error('[tableResolver] Missing required data files — tables not built');
