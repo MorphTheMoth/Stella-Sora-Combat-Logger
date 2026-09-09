@@ -220,6 +220,21 @@ void InitializeLogger();
 void MarkHittedAdditionalAttrFixApplied(int32_t configId);
 std::unordered_set<int32_t> TakeAppliedHittedAttrFixSnapshot();
 
+// ─── Lua VM origin catalog (emblems/gems + char base + discs + build) ─────────
+// Called from the Reset hook (Hook_ModuleClearData — Unity main thread): executes
+// a Lua chunk in the game's xlua VM via LuaManager.luaEnv:DoString. The chunk
+// calls the game's own accessors (PlayerData.StarTower.LevelData,
+// PlayerData.Equipment, ...) and returns a JSON string with, per character, the
+// pieces that bake into the attr 'origin' bucket:
+//   base  — Attribute-table row values (char base, per AllEnum.AttachAttr key)
+//   disc  — summed disc mapAttrBase contributions (tower run)
+//   gems  — equipped gem rolls: {AttrId, CfgValue, Value} (CharGemAttrValue ids)
+//   pots/skills/effects — gem affixes of those kinds
+// Results are cached; the first damage event after the reset emits one "Origin"
+// entry (tower team as a batch, other modes lazily per appearing actor).
+void RefreshOriginCatalog();
+void MaybeEmitOriginCatalog(AdventureActor_o* fromActor, AdventureActor_o* toActor);
+
 // Resolve the AdventureModuleDebugHelper singleton (SceneSingleton<T>.
 // get_Instance chain — defined in proxy.cpp).  Used by EnableAllDebugGizmos
 // to write the gizmo flag bytes onto the same instance the engine reads.

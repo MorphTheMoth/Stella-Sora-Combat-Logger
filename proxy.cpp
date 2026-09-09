@@ -115,6 +115,9 @@ static void __fastcall Hook_ModuleClearData(void* self, void* method) {
     OnResetTime();
     g_HaveHitSnapshot = false;
     g_SnapshotTime.clear();
+    // Re-read the live origin catalog (emblems/gems + char base + discs) from the
+    // game's Lua state on the main thread; the next damage event emits it once.
+    RefreshOriginCatalog();
     g_OrigModuleClearData(self, method);
 }
 

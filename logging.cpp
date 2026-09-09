@@ -1322,6 +1322,10 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
             j["DefenderAttrDict"] = attrDict;
     }
 
+    // Per-room origin catalog (emblems/gems + char base + discs): one entry after
+    // each Reset, on the first damage event of the room.
+    MaybeEmitOriginCatalog(fromActor, toActor);
+
     logJson(j);
 }
 
@@ -1333,6 +1337,542 @@ void BuildSkillCastJson(int32_t skillId) {
     j["SkillId"] = skillId;
 
     logJson(j);
+}
+
+// =============================================================================
+//  LUA VM ORIGIN CATALOG
+// =============================================================================
+// Reads the live game state through the game's own Lua code:
+//   LuaManager (MonoSingleton, g_instance @static 0x0) → luaEnv @0x20
+//   → xlua.LuaEnv.DoString (RVA 0x140F710, dump.cs:207654) with a chunk that
+//   mirrors PlayerCharData.lua:CalCharacterAttrBattle (line 1690) / the tower
+//   variant StarTowerLevelData.lua:1132, using the game's own accessors.
+// Field offsets from dump.cs:188464 (LuaManager) — static g_instance @0x0,
+// luaEnv backing field @0x20.
+
+typedef void*       (*FnIl2CppDomainGet)();
+typedef void**      (*FnIl2CppDomainGetAssemblies)(void*, size_t*);
+typedef void*       (*FnIl2CppAssemblyGetImage)(void*);
+typedef size_t      (*FnIl2CppImageGetClassCount)(void*);
+typedef void*       (*FnIl2CppImageGetClass)(void*, size_t);
+typedef const char* (*FnIl2CppClassNameGet)(void*);
+typedef const char* (*FnIl2CppClassNamespaceGet)(void*);
+typedef void*       (*FnIl2CppClassGetMethodFromName)(void*, const char*, int);
+typedef void*       (*FnIl2CppRuntimeInvoke)(void*, void*, void**, void**);
+typedef void*       (*FnIl2CppStringNew)(const char*);
+typedef void*       (*FnIl2CppThreadCurrent)();
+typedef void*       (*FnIl2CppThreadAttach)(void*);
+typedef void        (*FnIl2CppRuntimeClassInit)(void*);
+typedef void*       (*FnIl2CppCppClassGetFieldFromName)(void*, const char*);
+typedef void*       (*FnIl2CppCppClassGetParent)(void*);
+typedef void        (*FnIl2CppFieldStaticGetValue)(void* field, void* value);
+typedef void*       (*FnIl2CppObjectGetClass)(void*);
+typedef void*       (*FnIl2CppMethodGetParam)(void* method, uint32_t idx);
+typedef void*       (*FnIl2CppClassFromIl2CppType)(void* type);
+typedef void*       (*FnIl2CppArrayNew)(void* arrayClass, il2cpp_array_size_t length);
+typedef void*       (*FnIl2CppArrayClassGet)(void* elementClass);
+
+static FnIl2CppDomainGet              p_domain_get            = nullptr;
+static FnIl2CppDomainGetAssemblies    p_domain_get_assemblies = nullptr;
+static FnIl2CppAssemblyGetImage       p_assembly_get_image    = nullptr;
+static FnIl2CppImageGetClassCount     p_image_get_class_count = nullptr;
+static FnIl2CppImageGetClass          p_image_get_class       = nullptr;
+static FnIl2CppClassNameGet           p_class_get_name        = nullptr;
+static FnIl2CppClassNamespaceGet      p_class_get_namespace   = nullptr;
+static FnIl2CppClassGetMethodFromName p_class_get_method      = nullptr;
+static FnIl2CppRuntimeInvoke          p_runtime_invoke        = nullptr;
+static FnIl2CppStringNew              p_string_new            = nullptr;
+static FnIl2CppThreadCurrent          p_thread_current        = nullptr;
+static FnIl2CppThreadAttach           p_thread_attach         = nullptr;
+static FnIl2CppRuntimeClassInit       p_runtime_class_init    = nullptr;
+static FnIl2CppCppClassGetFieldFromName p_class_get_field     = nullptr;
+static FnIl2CppCppClassGetParent      p_class_get_parent      = nullptr;
+static FnIl2CppFieldStaticGetValue    p_field_static_get      = nullptr;
+static FnIl2CppObjectGetClass         p_object_get_class      = nullptr;
+static FnIl2CppMethodGetParam         p_method_get_param      = nullptr;
+static FnIl2CppClassFromIl2CppType    p_class_from_type       = nullptr;
+static FnIl2CppArrayNew               p_array_new             = nullptr;
+static FnIl2CppArrayClassGet          p_array_class_get       = nullptr;
+
+// The chunk as UTF-8 bytes (for the DoString(byte[]) overload) — built once.
+static void* g_OriginChunkBytes = nullptr;
+
+static bool EnsureIl2CppExports() {
+    static bool ready = false;
+    if (ready) return true;
+    HMODULE m = GetModuleHandleA("GameAssembly.dll");
+    if (!m) return false;
+    auto req = [&](const char* n, void** p) {
+        *p = (void*)GetProcAddress(m, n);
+        return *p != nullptr;
+    };
+    ready =
+        req("il2cpp_domain_get",              (void**)&p_domain_get)            &&
+        req("il2cpp_domain_get_assemblies",   (void**)&p_domain_get_assemblies) &&
+        req("il2cpp_assembly_get_image",      (void**)&p_assembly_get_image)    &&
+        req("il2cpp_image_get_class_count",   (void**)&p_image_get_class_count) &&
+        req("il2cpp_image_get_class",         (void**)&p_image_get_class)       &&
+        req("il2cpp_class_get_name",          (void**)&p_class_get_name)        &&
+        req("il2cpp_class_get_namespace",      (void**)&p_class_get_namespace)   &&
+        req("il2cpp_class_get_method_from_name", (void**)&p_class_get_method)    &&
+        req("il2cpp_runtime_invoke",          (void**)&p_runtime_invoke)        &&
+        req("il2cpp_string_new",              (void**)&p_string_new)            &&
+        req("il2cpp_thread_current",          (void**)&p_thread_current)        &&
+        req("il2cpp_thread_attach",           (void**)&p_thread_attach)         &&
+        req("il2cpp_runtime_class_init",      (void**)&p_runtime_class_init)    &&
+        req("il2cpp_class_get_field_from_name", (void**)&p_class_get_field)     &&
+        req("il2cpp_class_get_parent",        (void**)&p_class_get_parent)      &&
+        req("il2cpp_field_static_get_value",  (void**)&p_field_static_get)      &&
+        req("il2cpp_object_get_class",        (void**)&p_object_get_class)      &&
+        req("il2cpp_method_get_param",        (void**)&p_method_get_param)      &&
+        req("il2cpp_class_from_il2cpp_type",  (void**)&p_class_from_type)       &&
+        req("il2cpp_array_new",               (void**)&p_array_new)             &&
+        req("il2cpp_array_class_get",         (void**)&p_array_class_get);
+    if (!ready) log("[origin] il2cpp exports missing");
+    return ready;
+}
+
+// Find a class by simple name, validated by a distinctive member so we don't
+// grab an unrelated class that happens to share the name. `ns` may be nullptr
+// for any namespace. Scans ALL images and returns the first validated match.
+static void* FindIl2CppImageClass(const char* name, const char* ns,
+                                  const char* mustHaveMethod, int methodArgc,
+                                  const char* mustHaveField) {
+    if (!EnsureIl2CppExports()) return nullptr;
+    void* domain = p_domain_get();
+    if (!domain) return nullptr;
+    size_t nAsm = 0;
+    void** asms = p_domain_get_assemblies(domain, &nAsm);
+    if (!asms) return nullptr;
+    for (size_t i = 0; i < nAsm; ++i) {
+        void* img = p_assembly_get_image(asms[i]);
+        if (!img) continue;
+        size_t nCls = p_image_get_class_count(img);
+        for (size_t c = 0; c < nCls; ++c) {
+            void* klass = p_image_get_class(img, c);
+            if (!klass) continue;
+            const char* n = p_class_get_name(klass);
+            if (!n || strcmp(n, name) != 0) continue;
+            if (ns) {
+                const char* kns = p_class_get_namespace(klass);
+                if (!kns || strcmp(kns, ns) != 0) continue;
+            }
+            if (mustHaveField && !p_class_get_field(klass, mustHaveField)) continue;
+            if (mustHaveMethod && !p_class_get_method(klass, mustHaveMethod, methodArgc)) continue;
+            return klass;
+        }
+    }
+    return nullptr;
+}
+
+struct Il2CppObjectArrayRef {
+    Il2CppObject obj;
+    Il2CppArrayBounds* bounds;
+    il2cpp_array_size_t max_length;
+    void* m_Items[65535];
+};
+
+static std::string ReadIl2CppUTF16(System_String_o* s) {
+    if (!s) return "";
+    int32_t len = s->fields._stringLength;
+    if (len <= 0 || len > 1 << 20) return "";
+    const wchar_t* chars = reinterpret_cast<const wchar_t*>(&s->fields._firstChar);
+    int sz = WideCharToMultiByte(CP_UTF8, 0, chars, len, nullptr, 0, nullptr, nullptr);
+    if (sz <= 0) return "";
+    std::string out(sz, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, chars, len, out.data(), sz, nullptr, nullptr);
+    return out;
+}
+
+// The collector chunk. Mirrors the game's own origin computation:
+//  - PlayerCharData.lua:CalCharacterAttrBattle (line 1690) — general modes
+//  - StarTowerLevelData.lua:CalCharacterAttrBattle (line 1132) — tower runs
+// All state read from the live Lua globals (PlayerData is global, utils.lua:30).
+static const char* kOriginChunk = R"lua(
+local ok, res = pcall(function()
+  local CD = require("GameCore.Data.ConfigData")
+  local IFP = CD.IntFloatPrecision or 0.0001
+  local ATT = AllEnum.AttachAttr
+  local function sn(v) return string.format('%.10g', tonumber(v) or 0) end
+  local function sq(s) return (tostring(s):gsub('[%c"\\]', '?')) end
+
+  local pct = {}
+  for _, a in ipairs(ATT) do if a.bPercent then pct[#pct+1] = '"'..a.sKey..'":true' end end
+
+  -- ── Boss Blitz (ScoreBoss) only ─────────────────────────────────────────
+  -- Record = PlayerData.ScoreBoss.curLevel.mapBuildData (team + discs + build)
+  -- Guarded by the game's own mode flag (PlayerScoreBossData sets it on entry).
+  local SB = nil
+  pcall(function() SB = PlayerData.ScoreBoss end)
+  local isBlitz = false
+  pcall(function()
+    isBlitz = SB and SB.curLevel and SB.curLevel.mapBuildData
+      and SB.curLevel.tbCharId and #SB.curLevel.tbCharId > 0
+      and PlayerData.nCurGameType == AllEnum.WorldMapNodeType.ScoreBoss
+  end)
+  if not isBlitz then return '' end
+
+  local CL = SB.curLevel
+  local team, charData = {}, {}
+  for _, cid in ipairs(CL.tbCharId) do
+    team[#team+1] = tostring(cid)
+    charData[cid] = { nLevel = 1, nAdvance = 0 }
+    pcall(function()
+      local mc = PlayerData.Char._mapChar[cid]
+      if mc then charData[cid] = { nLevel = mc.nLevel or 1, nAdvance = mc.nAdvance or 0 } end
+    end)
+  end
+
+  -- discs: per-disc stat breakdown + sum (DiscData.mapAttrBase, the same
+  -- source CalCharacterAttrBattle uses — PlayerCharData.lua:1700)
+  local discIds, discObjs, discSum = {}, {}, {}
+  pcall(function()
+    for _, d in ipairs(CL.tbDiscId or {}) do
+      if d and d > 0 then
+        discIds[#discIds+1] = tostring(d)
+        local entry = { id = d, attrs = {} }
+        local dd = PlayerData.Disc:GetDiscById(d)
+        local mb = dd and dd.mapAttrBase or nil
+        if mb then
+          for _, a in ipairs(ATT) do
+            local v = mb[a.sKey]
+            if v and v.CfgValue and v.CfgValue ~= 0 then
+              entry.attrs[a.sKey] = v.CfgValue
+              discSum[a.sKey] = (discSum[a.sKey] or 0) + v.CfgValue
+            end
+          end
+        end
+        discObjs[#discObjs+1] = entry
+      end
+    end
+  end)
+
+  -- build (record rank) attrs — PlayerBuildData:GetBuildAttrBase (lua:366)
+  local buildSum = {}
+  pcall(function()
+    local ba = PlayerData.Build:GetBuildAttrBase(CL.mapBuildData.nBuildId)
+    if ba then
+      for _, a in ipairs(ATT) do
+        local v = ba[a.sKey]
+        if v and v.CfgValue and v.CfgValue ~= 0 then buildSum[a.sKey] = v.CfgValue end
+      end
+    end
+  end)
+
+  -- equipped gems of a char from the account store, per-gem, resolved through
+  -- the in-use preset (mirrors PlayerEquipmentDataEx:GetEquipedGem, lua:135)
+  local gemOf = function(cid)
+    local out = {}
+    local okE = pcall(function()
+      local eqList, slotData = PlayerData.Equipment:GetEquipedGem(cid)
+      if eqList and #eqList > 0 then
+        for gi, eq in ipairs(eqList) do
+          local slot = slotData and slotData[gi] and slotData[gi].nSlotId or 0
+          local attrs, effects, pots, skills = {}, {}, {}, {}
+          for _, ra in ipairs(eq:GetRandomAttr() or {}) do
+            attrs[#attrs+1] = '['..tostring(ra.AttrId)..','..sn(ra.CfgValue)..','..sn(ra.Value)..']'
+          end
+          for _, ef in ipairs(eq:GetEffect() or {}) do
+            effects[#effects+1] = tostring(ef)
+          end
+          for _, p in ipairs(eq.tbPotentialAffix or {}) do
+            pots[#pots+1] = '['..tostring(p.AttrTypeFirstSubtype)..','..sn(p.Value)..']'
+          end
+          for _, s in ipairs(eq.tbSkillAffix or {}) do
+            skills[#skills+1] = '['..tostring(s.AttrTypeFirstSubtype)..','..sn(s.Value)..']'
+          end
+          out[#out+1] = '{'..'"slot":'..tostring(slot)
+            ..',"attrs":['..table.concat(attrs, ',')..']'
+            ..',"effects":['..table.concat(effects, ',')..']'
+            ..',"pots":['..table.concat(pots, ',')..']'
+            ..',"skills":['..table.concat(skills, ',')..']}'
+        end
+      end
+    end)
+    if not okE then
+      return {}
+    end
+    return out
+  end
+
+  local charArr = {}
+  for cid, mc in pairs(charData) do
+    local nLevel   = (mc and mc.nLevel)   or 1
+    local nAdvance = (mc and mc.nAdvance) or 0
+
+    local baseParts, eBase = {}, nil
+    local okA, eA = pcall(function()
+      local nAttrId = UTILS.GetCharacterAttributeId(cid, nAdvance, nLevel)
+      local attrCfg = nAttrId and ConfigTable.GetData_Attribute(tostring(nAttrId)) or nil
+      local charCfg = DataTable.Character[cid]
+      if attrCfg then
+        for _, a in ipairs(ATT) do
+          local v = attrCfg[a.sKey]
+          if v == nil then v = 0 end
+          if a.bPlayer and charCfg and charCfg[a.sKey] ~= nil then v = charCfg[a.sKey] end
+          if v ~= 0 then
+            baseParts[#baseParts+1] = '"'..a.sKey..'":'..sn(v)
+          end
+        end
+      end
+    end)
+    if not okA then eBase = eA end
+
+    local discParts, buildParts = {}, {}
+    for _, a in ipairs(ATT) do
+      local v = discSum[a.sKey]
+      if v and v ~= 0 then discParts[#discParts+1] = '"'..a.sKey..'":'..sn(v) end
+      local bv = buildSum[a.sKey]
+      if bv and bv ~= 0 then buildParts[#buildParts+1] = '"'..a.sKey..'":'..sn(bv) end
+    end
+
+    local gems, eGem = {}, nil
+    local okG, eG2 = pcall(function() gems = gemOf(cid) end)
+    if not okG then eGem = eG2 end
+
+    local parts = {
+      '"charId":'..tostring(cid),
+      '"level":'..tostring(nLevel),
+      '"advance":'..tostring(nAdvance),
+      '"base":{'..table.concat(baseParts, ',')..'}',
+      '"disc":{'..table.concat(discParts, ',')..'}',
+      '"build":{'..table.concat(buildParts, ',')..'}',
+      '"gems":['..table.concat(gems, ',')..']',
+    }
+    if eBase then parts[#parts+1] = '"errBase":"'..sq(eBase)..'"' end
+    if eGem then parts[#parts+1] = '"errGems":"'..sq(eGem)..'"' end
+    charArr[#charArr+1] = '{'..table.concat(parts, ',')..'}'
+  end
+
+  local teamArr = table.concat(team, ',')
+  local discArr = table.concat(discIds, ',')
+  local discObjArr = {}
+  for _, e in ipairs(discObjs) do
+    local parts = {}
+    for k, v in pairs(e.attrs) do
+      parts[#parts+1] = '"'..k..'":'..sn(v)
+    end
+    discObjArr[#discObjArr+1] = '{"id":"'..tostring(e.id)..'"'..(#parts > 0 and ',"attrs":{'..table.concat(parts, ',')..'}' or '')..'}'
+  end
+  return '{"mode":"bossblitz","ifp":'..sn(IFP)..',"pct":{'..table.concat(pct, ',')..'}'
+       ..',"team":['..teamArr..'],"discs":['..discArr..']'
+       ..',"discStats":['..table.concat(discObjArr, ',')..']'
+       ..',"chars":['..table.concat(charArr, ',')..']}'
+end)
+if ok then return res end
+return 'ERR:' .. (tostring(res):gsub('[%c"\\]', '?'))
+)lua";
+
+static std::string RunLuaOriginCollector() {
+    if (!EnsureIl2CppExports()) return "";
+
+    static void* mgrKlass        = nullptr;
+    static void* luaEnvKlass     = nullptr;
+    static void* doStringMethod  = nullptr;
+    if (!doStringMethod) {
+        // The real LuaManager owns the luaEnv auto-property; il2cpp metadata
+        // names its backing field "<luaEnv>k__BackingField" (dump.cs:188464).
+        mgrKlass = FindIl2CppImageClass("LuaManager", nullptr, nullptr, 0, "<luaEnv>k__BackingField");
+        if (!mgrKlass) { log("[origin] LuaManager class not found"); return ""; }
+        luaEnvKlass = FindIl2CppImageClass("LuaEnv", nullptr, "DoString", 3, nullptr);
+        if (!luaEnvKlass) { log("[origin] LuaEnv class not found"); return ""; }
+        doStringMethod = p_class_get_method(luaEnvKlass, "DoString", 3);
+        if (!doStringMethod) { log("[origin] DoString method not found"); return ""; }
+    }
+
+    // static_fields are allocated lazily — make sure the class is initialized.
+    p_runtime_class_init(mgrKlass);
+
+    // g_instance is declared on the generic base MonoSingleton<T> (dump.cs:1109414),
+    // NOT on LuaManager — LuaManager has no statics of its own. Resolve it from
+    // the inflated parent class (MonoSingleton'1<LuaManager>), preferring the
+    // field API (handles generic static offsets) with a raw static_fields fallback.
+    void* mgrInstance = nullptr;
+    {
+        void* holder = mgrKlass;
+        if (!reinterpret_cast<Il2CppClass*>(holder)->static_fields) {
+            void* parent = p_class_get_parent(mgrKlass);
+            if (parent) {
+                p_runtime_class_init(parent);
+                holder = parent;
+            }
+        }
+        void* sf = reinterpret_cast<Il2CppClass*>(holder)->static_fields;
+        if (!sf) { log("[origin] no static_fields on LuaManager or its MonoSingleton base"); return ""; }
+        void* fld = p_class_get_field(holder, "g_instance");
+        if (fld) {
+            p_field_static_get(fld, &mgrInstance);
+        } else {
+            mgrInstance = *(void**)sf;           // MonoSingleton<T>.g_instance @0x0
+        }
+    }
+    if (!mgrInstance) { log("[origin] LuaManager instance null (Lua not initialised?)"); return ""; }
+    void* luaEnv = *(void**)((char*)mgrInstance + 0x20);   // luaEnv backing @0x20
+    if (!luaEnv) { log("[origin] luaEnv null"); return ""; }
+
+    // Which DoString overload did class_get_method_from_name pick? Both have
+    // argc==3 (dump.cs:207651 byte[], 207654 string). Check the first param type.
+    static bool overloadChecked = false;
+    static bool wantsBytes = false;
+    if (!overloadChecked) {
+        overloadChecked = true;
+        void* p0 = p_method_get_param(doStringMethod, 0);
+        void* p0cls = p0 ? p_class_from_type(p0) : nullptr;
+        const char* p0name = p0cls ? p_class_get_name(p0cls) : nullptr;
+        wantsBytes = p0name && strcmp(p0name, "Byte[]") == 0;
+        log("[origin] DoString first param: %s (%s path)",
+            p0name ? p0name : "?", wantsBytes ? "byte[]" : "string");
+    }
+
+    // Build the chunk argument for the detected overload.
+    void* chunkArg = nullptr;
+    if (wantsBytes) {
+        if (!g_OriginChunkBytes) {
+            void* byteCls = FindIl2CppImageClass("Byte", "System", nullptr, 0, nullptr);
+            if (!byteCls) { log("[origin] System.Byte class not found"); return ""; }
+            void* arrCls = p_array_class_get(byteCls);
+            if (!arrCls) { log("[origin] byte[] class not found"); return ""; }
+            size_t len = strlen(kOriginChunk);
+            void* arr = p_array_new(arrCls, (il2cpp_array_size_t)len);
+            if (!arr) { log("[origin] byte[] alloc failed"); return ""; }
+            memcpy(reinterpret_cast<Il2CppObjectArrayRef*>(arr)->m_Items, kOriginChunk, len);
+            g_OriginChunkBytes = arr;
+        }
+        chunkArg = g_OriginChunkBytes;
+    } else {
+        chunkArg = p_string_new(kOriginChunk);
+    }
+
+    // The main thread is attached already; attach defensively if somehow not.
+    if (!p_thread_current()) p_thread_attach(p_domain_get());
+
+    void* exc = nullptr;
+    void* args[3] = { chunkArg, p_string_new("SSLOriginCollector"), nullptr };
+    void* ret = p_runtime_invoke(doStringMethod, luaEnv, args, &exc);
+    if (exc || !ret) {
+        std::string msg;
+        if (exc) {
+            void* ek = p_object_get_class(exc);
+            void* ts = ek ? p_class_get_method(ek, "ToString", 0) : nullptr;
+            if (ts) {
+                void* texc = nullptr;
+                void* tret = p_runtime_invoke(ts, exc, nullptr, &texc);
+                if (tret && !texc)
+                    msg = ReadIl2CppUTF16(reinterpret_cast<System_String_o*>(tret));
+            }
+        }
+        log("[origin] DoString failed: %.400s", msg.c_str());
+        return "";
+    }
+    auto* arr = reinterpret_cast<Il2CppObjectArrayRef*>(ret);
+    if (arr->max_length < 1 || !arr->m_Items[0]) {
+        log("[origin] DoString returned empty");
+        return "";
+    }
+    std::string res = ReadIl2CppUTF16(reinterpret_cast<System_String_o*>(arr->m_Items[0]));
+    if (res.rfind("ERR:", 0) == 0) {
+        log("[origin] chunk error: %.200s", res.c_str());
+        return "";
+    }
+    return res;
+}
+
+// ── Cache + emission ──
+static std::mutex g_OriginMutex;
+static json g_OriginCatalog = json::object();                 // {ifp,pct,team,chars[]}
+static std::unordered_map<int32_t, json> g_OriginByChar;
+static std::unordered_set<int32_t> g_OriginEmitted;
+static bool g_OriginPending = false;
+static DWORD g_OriginMainThreadId = 0;
+static bool  g_OriginRetryAtHit   = false;
+
+void RefreshOriginCatalog() {
+    std::lock_guard<std::mutex> lk(g_OriginMutex);
+    g_OriginMainThreadId = GetCurrentThreadId();
+    g_OriginRetryAtHit = true;         // failed refreshes get one combat-time retry
+    g_OriginByChar.clear();
+    g_OriginEmitted.clear();
+    g_OriginCatalog = json::object();
+    g_OriginPending = true;
+
+    std::string res = RunLuaOriginCollector();
+    if (res.empty()) { g_OriginPending = false; return; }
+    json parsed = json::parse(res, nullptr, false);
+    if (parsed.is_discarded() || !parsed.is_object()) {
+        log("[origin] chunk output not valid json: %.120s", res.c_str());
+        g_OriginPending = false;
+        return;
+    }
+    g_OriginCatalog = parsed;
+    for (auto& cj : parsed.value("chars", json::array())) {
+        if (!cj.is_object()) continue;
+        int32_t cid = cj.value("charId", 0);
+        if (cid > 0) g_OriginByChar[cid] = cj;
+    }
+    g_OriginRetryAtHit = false;        // success — no retry needed
+    auto team = parsed.value("team", json::array());
+    log("[origin] catalog refreshed: chars=%zu team=%zu",
+        g_OriginByChar.size(), (size_t)team.size());
+
+    // Emit immediately for team-aware modes (e.g. Star Tower): one entry right
+    // after the Reset — room enter — without waiting for the first damage event
+    // (logJson takes g_Mutex; g_OriginMutex is never taken while holding it, so
+    // this nesting has no inversion).
+    if (!team.empty()) {
+        json out = g_OriginCatalog;
+        out["Type"] = "Origin";
+        out["Time"] = gameTime();
+        g_OriginPending = false;
+        logJson(out);
+    }
+}
+
+void MaybeEmitOriginCatalog(AdventureActor_o* fromActor, AdventureActor_o* toActor) {
+    // Combat-time retry: if the reset-time refresh failed and the damage hook
+    // runs on the same thread it ran on at the reset (same call environment),
+    // retry the DoString once here — at room enter / combat start.
+    if (!g_OriginPending && g_OriginRetryAtHit && g_OriginByChar.empty()
+        && GetCurrentThreadId() == g_OriginMainThreadId) {
+        g_OriginRetryAtHit = false;    // single retry per room
+        RefreshOriginCatalog();
+    }
+    if (!g_OriginPending) return;
+    json out;
+    {
+        std::lock_guard<std::mutex> lk(g_OriginMutex);
+        if (!g_OriginPending) return;
+
+        auto team = g_OriginCatalog.value("team", json::array());
+        if (!team.empty()) {
+            // Tower (or any mode that reported its deployed team): emit the whole
+            // batch once, on the first damage event after the reset.
+            out = g_OriginCatalog;
+            g_OriginPending = false;
+        } else {
+            // No team info: emit lazily per appearing actor dataId (= char tid,
+            // same key the viewer resolves against Character.json).
+            json chars = json::array();
+            auto addActor = [&](AdventureActor_o* a) {
+                if (!a) return;
+                int32_t dataId = a->fields._dataID_k__BackingField;
+                if (dataId <= 0 || g_OriginEmitted.count(dataId)) return;
+                g_OriginEmitted.insert(dataId);          // never retried, even if absent
+                auto it = g_OriginByChar.find(dataId);
+                if (it != g_OriginByChar.end()) chars.push_back(it->second);
+            };
+            addActor(fromActor);
+            addActor(toActor);
+            if (chars.empty()) return;
+            out["chars"] = chars;
+            out["pct"]  = g_OriginCatalog.value("pct", json::object());
+            out["ifp"]  = g_OriginCatalog.value("ifp", 0.0);
+            if (g_OriginEmitted.size() >= g_OriginByChar.size() && !g_OriginByChar.empty())
+                g_OriginPending = false;   // everything emitted
+        }
+    }
+    out["Type"] = "Origin";
+    out["Time"] = gameTime();
+    logJson(out);
 }
 
 void BuildResetJson() {
