@@ -350,6 +350,12 @@ static void __fastcall Hook_CopyBattleData(void* areaEntity, bool force, void* m
                     AdventureEffect_o* effect = reinterpret_cast<AdventureEffect_o*>(e.value);
                     if (!effect) continue;
                     if (effect->fields.removed) continue;
+                    // NOTE: deliberately NOT stack-filtered. The snapshot only
+                    // defines the lookup candidates; per-hit payloads (Hitted*)
+                    // write into the shared static overlay and their stack may
+                    // already be popped when an area/weapon calc consumes that
+                    // overlay — the row gate combines the stack check with the
+                    // executed-since-last-calc record instead.
                     snap.insert(effect->fields.id);
                 }
             }
@@ -404,6 +410,7 @@ static void __fastcall Hook_WeaponSetup(AdventureWeapon_o* weapon, LogicEntity_o
                     AdventureEffect_o* effect = reinterpret_cast<AdventureEffect_o*>(e.value);
                     if (!effect) continue;
                     if (effect->fields.removed) continue;
+                    // NOTE: deliberately NOT stack-filtered — see Hook_CopyBattleData.
                     snap.insert(effect->fields.id);
                 }
             }
@@ -686,6 +693,41 @@ static void __fastcall Hook_GetBothAllInfo(AdventureActor_o* actor, void* method
     g_GetBothAllInfoSnapshot = snap;
     g_SnapshotTime = gameTime();
     g_HaveHitSnapshot = true;
+
+    // TEMP DEBUG: dump per-effect stack sizes at snapshot time for the watch list
+    AdventureActor_o* dbgFrom = nullptr;
+    {
+        auto* parentKlass2 = actor ? actor->klass->_1.parent : nullptr;
+        if (parentKlass2) {
+            auto* sf2 = reinterpret_cast<AdventureActor_c*>(parentKlass2)->static_fields;
+            if (sf2) dbgFrom = sf2->fromActorTemp;
+        }
+    }
+    if (dbgFrom && dbgFrom->fields.effectManage && dbgFrom->fields.effectManage->fields.effectsDict) {
+        static const int32_t kWatch[] = { 3008026, 3008006, 4028023, 4028003 };
+        auto* ed = dbgFrom->fields.effectManage->fields.effectsDict;
+        auto* ea = ed->fields._entries;
+        int sc = ed->fields._count;
+        if (ea) {
+            for (int i = 0; i < sc; ++i) {
+                const auto& e = ea->m_Items[i].fields;
+                if (e.hashCode < 0) continue;
+                AdventureEffect_o* eff = reinterpret_cast<AdventureEffect_o*>(e.value);
+                if (!eff || eff->fields.removed) continue;
+                auto* cfg = eff->fields._effectConfig_k__BackingField;
+                int32_t cid = cfg ? cfg->fields.id_ : 0;
+                bool match = false;
+                for (int w = 0; w < 4; ++w) if (cid == kWatch[w]) match = true;
+                if (!match) continue;
+                auto* st = eff->fields._effectStack;
+                int sz = (st && st->fields._array) ? st->fields._size : -1;
+                bool inSnap = snap.count(eff->fields.id) != 0;
+                debugEffectLog("[snap-time] actor=%s configId=%d instId=%d stackSize=%d inSnapshot=%d trigger=%d",
+                    adventureActorId(dbgFrom).c_str(), cid, eff->fields.id, sz, (int)inSnap,
+                    cfg ? cfg->fields.trigger_ : -1);
+            }
+        }
+    }
 }
 
 // =============================================================================
@@ -818,8 +860,16 @@ static void __fastcall Hook_HittedAdditionalAttrFixExecute(AdventureEffectBase_o
 {
     if (effectBase && effectBase->fields._effect) {
         auto* effectCfg = effectBase->fields._effect->fields._effectConfig_k__BackingField;
-        if (effectCfg)
+        if (effectCfg) {
+            if (effectCfg->fields.id_ == 3008026) {
+                auto* parentEffect = effectBase->fields._effect;
+                auto* st = parentEffect->fields._effectStack;
+                debugEffectLog("[hitted-exec] configId=3008026 stackSizeAfterPush=%d owner=%s",
+                    st ? st->fields._size : -1,
+                    parentEffect->fields._owner ? adventureActorId(parentEffect->fields._owner).c_str() : "null");
+            }
             MarkHittedAdditionalAttrFixApplied(effectCfg->fields.id_);
+        }
     }
     g_OrigHittedAdditionalAttrFixExecute(effectBase, method);
 }

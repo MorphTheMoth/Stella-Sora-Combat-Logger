@@ -70,6 +70,7 @@ extern std::atomic<int64_t>            g_CombatStartWallMs; // wall-clock fallba
 // Basic logging
 void log(const char* fmt, ...);
 void logJson(const json& j);
+void debugEffectLog(const char* fmt, ...);
 std::string gameTime();
 void loadConfig(const std::string& dir);
 

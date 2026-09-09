@@ -144,6 +144,28 @@ void logJson(const json& j) {
     fflush(g_JsonLog);
 }
 
+// TEMP DEBUG: free-form debug lines next to the shared json log (same dir,
+// wine-safe), so effect-gate diagnostics are reachable at /dev/shm.
+static FILE* g_DebugLog = nullptr;
+void debugEffectLog(const char* fmt, ...) {
+    if (!g_DebugLog) {
+        HMODULE ntdll = GetModuleHandleA("ntdll.dll");
+        bool wine = ntdll && GetProcAddress(ntdll, "wine_get_version") != nullptr;
+        std::string dir = wine ? "Z:\\dev\\shm\\StellaSoraLogger"
+                               : GetLocalAppDataPath() + "\\Stella Sora Combat Logger";
+        g_DebugLog = fopen((dir + "\\debug_effects.txt").c_str(), "a");
+    }
+    if (!g_DebugLog) return;
+    std::lock_guard<std::mutex> lk(g_Mutex);
+    fprintf(g_DebugLog, "[%s] ", gameTime().c_str());
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(g_DebugLog, fmt, args);
+    va_end(args);
+    fputc('\n', g_DebugLog);
+    fflush(g_DebugLog);
+}
+
 // =============================================================================
 //  LEVEL MAP
 // =============================================================================
@@ -365,183 +387,26 @@ const char* AttrName(int i) {
 
 // =============================================================================
 //  Effect activation gate
-// =============================================================================// The game only ever executes an effect when its Effect config's trigger
-// conditions pass (AdventureEffect$$PreExecute, decompiled.c:3635284) and its
-// take-effect conditions pass (AdventureEffect$$TakeConditionExcute,
-// decompiled.c:3635442). The dump below lists registered / stacked effects
-// regardless of that gate, so dormant effects leak into the log — e.g.
-// "Daylight Garden" (4028003/4028023, +19.6% Normal/Skill Dmg to the main
-// Ventus Trekker) is gated on 'owner element == Ventus (4)' AND 'owner is main
-// control' yet stays registered on every team member while inactive.
-//
-// EvalEffectCondition mirrors AdventureEffect$$ExecuteCondition
-// (decompiled.c:3632929) for the condition types that are pure actor state —
-// they need no skill/hit/buff event info, which the dump does not have:
-//   0 / 1 / 29  NONE / DEFAULT / TIME_INTERVAL → true (decompiled.c:3633139)
-//   10  ACTORELEMENTTYPE    → element == param1, else hitElementTypeExtension
-//                             contains param1 (decompiled.c:3633298)
-//   18  HAVE_SHIELD         → actorShield._shieldValue > 0 (decompiled.c:3633430)
-//   19  NO_SHIELD           → actorShield._shieldValue < 1 (decompiled.c:3633446)
-//   41  SELF_BE_MIANCONTROL → effect owner's isAssist == false (decompiled.c:3634069)
-//   42  SELF_BE_ASSISTANT   → effect owner's isAssist == true  (decompiled.c:3634080)
-//   52  BE_MIANCONTROL      → impact actor's isAssist == false (decompiled.c:3634317)
-//   53  BE_ASSISTANT        → impact actor's isAssist == true  (decompiled.c:3634326)
-// Any other condition type depends on event info → unknown (-1): the entry is
-// kept, matching the previous behaviour.
-static bool TryParseIntParam(System_String_o* s, bool allowEmpty, int32_t& out) {    // Mirrors AdventureEffect$$TryParseStringParamToInt: empty parses to 0 when
-    // allowEmpty; otherwise a strict full-string int parse (like int.TryParse —
-    // "0.196" and other non-integers fail).
-    if (!s) { if (allowEmpty) { out = 0; return true; } return false; }
-    int32_t len = s->fields._stringLength;
-    if (len <= 0) { if (allowEmpty) { out = 0; return true; } return false; }
-    const uint16_t* chars = &s->fields._firstChar;
-    int i = 0;
-    bool neg = false;
-    if (chars[0] == u'-') { neg = true; i = 1; }
-    else if (chars[0] == u'+') { i = 1; }
-    if (i >= len) return false;
-    int64_t acc = 0;
-    for (; i < len; ++i) {
-        uint16_t c = chars[i];
-        if (c < u'0' || c > u'9') return false;
-        acc = acc * 10 + (c - u'0');
-        if (acc > 2147483647LL) return false;
-    }
-    out = (int32_t)(neg ? -acc : acc);
-    return true;
-}
-
-static bool ActorIsA(const void* klass, const char* className) {
-    // Walk the il2cpp parent chain comparing class names. Il2CppClass starts
-    // with Il2CppClass_1 (name / namespaze / parent, game_structs.h:38).
-    const Il2CppClass_1* k = reinterpret_cast<const Il2CppClass_1*>(klass);
-    while (k) {
-        if (k->name && strcmp(k->name, className) == 0) return true;
-        k = reinterpret_cast<const Il2CppClass_1*>(k->parent);
-    }
-    return false;
-}
-
-// Returns 1 = pass, 0 = definitively fail (inactive), -1 = unknown.
-static int EvalEffectCondition(AdventureActor_o* impact, AdventureActor_o* owner,
-                               int32_t cond, System_String_o* p1, System_String_o* p2) {
-    switch (cond) {
-    case 0:
-    case 1:
-    case 29:
-        return 1;
-    case 10: {  // ACTORELEMENTTYPE
-        int32_t v;
-        if (!TryParseIntParam(p1, false, v)) return 0;
-        if (!impact) return 0;
-        auto* ei = impact->fields.actorElementInfo;
-        if (!ei) return 0;
-        if (ei->fields._elementType_k__BackingField == v) return 1;
-        auto* ext = ei->fields.hitElementTypeExtension;
-        if (!ext || !ext->fields._items) return 0;
-        int32_t n = ext->fields._size;
-        if (n > (int32_t)ext->fields._items->max_length) n = (int32_t)ext->fields._items->max_length;
-        for (int32_t i = 0; i < n; ++i)
-            if (ext->fields._items->m_Items[i] == v) return 1;
-        return 0;
-    }
-    case 18: {  // HAVE_SHIELD
-        if (!impact) return 0;
-        auto* sh = impact->fields.actorShield;
-        if (!sh) return 0;
-        return sh->fields._shieldValue > 0 ? 1 : 0;
-    }
-    case 19: {  // NO_SHIELD
-        if (!impact) return 0;
-        auto* sh = impact->fields.actorShield;
-        if (!sh) return 0;
-        return sh->fields._shieldValue < 1 ? 1 : 0;
-    }
-    case 41: {  // SELF_BE_MIANCONTROL — the effect owner must be main control
-        if (!owner) return 0;
-        if (!ActorIsA(owner->klass, "PlayerAdventureActor")) return 0;
-        return !reinterpret_cast<PlayerAdventureActor_o*>(owner)->fields.isAssist ? 1 : 0;
-    }
-    case 42: {  // SELF_BE_ASSISTANT
-        if (!owner) return 0;
-        if (!ActorIsA(owner->klass, "PlayerAdventureActor")) return 0;
-        return reinterpret_cast<PlayerAdventureActor_o*>(owner)->fields.isAssist ? 1 : 0;
-    }
-    case 52: {  // BE_MIANCONTROL — the impact actor must be main control
-        if (!impact) return 0;
-        if (!ActorIsA(impact->klass, "PlayerAdventureActor")) return 0;
-        return !reinterpret_cast<PlayerAdventureActor_o*>(impact)->fields.isAssist ? 1 : 0;
-    }
-    case 53: {  // BE_ASSISTANT
-        if (!impact) return 0;
-        if (!ActorIsA(impact->klass, "PlayerAdventureActor")) return 0;
-        return reinterpret_cast<PlayerAdventureActor_o*>(impact)->fields.isAssist ? 1 : 0;
-    }
-    default:
-        return -1;
-    }
-}
-
-// One condition group. Target 0 → pass (AdventureEffect$$CheckCondition,
-// decompiled.c:3632790). Target 1 = self → the effect owner (GetGoals case 1,
-// decompiled.c:3634640); other goals (enemy / all players / faction) need
-// actor enumeration the dump cannot do → unknown. Every impact actor must
-// pass (decompiled.c:3632800 loop).
-static int EvalConditionGroup(AdventureActor_o* owner, int32_t target, int32_t cond,
-                              System_String_o* p1, System_String_o* p2,
-                              System_String_o* p3, System_String_o* p4) {
-    if (target == 0) return 1;
-    if (target != 1) return -1;
-    if (!owner) return 0;   // null impact actor throws in-game → treated as fail
-    (void)p3; (void)p4;
-    return EvalEffectCondition(owner, owner, cond, p1, p2);
-}
-
-// Combine two groups with a logic type: 1 = AND, 2 = OR; any other value fails
-// in the game itself (decompiled.c:3635305 trigger / 3635516 take-effect).
-static int CombineConditionGroups(int g1, int g2, int32_t logicType) {
-    if (logicType == 1) {  // AND
-        if (g1 == 0 || g2 == 0) return 0;
-        if (g1 == 1 && g2 == 1) return 1;
-        return -1;
-    }
-    if (logicType == 2) {  // OR
-        if (g1 == 1 || g2 == 1) return 1;
-        if (g1 == 0 && g2 == 0) return 0;
-        return -1;
-    }
-    return 0;
-}
-
-// Full activation gate for a live AdventureEffect: trigger conditions AND
-// take-effect conditions must both pass. Returns 1 = active, 0 = definitively
-// inactive (skip in the dump), -1 = unknown (keep, previous behaviour).
-static int EffectActivationGate(const AdventureEffect_o* effect) {
-    if (!effect) return -1;
-    auto* cfg = effect->fields._effectConfig_k__BackingField;
-    if (!cfg) return -1;
-    AdventureActor_o* owner = effect->fields._owner;
-
-    int trig = CombineConditionGroups(
-        EvalConditionGroup(owner, cfg->fields.triggerTarget_, cfg->fields.triggerCondition1_,
-                           cfg->fields.triggerParam1_, cfg->fields.triggerParam2_,
-                           cfg->fields.triggerParam3_, cfg->fields.triggerParam4_),
-        EvalConditionGroup(owner, cfg->fields.triggerTarget2_, cfg->fields.triggerCondition2_,
-                           cfg->fields.trigger2Param1_, cfg->fields.trigger2Param2_,
-                           cfg->fields.trigger2Param3_, cfg->fields.trigger2Param4_),
-        cfg->fields.triggerLogicType_);
-    int take = CombineConditionGroups(
-        EvalConditionGroup(owner, cfg->fields.takeEffectTarget1_, cfg->fields.takeEffectCondition1_,
-                           cfg->fields.takeEffectParam1_, cfg->fields.takeEffectParam2_,
-                           cfg->fields.takeEffectParam3_, cfg->fields.takeEffectParam4_),
-        EvalConditionGroup(owner, cfg->fields.takeEffectTarget2_, cfg->fields.takeEffectCondition2_,
-                           cfg->fields.takeEffect2Param1_, cfg->fields.takeEffect2Param2_,
-                           cfg->fields.takeEffect2Param3_, cfg->fields.takeEffect2Param4_),
-        cfg->fields.takeEffectLogicType_);
-
-    if (trig == 0 || take == 0) return 0;
-    if (trig == 1 && take == 1) return 1;
-    return -1;
+// =============================================================================
+// Ground-truth gate: AdventureEffect._effectStack is the game's own
+// "currently applied" state. Execute() pushes the payload onto it
+// (AdventureEffect$$Execute, decompiled.c:3634414) and the matching post phase
+// pops + undoes it: OnDamage pops triggers 2/3/4/5/11 after the damage calc,
+// OnCastSkillEnd pops 6, OnEffectPostExecute pops 18, OnBattleFinish pops
+// IN_BATTLE_STATE, and AdventureEffectBase$$set_Removed (decompiled.c:3631990)
+// drains it with undo. Continuous (trigger 1) effects are pushed once inside
+// AdventureEffect$$OnInit (decompiled.c:3635117) — conditions are evaluated
+// once at registration — and stay pushed for the effect's whole lifetime.
+// CalculateNormalDamage runs inside that bracket for every damage-relevant
+// trigger, so stack > 0 ⟺ the effect's contribution is alive for this hit:
+// per-hit effects (pushed pre-settlement, popped post-settlement), continuous
+// effects, and time-triggered ones alike. Dormant effects (PreExecute failed —
+// e.g. Tailwind Journey's "main Trekker HP above 80%" unmet, or Daylight
+// Garden registered while its conditions failed) are never pushed → skipped.
+static bool EffectStackAlive(const AdventureEffect_o* effect) {
+    if (!effect) return false;
+    auto* st = effect->fields._effectStack;
+    return st && st->fields._size > 0;
 }
 
 // =============================================================================
@@ -957,6 +822,16 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
                 AdventureEffect_o* effect = reinterpret_cast<AdventureEffect_o*>(e.value);
                 if (!effect || effect->fields.removed) continue;
                 dictIds.insert(effect->fields.id);
+                // TEMP DEBUG: stack state of the watch-list effects at dump time
+                auto* cfg = effect->fields._effectConfig_k__BackingField;
+                int32_t cid = cfg ? cfg->fields.id_ : 0;
+                if (cid == 3008026 || cid == 3008006) {
+                    auto* st = effect->fields._effectStack;
+                    debugEffectLog("[dump-time] actor=%s configId=%d instId=%d stackSize=%d trigger=%d",
+                        actorId.c_str(), cid, effect->fields.id,
+                        (st && st->fields._array) ? st->fields._size : -1,
+                        cfg ? cfg->fields.trigger_ : -1);
+                }
             }
         }
         for (auto instId : *effectSnapshot) {
@@ -970,16 +845,26 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
                     AdventureEffect_o* effect = reinterpret_cast<AdventureEffect_o*>(e.value);
                     if (!effect || effect->fields.removed) continue;
                     if (effect->fields.id != instId) continue;
-                    if (EffectActivationGate(effect) == 0) {
-                        // Trigger/take-effect conditions definitively fail right
-                        // now — the effect is dormant (e.g. "Daylight Garden"
-                        // while its owner is not the main Ventus Trekker). Skip
-                        // the entry and the instance-snapshot fallback below.
+                    auto* effectCfg = effect->fields._effectConfig_k__BackingField;
+                    int32_t baseConfigId = effectCfg ? effectCfg->fields.id_ : 0;
+                    // Combined ground-truth gate:
+                    //  - stack > 0: the payload is currently pushed — continuous
+                    //    (trigger 1, pushed at OnInit) or inside the push bracket
+                    //    of this hit's settlement (actor-hit route).
+                    //  - executed-since-last-calc record: per-hit Hitted* payloads
+                    //    write into the SHARED static overlay, and their pop can
+                    //    precede an area/weapon calc that still consumes that
+                    //    overlay — the stack alone would wrongly drop those rows.
+                    bool alive = EffectStackAlive(effect)
+                        || (appliedHittedAttrFix && appliedHittedAttrFix->count(baseConfigId));
+                    if (!alive) {
+                        // Registered but nothing currently pushed and nothing
+                        // executed for this hit — dormant. Skip the entry AND
+                        // the instance-snapshot fallback below, which would
+                        // otherwise resurrect the row from stored OnInit info.
                         usedLive = true;
                         break;
                     }
-                    auto* effectCfg = effect->fields._effectConfig_k__BackingField;
-                    int32_t baseConfigId = effectCfg ? effectCfg->fields.id_ : 0;
                     int32_t ltd = effectCfg ? effectCfg->fields.levelTypeData_ : 0;
                     int32_t ld = effectCfg ? effectCfg->fields.levelData_ : 0;
                     json allValueOptions = json::array();
@@ -1055,11 +940,19 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
             AdventureEffect_o* effect = reinterpret_cast<AdventureEffect_o*>(e.value);
             if (!effect) continue;
             if (effect->fields.removed) continue;
-            if (EffectActivationGate(effect) == 0) continue; // inactive — dormant registered effect
 
             // Pre-compute level config data for this effect (shared by all stack items)
             auto* effectCfg = effect->fields._effectConfig_k__BackingField;
             int32_t baseConfigId = effectCfg ? effectCfg->fields.id_ : 0;
+
+            // Combined gate (same as the snapshot path): the payload must either
+            // be currently pushed (continuous / inside this settlement's push
+            // bracket) or have executed since the last calc (per-hit Hitted*
+            // payloads whose overlay write outlives their pop into the
+            // shared static overlay this calc consumes).
+            if (!EffectStackAlive(effect) &&
+                !(appliedHittedAttrFix && appliedHittedAttrFix->count(baseConfigId)))
+                continue; // dormant registered effect
             int32_t levelTypeData = effectCfg ? effectCfg->fields.levelTypeData_ : 0;
             int32_t levelData = effectCfg ? effectCfg->fields.levelData_ : 0;
 
@@ -1102,19 +995,6 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
 
                     AdventureEffect_o* parentEffect = base->fields._effect;
 
-                    // HITTED_ADDITIONAL_ATTR_FIX (effectType 45) effects stay in the
-                    // effectsDict permanently, but their stat only actually lands in the
-                    // per-hit fromAdditionalAttrInfo when HittedAdditionalAttriFix_Execute
-                    // runs during that hit (it has no PostExecute; the whole snapshot is
-                    // cleared between hits). So a dict entry is NOT proof it is applied.
-                    // Only include it when the hook saw its Execute fire for this hit.
-                    if (parentEffect && parentEffect->fields._effectType == 45) {
-                        if (!appliedHittedAttrFix ||
-                            !appliedHittedAttrFix->count(baseConfigId)) {
-                            continue;
-                        }
-                    }
-
                     auto* ValueCfgPtr = parentEffect->fields._effectValueConfig_k__BackingField;
                     je["configId"] = baseConfigId;
                     je["valueConfigId"] = ValueCfgPtr ? ValueCfgPtr->fields.id_ : 0;
@@ -1147,7 +1027,7 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
                 auto* trigCfg = effect->fields._effectConfig_k__BackingField;
                 if (trigCfg && (trigCfg->fields.trigger_ == 3 || trigCfg->fields.trigger_ == 5)) continue;
                 if (effectSnapshot && !effectSnapshot->count(effect->fields.id)) continue;
-                if (EffectActivationGate(effect) == 0) continue; // inactive — skip
+                if (!EffectStackAlive(effect)) continue; // not currently applied — skip
                 json te;
                 te["id"]         = effect->fields.id;   // unique effect id (key in effectsDict)
                 auto* cfgPtr = effect->fields._effectConfig_k__BackingField;
@@ -1423,7 +1303,7 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
 
     if (toActor && g_Cfg.on_hit_effect_list) {
         ActorEffectManage_o* effectManage = toActor->fields.effectManage;
-        json effects = BuildEffectListJson(effectManage, g_Cfg.on_hit_effect_list_information, gdc, GetEffectValue, GetOnceAttr, GetValueConfigId, GetAttrValue, toActor, nullptr);
+        json effects = BuildEffectListJson(effectManage, g_Cfg.on_hit_effect_list_information, gdc, GetEffectValue, GetOnceAttr, GetValueConfigId, GetAttrValue, toActor, nullptr, appliedHittedAttrFix);
         if (!effects.empty())
             j["DefenderEffects"] = effects;
     }
