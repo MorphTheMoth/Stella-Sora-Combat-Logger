@@ -181,6 +181,14 @@ const discLangNames = new Map();
 //   potentialById:    potential id  -> Potential.json row (MaxLevel/EffectGroupId/Build)
 const gemAttrValueById = new Map();
 const potentialById = new Map();
+// potential id -> effect-id family base (Effect.json LevelData link; the
+// effect-id family is NOT always <EffectGroupId> — e.g. Nazuka's potentials
+// use families 13352xxx while EffectGroupId is 13329).
+const potentialEffectFamily = new Map();   // potential id -> effect-id family base (hint)
+const effectIdPot = new Map();             // effect configId -> potential id (exact "level source")
+const potEffectIds = new Map();            // potential id -> Set of effect configIds
+// potential id -> display name (from item.json root, same source buildHitTable uses)
+const potentialNameById = new Map();
 const EMBLEM_SLOT_NAMES = { 1: 'Emblem 70', 2: 'Emblem 80', 3: 'Emblem 90' };
 const GEM_SKILL_SLOT_NAMES = { 1: 'Normal Atk', 2: 'Skill', 3: 'Assist Skill I', 4: 'Ultimate' };
 
@@ -278,6 +286,9 @@ function buildRecordEmblemEffects(origin, charId) {
     origin._emblemRows = origin._emblemRows || {};
     if (origin._emblemRows[charId]) return origin._emblemRows[charId];
     const rows = [];
+    // Team index — mixed into synthetic configIds so rows from different
+    // units never collide in the collector's dedupe map.
+    const ci = (origin.team || []).indexOf(Number(charId));
     const ch = (origin.chars || []).find(c => String(c.charId) === String(charId));
     if (ch) {
         // Per-unit source group → the dmgcalc sidebar renders one section per
@@ -301,12 +312,13 @@ function buildRecordEmblemEffects(origin, charId) {
                     value = gv.value ?? raw;
                 }
                 rows.push({
-                    configId: 930000000 + gi * 1000 + statIdx,
+                    configId: 930000000 + ci * 100000 + gi * 1000 + statIdx,
                     valueConfigId: 0,
                     name: `${emblemName} : Stat ${statIdx}`,
                     attrType, subType, value,
                     source: emblemSource, effectType: 12, count: 1,
                     isRecordEffect: true, allValueConfigIds: [],
+                    _gemLevel: gv?.Level ?? null,   // roll tier: +1/+2/+3
                     _charId: Number(charId),
                     _charName: resolveActorKey('p:' + charId),
                 });
@@ -316,7 +328,7 @@ function buildRecordEmblemEffects(origin, charId) {
                 statIdx++;
                 const ev = effectValueTable.get(Number(eid));
                 rows.push({
-                    configId: 930000000 + gi * 1000 + statIdx,
+                    configId: 930000000 + ci * 100000 + gi * 1000 + statIdx,
                     valueConfigId: 0,
                     name: `${emblemName} : Stat ${statIdx}`,
                     attrType: ev?.attrType ?? null,
@@ -334,7 +346,9 @@ function buildRecordEmblemEffects(origin, charId) {
                 const potId = 500000 + Number(charId) * 100 + Number(potIdx);
                 const potEntry = potentialById.get(potId);
                 const potName = discLangNames.get(String(potId)) || `Potential ${potIdx}`;
-                const gid = potEntry?.EffectGroupId;
+                // Effect-id family from the Effect.json LevelData link
+                // (falls back to EffectGroupId for potentials without one).
+                const gid = potentialEffectFamily.get(potId) ?? (potEntry?.EffectGroupId ? potEntry.EffectGroupId * 1000 : undefined);
                 const maxLv = potEntry?.MaxLevel || 0;
                 const build = potEntry?.Build || 1;
                 const base = Number(potBase[String(potId)] ?? potBase[potId] ?? 0);
@@ -355,13 +369,13 @@ function buildRecordEmblemEffects(origin, charId) {
                 // of the potential's effect entries by the granted levels
                 // (handled in dcApplyEffectOverrides via linkPotential).
                 rows.push({
-                    configId: 940000000 + gi * 100 + Number(potIdx),
+                    configId: 940000000 + ci * 100000 + gi * 100 + Number(potIdx),
                     valueConfigId: 0,
                     name: `${emblemName} : ${potName}`,
                     attrType: null, subType: null, value: null,
                     count: 1, source: emblemSource, effectType: 12,
                     isRecordEffect: true, isPotRow: true,
-                    linkPotential: { gid, base, addLv, maxLv, variant },
+                    linkPotential: { potId, gid, base, addLv, maxLv, variant, charId: Number(charId) },
                     allValueConfigIds: [],
                     _charId: Number(charId),
                     _charName: resolveActorKey('p:' + charId),
@@ -372,7 +386,7 @@ function buildRecordEmblemEffects(origin, charId) {
             (g.skills || []).forEach(sk => {
                 const slotIdx = sk[0], lv = sk[1] || 0;
                 rows.push({
-                    configId: 950000000 + gi * 100 + Number(slotIdx),
+                    configId: 950000000 + ci * 100000 + gi * 100 + Number(slotIdx),
                     valueConfigId: 0,
                     name: `${emblemName} : ${GEM_SKILL_SLOT_NAMES[slotIdx] || ('Skill ' + slotIdx)} +${lv} lv`,
                     attrType: null, subType: null, value: null,
@@ -909,6 +923,17 @@ function buildEffectTable(dataFiles) {
             if (!('levelTypeData' in effEntry)) continue;
             const configId = parseInt(key, 10);
             const ldt      = effEntry.levelTypeData;
+            // Potential linkage: LevelData points at the potential id whose
+            // levels drive this effect. Mapping is by EXACT effect id — two
+            // potentials can share a ÷1000 id bucket (e.g. Nazuka's pots 31/33
+            // both live in 13353xxx, told apart by the hundreds digit).
+            if (effEntry.LevelData >= 500000 && effEntry.LevelData < 600000) {
+                const potId = Number(effEntry.LevelData);
+                potentialEffectFamily.set(potId, Math.floor(configId / 1000) * 1000);
+                effectIdPot.set(configId, potId);
+                if (!potEffectIds.has(potId)) potEffectIds.set(potId, new Set());
+                potEffectIds.get(potId).add(configId);
+            }
             if (ldt === 5 && subNoteEffectIds.has(configId)) continue;
             if (affinityEffectIds.has(configId)) continue;
 
@@ -1377,6 +1402,15 @@ async function initTables(dataRoot) {
             const id = parseInt(k, 10);
             if (!id || !v) continue;
             potentialById.set(id, v);
+        }
+    }
+    potentialNameById.clear();
+    if (jPotential && jItemRoot) {
+        for (const [k, v] of Object.entries(jPotential)) {
+            const id = parseInt(k, 10);
+            if (!id) continue;
+            const nm = jItemRoot[k]?.name;
+            if (nm && nm !== '?') potentialNameById.set(id, nm);
         }
     }
 

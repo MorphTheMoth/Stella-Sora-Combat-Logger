@@ -641,6 +641,31 @@
             background: #1a1a1a;
         }
         #eiPanel.visible { display: flex; }
+        /* ── Record panel ── */
+        #recordPanel {
+            display: none; flex: 1; flex-direction: column; overflow: hidden;
+            background: #1a1a1a;
+        }
+        #recordPanel.visible { display: flex; }
+        .rec-scroll { flex: 1; overflow-y: auto; padding: 10px 14px; }
+        .rec-header { font-size: 14px; color: #ccc; font-weight: bold; margin-bottom: 10px; }
+        .rec-mode { color: #777; font-weight: normal; font-size: 12px; }
+        .rec-char { margin-bottom: 14px; }
+        .rec-char-name { font-size: 13px; color: #ddd; margin-bottom: 4px; }
+        .rec-char-sub { color: #888; font-size: 11px; }
+        .rec-table { width: auto; min-width: 420px; font-size: 12px; border-collapse: collapse; }
+        .rec-table th { color: #888; font-weight: normal; text-align: right; padding: 3px 10px; border-bottom: 1px solid #2a2a2a; }
+        .rec-table td { padding: 3px 10px; border-bottom: 1px solid #222; color: #ccc; text-align: right; }
+        .rec-table th:first-child, .rec-table td.rec-name { text-align: left; }
+        .rec-table td.rec-name { max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .rec-bonus { color: #7fbf7f; }
+        .rec-nobonus { color: #555; }
+        .rec-ctx { color: #777; font-size: 11px; margin-top: 4px; }
+        .rec-none { color: #555; font-size: 12px; font-style: italic; margin: 4px 0; }
+        .rec-empty {
+            flex: 1; display: flex; align-items: center; justify-content: center;
+            color: #555; font-size: 13px; font-style: italic;
+        }
         .ei-empty, .ei-loading {
             flex: 1; display: flex; align-items: center; justify-content: center;
             color: #555; font-size: 13px; font-style: italic;
@@ -924,6 +949,7 @@
                 <button class="tab-btn" id="tabAnalytics" onclick="switchTab('analytics')">Analytics</button>
                 <button class="tab-btn" id="tabDmgCalc" onclick="switchTab('dmgcalc')">Dmg Calc</button>
                 <button class="tab-btn" id="tabEffectImpact" onclick="switchTab('effectimpact')">Effect Impact</button>
+                <button class="tab-btn" id="tabRecord" onclick="switchTab('record')">Record</button>
             </div>
             <div class="stats" id="stats"></div>
         </div>
@@ -1126,6 +1152,10 @@
             <!-- rendered by effectImpact.js -->
         </div>
 
+        <div id="recordPanel">
+            <!-- rendered by record.js -->
+        </div>
+
     </div>
     <div class="flex-spacer"></div>
 
@@ -1160,6 +1190,7 @@
     <script src="dmgCalc.calc.js"></script>
     <script src="dmgCalc.ui.js"></script>
     <script src="effectImpact.js"></script>
+    <script src="record.js"></script>
 </div>
 <div id="quickSwap">
     <a class="qs-btn emblems" href="/emblems/">Emblems</a>

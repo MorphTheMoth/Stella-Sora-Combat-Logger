@@ -54,7 +54,7 @@ function eiResolveEffectDelta(ev, ef) {
             }
         }
         if (!first || first.attrType == null || first.value == null) return null;
-        const override = dcEffectLevelOverrides?.get(ef.key);
+        const override = dcGetLevelOverride(first, ef.side);
         const attrType = override?.newAttrType ?? first.attrType;
         let subType  = override?.newSubType  ?? first.subType;
         let amount   = override ? override.newValue * count : first.value * count;
@@ -205,6 +205,47 @@ function eiComputeEffect(ef, baseline) {
         return { totalWith, totalWithout, hitCount, affectedHits, maxStacks: 1, isAdded };
     }
 
+    // ── Emblem pot rows: composite impact ─────────────────────────────────
+    // A pot row has no stat of its own — disabling it lowers EVERY effect
+    // entry from that potential. Compute BOTH directions explicitly (pot
+    // forced off vs forced on) so the delta cannot be masked by ambient
+    // disabled-set state:
+    //   row disabled  → totalWith = pot-off,  totalWithout = pot-on
+    //   row enabled   → totalWith = pot-on,   totalWithout = pot-off
+    if (ef.isPotRow && ef.linkPotential) {
+        // Potential effects may sit on either side (e.g. Annihilation Echo
+        // lowers the BOSS's resistance → entries in DefenderEffects). Entries
+        // match by EXACT effect id (two potentials can share an id bucket).
+        const hasFamily = (ev) => {
+            const fam = (ev.AttackerEffects?.effects || [])
+                .concat(ev.DefenderEffects?.effects || [])
+                .concat(ev.AttackerRecord?.effects || []);
+            return fam.some(e => e.configId != null && dcEffectPot.get(e.configId) === ef.linkPotential.potId);
+        };
+        // Both directions are computed with a temp disabled set: off = the pot
+        // row's key added (emblem bonus excluded from the level formula),
+        // on = the key removed. dcGetLevelOverride threads the set through.
+        for (let i = 0; i < baseline.length; i++) {
+            const { ev, withDmg } = baseline[i];
+            if (!hasFamily(ev)) { totalWith += withDmg; totalWithout += withDmg; continue; }
+            affectedHits++;
+            const offSet = new Set(dcEffectsDisabled); offSet.add(ef.key);
+            const onSet  = new Set(dcEffectsDisabled); onSet.delete(ef.key);
+            const offOv = dcApplyEffectOverrides(ev, offSet, dcEffectLevelOverrides);
+            const offDmg = calcDamage(calcHitFields(ev, offOv, offSet, dcEffectLevelOverrides), dcBonus, dcDisabled);
+            const onOv  = dcApplyEffectOverrides(ev, onSet,  dcEffectLevelOverrides);
+            const onDmg  = calcDamage(calcHitFields(ev, onOv,  onSet,  dcEffectLevelOverrides), dcBonus, dcDisabled);
+            if (offDmg === onDmg && i === 0) {
+                console.warn('[EI] pot row recompute flat:', ef.name,
+                    '| table rows:', dcPotLevels.size, '| potKey:', ef.key,
+                    '| bonus present:', !dcEffectsDisabled.has(ef.key));
+            }
+            if (isAdded) { totalWith += offDmg; totalWithout += onDmg; }
+            else         { totalWith += onDmg;  totalWithout += offDmg; }
+        }
+        return { totalWith, totalWithout, hitCount, affectedHits, maxStacks: 1, isAdded };
+    }
+
     // coeff: subtract the effect (-1) when it's normally present; add it (+1) when it's disabled
     const coeff = isAdded ? 1 : -1;
 
@@ -273,12 +314,22 @@ function eiComputeAll() {
 }
 
 // ─── Render ───────────────────────────────────────────────────────────────────
+// Guard against recursion: dcRefilterAndRender → dcRefreshEI → eiRender.
+let _eiAutoLoading = false;
+
 function eiRender() {
     const panel = document.getElementById('eiPanel');
     if (!panel.classList.contains('visible')) return;
 
     if (!dcFiltered.length) {
-        panel.innerHTML = `<div class="ei-empty">No hits loaded — open the Dmg Calc tab first and apply filters.</div>`;
+        // Auto-load: if no filtered hits yet but hit events exist, build the
+        // Dmg Calc filter list first (same as opening the Dmg Calc tab).
+        if (!_eiAutoLoading && allEvents.some(e => e.Type === 'Hit')) {
+            _eiAutoLoading = true;
+            try { dcRefilterAndRender(false, false); } finally { _eiAutoLoading = false; }
+            return; // dcRefilterAndRender → dcRefreshEI → eiRender with hits loaded
+        }
+        panel.innerHTML = `<div class="ei-empty">No hit events loaded yet — wait for combat data.</div>`;
         return;
     }
 
@@ -317,11 +368,23 @@ function eiRenderTable() {
 
     const efLvlBadge = (ef) => {
         if (ef.isPotentialsGroup || !ef.allValueConfigIds || ef.currentLevelIdx < 0) return '';
-        const override = dcEffectLevelOverrides?.get(ef.key);
+        const override = dcGetLevelOverride(ef, ef.side);
         if (!override) return '';
+        let diff;
         const overriddenIdx = ef.allValueConfigIds.findIndex(v => v.valueConfigId === override.newValueConfigId);
-        if (overriddenIdx < 0) return '';
-        const diff = overriddenIdx - ef.currentLevelIdx;
+        if (overriddenIdx >= 0) {
+            diff = overriddenIdx - ef.currentLevelIdx;
+        } else if (override.newValueConfigId != null && ef.configId != null) {
+            // potential-ladder fallback: decode levels from "<gid><P><L><V>"
+            const lo = ef.configId - (ef.configId % 1000);
+            const relCur = ef.valueConfigId > lo ? ef.valueConfigId - lo : 0;
+            const relNew = override.newValueConfigId > lo ? override.newValueConfigId - lo : 0;
+            const curL = relCur > 0 ? Math.floor((relCur % 100) / 10) : 0;
+            const newL = relNew > 0 ? Math.floor((relNew % 100) / 10) : 0;
+            diff = newL - curL;
+        } else {
+            return '';
+        }
         if (diff === 0) return '';
         const cls = diff > 0 ? 'ei-lvl-up' : 'ei-lvl-down';
         return ` <span class="ei-lvl-badge ${cls}" title="Level overridden: original Lv.${ef.currentLevelIdx + 1} → Lv.${overriddenIdx + 1}">lvl ${diff > 0 ? '+' : ''}${diff}</span>`;
@@ -482,13 +545,14 @@ function eiRenderTable() {
             const sideClass = ef.side === 'attacker' ? 'ei-side-atk' : ef.side === 'defender' ? 'ei-side-def' : 'ei-side-pot';
 
             const statCellContent = ef.isPotRow
-                ? `<span class="ei-attr"></span><span class="ei-val">lvl+${ef.linkPotential.addLv}</span>`
+                // the actual change the emblem grants (record gems "pots": [[potIdx, +levels]])
+                ? `<span class="ei-attr"></span><span class="ei-val">+${ef.linkPotential.addLv} lv</span>`
                 : ef.displayOnly
                 ? `<span class="ei-attr"></span><span class="ei-val"></span>`
                 : ef.isPotentialsGroup
                 ? `<span class="ei-attr">Hit Damage</span><span class="ei-val">${ef.value.map(num => `${num}%`).join(', ')}</span>`
                 : (() => {
-                    const override = dcEffectLevelOverrides?.get(ef.key);
+                    const override = dcGetLevelOverride(ef, ef.side);
                     // For ATTR_FIX effects subType is 1/2/3 (base/pct/abs); for
                     // ELEMENTTYPE_*_FIX effects subType is the element id, so the
                     // base/pct split is determined by effectType instead.
@@ -504,9 +568,12 @@ function eiRenderTable() {
                     const raw = override ? override.newValue : ef.value;
                     const overrideSubType = override ? override.newSubType : ef.subType;
                     const overrideAttrType = override ? override.newAttrType : ef.attrType;
-                    const displaySubLabel = ef.isRecordEffect
+                    // Emblem stat rolls show their tier (+1/+2/+3) from
+                    // CharGemAttrValue.Level
+                    let displaySubLabel = ef.isRecordEffect
                         ? (overrideSubType === 1 ? 'Origin' : eiSubTypeLabel(overrideSubType, null))
                         : eiSubTypeLabel(overrideSubType, ef.effectType);
+                    if (ef._gemLevel) displaySubLabel = `${displaySubLabel} +${ef._gemLevel}`;
                     const displayAttrLabel = overrideAttrType != null ? attrName(overrideAttrType) : attrName(ef.attrType);
                     const isSmall = raw != null && Math.abs(raw) < 15;
                     const valStr = raw != null ? (isSmall ? (raw * 100).toFixed(2) + '%' : String(raw)) : '?';

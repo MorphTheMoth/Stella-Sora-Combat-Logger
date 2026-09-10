@@ -36,6 +36,100 @@ const PLAYER_ATTR_FIX = 37;
 const HITTED_ADDITIONAL_ATTR_FIX = 45;
 const ELEMENTTYPE_ATTR_FIX = 52;
 const ELEMENTTYPE_ATTR_PERCENT_FIX = 54;
+// ── Emblem-pot-driven level overrides ────────────────────────────────────────
+// ─── Potential level table ────────────────────────────────────────────────────
+// Single source of truth for every potential-related level:
+//   effective level = recordLv (record) + bonus (emblem) + change (user ±),
+// clamped to [0, 9]. Effect entries carry a "level source" (the id of the
+// potential they belong to, resolved from Effect.json's LevelData link via
+// dcFamilyPot); their values are live-resolved from that potential's
+// EffectValue ladder at calc time — so changing a potential's level moves
+// ALL of its effects together, on both attacker and defender sides.
+const dcPotLevels = new Map();   // potId -> { potId, charId, recordLv, bonus, change, potKey }
+const dcEffectPot = new Map();   // effect configId -> potential id (exact level source)
+
+// Rebuild the level table from the active record (Origin event). User changes
+// survive rebuilds; rows the record doesn't list are dropped (lazy-recreated
+// from logged entries when the ± buttons touch them).
+function dcRebuildPotLevels() {
+    const prev = new Map(dcPotLevels);
+    dcPotLevels.clear();
+    if (typeof effectIdPot !== 'undefined') {
+        for (const [eid, potId] of effectIdPot) dcEffectPot.set(eid, potId);
+    }
+    const rec = (typeof getOriginRecord === 'function') ? getOriginRecord() : null;
+    for (const ch of (rec?.chars || [])) {
+        for (const p of (ch.pots || [])) {
+            const potId = Number(p[0]);
+            if (!potId || dcPotLevels.has(potId)) continue;
+            const recordLv = Number(p[1]) || 0;
+            const eff = Number(p[2]) || recordLv;
+            const old = prev.get(potId);
+            dcPotLevels.set(potId, {
+                potId,
+                charId: Number(ch.charId) || null,
+                recordLv,
+                bonus: Math.max(eff - recordLv, 0),   // emblem bonus (record's effective − record)
+                change: old ? (old.change || 0) : 0,
+            });
+        }
+    }
+}
+
+// Effective level of a potential: record + bonus + user change, clamped 0..9.
+// When the potential's emblem pot row is disabled (its key in `disabledSet`)
+// the emblem bonus is subtracted from the formula; the change field is not
+// touched.
+function dcPotEffectiveLevel(st, disabledSet) {
+    const dis = disabledSet ?? dcEffectsDisabled;
+    const bonus = (st.potKey && dis.has(st.potKey)) ? 0 : st.bonus;
+    return Math.min(Math.max(st.recordLv + bonus + (st.change || 0), 0), 9);
+}
+
+// Bridge for record.js (separate scope): per-potential level breakdown.
+window.dcPotLevelInfo = function (potId) {
+    const st = dcPotLevels.get(Number(potId));
+    return st ? { recordLv: st.recordLv, bonus: st.bonus, change: st.change || 0 } : null;
+};
+
+// e: raw effect entry or collected row (configId, valueConfigId)
+// Level arithmetic on the potential ladder ids "<gid><P><L><V>" (L = level,
+// V = build variant, P = family's hundreds digit): the logged level decodes
+// from the entry's valueConfigId; the effective level comes from the
+// potential's level table. Returns null when the two coincide (no override).
+function dcGetLevelOverride(e, side, disabledSet) {
+    const key = `${side}:${e.configId}:${e.valueConfigId ?? ''}`;
+    const user = dcEffectLevelOverrides.get(key);
+    if (user) return user;
+    if (e.configId == null) return null;
+    // Level source: stamped on collected rows; raw battle entries resolve
+    // through the family map.
+    const potId = e.levelSource != null ? e.levelSource
+        : dcEffectPot.get(e.configId);
+    if (potId == null) return null;
+    const lo = e.configId - (e.configId % 1000);
+    if (e.valueConfigId == null || e.valueConfigId <= lo) return null;
+    const rel = e.valueConfigId - lo;
+    const curL = Math.floor((rel % 100) / 10), V = rel % 10, P = Math.floor(rel / 100);
+    const st = dcPotLevels.get(potId);
+    const L = st ? dcPotEffectiveLevel(st, disabledSet) : curL;   // no record row → logged level
+    if (L === curL) return null;
+    let toV = 0, newVcId = 0;
+    if (L > 0) {
+        newVcId = lo + P * 100 + L * 10 + V;
+        const sv = effectValueTable.get(newVcId);
+        if (!sv || sv.value == null) return null;     // ladder row missing → keep logged
+        toV = sv.value;
+    }
+    const stCur = effectValueTable.get(e.valueConfigId);
+    return {
+        newValueConfigId: newVcId,
+        newValue: toV,
+        newAttrType: stCur?.attrType ?? e.attrType,
+        newSubType: stCur?.subType ?? e.subType,
+    };
+}
+
 const allowedEffectTypes = [ATTR_FIX, PLAYER_ATTR_FIX, HITTED_ADDITIONAL_ATTR_FIX, ELEMENTTYPE_ATTR_FIX, ELEMENTTYPE_ATTR_PERCENT_FIX];
 
 // ─── Stat lookup tables ───────────────────────────────────────────────────────
@@ -158,6 +252,7 @@ function deriveLevelCandidates(configId, valueConfigId, fromAttrDict) {
 // Returns an array of { key, side, configId, valueConfigId, name, attrType, subType, value, count, source, fromAttrDict }
 function dcCollectAttrFixEffects(dcFiltered) {
     const seen = new Map(); // key -> entry
+    dcRebuildPotLevels();   // rebuild the potential level table from the record
     for (const ev of dcFiltered) {
         const sides = [
             { side: 'attacker', list: ev.AttackerEffects?.effects, attrDict: ev.AttackerAttrDict },
@@ -192,6 +287,17 @@ function dcCollectAttrFixEffects(dcFiltered) {
                             const derived = deriveLevelCandidates(e.configId, e.valueConfigId, false);
                             if (derived) { allVcIds = derived.vc; curIdx = derived.curIdx; }
                         }
+                        // Level source: the potential this effect belongs to,
+                        // by exact effect id (pot rows carry linkPotential.potId).
+                        const levelSource = e.isPotRow
+                            ? (e.linkPotential?.potId ?? null)
+                            : (dcEffectPot.get(e.configId) ?? null);
+                        // The pot row's key drives the bonus term of the level
+                        // formula (disabled row → emblem bonus excluded).
+                        if (e.isPotRow && levelSource != null) {
+                            const stL = dcPotLevels.get(levelSource);
+                            if (stL) stL.potKey = key;
+                        }
                         seen.set(key, {
                             key, side,
                             configId: e.configId,
@@ -216,6 +322,8 @@ function dcCollectAttrFixEffects(dcFiltered) {
                             isRecordEffect: !!e.isRecordEffect,
                             isPotRow: !!e.isPotRow,
                             linkPotential: e.linkPotential,
+                            levelSource,
+                            _gemLevel: e._gemLevel ?? null,
                             displayOnly: !!e.displayOnly
                         });
                     }
@@ -335,7 +443,7 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides) {
     if (charName && typeof dcCharsDisabled !== 'undefined' && dcCharsDisabled.has(charName)) {
         return { aStats: origA, dStats: origD, _potentialsDisabled: true };
     }
-    if (dcEffectsDisabled.size === 0 && !(dcEffectLevelOverrides?.size)) return { aStats: origA, dStats: origD };
+    if (dcEffectsDisabled.size === 0 && !(dcEffectLevelOverrides?.size) && dcPotLevels.size === 0) return { aStats: origA, dStats: origD };
 
     // ── Potentials group disable ──────────────────────────────────────────────
     // If this hit belongs to a disabled Potentials group, zero all its stats so
@@ -421,54 +529,16 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides) {
                     statMap.set(attrId, stat);
                 }
                 // subType: 1=Base, 2=Pct, 3=Abs
+                const lvlOv = dcGetLevelOverride(e, side, dcEffectsDisabled);
+                const disVal = lvlOv ? lvlOv.newValue : e.value;
                 if ([ATTR_FIX, HITTED_ADDITIONAL_ATTR_FIX, PLAYER_ATTR_FIX].includes(e.effectType)) {
-                    if (e.subType === 1) { if (e.isRecordEffect) stat.origin = (stat.origin || 0) - e.value * count; else stat.base = (stat.base || 0) - e.value * count; }
-                    else if (e.subType === 2) stat.pct = (stat.pct || 0) - e.value * count;
-                    else if (e.subType === 3) stat.abs = (stat.abs || 0) - e.value * count;
+                    if (e.subType === 1) { if (e.isRecordEffect) stat.origin = (stat.origin || 0) - disVal * count; else stat.base = (stat.base || 0) - disVal * count; }
+                    else if (e.subType === 2) stat.pct = (stat.pct || 0) - disVal * count;
+                    else if (e.subType === 3) stat.abs = (stat.abs || 0) - disVal * count;
                 } else if (e.effectType === ELEMENTTYPE_ATTR_FIX) {
                     if (ev.HitConfig.elementType === e.subType) stat.base = (stat.base || 0) - e.value * count;
                 } else if (e.effectType === ELEMENTTYPE_ATTR_PERCENT_FIX) {
                     if (ev.HitConfig.elementType === e.subType) stat.pct = (stat.pct || 0) - e.value * count;
-                }
-            }
-        }
-
-        // ── Record pot shortcuts ─────────────────────────────────────
-        // Disabling an emblem-pot row lowers ALL of that potential's effect
-        // entries down to the record's own base level (multi-stat safe):
-        // per entry, remove valueAt(currentLevel) - valueAt(baseLevel).
-        if (list?.length) {
-            for (const pr of list) {
-                if (!pr.isPotRow || !pr.linkPotential) continue;
-                const pkey = `${side}:${pr.configId}:${pr.valueConfigId ?? ''}`;
-                if (!dcEffectsDisabled.has(pkey)) continue;
-                const { gid, base, variant } = pr.linkPotential;
-                const lo = gid * 1000;
-                // the potential's battle effects live in the hit's own effect
-                // lists — scan both the record rows and the effects list
-                const family = [
-                    ...(list || []),
-                    ...(side === 'attacker' ? (ev.AttackerEffects?.effects || [])
-                                            : (ev.DefenderEffects?.effects || [])),
-                ];
-                for (const e of family) {
-                    if (e.configId == null || e.configId < lo || e.configId > lo + 999) continue;
-                    if (e.attrType == null || e.value == null) continue;
-                    let toV = 0;
-                    if (base > 0) {
-                        // entry's own build variant when decodable, else the row's
-                        let entryVar = variant;
-                        if (e.valueConfigId != null && e.valueConfigId > lo) entryVar = (e.valueConfigId - lo) % 10;
-                        const st = effectValueTable.get(lo + base * 10 + entryVar);
-                        toV = st && st.value != null ? st.value : 0;
-                    }
-                    const delta = e.value - toV;
-                    if (!delta) continue;
-                    let stat = statMap.get(e.attrType);
-                    if (!stat) { stat = { origin: 0, base: 0, pct: 0, abs: 0 }; statMap.set(e.attrType, stat); }
-                    if (e.subType === 1) stat.origin = (stat.origin || 0) - delta;
-                    else if (e.subType === 2) stat.pct = (stat.pct || 0) - delta;
-                    else if (e.subType === 3) stat.abs = (stat.abs || 0) - delta;
                 }
             }
         }
@@ -507,7 +577,7 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides) {
     // ── Level overrides ──────────────────────────────────────────────
     // For effects with a level override (and not disabled), remove old
     // contribution and add the new level's contribution.
-    if (dcEffectLevelOverrides && dcEffectLevelOverrides.size > 0) {
+    if ((dcEffectLevelOverrides && dcEffectLevelOverrides.size > 0) || dcPotLevels.size > 0) {
         for (const { side, list, attrDict, statMap } of sides) {
             // effects
             if (list?.length) {
@@ -524,7 +594,7 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides) {
                     seenInHit.add(e.configId);
                     const key = `${side}:${e.configId}:${e.valueConfigId ?? ''}`;
                     if (dcEffectsDisabled.has(key)) continue;
-                    const override = dcEffectLevelOverrides.get(key);
+                    const override = dcGetLevelOverride(e, side, dcEffectsDisabled);
                     if (!override) continue;
                     const attrId = e.attrType;
                     if (attrId == null || e.value == null) continue;

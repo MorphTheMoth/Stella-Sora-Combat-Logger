@@ -184,11 +184,11 @@ function renderEffectsPanel() {
                     if (ef.isPotentialsGroup) {
                         valStr = `${ef.count} hit${ef.count !== 1 ? 's' : ''}`;
                     } else if (ef.isPotRow) {
-                        valStr = `lvl+${ef.linkPotential.addLv}`;
+                        valStr = `+${ef.linkPotential.addLv} lv`;
                     } else if (ef.displayOnly) {
                         valStr = '';
                     } else {
-                        const override = dcEffectLevelOverrides.get(ef.key);
+                        const override = dcGetLevelOverride(ef, ef.side);
                         const raw = override ? override.newValue : ef.value;
                         const overrideAttrType = override ? override.newAttrType : ef.attrType;
                         const overrideSubType = override ? override.newSubType : ef.subType;
@@ -204,10 +204,17 @@ function renderEffectsPanel() {
                     const escKey = ef.key.replace(/'/g, "\\'");
                     let effectiveLevelIdx = ef.currentLevelIdx;
                     if (hasLevels) {
-                        const existingOverride = dcEffectLevelOverrides.get(ef.key);
-                        if (existingOverride) {
-                            const overriddenIdx = ef.allValueConfigIds.findIndex(v => v.valueConfigId === existingOverride.newValueConfigId);
-                            if (overriddenIdx >= 0) effectiveLevelIdx = overriddenIdx;
+                        const effOverride = dcGetLevelOverride(ef, ef.side);
+                        if (effOverride) {
+                            const overriddenIdx = ef.allValueConfigIds.findIndex(v => v.valueConfigId === effOverride.newValueConfigId);
+                            if (overriddenIdx >= 0) {
+                                effectiveLevelIdx = overriddenIdx;
+                            } else if (ef.configId != null) {
+                                // potential-ladder fallback: decode L from "<gid><P><L><V>"
+                                const lo = ef.configId - (ef.configId % 1000);
+                                const rel = effOverride.newValueConfigId > lo ? effOverride.newValueConfigId - lo : 0;
+                                effectiveLevelIdx = rel > 0 ? Math.floor((rel % 100) / 10) - 1 : -1;   // L0 → 0/max
+                            }
                         }
                     }
                     const maxLvl = hasLevels ? ef.allValueConfigIds.length - 1 : 0;
@@ -280,7 +287,7 @@ function dcCharOwnsSource(charName, source) {
 //   - 'Pots Max Lvl 6' / 'Pots All Lvl 6': force Potentials-source effects to
 //     level 6 via dcEffectLevelOverrides (enable-style buttons)
 //   - 'Boss Blitz' / 'Talents': bulk-disable effects by source
-const POT_LEVEL_IDX = 5; // level 6 = index 5 in allValueConfigIds
+const POT_LEVEL = 6;     // quick-toggle target level
 
 // groupKey ('bossblitz'|'talents') -> Set<effectKey> disabled by this toggle
 const dcGroupEffectKeys = new Map();
@@ -299,74 +306,32 @@ function dcGroupSourceMatcher(groupKey) {
         : (src) => typeof src === 'string' && src.includes('Talents');
 }
 
-// Resolve the valueConfigId/attrType/subType/value at a given level index.
-// Mirrors the resolution logic of dcChangeEffectLevel.
-function dcResolveLevelEntry(ef, newIdx) {
-    const newEntry = ef.allValueConfigIds[newIdx];
-    if (!newEntry) return null;
-    const newVcId = newEntry.valueConfigId;
-    let newValue, newAttrType, newSubType;
-    if (ef.fromAttrDict) {
-        const slots = onceAttrValueTable.get(newVcId);
-        if (!slots || slots.length === 0) return null;
-        const slot = slots.find(s => (s.slotNum ?? 1) === (ef.slotNum ?? 0)) ?? slots[0];
-        newValue    = slot.value;
-        newAttrType = slot.attrType;
-        newSubType  = slot.subType;
-    } else {
-        const ev = effectValueTable.get(newVcId);
-        if (!ev || ev.value == null) return null;
-        newValue    = ev.value;
-        newAttrType = ev.attrType != null ? ev.attrType : ef.attrType;
-        newSubType  = ev.subType  != null ? ev.subType  : ef.subType;
-    }
-    if (newValue == null) return null;
-    return { newVcId, newValue, newAttrType, newSubType };
-}
-
-// Apply a pots-level toggle: override Potentials-source effects to level 6.
-// Only level-scaling potentials with a max level of exactly 9 are touched.
 // Non-scaling / differently-capped effects in the Potentials section are
 // skipped. onlyAboveMax=true clamps levels above 6 down, leaving lower levels.
+// Quick toggles set every potential's effective level to 6 by writing the
+// adjustment into the potential's level-table `change` (so it shows up in the
+// record page's Changes column and moves every effect of that potential).
+// state.prev remembers each potential's previous change so revert restores it.
 function dcPotsApply(state, onlyAboveMax) {
+    // only potentials that actually have effects in this log
+    const activePots = new Set();
     for (const ef of dcCollectAttrFixEffects(dcFiltered)) {
-        if (ef.isPotentialsGroup || !dcIsPotentialSource(ef.source)) continue;
-        if (!ef.allValueConfigIds || ef.allValueConfigIds.length < 2 || ef.currentLevelIdx < 0) continue;
-        // Only effects whose max level is exactly 9 (9 levels => length 9)
-        if (ef.allValueConfigIds.length !== 9) continue;
-        // Current effective level index: an existing override wins over the raw level
-        let curIdx = ef.currentLevelIdx;
-        const existing = dcEffectLevelOverrides.get(ef.key);
-        if (existing) {
-            const oi = ef.allValueConfigIds.findIndex(v => v.valueConfigId === existing.newValueConfigId);
-            if (oi >= 0) curIdx = oi;
-        }
-        const targetIdx = Math.min(POT_LEVEL_IDX, ef.allValueConfigIds.length - 1);
-        if (onlyAboveMax && curIdx <= targetIdx) continue;
-        if (curIdx === targetIdx && !dcEffectLevelOverrides.has(ef.key)) continue;
-        // Record the previous override state once so revert restores it
-        if (!state.prev.has(ef.key)) {
-            state.prev.set(ef.key, dcEffectLevelOverrides.has(ef.key) ? dcEffectLevelOverrides.get(ef.key) : undefined);
-        }
-        const resolved = dcResolveLevelEntry(ef, targetIdx);
-        if (!resolved) continue;
-        if (resolved.newVcId === ef.valueConfigId) {
-            dcEffectLevelOverrides.delete(ef.key);
-        } else {
-            dcEffectLevelOverrides.set(ef.key, {
-                newValueConfigId: resolved.newVcId,
-                newValue: resolved.newValue,
-                newAttrType: resolved.newAttrType != null ? resolved.newAttrType : ef.attrType,
-                newSubType:  resolved.newSubType  != null ? resolved.newSubType  : ef.subType,
-            });
-        }
+        if (ef.levelSource != null) activePots.add(ef.levelSource);
+    }
+    for (const potId of activePots) {
+        const st = dcPotLevels.get(potId);
+        if (!st) continue;
+        if (dcPotEffectiveLevel(st) === POT_LEVEL) continue;
+        if (onlyAboveMax && dcPotEffectiveLevel(st) <= POT_LEVEL) continue;
+        if (!state.prev.has(potId)) state.prev.set(potId, st.change || 0);
+        st.change = POT_LEVEL - st.recordLv - st.bonus;
     }
 }
 
 function dcPotsRevert(state) {
-    for (const [key, prev] of state.prev) {
-        if (prev === undefined) dcEffectLevelOverrides.delete(key);
-        else dcEffectLevelOverrides.set(key, prev);
+    for (const [potId, prev] of state.prev) {
+        const st = dcPotLevels.get(potId);
+        if (st) st.change = prev;
     }
     state.prev.clear();
 }
@@ -659,44 +624,71 @@ window.dcToggleEffect = function(key) {
     dcNotifyAnalytics();
 };
 
+// Reset a potential's user change to 0 (record page click).
+window.dcResetPotLevelChange = function(potId) {
+    const st = dcPotLevels.get(Number(potId));
+    if (!st || !st.change) return;
+    st.change = 0;
+    renderEffectsPanel();
+    renderFormulaBar();
+    dcRender();
+    dcRefreshEI();
+    dcNotifyAnalytics();
+};
+
 window.dcChangeEffectLevel = function(key, direction) {
     const effects = dcCollectAttrFixEffects(dcFiltered);
     const ef = effects.find(e => e.key === key);
-    if (!ef || !ef.allValueConfigIds || ef.allValueConfigIds.length < 2) return;
+    if (!ef || ef.configId == null) return;
 
-    // Determine current level index: use override's valueConfigId if present,
-    // otherwise use the original currentLevelIdx from the raw data
-    const existingOverride = dcEffectLevelOverrides.get(key);
-    const curVcId = existingOverride ? existingOverride.newValueConfigId : ef.valueConfigId;
-    let curIdx = ef.allValueConfigIds.findIndex(v => v.valueConfigId === curVcId);
-    if (curIdx < 0) curIdx = ef.currentLevelIdx;
-    if (curIdx < 0) return;
-
-    const newIdx = curIdx + direction;
-    if (newIdx < 0 || newIdx >= ef.allValueConfigIds.length) return;
-    const newEntry = ef.allValueConfigIds[newIdx];
-    const newVcId = newEntry.valueConfigId;
-
-    let newValue, newAttrType, newSubType;
-    if (ef.fromAttrDict) {
-        const slots = onceAttrValueTable.get(newVcId);
-        if (slots && slots.length > 0) {
-            const slot = slots.find(s => (s.slotNum ?? 1) === (ef.slotNum ?? 0)) ?? slots[0];
-            newAttrType = slot.attrType;
-            newSubType  = slot.subType;
-            newValue    = slot.value;
-        } else {
-            return;
+    // Potential entry: its level lives in the potential's level table
+    // (recordLv + bonus + change) — step the CHANGE and every effect of that
+    // potential moves with it. Clamped to the ladder range 0..9.
+    if (ef.levelSource != null) {
+        let st = dcPotLevels.get(ef.levelSource);
+        if (!st) {
+            // potential not in the record — derive its base from the logged entry
+            const lo0 = ef.configId - (ef.configId % 1000);
+            let loggedL = 0;
+            if (ef.valueConfigId != null && ef.valueConfigId > lo0) {
+                loggedL = Math.floor(((ef.valueConfigId - lo0) % 100) / 10);
+            }
+            if (loggedL <= 0) return;
+            st = { potId: ef.levelSource, charId: null, recordLv: loggedL, bonus: 0, change: 0 };
+            dcPotLevels.set(ef.levelSource, st);
         }
-    } else {
+        const curL = dcPotEffectiveLevel(st);
+        const newL = Math.min(Math.max(curL + direction, 0), 9);
+        if (newL === curL) return;
+        st.change = (st.change || 0) + (newL - curL);
+        renderEffectsPanel();
+        renderFormulaBar();
+        dcRender();
+        dcRefreshEI();
+        dcNotifyAnalytics();
+        return;
+    }
+
+    // Generic entry: per-entry level override in the level-table ladder.
+    const effOverride = (typeof dcGetLevelOverride === 'function') ? dcGetLevelOverride(ef, ef.side) : null;
+    const baseVcId = effOverride ? effOverride.newValueConfigId : ef.valueConfigId;
+
+    let newVcId, newValue, newAttrType, newSubType;
+    {
+        // Generic level-table path
+        if (!ef.allValueConfigIds || ef.allValueConfigIds.length < 2) return;
+        const curVcId = effOverride ? effOverride.newValueConfigId : ef.valueConfigId;
+        let curIdx = ef.allValueConfigIds.findIndex(v => v.valueConfigId === curVcId);
+        if (curIdx < 0) curIdx = ef.currentLevelIdx;
+        if (curIdx < 0) return;
+        const newIdx = curIdx + direction;
+        if (newIdx < 0 || newIdx >= ef.allValueConfigIds.length) return;
+        newVcId = ef.allValueConfigIds[newIdx].valueConfigId;
         const ev = effectValueTable.get(newVcId);
-        if (ev && ev.value != null) {
-            newAttrType = ev.attrType != null ? ev.attrType : ef.attrType;
-            newSubType  = ev.subType  != null ? ev.subType  : ef.subType;
-            newValue    = ev.value;
-        } else {
-            return;
-        }
+        if (!ev || ev.value == null) return;
+        newValue = ev.value;
+        newAttrType = ev.attrType != null ? ev.attrType : ef.attrType;
+        newSubType  = ev.subType  != null ? ev.subType  : ef.subType;
     }
 
     if (newValue == null) return;
@@ -719,6 +711,7 @@ window.dcChangeEffectLevel = function(key, direction) {
     dcRefreshEI();
     dcNotifyAnalytics();
 };
+
 
 // ─── Dmg Calc totals (sidebar) ────────────────────────────────────────────────
 function dcRenderTotals() {
