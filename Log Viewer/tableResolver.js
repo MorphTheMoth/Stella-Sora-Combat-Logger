@@ -1110,6 +1110,21 @@ function buildEffectTable(dataFiles) {
     if (jOnceAttr) {
         for (const [oaKey, oaVal] of Object.entries(jOnceAttr)) {
             const configId = parseInt(oaKey, 10);
+            // Potential linkage: same contract as the Effect.json loop —
+            // LevelData points at the potential id whose levels drive this
+            // once-attr row (e.g. Field Pull 13725001 → 513725, Shattering
+            // Blow 13727001/2 → 513727). Must run before the
+            // effectTable.has() skip: some rows (13353201) exist in BOTH
+            // files, and without this their collected rows get no level
+            // source → the ± buttons and pot-level changes never move them.
+            if (configId && oaVal.levelTypeData != null
+                && oaVal.LevelData >= 500000 && oaVal.LevelData < 600000) {
+                const potId = Number(oaVal.LevelData);
+                potentialEffectFamily.set(potId, Math.floor(configId / 1000) * 1000);
+                effectIdPot.set(configId, potId);
+                if (!potEffectIds.has(potId)) potEffectIds.set(potId, new Set());
+                potEffectIds.get(potId).add(configId);
+            }
             if (!configId || effectTable.has(configId)) continue;
             const charId = Math.trunc(configId / 100000);
             const cname  = charName(charId);

@@ -184,11 +184,17 @@ function dcGetLevelOverride(e, side, disabledSet, charId, fromAttrDict) {
     let toV = 0, newVcId = 0;
     if (L > 0) {
         newVcId = lo + P * 100 + L * 10 + V;
-        const sv = effectValueTable.get(newVcId);
+        // Read through readVal, not effectValueTable directly: once-attr rows
+        // (OnceAdditionalAttribute LevelData → potential, e.g. Field Pull
+        // 13725001 → 513725) resolve their ladder in
+        // OnceAdditionalAttributeValue — a direct effectValueTable lookup
+        // always misses → null override → the level indicator and value stay
+        // at the logged level no matter the ± buttons.
+        const sv = readVal(newVcId);
         if (!sv || sv.value == null) return null;     // ladder row missing → keep logged
         toV = sv.value;
     }
-    const stCur = effectValueTable.get(e.valueConfigId);
+    const stCur = readVal(e.valueConfigId);
     return {
         newValueConfigId: newVcId,
         newValue: toV,
@@ -662,6 +668,12 @@ function dcCollectAttrFixEffects(dcFiltered) {
                             levelTypeData: lm.levelTypeData,
                             levelData: lm.levelData,
                             currentLevelIdx: curIdx >= 0 ? curIdx : -1,
+                            // Level source for once-attr rows (Effect.json's
+                            // LevelData link, same as effect-list rows) — lets
+                            // dcChangeEffectLevel route the ± buttons into the
+                            // potential's level table instead of a per-entry
+                            // override that dcGetLevelOverride can't find.
+                            levelSource: dcEffectPot.get(cid) ?? null,
                             _charId: e._charId ?? (side === 'attacker' ? evCharId : null)
                         });
                     } else if (stacks > seen.get(key).count) {

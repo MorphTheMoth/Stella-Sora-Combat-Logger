@@ -803,11 +803,19 @@ window.dcChangeEffectLevel = function(key, direction) {
 
     if (newValue == null) return;
 
+    // Write the override under the key dcGetLevelOverride looks up. For
+    // attrDict rows the collected key carries the "dict:" marker and the
+    // slotNum suffix, but resolution reads "<side>:<configId>:<vcid>" —
+    // writing under ef.key made per-entry level overrides silently inert.
+    const ovKey = ef.fromAttrDict
+        ? `${ef.side}:${ef.configId}:${ef.valueConfigId ?? ''}`
+        : key;
+
     // If overriding back to the original valueConfigId, remove the override
     if (newVcId === ef.valueConfigId) {
-        dcEffectLevelOverrides.delete(key);
+        dcEffectLevelOverrides.delete(ovKey);
     } else {
-        dcEffectLevelOverrides.set(key, {
+        dcEffectLevelOverrides.set(ovKey, {
             newValueConfigId: newVcId,
             newValue,
             newAttrType: newAttrType != null ? newAttrType : ef.attrType,

@@ -30,7 +30,11 @@ function eiResolveEffectDelta(ev, ef) {
                 && (e.slotNum ?? 0) === (ef.slotNum ?? 0)) {
                 if (e.attrType == null || e.value == null) return null;
                 const stacks = e.stacks || 1;
-                const override = dcEffectLevelOverrides?.get(ef.key);
+                // Read the override under the key dcGetLevelOverride
+                // writes/reads (no "dict:" marker / slotNum suffix — matches
+                // dcChangeEffectLevel's normalized ovKey).
+                const ovKey = `${ef.side}:${ef.configId}:${ef.valueConfigId ?? ''}`;
+                const override = dcEffectLevelOverrides?.get(ovKey);
                 const attrType = override?.newAttrType ?? e.attrType;
                 const subType  = override?.newSubType  ?? e.subType;
                 const amount   = override ? override.newValue * stacks : e.value * stacks;
