@@ -29,6 +29,20 @@ function recordRender() {
     const ifp = rec.ifp || 1e-4;
     const pctMap = rec.pct || {};
 
+    // Shared formatting: percent values are converted out of the ×1e-4 domain,
+    // float noise is trimmed (0.12000000000000001 → 0.12).
+    const fmtVal = (k, v) => {
+        const isPct = !!pctMap[k];
+        const n = isPct && Math.abs(v) > 2 ? v * ifp : v;
+        return typeof n === 'number' && !Number.isInteger(n) ? +n.toPrecision(8) : n;
+    };
+    // Disc stat keys are the C-side short codes (AEE, WEE, …) — display the
+    // full attribute name via the shared attr table (AEE → "Ventus Dmg").
+    const statName = k => {
+        const idx = typeof RECORD_SKEY_TO_ATTR !== 'undefined' ? RECORD_SKEY_TO_ATTR[k] : null;
+        return idx != null ? attrName(idx) : k;
+    };
+
     // Team order first, then any chars present only in the chars array.
     const order = (rec.team && rec.team.length)
         ? rec.team.map(String)
@@ -42,6 +56,7 @@ function recordRender() {
     }
 
     const html = [];
+    const builds = [];
     html.push('<div class="rec-scroll">');
     html.push('<div class="rec-header">Boss Blitz Record' +
         (rec.mode ? ` <span class="rec-mode">(${rec.mode})</span>` : '') + '</div>');
@@ -61,56 +76,108 @@ function recordRender() {
         } else {
             html.push('<table class="ei-table rec-table"><thead><tr>' +
                 '<th style="text-align:left">Potential</th>' +
-                '<th>Record Lv</th><th>Effective Lv</th><th>Bonus</th><th>Changes</th></tr></thead><tbody>');
+                '<th class="rec-c">Record Lv</th><th class="rec-c">Bonus</th><th class="rec-c">Changes</th></tr></thead><tbody>');
             for (const p of pots) {
                 const potId = Number(p[0]);
                 const recLv = Number(p[1]) || 0;
                 const effLv = Number(p[2]) || recLv;
                 const bonus = effLv - recLv;
-                // Live level-table state (recordLv + bonus + user change, clamped 0..9)
+                // Live user change comes from the pot level table (dcPotLevelInfo)
                 const info = window.dcPotLevelInfo ? window.dcPotLevelInfo(potId) : null;
                 const change = info ? (info.change || 0) : 0;
-                const liveLv = info ? Math.min(Math.max(recLv + bonus + change, 0), 9) : effLv;
                 const nm = potentialNameById.get(potId) || `Potential ${potId}`;
-                const bonusTxt = bonus > 0 ? `+${bonus}` : '—';
+                const bonusTxt = bonus > 0 ? `+${bonus}` : '';
                 const bonusCls = bonus > 0 ? 'rec-bonus' : 'rec-nobonus';
-                const effTxt = liveLv !== recLv
-                    ? `<strong>${liveLv}</strong>`
-                    : String(liveLv);
-                const chgTxt = change > 0 ? `+${change}` : (change < 0 ? String(change) : '—');
+                const chgTxt = change > 0 ? `+${change}` : (change < 0 ? String(change) : '');
                 const chgCls = change !== 0 ? 'rec-bonus' : 'rec-nobonus';
                 const chgAttr = change !== 0
                     ? ` title="Click to reset" style="cursor:pointer" onclick="dcResetPotLevelChange(${potId})"`
                     : '';
                 html.push(`<tr>` +
                     `<td class="rec-name">${nm}</td>` +
-                    `<td>${recLv}</td>` +
-                    `<td>${effTxt}</td>` +
-                    `<td class="${bonusCls}">${bonusTxt}</td>` +
-                    `<td class="${chgCls}"${chgAttr}>${chgTxt}</td>` +
+                    `<td class="rec-c">${recLv}</td>` +
+                    `<td class="rec-c ${bonusCls}">${bonusTxt}</td>` +
+                    `<td class="rec-c ${chgCls}"${chgAttr}>${chgTxt}</td>` +
                     `</tr>`);
             }
             html.push('</tbody></table>');
         }
 
-        // Compact record context: per-disc stats + build (flat, origin-domain)
-        const ctx = [];
-        const fmtVal = (k, v) => {
-            const isPct = !!pctMap[k];
-            return isPct && Math.abs(v) > 2 ? v * ifp : v;
-        };
-        (rec.discStats || []).forEach((d, i) => {
-            const parts = Object.entries(d.attrs || {})
-                .map(([k, v]) => `${k} ${fmtVal(k, v)}`).join(', ');
-            if (parts) ctx.push(`${resolveRecordDiscName(d.id)}: ${parts}`);
-        });
-        const build = Object.entries(ch.build || {})
-            .map(([k, v]) => `${k} ${fmtVal(k, v)}`).join(', ');
-        if (build) ctx.push(`Build: ${build}`);
-        if (ctx.length) {
-            html.push(`<div class="rec-ctx">${ctx.map(s => escapeHtml(s)).join(' · ')}</div>`);
+        // ── Skill levels (record lv / bonus / change, mirrors the pot table) ──
+        // ch.skills = [skillSlotType, recordLv, effectiveLv, maxLv] from the
+        // DLL collector (GetSkillLevel / GetCharSkillAddedLevel /
+        // GetCharSkillMaxLevel). Live change + effective come from the
+        // dmg calc's skill level table (dcSkillLevelInfo).
+        const sks = ch.skills || [];
+        if (sks.length) {
+            html.push('<div class="rec-sub" style="margin-top:6px">Skills</div>');
+            html.push('<table class="ei-table rec-table"><thead><tr>' +
+                '<th style="text-align:left">Skill</th>' +
+                '<th class="rec-c">Record Lv</th><th class="rec-c">Bonus</th><th class="rec-c">Changes</th></tr></thead><tbody>');
+            const orderedSks = sks.slice().sort((a, b) =>
+                SKILL_SLOT_ORDER.indexOf(Number(a[0])) - SKILL_SLOT_ORDER.indexOf(Number(b[0])));
+            for (const s of orderedSks) {
+                const slot = Number(s[0]);
+                const recLv = Number(s[1]) || 0;
+                const eff = Number(s[2]) || recLv;
+                const bonus = eff - recLv;
+                const info = window.dcSkillLevelInfo ? window.dcSkillLevelInfo(ch.charId, slot) : null;
+                const change = info ? (info.change || 0) : 0;
+                const nm = SKILL_SLOT_NAMES[slot] || ('Skill ' + slot);
+                const bonusTxt = bonus > 0 ? `+${bonus}` : '';
+                const bonusCls = bonus > 0 ? 'rec-bonus' : 'rec-nobonus';
+                const chgTxt = change > 0 ? `+${change}` : (change < 0 ? String(change) : '');
+                const chgCls = change !== 0 ? 'rec-bonus' : 'rec-nobonus';
+                const chgAttr = change !== 0
+                    ? ` title="Click to reset" style="cursor:pointer" onclick="dcResetSkillLevelChange(${ch.charId},${slot})"`
+                    : '';
+                html.push(`<tr>` +
+                    `<td class="rec-name">${nm}</td>` +
+                    `<td class="rec-c">${recLv}</td>` +
+                    `<td class="rec-c ${bonusCls}">${bonusTxt}</td>` +
+                    `<td class="rec-c ${chgCls}"${chgAttr}>${chgTxt}</td>` +
+                    `</tr>`);
+            }
+            html.push('</tbody></table>');
         }
 
+        // Per-char build stats — collected for the record-wide section below
+        const build = Object.entries(ch.build || {})
+            .map(([k, v]) => `${statName(k)} ${fmtVal(k, v)}`).join(', ');
+        if (build) builds.push([charName, build]);
+
+        html.push('</div>');
+    }
+
+    // Discs + build are record-wide (identical for the whole team) — render
+    // once after the characters: first three discs = main, the rest = support.
+    const dStats = rec.discStats || [];
+    if (dStats.length) {
+        const discLine = d => {
+            const parts = Object.entries(d.attrs || {})
+                .map(([k, v]) => `${statName(k)} ${fmtVal(k, v)}`).join(', ');
+            return parts ? `${resolveRecordDiscName(d.id)}: ${parts}` : resolveRecordDiscName(d.id);
+        };
+        html.push('<div class="rec-char rec-discs">');
+        html.push('<div class="rec-sub">Discs</div>');
+        html.push('<div class="rec-sub" style="margin-top:4px">Main discs</div>');
+        html.push('<ul class="rec-disc-list">' +
+            dStats.slice(0, 3).map(d => `<li>${escapeHtml(discLine(d))}</li>`).join('') + '</ul>');
+        if (dStats.length > 3) {
+            html.push('<div class="rec-sub" style="margin-top:4px">Support discs</div>');
+            html.push('<ul class="rec-disc-list">' +
+                dStats.slice(3).map(d => `<li>${escapeHtml(discLine(d))}</li>`).join('') + '</ul>');
+        }
+        // Build stats, deduped across the team (identical in practice)
+        const uniqBuilds = [];
+        for (const [nm, b] of builds) {
+            if (!uniqBuilds.some(x => x[1] === b)) uniqBuilds.push([nm, b]);
+        }
+        if (uniqBuilds.length) {
+            html.push('<div class="rec-sub" style="margin-top:8px">Build</div>');
+            html.push('<ul class="rec-disc-list">' + uniqBuilds.map(([nm, b]) =>
+                `<li>${escapeHtml(uniqBuilds.length > 1 ? `${nm}: ${b}` : b)}</li>`).join('') + '</ul>');
+        }
         html.push('</div>');
     }
 

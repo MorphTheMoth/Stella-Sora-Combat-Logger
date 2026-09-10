@@ -47,6 +47,11 @@ const ELEMENTTYPE_ATTR_PERCENT_FIX = 54;
 // ALL of its effects together, on both attacker and defender sides.
 const dcPotLevels = new Map();   // potId -> { potId, charId, recordLv, bonus, change, potKey }
 const dcEffectPot = new Map();   // effect configId -> potential id (exact level source)
+// Skill-scaled effect/once-attr configIds (levelTypeData 3): configId → slot
+// (the config's LevelData ActionKey). Raw battle entries don't carry the
+// levelType stamp, so this map (filled from the levelMap + collection)
+// resolves the slot for them.
+const dcSkillScaled = new Map();
 
 // Rebuild the level table from the active record (Origin event). User changes
 // survive rebuilds; rows the record doesn't list are dropped (lazy-recreated
@@ -93,15 +98,77 @@ window.dcPotLevelInfo = function (potId) {
 };
 
 // e: raw effect entry or collected row (configId, valueConfigId)
-// Level arithmetic on the potential ladder ids "<gid><P><L><V>" (L = level,
-// V = build variant, P = family's hundreds digit): the logged level decodes
-// from the entry's valueConfigId; the effective level comes from the
-// potential's level table. Returns null when the two coincide (no override).
-function dcGetLevelOverride(e, side, disabledSet) {
+// Level override resolution, by level source:
+//   1. explicit user override (dcEffectLevelOverrides)
+//   2. skill-scaled (levelTypeData 3, slot = the config's LevelData ActionKey):
+//      value id = configId + skillLevel*10 where skillLevel is the owner's
+//      skill-slot level (CommonHelper_GetValueConfigIdByLevelType,
+//      decompiled.c:3616319 → GetLevelByLevelType → PlayerSkillCd_GetSkillLevel);
+//      the effective level comes from the owning character's skill-level table
+//   3. potential-scaled: ladder ids "<gid><P><L><V>" (L = level, V = build
+//      variant, P = family's hundreds digit); the logged level decodes from
+//      the entry's valueConfigId, the effective level from the potential's
+//      level table.
+// Returns null when the effective level coincides with the logged one.
+function dcGetLevelOverride(e, side, disabledSet, charId, fromAttrDict) {
     const key = `${side}:${e.configId}:${e.valueConfigId ?? ''}`;
     const user = dcEffectLevelOverrides.get(key);
     if (user) return user;
     if (e.configId == null) return null;
+
+    // Value table for this row kind (once-attr rows resolve in
+    // OnceAdditionalAttributeValue, everything else in EffectValue).
+    const isAttr = fromAttrDict ?? e.fromAttrDict ?? false;
+    const vtab = isAttr ? onceAttrValueTable : effectValueTable;
+    // Pull (attrType, subType, value) out of a value-table row (once-attr rows
+    // hold up to 3 slots keyed by slotNum).
+    const readVal = (vcId) => {
+        const sv = vtab.get(vcId);
+        if (!sv) return null;
+        if (isAttr) {
+            const slots = Array.isArray(sv) ? sv : [];
+            const slot = slots.find(s => (s.slotNum ?? 1) === (e.slotNum ?? 0)) ?? slots[0];
+            return slot && slot.value != null ? slot : null;
+        }
+        return sv.value != null ? sv : null;
+    };
+
+    // ── Skill-scaled rows (Effect/OnceAttr levelTypeData 3) ────────────────
+    const rawSlot = (e.levelTypeData === 3) ? e.levelData : dcSkillScaled.get(e.configId);
+    if (rawSlot != null) {
+        // The game resolves the effect's value id ONCE at creation with the
+        // ORIGIN actor's skill dict (ActorEffectManage_AddEffect,
+        // decompiled.c:3433232 → GetValueConfigIdByLevelType(fromActor,…))
+        // and copies carry the resolved id — so the level source is the
+        // effect's OWNER (id-prefix char), not each hit's attacker. Once-attr
+        // dict rows resolve per-holder instead (AddAttr_1 uses the receiving
+        // actor, decompiled.c:3421955).
+        const cid = isAttr ? (charId ?? e._charId)
+            : (dcEffectOwnerCharId(e.configId) ?? charId ?? e._charId);
+        if (cid == null || e.valueConfigId == null || e.valueConfigId <= e.configId) return null;
+        // The slot-2 dict is role-adjusted at battle setup (main char → main
+        // skill, support → support skill) — resolve by the OWNER's deployment
+        // role. (The config's own MainOrSupport field is the Lua display path's
+        // disambiguator, QueryLevelInfo lua:1596; combat ignores it.)
+        const skillSlot = dcSkillSlotFor(rawSlot, null, dcAttackerRoleSlot(cid));
+        const st = dcSkillLevels.get(`${cid}:${skillSlot}`);
+        if (!st) return null;
+        const curL = Math.round((e.valueConfigId - e.configId) / 10);
+        const L = dcSkillEffectiveLevel(st, disabledSet);
+        if (L === curL || L <= 0) return null;
+        const newVcId = e.configId + L * 10;
+        const sv = readVal(newVcId);
+        if (!sv) return null;                        // ladder row missing → keep logged
+        const stCur = readVal(e.valueConfigId);
+        return {
+            newValueConfigId: newVcId,
+            newValue: sv.value,
+            newAttrType: stCur?.attrType ?? e.attrType,
+            newSubType: stCur?.subType ?? e.subType,
+        };
+    }
+
+    // ── Potential-scaled rows ────────────────────────────────────────────
     // Level source: stamped on collected rows; raw battle entries resolve
     // through the family map.
     const potId = e.levelSource != null ? e.levelSource
@@ -129,6 +196,206 @@ function dcGetLevelOverride(e, side, disabledSet) {
         newSubType: stCur?.subType ?? e.subType,
     };
 }
+
+// ─── Skill level table ──────────────────────────────────────────────────
+// Single source of truth for every skill-slot level (levelTypeData-3 hits
+// and effects resolve into these via dcSkillSlotFor):
+//   effective level = recordLv (record) + bonus (emblem/talent adds) + change
+//   (user ±), clamped to [1, maxLv] for resolution (level 0 → logged value).
+// The bonus mirrors the emblem-pot pattern: it is decomposed per emblem row
+// (each gem's skill affix), and disabling that emblem's row in the sidebar
+// drops its levels from the effective level. Any residual the record's
+// effective level carries beyond the emblem rows (talent adds) is kept as a
+// non-disableable null-key row so the record total still reproduces.
+// Key: "<charId>:<skillSlotType>" (slotType = ActionKey: 2=Main, 3=Support,
+// 4=Ultimate, 5=Normal — GAME_ENUM_DEFINE.lua:218).
+const dcSkillLevels = new Map();   // "charId:slot" -> { charId, slot, charName, recordLv, bonusByRow, change, maxLv }
+
+// Synthetic row key for an emblem skill affix — MUST stay in sync with
+// buildRecordEmblemEffects (tableResolver.js): configId 950000000 + teamIdx
+// *100000 + gemIdx*100 + gemSlot, collected under side 'attacker',
+// valueConfigId 0. gemSlot is the gem-affix slot index 1..4 (GEM_SKILL_SLOT_NAMES).
+function dcEmblemSkillRowKey(origin, charId, gemIdx, gemSlot) {
+    const ci = (origin.team || []).indexOf(Number(charId));
+    if (ci < 0) return null;
+    return `attacker:${950000000 + ci * 100000 + gemIdx * 100 + Number(gemSlot)}:0`;
+}
+
+// Gem-affix slot (1..4, as recorded in tbSkillAffix / GEM_SKILL_SLOT_NAMES)
+// → skillSlotType / ActionKey (2=Main, 3=Support, 4=Ultimate, 5=Normal).
+// Same 1..4 order as GetSkillIds / the DLL collector's slotFor table.
+const GEM_SLOT_TO_ACTION = { 1: 5, 2: 2, 3: 3, 4: 4 };
+
+function dcRebuildSkillLevels() {
+    const prev = new Map(dcSkillLevels);
+    dcSkillLevels.clear();
+    dcSkillScaled.clear();
+    // Skill-scaled configs straight from the levelMap (levelTypeData 3, either
+    // Effect or OnceAdditionalAttribute rows): configId → slot (LevelData
+    // ActionKey). Fills before collection stamps raw battle entries, so the
+    // calc paths resolve skill-scaled rows regardless of call order.
+    if (typeof levelMap !== 'undefined') {
+        for (const [id, e] of levelMap) {
+            if (e && e.t !== 'hit' && e.lt === 3) dcSkillScaled.set(id, e.ld);
+        }
+    }
+    const rec = (typeof getOriginRecord === 'function') ? getOriginRecord() : null;
+    for (const ch of (rec?.chars || [])) {
+        const charId = Number(ch.charId) || null;
+        if (charId == null) continue;
+        const charName = (typeof resolveActorKey === 'function') ? resolveActorKey('p:' + charId) : String(charId);
+        for (const s of (ch.skills || [])) {
+            const slot = Number(s[0]);
+            if (!slot) continue;
+            const recordLv = Number(s[1]) || 0;
+            const eff = Number(s[2]) || recordLv;
+            const maxLv = Number(s[3]) || 0;
+            const key = `${charId}:${slot}`;
+            // Per-emblem bonus rows: each gem's skill affix [slot, +levels]
+            // gets its own disableable entry (same rows the sidebar shows as
+            // "<emblem> : <slot> +N lv" display-only rows).
+            const bonusByRow = [];
+            let gemSum = 0;
+            (ch.gems || []).forEach((g, gi) => {
+                for (const sk of (g.skills || [])) {
+                    // gem affix slots are 1..4 → map to the record's ActionKey slots
+                    const gemSlot = Number(sk[0]);
+                    if ((GEM_SLOT_TO_ACTION[gemSlot] ?? gemSlot) !== slot) continue;
+                    const add = Number(sk[1]) || 0;
+                    if (!add) continue;
+                    const rowKey = rec && dcEmblemSkillRowKey(rec, charId, gi, gemSlot);
+                    bonusByRow.push([rowKey, add]);
+                    gemSum += add;
+                }
+            });
+            // Residual = record's effective − record − emblem adds (talent /
+            // equipment adds): not tied to an emblem row → always on.
+            const residual = (eff - recordLv) - gemSum;
+            if (residual > 0) bonusByRow.push([null, residual]);
+            const old = prev.get(key);
+            dcSkillLevels.set(key, {
+                charId,
+                slot,
+                charName,
+                recordLv,
+                bonusByRow,
+                maxLv,
+                change: old ? (old.change || 0) : 0,
+            });
+        }
+    }
+}
+
+// Sum of the emblem/talent bonus rows not disabled in the sidebar.
+function dcSkillRowBonus(st, disabledSet) {
+    const dis = disabledSet ?? dcEffectsDisabled;
+    let bonus = 0;
+    for (const [rowKey, lv] of (st.bonusByRow || [])) {
+        if (rowKey != null && dis && dis.has(rowKey)) continue;
+        bonus += lv;
+    }
+    return bonus;
+}
+
+// Absolute simulation cap: the per-level ladders carry 13 entries (e.g.
+// Bouquet Blast 133320001 has sp[13]), so levels up to 13 always resolve.
+const DC_SKILL_LEVEL_CAP = 13;
+
+// Level cap: the collector's maxLv is the *currently reachable* max
+// (GetCharSkillMaxLevel) — emblem/talent affix adds extend it, and the
+// ladder domain always allows up to DC_SKILL_LEVEL_CAP, so floor the cap
+// there (that's what the ± buttons can reach for what-if simulation).
+function dcSkillMaxLevel(st, disabledSet) {
+    const base = st.maxLv > 0 ? st.maxLv : 99;
+    return Math.max(base + dcSkillRowBonus(st, disabledSet), DC_SKILL_LEVEL_CAP);
+}
+
+// Effective skill level: record + enabled bonus + user change, clamped to the
+// extended cap (base max + enabled bonus).
+function dcSkillEffectiveLevel(st, disabledSet) {
+    return Math.min(Math.max(st.recordLv + dcSkillRowBonus(st, disabledSet) + (st.change || 0), 0), dcSkillMaxLevel(st, disabledSet));
+}
+
+// Effective level the game would use for a hit scaling by hitConfig
+// levelTypeData/levelData — 3 = skill slot (skill-level table), 1 = perk
+// (the potential's level table). Returns null when untracked/unchanged.
+// Which tracked skill-slot state does a levelTypeData-3 config scale with?
+// ActionKey 2 (B) is a SHARED slot: the caster's slot dict is role-adjusted
+// at battle setup — PlayerCharData:CalCharacterAttrBattle (lua:1704) removes
+// the unused skill from the level array (main char drops support, support
+// char drops main) and boot binds slot B to the survivor
+// (decompiled.c:4497189: Normal←v[0], B←v[1], D←v[2]; C never bound) — and
+// the Lua level query disambiguates via the config's MainOrSupport flag
+// (PlayerCharData.lua:1596: levelData==2 → SUPPORT ? skill[3] : skill[2]).
+// 4 = ultimate, 5 and anything else (incl. 1/3) = normal attack level
+// (PlayerCharData.lua:1611 fallback).
+// mainOrSupport: hit configs carry it (1=MAINCONTROL, 2=SUPPORT, 0 → main);
+// effect configs don't — pass roleSlot instead (the attacker's deployment
+// role: 2 = record team[0] main char, 3 = support, null → main default).
+function dcSkillSlotFor(levelData, mainOrSupport, roleSlot) {
+    if (levelData === 4) return 4;
+    if (levelData === 2) {
+        if (mainOrSupport != null) return mainOrSupport === 2 ? 3 : 2;
+        return roleSlot ?? 2;
+    }
+    return 5;
+}
+
+// Owner character of an effect — effect ids encode the owning char in their
+// first three digits (e.g. 16093001 → 160 Suntide Willow; holds for all 22
+// levelTypeData-3 rows in Effect.json).
+function dcEffectOwnerCharId(configId) {
+    const n = parseInt(String(configId ?? '').slice(0, 3), 10);
+    return n > 0 ? n : null;
+}
+
+// Deployment role of a character in the active record: 2 = main char
+// (team[0]), 3 = support, null = unknown/not in record.
+function dcAttackerRoleSlot(charId) {
+    if (charId == null) return null;
+    const rec = (typeof getOriginRecord === 'function') ? getOriginRecord() : null;
+    if (!rec?.team?.length) return null;
+    const idx = rec.team.map(Number).indexOf(Number(charId));
+    if (idx === 0) return 2;
+    if (idx > 0) return 3;
+    return null;
+}
+
+function dcHitScalingLevel(hc, charId, disabledSet) {
+    if (!hc) return null;
+    if (hc.levelTypeData === 3) {
+        if (charId == null) return null;
+        const slot = dcSkillSlotFor(hc.levelData, hc.mainOrSupport);
+        const st = dcSkillLevels.get(`${charId}:${slot}`);
+        return st ? dcSkillEffectiveLevel(st, disabledSet) : null;
+    }
+    if (hc.levelTypeData === 1) {
+        const st = dcPotLevels.get(hc.levelData);
+        return st ? dcPotEffectiveLevel(st, disabledSet) : null;
+    }
+    return null;
+}
+
+// Attacker charId of a hit event ("p:<dataId>").
+function dcEventCharId(ev) {
+    const m = String(ev?.Attacker || '').match(/^p:(\d+)/);
+    return m ? Number(m[1]) : null;
+}
+
+// Bridges for record.js (separate scope): per-skill level breakdown.
+window.dcSkillLevelInfo = function (charId, slot) {
+    const st = dcSkillLevels.get(`${Number(charId)}:${Number(slot)}`);
+    if (!st) return null;
+    let bonusTotal = 0;
+    for (const [, lv] of (st.bonusByRow || [])) bonusTotal += lv;
+    return {
+        recordLv: st.recordLv,
+        bonus: bonusTotal,
+        change: st.change || 0,
+        // extended cap: base max + total adds (emblem + talent)
+        max: st.maxLv > 0 ? st.maxLv + bonusTotal : 99,
+    };
+};
 
 const allowedEffectTypes = [ATTR_FIX, PLAYER_ATTR_FIX, HITTED_ADDITIONAL_ATTR_FIX, ELEMENTTYPE_ATTR_FIX, ELEMENTTYPE_ATTR_PERCENT_FIX];
 
@@ -253,7 +520,9 @@ function deriveLevelCandidates(configId, valueConfigId, fromAttrDict) {
 function dcCollectAttrFixEffects(dcFiltered) {
     const seen = new Map(); // key -> entry
     dcRebuildPotLevels();   // rebuild the potential level table from the record
+    dcRebuildSkillLevels(); // rebuild the skill level table from the record
     for (const ev of dcFiltered) {
+        const evCharId = dcEventCharId(ev);   // attacker charId (skill-level owner)
         const sides = [
             { side: 'attacker', list: ev.AttackerEffects?.effects, attrDict: ev.AttackerAttrDict },
             { side: 'attacker', list: ev.AttackerRecord?.effects, attrDict: null },
@@ -278,6 +547,9 @@ function dcCollectAttrFixEffects(dcFiltered) {
                     const key = `${side}:${e.configId}:${e.valueConfigId ?? ''}`;
                     if (!seen.has(key)) {
                         const lm = resolveLevelMap(e.configId);
+                        // Skill-scaled effect (levelTypeData 3): register the
+                        // configId → slot link so raw battle entries resolve too.
+                        if (lm.levelTypeData === 3) dcSkillScaled.set(e.configId, lm.levelData);
                         // Record rows (emblem pots) carry their own level ladder
                         // (the potential's marginal levels) — keep it as-is.
                         let allVcIds = (e.allValueConfigIds && e.allValueConfigIds.length)
@@ -324,6 +596,12 @@ function dcCollectAttrFixEffects(dcFiltered) {
                             linkPotential: e.linkPotential,
                             levelSource,
                             _gemLevel: e._gemLevel ?? null,
+                            _skillAddLv: e._skillAddLv ?? null,
+                            // owning character (attacker) — drives skill-scaled
+                            // (levelTypeData 3) level resolution for this row.
+                            // Record rows keep their own _charId (emblem rows are
+                            // always attached to their owner's hits, but be safe).
+                            _charId: e._charId ?? (side === 'attacker' ? evCharId : null),
                             displayOnly: !!e.displayOnly
                         });
                     }
@@ -344,6 +622,7 @@ function dcCollectAttrFixEffects(dcFiltered) {
                     const stacks = e.stacks != null ? e.stacks : 1;
                     if (!seen.has(key)) {
                         const lm = resolveLevelMap(cid);
+                        if (lm.levelTypeData === 3) dcSkillScaled.set(cid, lm.levelData);
                         let allVcIds = lm.allValueConfigIds;
                         let curIdx = allVcIds.findIndex(v => v.valueConfigId === e.valueConfigId);
                         if (curIdx < 0) {
@@ -382,7 +661,8 @@ function dcCollectAttrFixEffects(dcFiltered) {
                             allValueConfigIds: allVcIds,
                             levelTypeData: lm.levelTypeData,
                             levelData: lm.levelData,
-                            currentLevelIdx: curIdx >= 0 ? curIdx : -1
+                            currentLevelIdx: curIdx >= 0 ? curIdx : -1,
+                            _charId: e._charId ?? (side === 'attacker' ? evCharId : null)
                         });
                     } else if (stacks > seen.get(key).count) {
                         seen.get(key).count = stacks;
@@ -443,7 +723,10 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides) {
     if (charName && typeof dcCharsDisabled !== 'undefined' && dcCharsDisabled.has(charName)) {
         return { aStats: origA, dStats: origD, _potentialsDisabled: true };
     }
-    if (dcEffectsDisabled.size === 0 && !(dcEffectLevelOverrides?.size) && dcPotLevels.size === 0) return { aStats: origA, dStats: origD };
+    if (dcEffectsDisabled.size === 0 && !(dcEffectLevelOverrides?.size) && dcPotLevels.size === 0 && dcSkillLevels.size === 0) return { aStats: origA, dStats: origD };
+
+    // Attacker charId — owner of attacker-side skill-scaled effects
+    const attackerCharId = dcEventCharId(ev);
 
     // ── Potentials group disable ──────────────────────────────────────────────
     // If this hit belongs to a disabled Potentials group, zero all its stats so
@@ -529,7 +812,7 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides) {
                     statMap.set(attrId, stat);
                 }
                 // subType: 1=Base, 2=Pct, 3=Abs
-                const lvlOv = dcGetLevelOverride(e, side, dcEffectsDisabled);
+                const lvlOv = dcGetLevelOverride(e, side, dcEffectsDisabled, attackerCharId);
                 const disVal = lvlOv ? lvlOv.newValue : e.value;
                 if ([ATTR_FIX, HITTED_ADDITIONAL_ATTR_FIX, PLAYER_ATTR_FIX].includes(e.effectType)) {
                     if (e.subType === 1) { if (e.isRecordEffect) stat.origin = (stat.origin || 0) - disVal * count; else stat.base = (stat.base || 0) - disVal * count; }
@@ -577,7 +860,7 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides) {
     // ── Level overrides ──────────────────────────────────────────────
     // For effects with a level override (and not disabled), remove old
     // contribution and add the new level's contribution.
-    if ((dcEffectLevelOverrides && dcEffectLevelOverrides.size > 0) || dcPotLevels.size > 0) {
+    if ((dcEffectLevelOverrides && dcEffectLevelOverrides.size > 0) || dcPotLevels.size > 0 || dcSkillLevels.size > 0) {
         for (const { side, list, attrDict, statMap } of sides) {
             // effects
             if (list?.length) {
@@ -594,7 +877,7 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides) {
                     seenInHit.add(e.configId);
                     const key = `${side}:${e.configId}:${e.valueConfigId ?? ''}`;
                     if (dcEffectsDisabled.has(key)) continue;
-                    const override = dcGetLevelOverride(e, side, dcEffectsDisabled);
+                    const override = dcGetLevelOverride(e, side, dcEffectsDisabled, attackerCharId);
                     if (!override) continue;
                     const attrId = e.attrType;
                     if (attrId == null || e.value == null) continue;
@@ -643,7 +926,7 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides) {
                     if (seenInHit.has(key)) continue;
                     seenInHit.add(key);
                     if (dcEffectsDisabled.has(key)) continue;
-                    const override = dcEffectLevelOverrides.get(key);
+                    const override = dcGetLevelOverride(e, side, dcEffectsDisabled, attackerCharId, true);
                     if (!override) continue;
 
                     const stacks = e.stacks != null ? e.stacks : 1;
@@ -704,7 +987,37 @@ function calcHitFields(ev, statOverrides, dcEffectsDisabled, dcEffectLevelOverri
     const el = hc.elementType;
 
     // Multiplier
-    const multiplier = dp.skillPercentAmend != null ? dp.skillPercentAmend / 10000 / 100 : 0;
+    let multiplier = dp.skillPercentAmend != null ? dp.skillPercentAmend / 10000 / 100 : 0;
+
+    // ── Hit level rescale ─────────────────────────────────────────────
+    // Hits scale with a level the game resolves from levelTypeData/levelData:
+    //   3 = skill slot (ActionKey 2/3/4/5 → the skill-level table)
+    //   1 = perk (levelData = perkId → the potential's level table)
+    // (AdventureActor skillLevelTemp, decompiled.c:3852930; the game then does
+    // level-1 for types 1/2/3 before indexing — and DamageParams.skillLevel is
+    // that raw level + 1, so sp[skillLevel - 1] reproduces the game's pick.)
+    // When the tracked effective level differs from the logged one, re-pick
+    // the multiplier from the hit's per-level array (levelMap "t":"hit"
+    // entry written by WriteHitDamageLevelMapEntry). Missing entry (old logs)
+    // → keep the logged value.
+    {
+        const charId = dcEventCharId(ev);
+        const L = dcHitScalingLevel(hc, charId, dcEffectsDisabled);
+        const loggedL = dp.skillLevel;
+        if (L != null && loggedL != null && L !== loggedL) {
+            if (L <= 0) {
+                // level 0 = source disabled (perk/skill turned off) → no hit
+                multiplier = 0;
+            } else {
+                const hm = (typeof resolveHitLevelMap === 'function') ? resolveHitLevelMap(hc.hitDamageId) : null;
+                if (hm && hm.sp && hm.sp.length) {
+                    const idx = Math.min(Math.max(L - 1, 0), hm.sp.length - 1);
+                    const nv = hm.sp[idx];
+                    if (nv != null) multiplier = nv / 10000 / 100;
+                }
+            }
+        }
+    }
 
     // BaseAtk
     const baseAtk = statBase(aStats, 1);

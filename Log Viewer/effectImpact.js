@@ -246,6 +246,71 @@ function eiComputeEffect(ef, baseline) {
         return { totalWith, totalWithout, hitCount, affectedHits, maxStacks: 1, isAdded };
     }
 
+    // ── Emblem skill rows: composite impact ─────────────────────────────────
+    // A skill-affix shortcut row (buildRecordEmblemEffects configId 950000000
+    // + teamIdx*100000 + gemIdx*100 + gemSlot, display-only, no stat of its
+    // own) removes the emblem's +lv from the skill-level table when disabled
+    // (dcSkillRowBonus → dcSkillEffectiveLevel). That rescales every hit and
+    // skill-scaled effect entry resolving through that char+slot, so like the
+    // pot rows the impact is computed as an explicit both-directions recompute
+    // (off = key added to the disabled set, on = key removed).
+    if (ef.displayOnly && ef.configId >= 950000000 && ef.configId < 960000000) {
+        const charId = ef._charId != null ? Number(ef._charId) : null;
+        const gemSlot = (ef.configId - 950000000) % 100;
+        // gem affix slot 1..4 → skillSlotType / ActionKey (5=Normal, 2=Skill,
+        // 3=Assist, 4=Ult) — same mapping the level table builds with.
+        const slot = (typeof GEM_SLOT_TO_ACTION !== 'undefined' ? GEM_SLOT_TO_ACTION[gemSlot]
+            : ({ 1: 5, 2: 2, 3: 3, 4: 4 })[gemSlot]) ?? gemSlot;
+        const slotOf = (rawSlot, owner) =>
+            dcSkillSlotFor(rawSlot, null, dcAttackerRoleSlot(owner)) === slot;
+        // A hit is affected when its own level scaling goes through the
+        // char+slot (levelTypeData 3 hits) OR it carries a skill-scaled
+        // effect/once-attr entry owned by the char whose slot resolves here —
+        // the same resolution dcGetLevelOverride applies.
+        const hasFamily = (ev) => {
+            const evChar = dcEventCharId(ev);
+            const hc = ev.HitConfig || {};
+            if (hc.levelTypeData === 3 && evChar === charId
+                && dcSkillSlotFor(hc.levelData, hc.mainOrSupport) === slot) return true;
+            const fam = (ev.AttackerEffects?.effects || [])
+                .concat(ev.DefenderEffects?.effects || [])
+                .concat(ev.AttackerRecord?.effects || []);
+            for (const e of fam) {
+                if (!allowedEffectTypes.includes(e.effectType)) continue;
+                const rawSlot = (e.levelTypeData === 3) ? e.levelData : dcSkillScaled.get(e.configId);
+                if (rawSlot == null) continue;
+                const owner = dcEffectOwnerCharId(e.configId) ?? evChar;
+                if (owner === charId && slotOf(rawSlot, owner)) return true;
+            }
+            for (const dict of [ev.AttackerAttrDict, ev.DefenderAttrDict]) {
+                if (!Array.isArray(dict)) continue;
+                for (const e of dict) {
+                    const rawSlot = (e.levelTypeData === 3) ? e.levelData : dcSkillScaled.get(e.configId);
+                    if (rawSlot == null) continue;
+                    // once-attr rows resolve per the hit's attacker (dcGetLevelOverride)
+                    if (evChar === charId && slotOf(rawSlot, evChar)) return true;
+                }
+            }
+            return false;
+        };
+        for (let i = 0; i < baseline.length; i++) {
+            const { ev, withDmg } = baseline[i];
+            if (!hasFamily(ev)) { totalWith += withDmg; totalWithout += withDmg; continue; }
+            affectedHits++;
+            const offSet = new Set(dcEffectsDisabled); offSet.add(ef.key);
+            const onSet  = new Set(dcEffectsDisabled); onSet.delete(ef.key);
+            const offDmg = calcDamage(calcHitFields(ev,
+                dcApplyEffectOverrides(ev, offSet, dcEffectLevelOverrides),
+                offSet, dcEffectLevelOverrides), dcBonus, dcDisabled);
+            const onDmg  = calcDamage(calcHitFields(ev,
+                dcApplyEffectOverrides(ev, onSet,  dcEffectLevelOverrides),
+                onSet,  dcEffectLevelOverrides), dcBonus, dcDisabled);
+            if (isAdded) { totalWith += offDmg; totalWithout += onDmg; }
+            else         { totalWith += onDmg;  totalWithout += offDmg; }
+        }
+        return { totalWith, totalWithout, hitCount, affectedHits, maxStacks: 1, isAdded };
+    }
+
     // coeff: subtract the effect (-1) when it's normally present; add it (+1) when it's disabled
     const coeff = isAdded ? 1 : -1;
 
@@ -406,21 +471,33 @@ function eiRenderTable() {
         }
     }
 
-    // ── Sibling potentials grouping ───────────────────────────────────────────
-    // Effect rows from the same potential (same name + same source) are sorted as
-    // one unit: forced adjacent, ranked by the higher member's value — or by the
-    // summed gain% when the sort column is gain%.
-    const siblingGroups = new Map(); // key `${source}\u0000${name}` -> rows[]
+    // ── Sibling grouping (Potentials + Discs) ────────────────────────────────
+    // Rows belonging to the same "chain" are sorted as one unit: forced
+    // adjacent, ranked by the summed gain% when the sort column is gain%, or
+    // by the member values otherwise.
+    //   Potentials: same name + same source (one potential ladder).
+    //   Discs:      all rows of one disc — its "<disc> : Stat n" stat rows
+    //               (tableResolver.js buildRecordDiscEffects) and its
+    //               "<disc>: Melody|Harmony N - ..." effect rows (disc-buff
+    //               decoder) — chained by the disc name before the first ':'.
+    const siblingGroups = new Map(); // key `${source}\u0000${chainName}` -> rows[]
     const unitOf = new Map();        // row -> its sibling group (if any)
-    for (const r of rows) {
-        if (r.ef.isPotentialsGroup) continue;
-        const src = r.ef.source ?? '';
-        if (!src.includes('Potentials')) continue;
-        const key = `${src}\u0000${r.ef.name}`;
+    const addToSiblingGroup = (key, r) => {
         let g = siblingGroups.get(key);
         if (!g) { g = []; siblingGroups.set(key, g); }
         g.push(r);
         unitOf.set(r, g);
+    };
+    for (const r of rows) {
+        if (r.ef.isPotentialsGroup) continue;
+        const src = r.ef.source ?? '';
+        if (src.includes('Potentials')) {
+            addToSiblingGroup(`${src}\u0000${r.ef.name}`, r);
+        } else if (src === 'Discs') {
+            const nm = r.ef.name ?? '';
+            const c = nm.indexOf(':');
+            if (c > 0) addToSiblingGroup(`${src}\u0000${nm.slice(0, c).trim()}`, r);
+        }
     }
 
     const unitSortVal = (unit) => {
@@ -468,7 +545,9 @@ function eiRenderTable() {
         let vb = unitSortVal(b);
         if (!isFinite(va)) va = 1e18;
         if (!isFinite(vb)) vb = 1e18;
-        return eiSortDir * (vb - va);
+        // eiSortDir=-1 means descending (largest gain first), so negate:
+        // -(-1) * (vb - va) = vb - va → bigger values sort first.
+        return -eiSortDir * (vb - va);
     });
 
     const sortedRows = [];
@@ -548,7 +627,7 @@ function eiRenderTable() {
                 // the actual change the emblem grants (record gems "pots": [[potIdx, +levels]])
                 ? `<span class="ei-attr"></span><span class="ei-val">+${ef.linkPotential.addLv} lv</span>`
                 : ef.displayOnly
-                ? `<span class="ei-attr"></span><span class="ei-val"></span>`
+                ? `<span class="ei-attr"></span><span class="ei-val">+${ef._skillAddLv || 0} lv</span>`
                 : ef.isPotentialsGroup
                 ? `<span class="ei-attr">Hit Damage</span><span class="ei-val">${ef.value.map(num => `${num}%`).join(', ')}</span>`
                 : (() => {

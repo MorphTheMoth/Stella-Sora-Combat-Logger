@@ -71,15 +71,30 @@ function effectTypeHasAttr(et) {
 // Returns { levelTypeData, levelData, allValueConfigIds } or defaults.
 function resolveLevelMap(configId) {
     const entry = levelMap.get(configId);
-    if (entry) {
+    if (entry && entry.t !== 'hit') {
         return {
             levelTypeData: entry.lt,
             levelData: entry.ld,
-            allValueConfigIds: entry.vc.map(v => ({ level: v.l, valueConfigId: v.v }))
+            allValueConfigIds: (entry.vc || []).map(v => ({ level: v.l, valueConfigId: v.v }))
         };
     }
     return { levelTypeData: 0, levelData: 0, allValueConfigIds: [] };
 }
+
+// Looks up a hit config ("t":"hit" levelMap entry, keyed by hitDamageId).
+// Returns the entry ({ lt, ld, sp, sa, tp, ta, ap, pi }) or null.
+// The per-level arrays are indexed by the level the game resolved MINUS 1 for
+// levelTypeData 1/2/3 (decompiled.c:3853176) — the logged DamageParams.skillLevel
+// is that level + 1, so sp[skillLevel - 1] reproduces the game's pick.
+function resolveHitLevelMap(hitDamageId) {
+    const entry = levelMap.get(Number(hitDamageId));
+    return (entry && entry.t === 'hit') ? entry : null;
+}
+
+// Skill slot (ActionKey) display names — the slots whose levels scale hits
+// (levelTypeData 3, levelData = ActionKey) and skill-scaled effects.
+const SKILL_SLOT_NAMES = { 2: 'Main Skill', 3: 'Support Skill', 4: 'Ultimate', 5: 'Normal Attack' };
+const SKILL_SLOT_ORDER = [5, 2, 3, 4];   // display order: Normal, Main, Support, Ultimate
 
 // int skillId -> { ownerName, skillType, skillName, fcPath }
 const skillTable    = new Map();
@@ -190,7 +205,7 @@ const potEffectIds = new Map();            // potential id -> Set of effect conf
 // potential id -> display name (from item.json root, same source buildHitTable uses)
 const potentialNameById = new Map();
 const EMBLEM_SLOT_NAMES = { 1: 'Emblem 70', 2: 'Emblem 80', 3: 'Emblem 90' };
-const GEM_SKILL_SLOT_NAMES = { 1: 'Normal Atk', 2: 'Skill', 3: 'Assist Skill I', 4: 'Ultimate' };
+const GEM_SKILL_SLOT_NAMES = { 1: 'Normal Atk', 2: 'Main Skill', 3: 'Support Skill', 4: 'Ultimate' };
 
 function getOriginRecord() { return originRecord; }
 
@@ -294,6 +309,11 @@ function buildRecordEmblemEffects(origin, charId) {
         // Per-unit source group → the dmgcalc sidebar renders one section per
         // unit ("<char name> Emblems"), and the effect-impact chips match.
         const emblemSource = `${resolveActorKey('p:' + charId)} Emblems`;
+        // Stat rolls are named after the attribute they affect ("Ventus Pen",
+        // "Skill Dmg", …) via the shared ATTR_NAMES table; rolls without a
+        // numeric attr id (Type 37 PLAYER_ATTR_FIX / unknown) keep "Stat N".
+        const rollName = (attrType, idx) =>
+            attrType != null && attrName(attrType) !== '?' ? attrName(attrType) : `Stat ${idx}`;
         const potBase = ch.potBase || {};
         (ch.gems || []).forEach((g, gi) => {
             const slot = g.slot || (gi + 1);
@@ -314,7 +334,7 @@ function buildRecordEmblemEffects(origin, charId) {
                 rows.push({
                     configId: 930000000 + ci * 100000 + gi * 1000 + statIdx,
                     valueConfigId: 0,
-                    name: `${emblemName} : Stat ${statIdx}`,
+                    name: `${emblemName} : ${rollName(attrType, statIdx)}`,
                     attrType, subType, value,
                     source: emblemSource, effectType: 12, count: 1,
                     isRecordEffect: true, allValueConfigIds: [],
@@ -330,7 +350,7 @@ function buildRecordEmblemEffects(origin, charId) {
                 rows.push({
                     configId: 930000000 + ci * 100000 + gi * 1000 + statIdx,
                     valueConfigId: 0,
-                    name: `${emblemName} : Stat ${statIdx}`,
+                    name: `${emblemName} : ${rollName(ev?.attrType ?? null, statIdx)}`,
                     attrType: ev?.attrType ?? null,
                     subType: ev?.subType ?? 2,
                     value: ev?.value ?? null,
@@ -382,16 +402,19 @@ function buildRecordEmblemEffects(origin, charId) {
                 });
             });
             // skills: [slot, +levels] — display-only (excluded from calc by
-            // the allowedEffectTypes gate; effectType left null)
+            // the allowedEffectTypes gate; effectType left null). The +lv lives
+            // in _skillAddLv (shown as the green stat cell, like the pot rows);
+            // the level table keys the row by configId (dcEmblemSkillRowKey).
             (g.skills || []).forEach(sk => {
                 const slotIdx = sk[0], lv = sk[1] || 0;
                 rows.push({
                     configId: 950000000 + ci * 100000 + gi * 100 + Number(slotIdx),
                     valueConfigId: 0,
-                    name: `${emblemName} : ${GEM_SKILL_SLOT_NAMES[slotIdx] || ('Skill ' + slotIdx)} +${lv} lv`,
+                    name: `${emblemName} : ${GEM_SKILL_SLOT_NAMES[slotIdx] || ('Skill ' + slotIdx)}`,
                     attrType: null, subType: null, value: null,
                     source: emblemSource, effectType: null, count: 1,
                     isRecordEffect: true, displayOnly: true, allValueConfigIds: [],
+                    _skillAddLv: Number(lv) || 0,
                     _charId: Number(charId),
                     _charName: resolveActorKey('p:' + charId),
                 });

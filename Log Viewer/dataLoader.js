@@ -46,6 +46,9 @@ let serverTotal = Infinity; // server's total logical line count (from meta fram
 let backlogDone = false;    // true once the initial backlog has been fully received
 
 // ─── Level map ────────────────────
+// Entry kinds: effect entries (id → {lt, ld, vc:[{l,v}]} level ladder) and hit
+// entries ("t":"hit", id = hitDamageId → {lt, ld, sp/sa/tp/ta/ap/pi} per-level
+// value arrays written by the DLL's WriteHitDamageLevelMapEntry).
 async function fetchLevelMap(savedLogName) {
     try {
         let url = '/api/levelmap';
@@ -54,6 +57,20 @@ async function fetchLevelMap(savedLogName) {
         const data = await res.json();
         levelMap.clear();
         for (const entry of (data.entries || [])) {
+            if (entry.t === 'hit') {
+                levelMap.set(entry.id, {
+                    t: 'hit',
+                    lt: entry.lt || 0,
+                    ld: entry.ld || 0,
+                    sp: entry.sp || [],
+                    sa: entry.sa || [],
+                    tp: entry.tp || [],
+                    ta: entry.ta || [],
+                    ap: entry.ap || [],
+                    pi: entry.pi || []
+                });
+                continue;
+            }
             levelMap.set(entry.id, {
                 lt: entry.lt || 0,
                 ld: entry.ld || 0,

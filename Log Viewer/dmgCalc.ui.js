@@ -186,7 +186,7 @@ function renderEffectsPanel() {
                     } else if (ef.isPotRow) {
                         valStr = `+${ef.linkPotential.addLv} lv`;
                     } else if (ef.displayOnly) {
-                        valStr = '';
+                        valStr = `+${ef._skillAddLv || 0} lv`;
                     } else {
                         const override = dcGetLevelOverride(ef, ef.side);
                         const raw = override ? override.newValue : ef.value;
@@ -265,10 +265,75 @@ function renderEffectsPanel() {
             }
         }
 
+        // ── Skill Levels ─────────────────────────────────────────────────
+        // Per-character skill-slot levels (the levels skill-scaled hits and
+        // effects resolve against). Same record-lv/bonus/change model as the
+        // potentials: ± steps the slot's `change`, record.js shows the full
+        // breakdown, disabling an emblem skill row drops that emblem's bonus.
+        html += dcRenderSkillLevels();
+
         html += `</div></div>`;
     }
     panel.innerHTML = html;
     dcRenderCharList();
+}
+
+// ─── Skill Levels section ─────────────────────────────────────────────────
+// One collapsible group per character ("<char name> Skills"), one row per
+// skill slot (Normal Attack / Main / Support / Ultimate) showing the live
+// effective level with ± buttons that step the slot's user `change`.
+function dcRenderSkillLevels() {
+    if (dcSkillLevels.size === 0) return '';
+    // Character order: record team first, then any extras in seed order.
+    const byChar = new Map();   // charId -> [st]
+    const seedOrder = [];
+    for (const st of dcSkillLevels.values()) {
+        if (!byChar.has(st.charId)) { byChar.set(st.charId, []); seedOrder.push(st.charId); }
+        byChar.get(st.charId).push(st);
+    }
+    let charIds = seedOrder;
+    const rec = (typeof getOriginRecord === 'function') ? getOriginRecord() : null;
+    if (rec?.team?.length) {
+        const teamIds = rec.team.map(Number).filter(id => byChar.has(id));
+        const rest = seedOrder.filter(id => !teamIds.includes(id));
+        charIds = [...teamIds, ...rest];
+    }
+    let html = `<div class="dc-effects-side-header">Skill Levels</div>`;
+    for (const cid of charIds) {
+        const sts = (byChar.get(cid) || []).slice()
+            .sort((a, b) => SKILL_SLOT_ORDER.indexOf(a.slot) - SKILL_SLOT_ORDER.indexOf(b.slot));
+        if (!sts.length) continue;
+        const cname = sts[0].charName || String(cid);
+        const gkey = `skilllv||${cname}`;
+        // default open — initialize the shared toggle state on first sight so
+        // dcToggleSourceSection's generic flip behaves
+        if (!(gkey in dcSourceOpenStates)) dcSourceOpenStates[gkey] = true;
+        const isOpen = dcSourceOpenStates[gkey] === true;
+        const escapedGkey = gkey.replace(/'/g, "\\'");
+        html += `<div class="dc-source-toggle" onclick="dcToggleSourceSection('${escapedGkey}')">`
+            + `<span class="dc-source-arrow">${isOpen ? '▾' : '▸'}</span><span>${esc(cname)} Skills</span>`
+            + `<span class="dc-source-count">${sts.length}</span></div>`;
+        if (!isOpen) continue;
+        for (const st of sts) {
+            const eff = dcSkillEffectiveLevel(st);
+            const bonus = dcSkillRowBonus(st);
+            const max = dcSkillMaxLevel(st);
+            const change = st.change || 0;
+            const name = SKILL_SLOT_NAMES[st.slot] || ('Skill ' + st.slot);
+            const marker = (bonus > 0 ? ` <span class="rec-bonus">+${bonus}</span>` : '')
+                         + (change !== 0 ? ` <span class="rec-bonus">${change > 0 ? '+' : ''}${change}✎</span>` : '');
+            const title = `Record ${st.recordLv} + bonus ${bonus} + change ${change} = ${eff} (in-game max ${st.maxLv}, sim cap ${max})`
+                + ' — ± steps the user change for what-if simulation; reset on the Record page';
+            html += `<div class="dc-effect-row" title="${esc(title)}">`
+                + `<span class="dc-effect-row-name">${esc(name)}</span>`
+                + `<span class="dc-effect-row-val">Lv ${eff}/${max}${marker}</span>`
+                + `<span class="dc-effect-row-lvl">`
+                + `<button class="dc-lvl-btn${eff <= 0 ? ' dc-lvl-disabled' : ''}" onclick="dcChangeSkillLevel(${cid},${st.slot},-1)" title="Decrease skill level">−</button>`
+                + `<button class="dc-lvl-btn${eff >= max ? ' dc-lvl-disabled' : ''}" onclick="dcChangeSkillLevel(${cid},${st.slot},1)" title="Increase skill level">+</button>`
+                + `</span></div>`;
+        }
+    }
+    return html;
 }
 
 // ─── Per-character disable toggles ────────────────────────────────────────────
@@ -636,10 +701,55 @@ window.dcResetPotLevelChange = function(potId) {
     dcNotifyAnalytics();
 };
 
+// ± a character's skill-slot level (Skill Levels section / skill-scaled
+// effect rows). Steps the slot's user `change` — every skill-scaled hit
+// multiplier and effect of that slot moves together.
+window.dcChangeSkillLevel = function(charId, slot, direction) {
+    const st = dcSkillLevels.get(`${Number(charId)}:${Number(slot)}`);
+    if (!st) return;
+    const max = dcSkillMaxLevel(st);
+    const curL = dcSkillEffectiveLevel(st);
+    const newL = Math.min(Math.max(curL + direction, 0), max);
+    if (newL === curL) return;
+    st.change = (st.change || 0) + (newL - curL);
+    renderEffectsPanel();
+    renderFormulaBar();
+    dcRender();
+    dcRefreshEI();
+    dcNotifyAnalytics();
+};
+
+// Reset a skill's user change to 0 (record page click).
+window.dcResetSkillLevelChange = function(charId, slot) {
+    const st = dcSkillLevels.get(`${Number(charId)}:${Number(slot)}`);
+    if (!st || !st.change) return;
+    st.change = 0;
+    renderEffectsPanel();
+    renderFormulaBar();
+    dcRender();
+    dcRefreshEI();
+    dcNotifyAnalytics();
+};
+
 window.dcChangeEffectLevel = function(key, direction) {
     const effects = dcCollectAttrFixEffects(dcFiltered);
     const ef = effects.find(e => e.key === key);
     if (!ef || ef.configId == null) return;
+
+    // Skill-scaled effect (levelTypeData 3): its level lives in the owning
+    // character's skill level table — resolve the shared slot 2 by the
+    // attacker's deployment role, then step that slot's CHANGE so the effect
+    // and its hits move together.
+    if (ef.levelTypeData === 3 && ef.levelData != null) {
+        // owner-based: effects scale with their owner's skill (see
+        // dcGetLevelOverride); once-attr rows with the hit's attacker
+        const cid = ef.fromAttrDict ? (ef._charId ?? null) : (dcEffectOwnerCharId(ef.configId) ?? ef._charId);
+        if (cid != null) {
+            const slot = dcSkillSlotFor(ef.levelData, null, dcAttackerRoleSlot(cid));
+            dcChangeSkillLevel(cid, slot, direction);
+            return;
+        }
+    }
 
     // Potential entry: its level lives in the potential's level table
     // (recordLv + bonus + change) — step the CHANGE and every effect of that
