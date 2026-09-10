@@ -30,8 +30,13 @@ static std::atomic<int64_t>   g_LastLogicTickWallMs{0};
 // Level map: configId → {levelTypeData, levelData, allValueConfigIds}
 // Written once per unique configId to a sidecar file to avoid repeating
 // these deterministic values in every hit event.
+// Hit configs are a second entry kind ("t":"hit") keyed by hitDamageId:
+// {id, t:"hit", lt, ld, sp/sa/tp/ta/ap/pi} — the per-level value ARRAYS
+// (HitDamage has no per-level value ids; levels index into the arrays, see
+// CommonHelper_CalculateNormalDamage, decompiled.c:3612907).
 static std::string                  g_LevelMapPath;
 static std::unordered_set<int32_t>  g_LevelMapKnown;
+static std::unordered_set<int32_t>  g_HitLevelMapKnown;
 
 // =============================================================================
 //  GAME TIME
@@ -169,13 +174,23 @@ void debugEffectLog(const char* fmt, ...) {
 // =============================================================================
 //  LEVEL MAP
 // =============================================================================
-// Write a new entry to the levelMap file as a proper JSON array.
-// Reads the existing file, appends the entry, and rewrites.
+// Read an int RepeatedField into a JSON array (protobuf RepeatedField<int> is
+// { array: System_Int32_array*, count } — il2cpp.h RepeatedField_int__Fields).
+static json ReadRepeatedFieldInt(Google_Protobuf_Collections_RepeatedField_int__o* rf) {
+    json arr = json::array();
+    if (!rf || !rf->fields.array) return arr;
+    int32_t n = rf->fields.count;
+    if (n < 0) n = 0;
+    if ((uint32_t)n > rf->fields.array->max_length) n = (int32_t)rf->fields.array->max_length;
+    for (int32_t i = 0; i < n; ++i) arr.push_back(rf->fields.array->m_Items[i]);
+    return arr;
+}
 
-void WriteLevelMapEntry(int32_t configId, int32_t levelTypeData, int32_t levelData, const json& allValueConfigIds) {
-    if (configId <= 0) return;
-    if (g_LevelMapKnown.count(configId)) return;
-    g_LevelMapKnown.insert(configId);
+// Shared append: read the JSON array file, push `entry`, rewrite.
+static void AppendLevelMapEntry(const json& entry, int32_t id, std::unordered_set<int32_t>& known) {
+    if (id <= 0) return;
+    if (known.count(id)) return;
+    known.insert(id);
 
     // Read existing JSON array from file
     json arr = json::array();
@@ -196,11 +211,6 @@ void WriteLevelMapEntry(int32_t configId, int32_t levelTypeData, int32_t levelDa
     }
 
     // Append new entry
-    json entry;
-    entry["id"]  = configId;
-    entry["lt"]  = levelTypeData;
-    entry["ld"]  = levelData;
-    entry["vc"]  = allValueConfigIds;
     arr.push_back(entry);
 
     // Rewrite file
@@ -209,6 +219,41 @@ void WriteLevelMapEntry(int32_t configId, int32_t levelTypeData, int32_t levelDa
         fprintf(f, "%s", arr.dump().c_str());
         fclose(f);
     }
+}
+
+void WriteLevelMapEntry(int32_t configId, int32_t levelTypeData, int32_t levelData, const json& allValueConfigIds) {
+    if (configId <= 0) return;
+
+    json entry;
+    entry["id"]  = configId;
+    entry["lt"]  = levelTypeData;
+    entry["ld"]  = levelData;
+    entry["vc"]  = allValueConfigIds;
+    AppendLevelMapEntry(entry, configId, g_LevelMapKnown);
+}
+
+// Capture a hit config's per-level value arrays into the level map, once per
+// unique hitDamageId. Levels index the arrays: for levelTypeData 1/2/3 the
+// game does skillLevel-1 before indexing (decompiled.c:3853176), and the hit
+// log's skillLevel field is that raw level + 1 — so for the viewer,
+// sp[loggedSkillLevel - 1] reproduces the game's pick.
+void WriteHitDamageLevelMapEntry(const Nova_Client_HitDamage_o* hitDamageConfig) {
+    if (!hitDamageConfig) return;
+    const auto& f = hitDamageConfig->fields;
+    if (f.id_ <= 0) return;
+
+    json entry;
+    entry["id"] = f.id_;
+    entry["t"]  = "hit";
+    entry["lt"] = f.levelTypeData_;
+    entry["ld"] = f.levelData_;
+    entry["sp"] = ReadRepeatedFieldInt(f.skillPercentAmend_);
+    entry["sa"] = ReadRepeatedFieldInt(f.skillAbsAmend_);
+    entry["tp"] = ReadRepeatedFieldInt(f.talentPercentAmend_);
+    entry["ta"] = ReadRepeatedFieldInt(f.talentAbsAmend_);
+    entry["ap"] = ReadRepeatedFieldInt(f.additionalPercent_);
+    entry["pi"] = ReadRepeatedFieldInt(f.perkIntensity_);
+    AppendLevelMapEntry(entry, f.id_, g_HitLevelMapKnown);
 }
 
 // =============================================================================
@@ -1212,6 +1257,11 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
     if (hitDamageConfig) {
         const auto& f = hitDamageConfig->fields;
 
+        // Capture the hit's per-level value arrays into the level map (once
+        // per unique hitDamageId) — lets the viewer rescale hits at other
+        // skill/perk levels without needing HitDamage.json.
+        WriteHitDamageLevelMapEntry(hitDamageConfig);
+
         json hitCfg;
         hitCfg["hitDamageId"]   = f.id_;
         hitCfg["levelTypeData"] = f.levelTypeData_;
@@ -1656,6 +1706,27 @@ local ok, res = pcall(function()
         end
       end
     end)
+    -- record skill levels: [skillSlotType, recordLevel, effectiveLevel, maxLevel]
+    -- slot order in the added-level array follows GetSkillIds (PlayerCharData.lua:296):
+    --   1=NormalAtk(slot 5) 2=SkillId(slot 2) 3=AssistSkillId(slot 3) 4=UltimateId(slot 4)
+    -- record level from GetSkillLevel (PlayerCharData.lua:308, keyed by skillSlotType,
+    -- trial chars included); effective from GetCharSkillAddedLevel (lua:423,
+    -- base + talent + emblem/equipment enhance); max from GetCharSkillMaxLevel
+    -- (lua:411, nSlot is the 1..4 array index, see SkillListCtrl.lua:44-47).
+    local skillParts = {}
+    pcall(function()
+      local baseLv = PlayerData.Char:GetSkillLevel(cid) or {}
+      local effLv = PlayerData.Char:GetCharSkillAddedLevel(cid) or {}
+      local slotFor = { [1]=5, [2]=2, [3]=3, [4]=4 }
+      for i = 1, 4 do
+        local slot = slotFor[i]
+        local rec = tonumber(baseLv[slot]) or 1
+        local eff = tonumber(effLv[i]) or rec
+        local maxLv = 0
+        pcall(function() maxLv = tonumber(PlayerData.Char:GetCharSkillMaxLevel(cid, i)) or 0 end)
+        skillParts[#skillParts+1] = '['..tostring(slot)..','..tostring(rec)..','..tostring(eff)..','..tostring(maxLv)..']'
+      end
+    end)
     local parts = {
       '"charId":'..tostring(cid),
       '"level":'..tostring(nLevel),
@@ -1664,6 +1735,7 @@ local ok, res = pcall(function()
       '"disc":{'..table.concat(discParts, ',')..'}',
       '"build":{'..table.concat(buildParts, ',')..'}',
       '"pots":['..table.concat(potParts, ',')..']',
+      '"skills":['..table.concat(skillParts, ',')..']',
       '"gems":['..table.concat(gems, ',')..']',
     }
     if eBase then parts[#parts+1] = '"errBase":"'..sq(eBase)..'"' end
@@ -2057,8 +2129,12 @@ void InitializeLogger() {
                     json arr = json::parse(buf);
                     if (arr.is_array()) {
                         for (const auto& entry : arr) {
-                            if (entry.contains("id"))
-                                g_LevelMapKnown.insert(entry["id"].get<int32_t>());
+                            if (!entry.contains("id")) continue;
+                            const int32_t id = entry["id"].get<int32_t>();
+                            if (entry.contains("t") && entry["t"] == "hit")
+                                g_HitLevelMapKnown.insert(id);
+                            else
+                                g_LevelMapKnown.insert(id);
                         }
                     }
                 } catch (...) {}

@@ -25,7 +25,6 @@ struct GameDataController_o;
 struct Nova_Client_OnceAdditionalAttribute_o;
 struct System_Collections_Generic_Dictionary_int__int__o;
 struct ActorAdditionalAttrInfo_o;
-
 // Function pointer types shared between proxy.cpp and logging.cpp
 using FnGetOnceAttr                      = Nova_Client_OnceAdditionalAttribute_o* (__fastcall*)(GameDataController_o*, int32_t, void*);
 using FnGetValueConfigId                 = int32_t                                (__fastcall*)(AdventureActor_o*, int32_t, int32_t, int32_t, void*);
@@ -201,6 +200,8 @@ void BuildHitJson(
     const std::string* snapshotTime = nullptr,
     const std::unordered_set<int32_t>* appliedHittedAttrFix = nullptr);
 void BuildSkillCastJson(int32_t skillId);
+void WriteLevelMapEntry(int32_t configId, int32_t levelTypeData, int32_t levelData, const json& allValueConfigIds);
+void WriteHitDamageLevelMapEntry(const Nova_Client_HitDamage_o* hitDamageConfig);
 void BuildResetJson();
 
 // Utility

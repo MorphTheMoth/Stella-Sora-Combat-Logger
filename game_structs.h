@@ -35,6 +35,20 @@ struct Il2CppRuntimeInterfaceOffsetPair
     int32_t offset;
 };
 
+// Google protobuf RepeatedField<int> — { array: System_Int32_array*, count }
+// (il2cpp.h: Google_Protobuf_Collections_RepeatedField_int__Fields). Used to
+// read HitDamage's per-level value arrays (skillPercentAmend_ etc.).
+struct Google_Protobuf_Collections_RepeatedField_int__c;
+struct __declspec(align(8)) Google_Protobuf_Collections_RepeatedField_int__Fields {
+	struct System_Int32_array* array;
+	int32_t count;
+};
+struct Google_Protobuf_Collections_RepeatedField_int__o {
+	Google_Protobuf_Collections_RepeatedField_int__c *klass;
+	void *monitor;
+	Google_Protobuf_Collections_RepeatedField_int__Fields fields;
+};
+
 struct Il2CppClass_1
 {
     void* image;
