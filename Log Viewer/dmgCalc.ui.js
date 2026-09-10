@@ -746,6 +746,11 @@ window.dcChangeEffectLevel = function(key, direction) {
         const cid = ef.fromAttrDict ? (ef._charId ?? null) : (dcEffectOwnerCharId(ef.configId) ?? ef._charId);
         if (cid != null) {
             const slot = dcSkillSlotFor(ef.levelData, null, dcAttackerRoleSlot(cid));
+            // Lazy record reconstruction (logs without a record log): make sure
+            // the slot has a level-table entry before stepping it.
+            dcEnsureSkillLevel(cid, slot,
+                (ef.valueConfigId != null && ef.valueConfigId > ef.configId)
+                    ? Math.round((ef.valueConfigId - ef.configId) / 10) : 0);
             dcChangeSkillLevel(cid, slot, direction);
             return;
         }
@@ -757,15 +762,13 @@ window.dcChangeEffectLevel = function(key, direction) {
     if (ef.levelSource != null) {
         let st = dcPotLevels.get(ef.levelSource);
         if (!st) {
-            // potential not in the record — derive its base from the logged entry
+            // potential not in the record — synthesize an entry from the logged
+            // level (lazy record reconstruction for logs without a record log)
             const lo0 = ef.configId - (ef.configId % 1000);
-            let loggedL = 0;
-            if (ef.valueConfigId != null && ef.valueConfigId > lo0) {
-                loggedL = Math.floor(((ef.valueConfigId - lo0) % 100) / 10);
-            }
-            if (loggedL <= 0) return;
-            st = { potId: ef.levelSource, charId: null, recordLv: loggedL, bonus: 0, change: 0 };
-            dcPotLevels.set(ef.levelSource, st);
+            const loggedL = (ef.valueConfigId != null && ef.valueConfigId > lo0)
+                ? Math.floor(((ef.valueConfigId - lo0) % 100) / 10) : 0;
+            st = dcEnsurePotLevel(ef.levelSource, loggedL, ef._charId);
+            if (!st) return;
         }
         const curL = dcPotEffectiveLevel(st);
         const newL = Math.min(Math.max(curL + direction, 0), 9);

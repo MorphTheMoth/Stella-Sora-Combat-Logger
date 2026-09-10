@@ -21,11 +21,22 @@ function recordRender() {
 
     const rec = getOriginRecord();
     if (!rec || !rec.chars || !rec.chars.length) {
+        // Logs without a record log: render the record reconstructed from
+        // combat (lazy level reconstruction from parsed potential/skill rows
+        // and level-scaled hits).
+        const syn = (typeof dcSyntheticRecord === 'function') ? dcSyntheticRecord() : null;
+        if (syn) {
+            renderRecordData(panel, syn, true);
+            return;
+        }
         panel.innerHTML = '<div class="rec-empty">No record data yet — enter a Boss Blitz room ' +
             '(the logger writes one Origin entry per room, right after the Reset).</div>';
         return;
     }
+    renderRecordData(panel, rec, false);
+}
 
+function renderRecordData(panel, rec, synthetic) {
     const ifp = rec.ifp || 1e-4;
     const pctMap = rec.pct || {};
 
@@ -58,12 +69,13 @@ function recordRender() {
     const html = [];
     const builds = [];
     html.push('<div class="rec-scroll">');
-    html.push('<div class="rec-header">Boss Blitz Record' +
-        (rec.mode ? ` <span class="rec-mode">(${rec.mode})</span>` : '') + '</div>');
+    html.push('<div class="rec-header">' + (synthetic
+        ? 'Reconstructed Record <span class="rec-mode">(from combat log — no record entry in this log)</span>'
+        : 'Boss Blitz Record' + (rec.mode ? ` <span class="rec-mode">(${rec.mode})</span>` : '')) + '</div>');
 
     for (const ch of seq) {
         const cid = String(ch.charId);
-        const charName = resolveActorKey('p:' + cid);
+        const charName = cid === '0' ? 'Unknown' : resolveActorKey('p:' + cid);
         const lvl = ch.level != null ? `Lv ${ch.level}` : '';
         const adv = ch.advance != null && ch.advance > 0 ? ` · Adv ${ch.advance}` : '';
 

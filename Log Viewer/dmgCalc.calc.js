@@ -79,6 +79,13 @@ function dcRebuildPotLevels() {
             });
         }
     }
+    // Logs without a record log: resurrect the synthetic entries created by
+    // the lazy record reconstruction (dcEnsurePotLevel) — the record loop
+    // only repopulates keys the real record carries, and dropping the rest
+    // would destroy the user's pending ± changes on every collection.
+    for (const [potId, old] of prev) {
+        if (!dcPotLevels.has(potId)) dcPotLevels.set(potId, old);
+    }
 }
 
 // Effective level of a potential: record + bonus + user change, clamped 0..9.
@@ -95,6 +102,115 @@ function dcPotEffectiveLevel(st, disabledSet) {
 window.dcPotLevelInfo = function (potId) {
     const st = dcPotLevels.get(Number(potId));
     return st ? { recordLv: st.recordLv, bonus: st.bonus, change: st.change || 0 } : null;
+};
+
+// ── Lazy record reconstruction (logs without a record log) ────────────────
+// Old logs carry no Origin event, so the level tables start empty and the ±
+// buttons have nothing to step. The first time a row whose level scales with
+// a potential / skill slot is parsed, synthesize its level-table entry with
+// the row's logged level as Record Lv (no bonus rows). Real record data
+// always wins — dcRebuild* runs before collection and existing entries are
+// kept as-is.
+function dcEnsurePotLevel(potId, loggedL, charId) {
+    if (potId == null) return null;
+    let st = dcPotLevels.get(potId);
+    if (!st && loggedL > 0) {
+        st = { potId, charId: charId ?? null, recordLv: loggedL, bonus: 0, change: 0 };
+        dcPotLevels.set(potId, st);
+    }
+    return st ?? null;
+}
+
+function dcEnsureSkillLevel(charId, slot, loggedL) {
+    if (charId == null || slot == null) return null;
+    const key = `${charId}:${slot}`;
+    let st = dcSkillLevels.get(key);
+    if (!st && loggedL > 0) {
+        st = {
+            charId, slot,
+            charName: (typeof resolveActorKey === 'function') ? resolveActorKey('p:' + charId) : String(charId),
+            recordLv: loggedL,
+            bonusByRow: [],
+            maxLv: 0,   // unknown → dcSkillMaxLevel falls back to the sim cap
+            change: 0,
+        };
+        dcSkillLevels.set(key, st);
+    }
+    return st ?? null;
+}
+
+// Full reset of the dmg-calc simulation state — called on log swap / clear:
+// level tables, disabled rows, and per-entry level overrides belong to the
+// opened log and must not leak into another one (dcRebuild* repopulates the
+// tables from the new log's record, if it has one).
+window.dcResetSimState = function () {
+    dcPotLevels.clear();
+    dcSkillLevels.clear();
+    if (typeof dcEffectsDisabled !== 'undefined') dcEffectsDisabled.clear();
+    if (typeof dcEffectLevelOverrides !== 'undefined') dcEffectLevelOverrides.clear();
+};
+
+// Synthetic record for logs without a record log — shaped like an Origin
+// event's record so record.js can render it with the same per-character pot
+// / skill tables. Sources: the effect collection (potential / skill-scaled
+// rows) and the hits (levelTypeData 1/3), run through the lazy
+// reconstruction so the tables are populated even if the dmg-calc tab has
+// never been opened. Real record data takes precedence (record.js only
+// falls back to this when no Origin event exists).
+window.dcSyntheticRecord = function () {
+    if (typeof dcCollectAttrFixEffects === 'function' && typeof dcFiltered !== 'undefined') {
+        try {
+            for (const ef of dcCollectAttrFixEffects(dcFiltered)) {
+                if (ef.configId == null) continue;
+                const lo0 = ef.configId - (ef.configId % 1000);
+                if (ef.levelSource != null && ef.valueConfigId != null && ef.valueConfigId > lo0) {
+                    dcEnsurePotLevel(ef.levelSource,
+                        Math.floor(((ef.valueConfigId - lo0) % 100) / 10), ef._charId);
+                }
+                if (ef.levelTypeData === 3 && ef.valueConfigId != null && ef.valueConfigId > ef.configId) {
+                    const cid = ef.fromAttrDict ? (ef._charId ?? null)
+                        : (dcEffectOwnerCharId(ef.configId) ?? ef._charId);
+                    if (cid != null) {
+                        dcEnsureSkillLevel(cid,
+                            dcSkillSlotFor(ef.levelData, null, dcAttackerRoleSlot(cid)),
+                            Math.round((ef.valueConfigId - ef.configId) / 10));
+                    }
+                }
+            }
+            for (const ev of dcFiltered) {
+                const hc = ev.HitConfig;
+                if (!hc || (hc.levelTypeData !== 1 && hc.levelTypeData !== 3)) continue;
+                const loggedL = ev.DamageParams?.skillLevel;
+                if (!(loggedL > 0)) continue;
+                const cid = dcEventCharId(ev);
+                if (hc.levelTypeData === 3) {
+                    if (cid != null) {
+                        dcEnsureSkillLevel(cid, dcSkillSlotFor(hc.levelData, hc.mainOrSupport), loggedL);
+                    }
+                } else if (hc.levelData != null) {
+                    dcEnsurePotLevel(hc.levelData, loggedL, cid);
+                }
+            }
+        } catch (e) { /* collection needs a loaded log — ignore */ }
+    }
+    if (!dcPotLevels.size && !dcSkillLevels.size) return null;
+    const chars = new Map();   // "charId" -> { charId, pots: [], skills: [] }
+    const charFor = (cid) => {
+        const key = String(cid == null ? 0 : cid);
+        let ch = chars.get(key);
+        if (!ch) {
+            ch = { charId: cid == null ? 0 : Number(cid), pots: [], skills: [] };
+            chars.set(key, ch);
+        }
+        return ch;
+    };
+    for (const st of dcPotLevels.values()) {
+        charFor(st.charId).pots.push([st.potId, st.recordLv, st.recordLv + (st.bonus || 0), 9]);
+    }
+    for (const st of dcSkillLevels.values()) {
+        charFor(st.charId).skills.push([st.slot, st.recordLv, st.recordLv, 0]);
+    }
+    return { synthetic: true, team: [...chars.keys()].map(Number), chars: [...chars.values()] };
 };
 
 // e: raw effect entry or collected row (configId, valueConfigId)
@@ -151,9 +267,12 @@ function dcGetLevelOverride(e, side, disabledSet, charId, fromAttrDict) {
         // role. (The config's own MainOrSupport field is the Lua display path's
         // disambiguator, QueryLevelInfo lua:1596; combat ignores it.)
         const skillSlot = dcSkillSlotFor(rawSlot, null, dcAttackerRoleSlot(cid));
-        const st = dcSkillLevels.get(`${cid}:${skillSlot}`);
-        if (!st) return null;
         const curL = Math.round((e.valueConfigId - e.configId) / 10);
+        // Lazy record reconstruction: old logs without a record log have no
+        // entry for this slot — synthesize one with the logged level as
+        // Record Lv so the ± buttons have a base to step from.
+        const st = dcEnsureSkillLevel(cid, skillSlot, curL);
+        if (!st) return null;
         const L = dcSkillEffectiveLevel(st, disabledSet);
         if (L === curL || L <= 0) return null;
         const newVcId = e.configId + L * 10;
@@ -178,7 +297,7 @@ function dcGetLevelOverride(e, side, disabledSet, charId, fromAttrDict) {
     if (e.valueConfigId == null || e.valueConfigId <= lo) return null;
     const rel = e.valueConfigId - lo;
     const curL = Math.floor((rel % 100) / 10), V = rel % 10, P = Math.floor(rel / 100);
-    const st = dcPotLevels.get(potId);
+    const st = dcEnsurePotLevel(potId, curL, e._charId);   // lazy record reconstruction
     const L = st ? dcPotEffectiveLevel(st, disabledSet) : curL;   // no record row → logged level
     if (L === curL) return null;
     let toV = 0, newVcId = 0;
@@ -289,6 +408,12 @@ function dcRebuildSkillLevels() {
                 change: old ? (old.change || 0) : 0,
             });
         }
+    }
+    // Logs without a record log: resurrect the synthetic entries created by
+    // the lazy record reconstruction (dcEnsureSkillLevel) — same rationale as
+    // dcRebuildPotLevels above.
+    for (const [key, old] of prev) {
+        if (!dcSkillLevels.has(key)) dcSkillLevels.set(key, old);
     }
 }
 
@@ -1014,8 +1139,16 @@ function calcHitFields(ev, statOverrides, dcEffectsDisabled, dcEffectLevelOverri
     // → keep the logged value.
     {
         const charId = dcEventCharId(ev);
-        const L = dcHitScalingLevel(hc, charId, dcEffectsDisabled);
         const loggedL = dp.skillLevel;
+        // Lazy record reconstruction (logs without a record log): the first
+        // level-scaled hit parsed synthesizes its level-table entry with the
+        // logged level as Record Lv (skill slot / perk potential).
+        if (loggedL > 0 && hc.levelTypeData === 3 && charId != null) {
+            dcEnsureSkillLevel(charId, dcSkillSlotFor(hc.levelData, hc.mainOrSupport), loggedL);
+        } else if (loggedL > 0 && hc.levelTypeData === 1 && hc.levelData != null) {
+            dcEnsurePotLevel(hc.levelData, loggedL, charId);
+        }
+        const L = dcHitScalingLevel(hc, charId, dcEffectsDisabled);
         if (L != null && loggedL != null && L !== loggedL) {
             if (L <= 0) {
                 // level 0 = source disabled (perk/skill turned off) → no hit

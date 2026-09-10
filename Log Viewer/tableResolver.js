@@ -209,6 +209,18 @@ const GEM_SKILL_SLOT_NAMES = { 1: 'Normal Atk', 2: 'Main Skill', 3: 'Support Ski
 
 function getOriginRecord() { return originRecord; }
 
+// Full reset of record-derived viewer state — called on log swap / clear /
+// cut: the Origin event and everything built from it must not leak into
+// another log (Record tab, level tables, disabled rows, level overrides).
+// The new log's Origin event repopulates everything it carries on reparse.
+window.resetRecordState = function () {
+    originRecord = null;
+    if (typeof dcResetSimState === 'function') dcResetSimState();
+    if (typeof eiInvalidateCache === 'function') eiInvalidateCache();
+    const panel = document.getElementById('recordPanel');
+    if (panel && panel.classList.contains('visible') && window.Record) window.Record.render();
+};
+
 function resolveRecordDiscName(discId) {
     const id = String(discId);
     return discLangNames.get(id) || discLangNames.get('21' + id) || `Disc ${id}`;

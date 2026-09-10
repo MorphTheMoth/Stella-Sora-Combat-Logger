@@ -188,6 +188,10 @@ async function loadSavedLogsList() {
 
 // Wipe client-side log state (used by saved-log switch, clear, cut, resync).
 function resetClientState() {
+    // Record + dmg-calc sim state belong to the opened log — drop them so a
+    // previously opened log's record never survives a swap (the Origin event
+    // of the new log repopulates everything it carries on reparse).
+    if (typeof resetRecordState === 'function') resetRecordState();
     allEvents = [];
     filtered = [];
     foldedCount = 0;
