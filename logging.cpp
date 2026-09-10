@@ -1394,8 +1394,6 @@ static FnIl2CppClassFromIl2CppType    p_class_from_type       = nullptr;
 static FnIl2CppArrayNew               p_array_new             = nullptr;
 static FnIl2CppArrayClassGet          p_array_class_get       = nullptr;
 
-// The chunk as UTF-8 bytes (for the DoString(byte[]) overload) — built once.
-static void* g_OriginChunkBytes = nullptr;
 
 static bool EnsureIl2CppExports() {
     static bool ready = false;
@@ -1513,6 +1511,8 @@ local ok, res = pcall(function()
   if not isBlitz then return '' end
 
   local CL = SB.curLevel
+  local bd = nil   -- record detail: tbPotentials / tbSecondarySkill / tbNotes
+  pcall(function() bd = PlayerData.Build:GetBuildData(CL.mapBuildData.nBuildId) end)
   local team, charData = {}, {}
   for _, cid in ipairs(CL.tbCharId) do
     team[#team+1] = tostring(cid)
@@ -1642,12 +1642,17 @@ local ok, res = pcall(function()
     local okG, eG2 = pcall(function() gems = gemOf(cid) end)
     if not okG then eGem = eG2 end
 
-    local potBaseParts = {}
+    -- record potentials: [potentialId, recordLevel, effectiveLevel] where
+    -- effective = record + talent/equipment enhancement (PlayerBuildData.lua:292-305)
+    local potParts = {}
     pcall(function()
-      local pb = mc and mc.potBase or nil
-      if pb then
-        for pid, lvl in pairs(pb) do
-          potBaseParts[#potBaseParts+1] = '"'..pid..'":'..tostring(lvl)
+      local addLv = PlayerData.Char:GetCharEnhancedPotential(cid)
+      local list = bd and bd.tbPotentials and bd.tbPotentials[cid] or nil
+      if list then
+        for _, p in ipairs(list) do
+          local eff = p.nLevel
+          if addLv and addLv[p.nPotentialId] then eff = eff + addLv[p.nPotentialId] end
+          potParts[#potParts+1] = '['..tostring(p.nPotentialId)..','..tostring(p.nLevel)..','..tostring(eff)..']'
         end
       end
     end)
@@ -1658,13 +1663,26 @@ local ok, res = pcall(function()
       '"base":{'..table.concat(baseParts, ',')..'}',
       '"disc":{'..table.concat(discParts, ',')..'}',
       '"build":{'..table.concat(buildParts, ',')..'}',
-      '"potBase":{'..table.concat(potBaseParts, ',')..'}',
+      '"pots":['..table.concat(potParts, ',')..']',
       '"gems":['..table.concat(gems, ',')..']',
     }
     if eBase then parts[#parts+1] = '"errBase":"'..sq(eBase)..'"' end
     if eGem then parts[#parts+1] = '"errGems":"'..sq(eGem)..'"' end
     charArr[#charArr+1] = '{'..table.concat(parts, ',')..'}'
   end
+
+  -- record-wide: active secondary skills + sub-note skill counts
+  local secArr, noteArr = {}, {}
+  pcall(function()
+    for _, s in ipairs(bd and bd.tbSecondarySkill or {}) do
+      secArr[#secArr+1] = tostring(s)
+    end
+  end)
+  pcall(function()
+    for tid, qty in pairs(bd and bd.tbNotes or {}) do
+      noteArr[#noteArr+1] = '['..tostring(tid)..','..tostring(qty)..']'
+    end
+  end)
 
   local teamArr = table.concat(team, ',')
   local discArr = table.concat(discIds, ',')
@@ -1678,6 +1696,8 @@ local ok, res = pcall(function()
   end
   return '{"mode":"bossblitz","ifp":'..sn(IFP)..',"pct":{'..table.concat(pct, ',')..'}'
        ..',"team":['..teamArr..'],"discs":['..discArr..']'
+       ..',"secondarySkills":['..table.concat(secArr, ',')..']'
+       ..',"notes":['..table.concat(noteArr, ',')..']'
        ..',"discStats":['..table.concat(discObjArr, ',')..']'
        ..',"chars":['..table.concat(charArr, ',')..']}'
 end)
@@ -1746,21 +1766,20 @@ static std::string RunLuaOriginCollector() {
             p0name ? p0name : "?", wantsBytes ? "byte[]" : "string");
     }
 
-    // Build the chunk argument for the detected overload.
+    // Build the chunk argument for the detected overload. NOTE: allocated fresh
+    // on every call — il2cpp arrays are GC-tracked and a raw pointer with no
+    // managed reference gets collected between calls (dangling → parse garbage).
     void* chunkArg = nullptr;
     if (wantsBytes) {
-        if (!g_OriginChunkBytes) {
-            void* byteCls = FindIl2CppImageClass("Byte", "System", nullptr, 0, nullptr);
-            if (!byteCls) { log("[origin] System.Byte class not found"); return ""; }
-            void* arrCls = p_array_class_get(byteCls);
-            if (!arrCls) { log("[origin] byte[] class not found"); return ""; }
-            size_t len = strlen(kOriginChunk);
-            void* arr = p_array_new(arrCls, (il2cpp_array_size_t)len);
-            if (!arr) { log("[origin] byte[] alloc failed"); return ""; }
-            memcpy(reinterpret_cast<Il2CppObjectArrayRef*>(arr)->m_Items, kOriginChunk, len);
-            g_OriginChunkBytes = arr;
-        }
-        chunkArg = g_OriginChunkBytes;
+        void* byteCls = FindIl2CppImageClass("Byte", "System", nullptr, 0, nullptr);
+        if (!byteCls) { log("[origin] System.Byte class not found"); return ""; }
+        void* arrCls = p_array_class_get(byteCls);
+        if (!arrCls) { log("[origin] byte[] class not found"); return ""; }
+        size_t len = strlen(kOriginChunk);
+        void* arr = p_array_new(arrCls, (il2cpp_array_size_t)len);
+        if (!arr) { log("[origin] byte[] alloc failed"); return ""; }
+        memcpy(reinterpret_cast<Il2CppObjectArrayRef*>(arr)->m_Items, kOriginChunk, len);
+        chunkArg = arr;
     } else {
         chunkArg = p_string_new(kOriginChunk);
     }
