@@ -12,6 +12,10 @@
 #include <combaseapi.h>
 #include <cmath>
 #include <unordered_map>
+#include <vector>
+#include <algorithm>
+#include <atomic>
+#include <string>
 
 
 
@@ -109,6 +113,12 @@ void OnUpdateLogicTick() {
 }
 
 void OnBattleStart() {
+    if (LuaClockOwnsResetLog()) {
+        // Boss Blitz: the countdown path (LuaClockRunStart) already re-based the
+        // meter clock on the run start — don't clobber it with battle-start.
+        log("[time] OnBattleStart fired; ignored (Lua clock owns the baseline)");
+        return;
+    }
     g_CombatStartWallMs.store(0, std::memory_order_relaxed);
     g_CombatStartTimeFP.store(g_GameTimeFP.load(std::memory_order_relaxed), std::memory_order_relaxed);
     log("[time] OnBattleStart fired; combat start=%s", gameTime().c_str());
@@ -770,7 +780,6 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
     // Pre-build key set from GDC's EffectValue_Map for fast level-enumeration lookups
     std::unordered_set<int32_t> effectValueKeys;
     if (gdc && gdc->fields.EffectValue_Map) {
-        static bool once = false;
         effectValueKeys = CollectDictKeys(gdc->fields.EffectValue_Map);
     } else {
         static bool once2 = false;
@@ -1777,7 +1786,7 @@ if ok then return res end
 return 'ERR:' .. (tostring(res):gsub('[%c"\\]', '?'))
 )lua";
 
-static std::string RunLuaOriginCollector() {
+static std::string RunLuaDoString(const char* chunk, const char* label) {
     if (!EnsureIl2CppExports()) return "";
 
     static void* mgrKlass        = nullptr;
@@ -1847,20 +1856,20 @@ static std::string RunLuaOriginCollector() {
         if (!byteCls) { log("[origin] System.Byte class not found"); return ""; }
         void* arrCls = p_array_class_get(byteCls);
         if (!arrCls) { log("[origin] byte[] class not found"); return ""; }
-        size_t len = strlen(kOriginChunk);
+        size_t len = strlen(chunk);
         void* arr = p_array_new(arrCls, (il2cpp_array_size_t)len);
         if (!arr) { log("[origin] byte[] alloc failed"); return ""; }
-        memcpy(reinterpret_cast<Il2CppObjectArrayRef*>(arr)->m_Items, kOriginChunk, len);
+        memcpy(reinterpret_cast<Il2CppObjectArrayRef*>(arr)->m_Items, chunk, len);
         chunkArg = arr;
     } else {
-        chunkArg = p_string_new(kOriginChunk);
+        chunkArg = p_string_new(chunk);
     }
 
     // The main thread is attached already; attach defensively if somehow not.
     if (!p_thread_current()) p_thread_attach(p_domain_get());
 
     void* exc = nullptr;
-    void* args[3] = { chunkArg, p_string_new("SSLOriginCollector"), nullptr };
+    void* args[3] = { chunkArg, p_string_new(label), nullptr };
     void* ret = p_runtime_invoke(doStringMethod, luaEnv, args, &exc);
     if (exc || !ret) {
         std::string msg;
@@ -1888,6 +1897,10 @@ static std::string RunLuaOriginCollector() {
         return "";
     }
     return res;
+}
+
+static std::string RunLuaOriginCollector() {
+    return RunLuaDoString(kOriginChunk, "SSLOriginCollector");
 }
 
 // ── Cache + emission ──
@@ -1932,11 +1945,17 @@ void RefreshOriginCatalog() {
     // (logJson takes g_Mutex; g_OriginMutex is never taken while holding it, so
     // this nesting has no inversion).
     if (!team.empty()) {
-        json out = g_OriginCatalog;
-        out["Type"] = "Record";
-        out["Time"] = gameTime();
-        g_OriginPending = false;
-        logJson(out);
+        if (LuaClockOwnsResetLog()) {
+            // Lua-clock mode (Boss Blitz): the Record belongs at room enter / timer
+            // start — LuaClockRunStart re-refreshes the catalog here and emits it
+            // via EmitOriginCatalogRecord; g_OriginPending is still true here.
+        } else {
+            json out = g_OriginCatalog;
+            out["Type"] = "Record";
+            out["Time"] = gameTime();
+            g_OriginPending = false;
+            logJson(out);
+        }
     }
 }
 
@@ -1988,13 +2007,280 @@ void MaybeEmitOriginCatalog(AdventureActor_o* fromActor, AdventureActor_o* toAct
     logJson(out);
 }
 
+// =============================================================================
+//  LUA GAME CLOCK (Boss Blitz countdown sync)
+// =============================================================================
+//  ScoreBossLevelController (HybridCLR hotfix, Hotfix.decompiled.cs:55013)
+//  drives the top-middle countdown the player sees in Boss Blitz:
+//    - LevelStart zeroes totalTime and reads levelTotalTime from the config
+//      "ScoreBossTimeLimit" (Hotfix.decompiled.cs:55121-55125)
+//    - UpdateLogic accumulates the same per-tick logicDeltaTime our g_GameTimeFP
+//      hook sums; once per whole second it fires the Lua event
+//      "ScoreBoss_Gameplay_Time" with levelTotalTime - totalTime (:55140-55149)
+//    - timing starts at the engine's LEVEL_START_TIMING trigger (:55191-55195)
+//  We attach a persistent Lua listener via xLua DoString (same plumbing as the
+//  origin catalog — panels register string-keyed events through
+//  EventManager.Add, BaseCtrl.lua:458; CsPushToLua passes the raw name through,
+//  GameCore.lua:43) that records (seq, remaining) into a global table, and wrap
+//  PlayerScoreBossData:EnterScoreBossInstance — the single funnel for every
+//  Blitz floor entry (first entry + retry via EntryLvAgain,
+//  PlayerScoreBossData.lua:207/541).  Room entry is detected natively instead:
+//  AdventureModuleHelper$$EnterScoreBossFloor (il2cpp, script.json 0x11b46d0,
+//  called from ScoreBossLevel.lua:76 on every entry) is MinHooked in proxy.cpp
+//  — available from DLL init, so the first entry after game start is covered
+//  too (a Lua-side wrapper could not be: the listener installs from the first
+//  UpdateLogic tick, which only happens inside the first level).  Room enter is
+//  processed immediately in the hook; only the origin-catalog DoString is
+//  deferred to PollLuaClock (re-entering the Lua VM from inside the hook's
+//  Lua→C# call is not safe).
+//
+//    Room enter (Hook_EnterScoreBossFloor — native, so it works on the first
+//      entry after game start, before any Lua install has happened):  seed the
+//      meter clock (pre-fight time starts running), Reset log at 00:00.000 —
+//      emitted synchronously in the hook, so it precedes the actor-spawn
+//      effect/buff logs of the load.  Record #1 follows from the poll once the
+//      async build data is ready (3 s retry).
+//    Timer start (countdown jumped UP = totalTime was zeroed, or first observed
+//      event of a fresh listener): re-base the meter clock onto the run start
+//      (elapsed == limit - remaining), emit "Timer Start" with the pre-fight
+//      time, then Record #2.  ModuleClearData / OnBattleStart are gated off via
+//      LuaClockOwnsResetLog while a Blitz session is alive.
+static const char* kClockInstallChunk = R"lua(
+if __SSL_CLOCK ~= nil then return 'OK' end
+if EventManager == nil then return 'ERR:no EventManager' end
+__SSL_CLOCK = { seq = 0, remaining = -1, limit = -1 }
+pcall(function()
+  __SSL_CLOCK.limit = ConfigTable.GetConfigNumber('ScoreBossTimeLimit') or -1
+end)
+EventManager.Add("ScoreBoss_Gameplay_Time", __SSL_CLOCK, function(l, nTime)
+  __SSL_CLOCK.seq = __SSL_CLOCK.seq + 1
+  __SSL_CLOCK.remaining = tonumber(nTime) or -1
+end)
+return 'OK'
+)lua";
+
+static const char* kClockPollChunk = R"lua(
+if __SSL_CLOCK == nil then return '-1,-1,-1' end
+return tostring(__SSL_CLOCK.seq)..','..tostring(__SSL_CLOCK.remaining)
+  ..','..tostring(__SSL_CLOCK.limit or -1)
+)lua";
+
+static std::atomic<bool>    g_LuaClockInstalled{false};
+static std::atomic<int64_t> g_LuaClockNextInstallTryMs{0};
+static std::atomic<int64_t> g_LuaClockNextPollMs{0};
+static std::atomic<int64_t> g_LuaClockLastEventWallMs{0};    // last countdown event
+static std::atomic<int64_t> g_LuaClockLastSignalWallMs{0};   // last event OR room enter
+static std::atomic<int>     g_LuaClockSeq{-1};               // -1 = no successful poll yet
+static std::atomic<int>     g_LuaClockRemaining{-1};
+static std::atomic<int>     g_LuaClockLimit{-1};             // inferred levelTotalTime
+static std::atomic<int64_t> g_LuaClockPrefightBaseline{0};   // clock zero at room enter
+static std::atomic<bool>    g_LuaClockPrefightValid{false};
+static std::atomic<bool>    g_LuaClockRoomRecordPending{false};
+
+bool LuaClockOwnsResetLog() {
+    // While a Boss Blitz session is alive (room entry or countdown event within
+    // the last 10 min) the Lua-clock paths own the Reset/Record logs, not
+    // Hook_ModuleClearData / OnBattleStart.
+    int64_t last = g_LuaClockLastSignalWallMs.load(std::memory_order_relaxed);
+    return last != 0 && (int64_t)GetTickCount64() - last < 600000;
+}
+
+static std::string FormatMs(int64_t totalMs) {
+    if (totalMs < 0) totalMs = 0;
+    int ms = (int)(totalMs % 1000);
+    int64_t totalSec = totalMs / 1000;
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%02d:%02d.%03d", (int)(totalSec / 60), (int)(totalSec % 60), ms);
+    return buf;
+}
+
+static bool EmitOriginCatalogRecord(bool onlyIfPending) {
+    // Emit the origin catalog as a Record now.  onlyIfPending=true: skip when
+    // already emitted (lazy per-actor path / previous Record) and leave pending
+    // when nothing is resolved yet.  onlyIfPending=false: always emit (Record
+    // #2 at timer start — the twice-per-run contract).
+    bool emitted = false;
+    json out;
+    {
+        std::lock_guard<std::mutex> lk(g_OriginMutex);
+        if (onlyIfPending && !g_OriginPending) return false;
+        auto team = g_OriginCatalog.value("team", json::array());
+        if (!team.empty()) {
+            out = g_OriginCatalog;         // team-aware: whole batch
+        } else {
+            if (onlyIfPending && g_OriginByChar.empty()) return false;
+                                                  // nothing resolved — leave pending,
+                                                  // the lazy per-actor path may still fill in
+            // No team info: emit every char we resolved at the refresh.
+            json chars = json::array();
+            std::vector<int32_t> ids;
+            ids.reserve(g_OriginByChar.size());
+            for (auto& [cid, cj] : g_OriginByChar) ids.push_back(cid);
+            std::sort(ids.begin(), ids.end());    // stable output order
+            for (int32_t cid : ids) chars.push_back(g_OriginByChar[cid]);
+            out["chars"] = chars;
+            out["pct"]  = g_OriginCatalog.value("pct", json::object());
+            out["ifp"]  = g_OriginCatalog.value("ifp", 0.0);
+        }
+        g_OriginPending = false;
+        emitted = true;
+    }
+    out["Type"] = "Record";
+    out["Time"] = gameTime();
+    logJson(out);
+    return emitted;
+}
+
+void LuaClockNotifyRoomEnter() {
+    // Called directly from Hook_EnterScoreBossFloor (proxy.cpp, main thread,
+    // before the scene load) on every Blitz floor entry — first entry and
+    // retry.  Processed immediately so the Reset precedes the actor-spawn
+    // effect/buff logs that happen during the load (the deferred poll version
+    // ran from the level controller's first UpdateLogic tick, which is after
+    // spawn — the Reset landed behind a wall of stale-clock setup events).
+    // The origin-catalog DoString is deferred to the poll: we are inside a
+    // Lua→C# call here and must not re-enter the Lua VM.
+    g_LuaClockLastSignalWallMs.store((int64_t)GetTickCount64(), std::memory_order_relaxed);
+    int64_t nowFP = g_GameTimeFP.load(std::memory_order_relaxed);
+    g_CombatStartWallMs.store(0, std::memory_order_relaxed);
+    g_CombatStartTimeFP.store(nowFP, std::memory_order_relaxed);
+    g_LuaClockPrefightBaseline.store(nowFP, std::memory_order_relaxed);
+    g_LuaClockPrefightValid.store(true, std::memory_order_relaxed);
+    g_LuaClockRoomRecordPending.store(true, std::memory_order_relaxed);
+    log("[clock] Blitz room entered; pre-fight clock started");
+
+    ResetHitSnapshots();
+    BuildResetJson();
+}
+
+static void LuaClockRunStart(int rem, int d) {
+    // rem = countdown value at the last observed event, d = number of events
+    // that fired since the previous poll (all attributed to the new run: events
+    // only fire while timing, and the countdown jumped UP).  The first event of
+    // a run carries remaining == levelTotalTime - 1, so:
+    //     levelTotalTime = rem + d,   elapsed at last observed event = d seconds
+    //     trigger moment            = now - d seconds
+    int limit = rem + d;
+    if (limit <= 0 || d <= 0) return;
+    g_LuaClockLimit.store(limit, std::memory_order_relaxed);
+
+    int64_t nowFP = g_GameTimeFP.load(std::memory_order_relaxed);
+    int64_t triggerFP = nowFP - (int64_t)d * FP_ONE;
+
+    // Pre-fight time: room-enter baseline → countdown trigger.
+    bool preValid = g_LuaClockPrefightValid.exchange(false, std::memory_order_relaxed);
+    int64_t preFP = g_LuaClockPrefightBaseline.exchange(0, std::memory_order_relaxed);
+
+    // Re-base the meter clock onto the run start.
+    g_CombatStartWallMs.store(0, std::memory_order_relaxed);
+    g_CombatStartTimeFP.store(triggerFP, std::memory_order_relaxed);
+    log("[clock] Boss Blitz timer started (limit=%ds remaining=%d); meter clock synced to run start",
+        limit, rem);
+
+    // "Timer Start": the countdown began d seconds ago; report how long the
+    // room was loaded / pre-fight state lasted before the trigger fired.
+    json j;
+    j["Type"] = "Timer Start";
+    j["Time"] = gameTime();
+    if (preValid && preFP != 0)
+        j["PreFight"] = FormatMs(((triggerFP - preFP) * 1000LL) / FP_ONE);
+    j["TimeLeft"] = rem;
+    logJson(j);
+
+    // Record #2 at combat start: fresh catalog read (build data is ready by
+    // now) + unconditional re-emit.
+    RefreshOriginCatalog();
+    EmitOriginCatalogRecord(/*onlyIfPending=*/false);
+}
+
+static void OnLuaClockAdvance(int prevSeq, int prevRem, int newSeq, int rem) {
+    g_LuaClockLastEventWallMs.store((int64_t)GetTickCount64(), std::memory_order_relaxed);
+    g_LuaClockLastSignalWallMs.store((int64_t)GetTickCount64(), std::memory_order_relaxed);
+    if (rem < 0) return;                       // malformed payload
+
+    int d = newSeq - (prevSeq < 0 ? 0 : prevSeq);      // events since last poll
+    if (d <= 0) return;
+
+    bool runStart = false;
+    if (prevSeq < 0) {
+        // First successful poll.  seq == 1 means the listener was live before
+        // the run started and exactly one tick has fired → this IS the run
+        // start.  seq > 1 means we attached mid-run — sync silently.
+        runStart = (newSeq == 1);
+    } else if (rem > prevRem) {
+        runStart = true;                       // countdown jumped UP → timer zeroed
+    }
+
+    if (runStart) {
+        LuaClockRunStart(rem, d);
+        return;
+    }
+
+    // Normal ticks: keep the meter clock locked to the game countdown
+    // (elapsed == limit - remaining).  This absorbs any drift between the two
+    // accumulators and covers missed polls; without a known limit (mid-run
+    // attach) we leave the baseline alone.
+    int limit = g_LuaClockLimit.load(std::memory_order_relaxed);
+    if (limit > 0 && rem <= limit) {
+        int64_t elapsedFP = (int64_t)(limit - rem) * FP_ONE;
+        g_CombatStartWallMs.store(0, std::memory_order_relaxed);
+        g_CombatStartTimeFP.store(g_GameTimeFP.load(std::memory_order_relaxed) - elapsedFP,
+                                  std::memory_order_relaxed);
+    }
+}
+
+void PollLuaClock() {
+    if (!g_LuaClockInstalled.load(std::memory_order_relaxed)) {
+        int64_t now = (int64_t)GetTickCount64();
+        if (now >= g_LuaClockNextInstallTryMs.load(std::memory_order_relaxed)) {
+            g_LuaClockNextInstallTryMs.store(now + 3000, std::memory_order_relaxed);
+            std::string res = RunLuaDoString(kClockInstallChunk, "SSLClockInstall");
+            if (res == "OK") {
+                g_LuaClockInstalled.store(true, std::memory_order_relaxed);
+                g_LuaClockSeq.store(-1, std::memory_order_relaxed);
+                log("[clock] ScoreBoss_Gameplay_Time listener installed (Boss Blitz countdown sync)");
+            }
+        }
+        return;
+    }
+
+    int64_t now = (int64_t)GetTickCount64();
+    if (now < g_LuaClockNextPollMs.load(std::memory_order_relaxed)) return;
+    g_LuaClockNextPollMs.store(now + 100, std::memory_order_relaxed);   // 10 Hz
+
+    std::string res = RunLuaDoString(kClockPollChunk, "SSLClockPoll");
+    if (res.empty()) return;
+    int seq = -1, rem = -1, limit = -1;
+    if (sscanf(res.c_str(), "%d,%d,%d", &seq, &rem, &limit) != 3) return;
+    if (seq < 0) {                             // global gone (Lua env reloaded?)
+        g_LuaClockInstalled.store(false, std::memory_order_relaxed);
+        return;
+    }
+    if (g_LuaClockLimit.load(std::memory_order_relaxed) < 0 && limit > 0)
+        g_LuaClockLimit.store(limit, std::memory_order_relaxed);
+
+    // Room-enter Record still waiting for the build data (GetBuildDetailData is
+    // async): retry the catalog refresh at poll rate for up to 3 s.
+    if (g_LuaClockRoomRecordPending.load(std::memory_order_relaxed)) {
+        RefreshOriginCatalog();
+        if (EmitOriginCatalogRecord(/*onlyIfPending=*/true))
+            g_LuaClockRoomRecordPending.store(false, std::memory_order_relaxed);
+        else if (now - g_LuaClockLastSignalWallMs.load(std::memory_order_relaxed) > 3000)
+            g_LuaClockRoomRecordPending.store(false, std::memory_order_relaxed);
+    }
+
+    int prevSeq = g_LuaClockSeq.exchange(seq, std::memory_order_relaxed);
+    int prevRem = g_LuaClockRemaining.exchange(rem, std::memory_order_relaxed);
+    if (prevSeq == seq) return;                // nothing new
+    OnLuaClockAdvance(prevSeq, prevRem, seq, rem);
+}
+
 void BuildResetJson() {
     json j;
     j["Type"] = "Reset";
     j["Time"] = gameTime();
 
     logJson(j);
-    //log("[Reset] %s", gameTime().c_str());
 }
 
 std::mutex g_PlayerSnapshotMutex;

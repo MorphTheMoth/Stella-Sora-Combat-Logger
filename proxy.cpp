@@ -104,6 +104,32 @@ static void __fastcall Hook_MonsterActionStateOnEnter(void* self, void* preStatu
     }
 }
 
+// Per-room hit snapshot state, cleared on room change — shared with the Lua
+// clock's timer-zero path (LuaClockRunStart in logging.cpp).
+void ResetHitSnapshots() {
+    g_HaveHitSnapshot = false;
+    g_SnapshotTime.clear();
+}
+
+// =============================================================================
+//  Boss Blitz floor-enter hook (room-enter signal for the Lua game clock)
+//  AdventureModuleHelper$$EnterScoreBossFloor (il2cpp, script.json 0x11b46d0)
+//  is called from ScoreBossLevel.lua:76 on every Blitz floor entry — first
+//  entry and retry — so it works on the first combat after game start, before
+//  the Lua clock listener has been installed.  Room-enter processing (clock
+//  seed + Reset) runs synchronously here, before the scene load starts, so it
+//  precedes the actor-spawn setup logs; the origin catalog refresh is deferred
+//  to PollLuaClock (Lua VM re-entry not safe from this call context).
+// =============================================================================
+static constexpr uintptr_t RVA_ENTER_SCORE_BOSS_FLOOR = 0x11B46D0;  // AdventureModuleHelper$$EnterScoreBossFloor
+using FnEnterScoreBossFloor = void(__fastcall*)(int32_t id, void* team, void* method);
+static FnEnterScoreBossFloor g_OrigEnterScoreBossFloor = nullptr;
+
+static void __fastcall Hook_EnterScoreBossFloor(int32_t id, void* team, void* method) {
+    LuaClockNotifyRoomEnter();
+    g_OrigEnterScoreBossFloor(id, team, method);
+}
+
 // =============================================================================
 //  Reset-button hook
 // =============================================================================
@@ -111,13 +137,16 @@ using FnVoidVoid = void(__fastcall*)(void*, void*);
 static FnVoidVoid g_OrigModuleClearData = nullptr;
 
 static void __fastcall Hook_ModuleClearData(void* self, void* method) {
-    BuildResetJson();
     OnResetTime();
-    g_HaveHitSnapshot = false;
-    g_SnapshotTime.clear();
+    ResetHitSnapshots();
     // Re-read the live origin catalog (emblems/gems + char base + discs) from the
     // game's Lua state on the main thread; the next damage event emits it once.
     RefreshOriginCatalog();
+    // Lua-clock modes (Boss Blitz): LuaClockRunStart owns the Reset log — it is
+    // emitted when the in-game timer is set back to zero, not here, so a retry
+    // produces exactly one Reset/Record pair, stamped at the run start.
+    if (!LuaClockOwnsResetLog())
+        BuildResetJson();
     g_OrigModuleClearData(self, method);
 }
 
@@ -207,11 +236,6 @@ static int64_t __fastcall Hook_CalcNormalDamage(
 
     int32_t damageTypeTemp = staticFields->damageTypeTemp;
     g_CurrentDamageTypeTemp = damageTypeTemp;
-
-    const char* hitTypeStr = "unknown";
-    if (damageTypeTemp == 1) hitTypeStr = "actor";
-    else if (damageTypeTemp == 2) hitTypeStr = "weapon";
-    else if (damageTypeTemp == 5) hitTypeStr = "area";
 
     // ── Step 2: choose the right effect snapshot for this hit ──────────────────
     EffectSnapshot hitSnapshot;
@@ -887,6 +911,7 @@ static FnUpdateLogic g_OrigUpdateLogic = nullptr;
 static void __fastcall Hook_UpdateLogic(void* self, TrueSync_FP_o logicDeltaTime, void* method) {
     OnUpdateLogicTick();
     g_GameTimeFP.fetch_add(logicDeltaTime.fields._serializedValue, std::memory_order_relaxed);
+    PollLuaClock();   // Boss Blitz countdown sync (10 Hz internally throttled)
 
     // Re-apply gizmo flags every tick — the engine clears them between frames,
     // so a one-shot write at DllMain is not enough.
@@ -958,7 +983,6 @@ typedef void (__fastcall* FnShowCircleGizmoDiag_t)(void* __this, void* pos, void
 static FnShowCircleGizmoDiag_t g_OrigShowCircleGizmoDiag = nullptr;
 
 static void __fastcall Hook_ShowCircleGizmoDiag(void* __this, void* pos, void* up, float radius, void* color, float durationTime, float lineWidthPixels, void* method) {
-    static int64_t s_count = 0;
     g_OrigShowCircleGizmoDiag(__this, pos, up, radius, color, durationTime, lineWidthPixels, method);
 }
 
@@ -966,7 +990,6 @@ typedef void (__fastcall* FnShowRingGizmoDiag_t)(void* __this, void* pos, void* 
 static FnShowRingGizmoDiag_t g_OrigShowRingGizmoDiag = nullptr;
 
 static void __fastcall Hook_ShowRingGizmoDiag(void* __this, void* pos, void* up, float innerRadius, float radius, void* innerColor, void* color, float durationTime, void* method) {
-    static int64_t s_count = 0;
     g_OrigShowRingGizmoDiag(__this, pos, up, innerRadius, radius, innerColor, color, durationTime, method);
 }
 
@@ -1039,6 +1062,7 @@ static DWORD WINAPI InitThread(LPVOID) {
     InstallHook(g_base + RVA_CALC_NORMAL_DAMAGE,     reinterpret_cast<void*>(&Hook_CalcNormalDamage),   (void**)&g_OrigCalcNormalDamage,   "CommonHelper$$CalculateNormalDamage");
     InstallHook(g_base + RVA_MONSTER_ACTION_STATE_ON_ENTER, reinterpret_cast<void*>(&Hook_MonsterActionStateOnEnter), (void**)&g_OrigMonsterActionStateOnEnter, "MonsterActionState$$OnEnter");
     InstallHook(g_base + RVA_MODULE_CLEAR_DATA,      reinterpret_cast<void*>(&Hook_ModuleClearData),    (void**)&g_OrigModuleClearData,    "AdventureModuleController$$ClearData");
+    InstallHook(g_base + RVA_ENTER_SCORE_BOSS_FLOOR, reinterpret_cast<void*>(&Hook_EnterScoreBossFloor), (void**)&g_OrigEnterScoreBossFloor, "AdventureModuleHelper$$EnterScoreBossFloor");
     InstallHook(g_base + RVA_GET_BOTH_ALL_INFO,      reinterpret_cast<void*>(&Hook_GetBothAllInfo),     (void**)&g_OrigGetBothAllInfo,     "AdventureActor$$GetBothAllInfo");
     InstallHook(g_base + RVA_AREA_COPY_BATTLE,       reinterpret_cast<void*>(&Hook_CopyBattleData),     (void**)&g_OrigCopyBattleData,     "AreaEffectEntity$$CopyBattleData");
     InstallHook(g_base + RVA_WEAPON_SETUP,           reinterpret_cast<void*>(&Hook_WeaponSetup),        (void**)&g_OrigWeaponSetup,        "AdventureWeapon$$Setup");

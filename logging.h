@@ -84,6 +84,25 @@ void OnUpdateLogicTick();
 void OnBattleStart();
 void OnResetTime();
 
+// Lua game clock (Boss Blitz "ScoreBoss_Gameplay_Time" countdown) — defined in
+// logging.cpp:
+//   PollLuaClock: call every Hook_UpdateLogic tick.  Installs a persistent Lua
+//     listener + PlayerScoreBossData:EnterScoreBossInstance room wrapper via
+//     xLua DoString (3 s retry), polls both at 10 Hz.  On room enter: seeds the
+//     pre-fight clock and emits Reset + Record.  On countdown start: re-bases
+//     the meter clock on the in-game countdown (elapsed == limit - remaining),
+//     emits "Timer Start" (with the pre-fight time) + a second Record.
+//   LuaClockOwnsResetLog: true while a Blitz session is alive (room entry or
+//     countdown event within a 10 min window) — gates Hook_ModuleClearData's
+//     own Reset/Record emission and the OnBattleStart re-seed, because the
+//     room-enter / timer-start paths own those now.
+//   ResetHitSnapshots: defined in proxy.cpp — clears the per-room hit snapshot
+//     state (g_HaveHitSnapshot / g_SnapshotTime), called by the timer-zero path.
+void PollLuaClock();
+bool LuaClockOwnsResetLog();
+void ResetHitSnapshots();
+void LuaClockNotifyRoomEnter();   // called from Hook_EnterScoreBossFloor — immediate room-enter processing
+
 // String helpers
 std::string Il2CppStringToStd(System_String_o* strObj);
 const char* AttrName(int i);
@@ -222,17 +241,22 @@ void MarkHittedAdditionalAttrFixApplied(int32_t configId);
 std::unordered_set<int32_t> TakeAppliedHittedAttrFixSnapshot();
 
 // ─── Lua VM origin catalog (emblems/gems + char base + discs + build) ─────────
-// Called from the Reset hook (Hook_ModuleClearData — Unity main thread): executes
-// a Lua chunk in the game's xlua VM via LuaManager.luaEnv:DoString. The chunk
-// calls the game's own accessors (PlayerData.StarTower.LevelData,
-// PlayerData.Equipment, ...) and returns a JSON string with, per character, the
-// pieces that bake into the attr 'origin' bucket:
+// Executes a Lua chunk in the game's xlua VM via LuaManager.luaEnv:DoString on
+// the Unity main thread. The chunk calls the game's own accessors
+// (PlayerData.StarTower.LevelData, PlayerData.Equipment, ...) and returns a JSON
+// string with, per character, the pieces that bake into the attr 'origin'
+// bucket:
 //   base  — Attribute-table row values (char base, per AllEnum.AttachAttr key)
 //   disc  — summed disc mapAttrBase contributions (tower run)
 //   gems  — equipped gem rolls: {AttrId, CfgValue, Value} (CharGemAttrValue ids)
 //   pots/skills/effects — gem affixes of those kinds
-// Results are cached; the first damage event after the reset emits one "Origin"
-// entry (tower team as a batch, other modes lazily per appearing actor).
+// Results are cached; emission points:
+//   Lua-clock mode (Boss Blitz, LuaClockOwnsResetLog): LuaClockRunStart refreshes
+//     the catalog at timer zero and force-emits one "Origin" entry (team batch,
+//     or every resolved char).
+//   Otherwise: Hook_ModuleClearData refreshes it; the team batch (e.g. Star
+//     Tower) is emitted immediately, other modes lazily per appearing actor on
+//     the first damage events.
 void RefreshOriginCatalog();
 void MaybeEmitOriginCatalog(AdventureActor_o* fromActor, AdventureActor_o* toActor);
 
