@@ -45,7 +45,6 @@ static constexpr uintptr_t RVA_UPDATE_LOGIC                  = 0x118EF10;
 static constexpr uintptr_t RVA_BATTLE_START                  = 0x10450B0;
 static constexpr uintptr_t RVA_SPAWN_SKILL                   = 0x118DA40;
 static constexpr uintptr_t RVA_BUFF_EFFECT_ON_INIT           = 0x16F6B80;
-static constexpr uintptr_t RVA_BUFF_ENTITY_INIT              = 0x16FB6A0;
 static constexpr uintptr_t RVA_BUFF_ENTITY_EXCUTE            = 0x16FA360;
 static constexpr uintptr_t RVA_CALC_NORMAL_DAMAGE            = 0x11213B0;
 static constexpr uintptr_t RVA_HITTED_ADDITIONAL_ATTR_FIX_EXECUTE = 0x114A730;  // HittedAdditionalAttriFix$$Execute
@@ -158,7 +157,7 @@ using FnCalcNormalDamage = int64_t(__fastcall*)( AdventureActor_o*, AdventureAct
 static FnCalcNormalDamage g_OrigCalcNormalDamage = nullptr;
 
 
-static std::atomic<GameDataController_o*> g_gdc{nullptr};  // atomic, not raw pointer
+static std::atomic<GameDataController_o*> g_gdc{nullptr};
 
 // =============================================================================
 //  Capture GDC singleton from any GameDataController method
@@ -176,14 +175,18 @@ static GdcHook g_GdcHooks[2] = {
     { nullptr, "GameDataController$$GetMonster" },
 };
 
-static void* __fastcall GdcHook_GetHitDamage(GameDataController_o* __this, int32_t key, void* method) {
+// Record the GDC singleton the first time any hooked Get* method fires.
+static inline void CaptureGdc(GameDataController_o* __this) {
     if (!g_gdc.load(std::memory_order_relaxed) && __this)
         g_gdc.store(__this, std::memory_order_relaxed);
+}
+
+static void* __fastcall GdcHook_GetHitDamage(GameDataController_o* __this, int32_t key, void* method) {
+    CaptureGdc(__this);
     return g_GdcHooks[0].original(__this, key, method);
 }
 static void* __fastcall GdcHook_GetMonster(GameDataController_o* __this, int32_t key, void* method) {
-    if (!g_gdc.load(std::memory_order_relaxed) && __this)
-        g_gdc.store(__this, std::memory_order_relaxed);
+    CaptureGdc(__this);
     return g_GdcHooks[1].original(__this, key, method);
 }
 
@@ -228,11 +231,6 @@ static int64_t __fastcall Hook_CalcNormalDamage(
     if (!actorClass->static_fields) { return callOriginal(); }
 
     AdventureActor_StaticFields* staticFields = actorClass->static_fields;
-
-    int32_t hitElem = hitDamageConfig ? hitDamageConfig->fields.elementType_ : -1;
-    int32_t hitDmgType = hitDamageConfig ? hitDamageConfig->fields.damageType_ : -1;
-    int32_t hitDmgId = hitDamageConfig ? hitDamageConfig->fields.id_ : -1;
-    int32_t hitEffectType = hitDamageConfig ? hitDamageConfig->fields.effectType_ : -1;
 
     int32_t damageTypeTemp = staticFields->damageTypeTemp;
     g_CurrentDamageTypeTemp = damageTypeTemp;
@@ -283,12 +281,10 @@ static int64_t __fastcall Hook_CalcNormalDamage(
     GameDataController_o* gdc = GetGDC();
     FnGetOnceAttr                     GetOnceAttr   = nullptr;
     FnGetValueConfigId                GetValueConfigId = nullptr;
-    FnGetEffectValue                  GetEffectValue    = nullptr;
     FnGetOnceAdditionalAttributeValue GetAttrValue      = nullptr;
     if (gdc && g_base) {
         GetOnceAttr   = reinterpret_cast<FnGetOnceAttr>                    (g_base + RVA_GET_ONCE_ATTR);
         GetValueConfigId = reinterpret_cast<FnGetValueConfigId>            (g_base + RVA_GET_VALUE_CONFIG_ID);
-        GetEffectValue    = reinterpret_cast<FnGetEffectValue>             (g_base + RVA_GET_EFFECT_VALUE);
         GetAttrValue      = reinterpret_cast<FnGetOnceAdditionalAttributeValue>(g_base + RVA_GET_ONCE_ADDITIONAL_ATTRIBUTE_VALUE);
     }
 
@@ -298,7 +294,6 @@ static int64_t __fastcall Hook_CalcNormalDamage(
     AttributeList_o* defenderInfo = staticFields->toAdditionalAttrInfo
         ? staticFields->toAdditionalAttrInfo->fields._attributeList_k__BackingField   : nullptr;
 
-    // ── Step 6: BuildHitJson ─────────────────────────────────────────────────
     BuildHitJson(
         fromActor, toActor, hitDamageConfig, skillLevel, isCrit, isDot, hudColorIndex,
         skillPercentAmend, talentGroupPercentAmend, skillAbsAmend, talentGroupAbsAmend,
@@ -310,7 +305,7 @@ static int64_t __fastcall Hook_CalcNormalDamage(
         staticFields->fromAdditionalAttrDict,
         staticFields->toAdditionalAttrDict,
         gdc, GetOnceAttr, GetValueConfigId,
-        GetEffectValue, GetAttrValue, hitEffectSnapshot, pHitSnapshotTime,
+        GetAttrValue, hitEffectSnapshot, pHitSnapshotTime,
         pAppliedHitted);
 
     return dmg;
@@ -325,69 +320,66 @@ static FnCopyBattleData g_OrigCopyBattleData = nullptr;
 using FnIsUseHitFromSummon = bool(__fastcall*)(LogicEntity_o*, PlayerAdventureActor_o**, void*);
 static FnIsUseHitFromSummon g_IsUseHitFromSummon = nullptr;
 
+// Resolve the real stats source: if the actor is a summoned entity, use the
+// summoner instead (ActorHelper$$IsUseHitFromSummon, lazily resolved by RVA).
+static AdventureActor_o* ResolveHitSource(AdventureActor_o* source) {
+    if (!source || !g_base) return source;
+    if (!g_IsUseHitFromSummon)
+        g_IsUseHitFromSummon = reinterpret_cast<FnIsUseHitFromSummon>(g_base + RVA_IS_USE_HIT_FROM_SUMMON);
+    if (!g_IsUseHitFromSummon) return source;
+    PlayerAdventureActor_o* summoner = nullptr;
+    bool isSummoned = g_IsUseHitFromSummon(
+        reinterpret_cast<LogicEntity_o*>(source),
+        reinterpret_cast<PlayerAdventureActor_o**>(&summoner),
+        nullptr);
+    return (isSummoned && summoner) ? reinterpret_cast<AdventureActor_o*>(summoner) : source;
+}
+
+// Collect the live effect instance IDs registered on `source`'s effectsDict.
+// requireStackAlive=false: deliberately NOT stack-filtered — the snapshot only
+// defines the lookup candidates; per-hit payloads (Hitted*) write into the
+// shared static overlay and their stack may already be popped when an
+// area/weapon calc consumes that overlay — the row gate in BuildEffectListJson
+// combines the stack check with the executed-since-last-calc record instead.
+// requireStackAlive=true: only effects with a currently pushed payload.
+static EffectSnapshot CollectEffectIds(AdventureActor_o* source, bool requireStackAlive) {
+    EffectSnapshot snap;
+    if (!source || !source->fields.effectManage) return snap;
+    auto* effectsDict = source->fields.effectManage->fields.effectsDict;
+    if (!effectsDict) return snap;
+    auto* entriesArr = effectsDict->fields._entries;
+    int slotCount = effectsDict->fields._count;
+    if (!entriesArr || slotCount <= 0) return snap;
+    for (int i = 0; i < slotCount; ++i) {
+        const auto& e = entriesArr->m_Items[i].fields;
+        if (e.hashCode < 0) continue;
+        AdventureEffect_o* effect = reinterpret_cast<AdventureEffect_o*>(e.value);
+        if (!effect || effect->fields.removed) continue;
+        if (requireStackAlive) {
+            auto* stack = effect->fields._effectStack;
+            if (!stack || !stack->fields._array || stack->fields._size <= 0) continue;
+        }
+        snap.insert(effect->fields.id);
+    }
+    return snap;
+}
+
 static void __fastcall Hook_CopyBattleData(void* areaEntity, bool force, void* method)
 {
     g_OrigCopyBattleData(areaEntity, force, method);
 
-    // Lazy-init the IsUseHitFromSummon function pointer
-    if (!g_IsUseHitFromSummon && g_base)
-        g_IsUseHitFromSummon = reinterpret_cast<FnIsUseHitFromSummon>(g_base + RVA_IS_USE_HIT_FROM_SUMMON);
-
     auto* area = reinterpret_cast<AreaEffectEntity_o*>(areaEntity);
 
-    // Step 1: Get potential sources.
-    // NOTE: since the game update, AreaEffectEntity::CopyBattleData copies stats
-    // from _owner_k__BackingField only. _fxPlayer_k__BackingField is now a real
-    // AdventureFXPlayer (MonoBehaviour, NOT an AdventureActor), so it must never
-    // be used as the effect source.
+    // Owner is the game's stats source. NOTE: since the game update,
+    // _fxPlayer_k__BackingField is a real AdventureFXPlayer (MonoBehaviour, NOT
+    // an AdventureActor); it is kept only as a legacy fallback for the
+    // pre-update layout where it pointed at the owner actor.
     AdventureActor_o* fxPlayer = reinterpret_cast<AdventureActor_o*>(area->fields._fxPlayer_k__BackingField);
     AdventureActor_o* owner = area->fields._owner_k__BackingField;
-
-    // Step 2: Owner is the game's stats source; fxPlayer is only a legacy
-    // fallback for the pre-update layout where it pointed at the owner actor.
     AdventureActor_o* source = owner ? owner : fxPlayer;
 
-    // Step 3: If source exists, check if summoned → resolve to summoner
-    bool isSummoned = false;
-    AdventureActor_o* summonerResolved = nullptr;
-    if (source && g_IsUseHitFromSummon) {
-        PlayerAdventureActor_o* rawSummoner = nullptr;
-        isSummoned = g_IsUseHitFromSummon(
-            reinterpret_cast<LogicEntity_o*>(source),
-            reinterpret_cast<PlayerAdventureActor_o**>(&rawSummoner),
-            nullptr);
-        if (isSummoned && rawSummoner)
-            summonerResolved = reinterpret_cast<AdventureActor_o*>(rawSummoner);
-    }
-
-    // Use resolved summoner as the final source for effects
-    if (summonerResolved)
-        source = summonerResolved;
-
-    EffectSnapshot snap;
-    if (source && source->fields.effectManage) {
-        auto* effectsDict = source->fields.effectManage->fields.effectsDict;
-        if (effectsDict) {
-            auto* entriesArr = effectsDict->fields._entries;
-            int slotCount = effectsDict->fields._count;
-            if (entriesArr && slotCount > 0) {
-                for (int i = 0; i < slotCount; ++i) {
-                    const auto& e = entriesArr->m_Items[i].fields;
-                    if (e.hashCode < 0) continue;
-                    AdventureEffect_o* effect = reinterpret_cast<AdventureEffect_o*>(e.value);
-                    if (!effect) continue;
-                    if (effect->fields.removed) continue;
-                    // NOTE: deliberately NOT stack-filtered. The snapshot only
-                    // defines the lookup candidates; per-hit payloads (Hitted*)
-                    // write into the shared static overlay and their stack may
-                    // already be popped when an area/weapon calc consumes that
-                    // overlay — the row gate combines the stack check with the
-                    // executed-since-last-calc record instead.
-                    snap.insert(effect->fields.id);
-                }
-            }
-        }
-    }
+    source = ResolveHitSource(source);
+    EffectSnapshot snap = CollectEffectIds(source, /*requireStackAlive=*/false);
 
     {
         std::lock_guard<std::mutex> lk(g_AreaSnapshotMutex);
@@ -407,42 +399,8 @@ static void __fastcall Hook_WeaponSetup(AdventureWeapon_o* weapon, LogicEntity_o
 {
     g_OrigWeaponSetup(weapon, owner, pos, posY, dir, target, targetPos, targetPosY, aimType, method);
 
-    // Lazy-init IsUseHitFromSummon
-    if (!g_IsUseHitFromSummon && g_base)
-        g_IsUseHitFromSummon = reinterpret_cast<FnIsUseHitFromSummon>(g_base + RVA_IS_USE_HIT_FROM_SUMMON);
-
-    // Resolve the real stats source — same as Hook_CopyBattleData:
-    // if the owner is a summoned entity, use the summoner instead
-    AdventureActor_o* source = reinterpret_cast<AdventureActor_o*>(owner);
-    if (source && g_IsUseHitFromSummon) {
-        PlayerAdventureActor_o* summoner = nullptr;
-        bool isSummoned = g_IsUseHitFromSummon(
-            reinterpret_cast<LogicEntity_o*>(source),
-            reinterpret_cast<PlayerAdventureActor_o**>(&summoner),
-            nullptr);
-        if (isSummoned && summoner)
-            source = reinterpret_cast<AdventureActor_o*>(summoner);
-    }
-
-    EffectSnapshot snap;
-    if (source && source->fields.effectManage) {
-        auto* effectsDict = source->fields.effectManage->fields.effectsDict;
-        if (effectsDict) {
-            auto* entriesArr = effectsDict->fields._entries;
-            int slotCount = effectsDict->fields._count;
-            if (entriesArr && slotCount > 0) {
-                for (int i = 0; i < slotCount; ++i) {
-                    const auto& e = entriesArr->m_Items[i].fields;
-                    if (e.hashCode < 0) continue;
-                    AdventureEffect_o* effect = reinterpret_cast<AdventureEffect_o*>(e.value);
-                    if (!effect) continue;
-                    if (effect->fields.removed) continue;
-                    // NOTE: deliberately NOT stack-filtered — see Hook_CopyBattleData.
-                    snap.insert(effect->fields.id);
-                }
-            }
-        }
-    }
+    AdventureActor_o* source = ResolveHitSource(reinterpret_cast<AdventureActor_o*>(owner));
+    EffectSnapshot snap = CollectEffectIds(source, /*requireStackAlive=*/false);
 
     {
         std::lock_guard<std::mutex> lk(g_WeaponSnapshotMutex);
@@ -492,9 +450,6 @@ static void __fastcall Hook_SetPlayerSummonAttr(AdventureActor_o* self, Adventur
             g_MinionToPlayer[adventureActorId(self)] = std::move(link);
         }
     }
-
-    //log("[MINION] MonsterAdventureActor$$SetPlayerSummonAttrInfo percent=%d player=%s time=%s",
-    //    percent, player ? adventureActorId(player).c_str() : "null", gameTime().c_str());
 }
 
 using FnSetPlayerSummonSnap = void(__fastcall*)(AdventureActor_o*, AdventureActor_o*, int32_t, void*);
@@ -518,9 +473,6 @@ static void __fastcall Hook_SetPlayerSummonSnap(AdventureActor_o* self, Adventur
             g_MinionToPlayer[adventureActorId(self)] = std::move(link);
         }
     }
-
-    //log("[MINION] MonsterAdventureActor$$SetPlayerSummonAttrInfoBySnapshot percent=%d player=%s time=%s",
-    //    percent, player ? adventureActorId(player).c_str() : "null", gameTime().c_str());
 }
 
 // =============================================================================
@@ -689,72 +641,20 @@ static void __fastcall Hook_GetBothAllInfo(AdventureActor_o* actor, void* method
 {
     g_OrigGetBothAllInfo(actor, method);
 
+    // Snapshot the effects of the actor the hit is computed from (static
+    // fromActorTemp on the AdventureActor parent class) with their payload
+    // currently pushed (stack > 0).
     EffectSnapshot snap;
     auto* parentKlass = actor ? actor->klass->_1.parent : nullptr;
     if (parentKlass) {
         auto* actorClass = reinterpret_cast<AdventureActor_c*>(parentKlass);
         auto* sf = actorClass->static_fields;
-        if (sf) {
-            AdventureActor_o* fromActor = sf->fromActorTemp;
-            if (fromActor && fromActor->fields.effectManage) {
-                auto* effectsDict = fromActor->fields.effectManage->fields.effectsDict;
-                if (effectsDict) {
-                    auto* entriesArr = effectsDict->fields._entries;
-                    int slotCount = effectsDict->fields._count;
-                    if (entriesArr && slotCount > 0) {
-                        for (int i = 0; i < slotCount; ++i) {
-                            const auto& e = entriesArr->m_Items[i].fields;
-                            if (e.hashCode < 0) continue;
-                            AdventureEffect_o* effect = reinterpret_cast<AdventureEffect_o*>(e.value);
-                            if (!effect) continue;
-                            if (effect->fields.removed) continue;
-                            auto* stack = effect->fields._effectStack;
-                            if (stack && stack->fields._array && stack->fields._size > 0)
-                                snap.insert(effect->fields.id);
-                        }
-                    }
-                }
-            }
-        }
+        if (sf)
+            snap = CollectEffectIds(sf->fromActorTemp, /*requireStackAlive=*/true);
     }
     g_GetBothAllInfoSnapshot = snap;
     g_SnapshotTime = gameTime();
     g_HaveHitSnapshot = true;
-
-    // TEMP DEBUG: dump per-effect stack sizes at snapshot time for the watch list
-    AdventureActor_o* dbgFrom = nullptr;
-    {
-        auto* parentKlass2 = actor ? actor->klass->_1.parent : nullptr;
-        if (parentKlass2) {
-            auto* sf2 = reinterpret_cast<AdventureActor_c*>(parentKlass2)->static_fields;
-            if (sf2) dbgFrom = sf2->fromActorTemp;
-        }
-    }
-    if (dbgFrom && dbgFrom->fields.effectManage && dbgFrom->fields.effectManage->fields.effectsDict) {
-        static const int32_t kWatch[] = { 3008026, 3008006, 4028023, 4028003 };
-        auto* ed = dbgFrom->fields.effectManage->fields.effectsDict;
-        auto* ea = ed->fields._entries;
-        int sc = ed->fields._count;
-        if (ea) {
-            for (int i = 0; i < sc; ++i) {
-                const auto& e = ea->m_Items[i].fields;
-                if (e.hashCode < 0) continue;
-                AdventureEffect_o* eff = reinterpret_cast<AdventureEffect_o*>(e.value);
-                if (!eff || eff->fields.removed) continue;
-                auto* cfg = eff->fields._effectConfig_k__BackingField;
-                int32_t cid = cfg ? cfg->fields.id_ : 0;
-                bool match = false;
-                for (int w = 0; w < 4; ++w) if (cid == kWatch[w]) match = true;
-                if (!match) continue;
-                auto* st = eff->fields._effectStack;
-                int sz = (st && st->fields._array) ? st->fields._size : -1;
-                bool inSnap = snap.count(eff->fields.id) != 0;
-                debugEffectLog("[snap-time] actor=%s configId=%d instId=%d stackSize=%d inSnapshot=%d trigger=%d",
-                    adventureActorId(dbgFrom).c_str(), cid, eff->fields.id, sz, (int)inSnap,
-                    cfg ? cfg->fields.trigger_ : -1);
-            }
-        }
-    }
 }
 
 // =============================================================================
@@ -813,15 +713,6 @@ static void __fastcall Hook_BuffEffectOnInit(void* self, AdventureActor_o* owner
     if (g_Cfg.buffs) {
         BuildBuffJson("Buff", configId, owner, fromActor, 1);
     }
-}
-
-using FnBuffEntityInit = void(__fastcall*)( BuffEntity_o*, Nova_Client_Buff_o*, Nova_Client_BuffValue_o*, BuffCom_o*, AdventureActor_o*, void*);
-static FnBuffEntityInit g_OrigBuffEntityInit = nullptr;
-
-static void __fastcall Hook_BuffEntityInit(BuffEntity_o* self, Nova_Client_Buff_o* buffConfig, Nova_Client_BuffValue_o* buffValueConfig,
-                                           BuffCom_o* bfC, AdventureActor_o* fromActor, void* method)
-{
-    g_OrigBuffEntityInit(self, buffConfig, buffValueConfig, bfC, fromActor, method);
 }
 
 using FnBuffEntityExcute = void(__fastcall*)( BuffEntity_o*, int32_t, AdventureActor_o*, void*);
@@ -887,16 +778,8 @@ static void __fastcall Hook_HittedAdditionalAttrFixExecute(AdventureEffectBase_o
 {
     if (effectBase && effectBase->fields._effect) {
         auto* effectCfg = effectBase->fields._effect->fields._effectConfig_k__BackingField;
-        if (effectCfg) {
-            if (effectCfg->fields.id_ == 3008026) {
-                auto* parentEffect = effectBase->fields._effect;
-                auto* st = parentEffect->fields._effectStack;
-                debugEffectLog("[hitted-exec] configId=3008026 stackSizeAfterPush=%d owner=%s",
-                    st ? st->fields._size : -1,
-                    parentEffect->fields._owner ? adventureActorId(parentEffect->fields._owner).c_str() : "null");
-            }
+        if (effectCfg)
             MarkHittedAdditionalAttrFixApplied(effectCfg->fields.id_);
-        }
     }
     g_OrigHittedAdditionalAttrFixExecute(effectBase, method);
 }
@@ -924,13 +807,10 @@ void* GetDebugHelperInstance() {
     if (!g_base) return nullptr;
 
     // Nothing to do if every gizmo is off.
-    if (!g_Cfg.player_gizmo && !g_Cfg.monster_gizmo && !g_Cfg.bullet_gizmo &&
-        !g_Cfg.hitbox_gizmo && !g_Cfg.hearing_gizmo_for_player && !g_Cfg.hearing_gizmo_for_monster &&
-        !g_Cfg.vision_gizmo_for_player && !g_Cfg.vision_gizmo_for_monster &&
-        !g_Cfg.input_and_vision_gizmo && !g_Cfg.monster_path_gizmo &&
-        !g_Cfg.player_path_gizmo && !g_Cfg.camera_gizmo) {
-        return nullptr;
-    }
+    bool anyGizmo = false;
+    for (const auto& g : g_GizmoFlags)
+        if (g_Cfg.*(g.enabled)) { anyGizmo = true; break; }
+    if (!anyGizmo) return nullptr;
 
     // The game's generic-class metadata lives on the il2cpp HEAP, not in the
     // module image (observed: mi=0x3276AD00, klass=0x3276A180), so any manual
@@ -946,7 +826,7 @@ void* GetDebugHelperInstance() {
     uintptr_t mi = *(uintptr_t*)(g_base + RVA_ADM_GET_INSTANCE_METHODINFO);
 
     // Rate-limited diagnostics — log the first ~20 attempts and every 300th
-    // after that.  Removed once this is confirmed working.
+    // after that.
     static int64_t s_attempts = 0;
     s_attempts++;
     #define GIZMO_LOG(...) do { if (s_attempts <= 20 || (s_attempts % 300) == 0) log(__VA_ARGS__); } while (0)
@@ -958,41 +838,15 @@ void* GetDebugHelperInstance() {
         GIZMO_LOG("[gizmo] resolve #%lld mi=0x%llX -> implausible (not patched yet?)", (long long)s_attempts, (unsigned long long)mi);
         return nullptr;
     }
-    //GIZMO_LOG("[gizmo] resolve #%lld mi=0x%llX -> calling get_Instance", (long long)s_attempts, (unsigned long long)mi);
 
     uintptr_t inst = getInstance(mi);
     if (!inst) {
         GIZMO_LOG("[gizmo]   get_Instance -> 0 (helper not awake yet, retrying)");
         return nullptr;
     }
-    //GIZMO_LOG("[gizmo] RESOLVED instance=0x%llX", (unsigned long long)inst);
     #undef GIZMO_LOG
     return (void*)inst;
 }
-
-// =============================================================================
-//  TEMPORARY DIAGNOSTIC — engine gizmo call observers
-//  Hooks the engine's ShowCircleGizmo / ShowRingGizmo to prove whether the
-//  engine itself reaches the draw calls when the flags are set.  Passes through
-//  to origin so rendering is unaffected.  Remove once the feature works.
-// =============================================================================
-static constexpr uintptr_t RVA_SHOW_CIRCLE_GIZMO_DIAG = 0x111DB70;  // AdventureModuleDebugHelper$$ShowCircleGizmo
-static constexpr uintptr_t RVA_SHOW_RING_GIZMO_DIAG   = 0x111F7B0;  // AdventureModuleDebugHelper$$ShowRingGizmo
-
-typedef void (__fastcall* FnShowCircleGizmoDiag_t)(void* __this, void* pos, void* up, float radius, void* color, float durationTime, float lineWidthPixels, void* method);
-static FnShowCircleGizmoDiag_t g_OrigShowCircleGizmoDiag = nullptr;
-
-static void __fastcall Hook_ShowCircleGizmoDiag(void* __this, void* pos, void* up, float radius, void* color, float durationTime, float lineWidthPixels, void* method) {
-    g_OrigShowCircleGizmoDiag(__this, pos, up, radius, color, durationTime, lineWidthPixels, method);
-}
-
-typedef void (__fastcall* FnShowRingGizmoDiag_t)(void* __this, void* pos, void* up, float innerRadius, float radius, void* innerColor, void* color, float durationTime, void* method);
-static FnShowRingGizmoDiag_t g_OrigShowRingGizmoDiag = nullptr;
-
-static void __fastcall Hook_ShowRingGizmoDiag(void* __this, void* pos, void* up, float innerRadius, float radius, void* innerColor, void* color, float durationTime, void* method) {
-    g_OrigShowRingGizmoDiag(__this, pos, up, innerRadius, radius, innerColor, color, durationTime, method);
-}
-
 
 using FnBattleStart = void(__fastcall*)( void*, void*, void*);
 static FnBattleStart g_OrigBattleStart = nullptr;
@@ -1035,7 +889,6 @@ static DWORD WINAPI InitThread(LPVOID) {
 
     std::string logDir = GetLocalAppDataPath() + "\\Stella Sora Combat Logger";
     loadConfig(logDir);
-    BuildGemAttrTable(GetLocalAppDataPath() + "\\StellaSoraData");
     InitHttpLogger(logDir);
     InitStarTowerLogger(logDir);
 
@@ -1057,7 +910,6 @@ static DWORD WINAPI InitThread(LPVOID) {
     InstallHook(g_base + RVA_BATTLE_START,           reinterpret_cast<void*>(&Hook_BattleStart),        (void**)&g_OrigBattleStart,        "ActorEffectManage$$OnBattleStart");
     InstallHook(g_base + RVA_SPAWN_SKILL,            reinterpret_cast<void*>(&Hook_SpawnSkill),         (void**)&g_OrigSpawnSkill,         "AdventureLevelController$$SpawnSkill");
     InstallHook(g_base + RVA_BUFF_EFFECT_ON_INIT,    reinterpret_cast<void*>(&Hook_BuffEffectOnInit),   (void**)&g_OrigBuffEffectOnInit,   "BuffEffectBase$$OnInit");
-    InstallHook(g_base + RVA_BUFF_ENTITY_INIT,       reinterpret_cast<void*>(&Hook_BuffEntityInit),     (void**)&g_OrigBuffEntityInit,     "BuffEntity$$InitBuff");
     InstallHook(g_base + RVA_BUFF_ENTITY_EXCUTE,     reinterpret_cast<void*>(&Hook_BuffEntityExcute),   (void**)&g_OrigBuffEntityExcute,   "BuffEntity$$BuffExcute");
     InstallHook(g_base + RVA_CALC_NORMAL_DAMAGE,     reinterpret_cast<void*>(&Hook_CalcNormalDamage),   (void**)&g_OrigCalcNormalDamage,   "CommonHelper$$CalculateNormalDamage");
     InstallHook(g_base + RVA_MONSTER_ACTION_STATE_ON_ENTER, reinterpret_cast<void*>(&Hook_MonsterActionStateOnEnter), (void**)&g_OrigMonsterActionStateOnEnter, "MonsterActionState$$OnEnter");
@@ -1074,8 +926,6 @@ static DWORD WINAPI InitThread(LPVOID) {
     InstallHook(g_base + RVA_SAVE_PLAYER_SNAPSHOT,   reinterpret_cast<void*>(&Hook_SavePlayerSnapshot), (void**)&g_OrigSaveSnapshot,       "PlayerAdventureActor$$SavePlayerAttributeSnapshot");
     InstallHook(g_base + RVA_GDC_GET_HIT_DAMAGE,     reinterpret_cast<void*>(&GdcHook_GetHitDamage),    (void**)&g_GdcHooks[0].original, g_GdcHooks[0].name);
     InstallHook(g_base + RVA_GDC_GET_MONSTER,        reinterpret_cast<void*>(&GdcHook_GetMonster),      (void**)&g_GdcHooks[1].original, g_GdcHooks[1].name);
-    InstallHook(g_base + RVA_SHOW_CIRCLE_GIZMO_DIAG, reinterpret_cast<void*>(&Hook_ShowCircleGizmoDiag), (void**)&g_OrigShowCircleGizmoDiag, "ShowCircleGizmo(debug observer)");
-    InstallHook(g_base + RVA_SHOW_RING_GIZMO_DIAG,   reinterpret_cast<void*>(&Hook_ShowRingGizmoDiag),   (void**)&g_OrigShowRingGizmoDiag,   "ShowRingGizmo(debug observer)");
     InstallHttpHooks(g_base);
 
     log("[init] Ready.");

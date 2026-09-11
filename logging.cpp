@@ -159,28 +159,6 @@ void logJson(const json& j) {
     fflush(g_JsonLog);
 }
 
-// TEMP DEBUG: free-form debug lines next to the shared json log (same dir,
-// wine-safe), so effect-gate diagnostics are reachable at /dev/shm.
-static FILE* g_DebugLog = nullptr;
-void debugEffectLog(const char* fmt, ...) {
-    if (!g_DebugLog) {
-        HMODULE ntdll = GetModuleHandleA("ntdll.dll");
-        bool wine = ntdll && GetProcAddress(ntdll, "wine_get_version") != nullptr;
-        std::string dir = wine ? "Z:\\dev\\shm\\StellaSoraLogger"
-                               : GetLocalAppDataPath() + "\\Stella Sora Combat Logger";
-        g_DebugLog = fopen((dir + "\\debug_effects.txt").c_str(), "a");
-    }
-    if (!g_DebugLog) return;
-    std::lock_guard<std::mutex> lk(g_Mutex);
-    fprintf(g_DebugLog, "[%s] ", gameTime().c_str());
-    va_list args;
-    va_start(args, fmt);
-    vfprintf(g_DebugLog, fmt, args);
-    va_end(args);
-    fputc('\n', g_DebugLog);
-    fflush(g_DebugLog);
-}
-
 // =============================================================================
 //  LEVEL MAP
 // =============================================================================
@@ -269,54 +247,55 @@ void WriteHitDamageLevelMapEntry(const Nova_Client_HitDamage_o* hitDamageConfig)
 // =============================================================================
 //  CONFIG LOADING
 // =============================================================================
+// Single source of truth for every log_config.json key: default value + the
+// LogConfig field it feeds. Drives the default-file template, the parser and
+// the backfill of missing keys, so the three lists can't drift apart.
+struct CfgKey { const char* key; bool LogConfig::* field; bool def; };
+static const CfgKey kCfgKeys[] = {
+    { "buffs",                          &LogConfig::buffs,                          true },
+    { "effects",                        &LogConfig::effects,                        true },
+    { "damage",                         &LogConfig::damage,                         true },
+    { "skill_casts",                    &LogConfig::skill_casts,                    true },
+    { "on_hit_attacker_stats",          &LogConfig::on_hit_attacker_stats,          true },
+    { "on_hit_defender_stats",          &LogConfig::on_hit_defender_stats,          true },
+    { "on_hit_buff_list",               &LogConfig::on_hit_buff_list,               true },
+    { "on_hit_effect_list",             &LogConfig::on_hit_effect_list,             true },
+    { "on_hit_attacker_attr_dict",      &LogConfig::on_hit_attacker_attr_dict,      true },
+    { "on_hit_defender_attr_dict",      &LogConfig::on_hit_defender_attr_dict,      true },
+    { "player_gizmo",                   &LogConfig::player_gizmo,                   false },
+    { "monster_gizmo",                  &LogConfig::monster_gizmo,                  false },
+    { "bullet_gizmo",                   &LogConfig::bullet_gizmo,                   false },
+    { "hitbox_gizmo",                   &LogConfig::hitbox_gizmo,                   false },
+    { "hearing_gizmo_for_player",       &LogConfig::hearing_gizmo_for_player,       false },
+    { "hearing_gizmo_for_monster",      &LogConfig::hearing_gizmo_for_monster,      false },
+    { "vision_gizmo_for_player",        &LogConfig::vision_gizmo_for_player,        false },
+    { "vision_gizmo_for_monster",       &LogConfig::vision_gizmo_for_monster,       false },
+    { "input_and_vision_gizmo",         &LogConfig::input_and_vision_gizmo,         false },
+    { "monster_path_gizmo",             &LogConfig::monster_path_gizmo,             false },
+    { "player_path_gizmo",              &LogConfig::player_path_gizmo,              false },
+    { "camera_gizmo",                   &LogConfig::camera_gizmo,                   false },
+    { "monster_dummy_mode",             &LogConfig::monster_dummy_mode,             false },
+};
+
+static void ApplyConfigDefaults() {
+    for (const auto& k : kCfgKeys) g_Cfg.*(k.field) = k.def;
+}
+
 void loadConfig(const std::string& dir) {
     std::string path = dir + "\\log_config.json";
 
     FILE* f = fopen(path.c_str(), "r");
     if (!f) {
+        // No config file: write one with the defaults, then apply them.
+        ApplyConfigDefaults();
         f = fopen(path.c_str(), "w");
         if (f) {
-            fprintf(f,
-                "{\n"
-                "  \"buffs\":                          true,\n"
-                "  \"effects\":                        true,\n"
-                "  \"damage\":                         true,\n"
-                "  \"skill_casts\":                    true,\n"
-                "  \"on_hit_attacker_stats\":          true,\n"
-                "  \"on_hit_defender_stats\":          true,\n"
-                "  \"on_hit_buff_list\":               true,\n"
-                "  \"on_hit_effect_list\":             true,\n"
-                "  \"on_hit_effect_list_information\": true,\n"
-                "  \"on_hit_attacker_attr_dict\":      true,\n"
-                "  \"on_hit_defender_attr_dict\":      true,\n"
-                "  \"player_gizmo\":                   false,\n"
-                "  \"monster_gizmo\":                  false,\n"
-                "  \"bullet_gizmo\":                   false,\n"
-                "  \"hitbox_gizmo\":                   false,\n"
-                "  \"hearing_gizmo_for_player\":       false,\n"
-                "  \"hearing_gizmo_for_monster\":      false,\n"
-                "  \"vision_gizmo_for_player\":        false,\n"
-                "  \"vision_gizmo_for_monster\":       false,\n"
-                "  \"input_and_vision_gizmo\":         false,\n"
-                "  \"monster_path_gizmo\":             false,\n"
-                "  \"player_path_gizmo\":              false,\n"
-                "  \"camera_gizmo\":                   false,\n"
-                "  \"monster_dummy_mode\":             false\n"
-                "}\n");
+            json defaults = json::object();
+            for (const auto& k : kCfgKeys) defaults[k.key] = k.def;
+            fprintf(f, "%s\n", defaults.dump(2).c_str());
             fclose(f);
             log("[config] log_config.json not found — wrote defaults to %s", path.c_str());
         }
-        g_Cfg.buffs                          = true;
-        g_Cfg.effects                        = true;
-        g_Cfg.damage                         = true;
-        g_Cfg.skill_casts                    = true;
-        g_Cfg.on_hit_attacker_stats          = true;
-        g_Cfg.on_hit_defender_stats          = true;
-        g_Cfg.on_hit_buff_list               = true;
-        g_Cfg.on_hit_effect_list             = true;
-        g_Cfg.on_hit_effect_list_information = true;
-        g_Cfg.on_hit_attacker_attr_dict      = true;
-        g_Cfg.on_hit_defender_attr_dict      = true;
         return;
     }
 
@@ -329,62 +308,19 @@ void loadConfig(const std::string& dir) {
 
     try {
         json j = json::parse(buf);
-        auto get = [&](const char* key, bool def) -> bool {
-            return j.contains(key) ? j[key].get<bool>() : def;
-        };
-        g_Cfg.buffs                          = get("buffs",                          true);
-        g_Cfg.effects                        = get("effects",                        true);
-        g_Cfg.damage                         = get("damage",                         true);
-        g_Cfg.skill_casts                    = get("skill_casts",                    true);
-        g_Cfg.on_hit_attacker_stats          = get("on_hit_attacker_stats",          true);
-        g_Cfg.on_hit_defender_stats          = get("on_hit_defender_stats",          true);
-        g_Cfg.on_hit_buff_list               = get("on_hit_buff_list",               true);
-        g_Cfg.on_hit_effect_list             = get("on_hit_effect_list",             true);
-        g_Cfg.on_hit_effect_list_information = get("on_hit_effect_list_information", true);
-        g_Cfg.on_hit_attacker_attr_dict      = get("on_hit_attacker_attr_dict",      true);
-        g_Cfg.on_hit_defender_attr_dict      = get("on_hit_defender_attr_dict",      true);
-        g_Cfg.player_gizmo                   = get("player_gizmo",                   false);
-        g_Cfg.monster_gizmo                  = get("monster_gizmo",                  false);
-        g_Cfg.bullet_gizmo                   = get("bullet_gizmo",                   false);
-        g_Cfg.hitbox_gizmo                   = get("hitbox_gizmo",                   false);
-        g_Cfg.hearing_gizmo_for_player       = get("hearing_gizmo_for_player",       false);
-        g_Cfg.hearing_gizmo_for_monster      = get("hearing_gizmo_for_monster",      false);
-        g_Cfg.vision_gizmo_for_player        = get("vision_gizmo_for_player",        false);
-        g_Cfg.vision_gizmo_for_monster       = get("vision_gizmo_for_monster",       false);
-        g_Cfg.input_and_vision_gizmo         = get("input_and_vision_gizmo",         false);
-        g_Cfg.monster_path_gizmo             = get("monster_path_gizmo",             false);
-        g_Cfg.player_path_gizmo              = get("player_path_gizmo",              false);
-        g_Cfg.camera_gizmo                   = get("camera_gizmo",                   false);
-        g_Cfg.monster_dummy_mode             = get("monster_dummy_mode",             false);
+        for (const auto& k : kCfgKeys)
+            g_Cfg.*(k.field) = j.contains(k.key) ? j[k.key].get<bool>() : k.def;
 
-        // Check if config is missing new fields and update it
-        if (!j.contains("player_gizmo") || !j.contains("monster_gizmo") ||
-            !j.contains("bullet_gizmo") || !j.contains("hitbox_gizmo") ||
-            !j.contains("hearing_gizmo_for_player") || !j.contains("hearing_gizmo_for_monster") ||
-            !j.contains("vision_gizmo_for_player") || !j.contains("vision_gizmo_for_monster") ||
-            !j.contains("input_and_vision_gizmo") || !j.contains("monster_path_gizmo") ||
-            !j.contains("player_path_gizmo") || !j.contains("camera_gizmo") ||
-            !j.contains("on_hit_attacker_attr_dict") || !j.contains("on_hit_defender_attr_dict") ||
-            !j.contains("monster_dummy_mode")) {
-            j["player_gizmo"] = false;
-            j["monster_gizmo"] = false;
-            j["bullet_gizmo"] = false;
-            j["hitbox_gizmo"] = false;
-            j["hearing_gizmo_for_player"] = false;
-            j["hearing_gizmo_for_monster"] = false;
-            j["vision_gizmo_for_player"] = false;
-            j["vision_gizmo_for_monster"] = false;
-            j["input_and_vision_gizmo"] = false;
-            j["monster_path_gizmo"] = false;
-            j["player_path_gizmo"] = false;
-            j["camera_gizmo"] = false;
-            j["on_hit_attacker_attr_dict"] = true;
-            j["on_hit_defender_attr_dict"] = true;
-            j["monster_dummy_mode"] = false;
-            FILE* f = fopen(path.c_str(), "w");
-            if (f) {
-                fprintf(f, "%s", j.dump(2).c_str());
-                fclose(f);
+        // Backfill keys added by newer DLL versions and rewrite the file once.
+        bool changed = false;
+        for (const auto& k : kCfgKeys) {
+            if (!j.contains(k.key)) { j[k.key] = k.def; changed = true; }
+        }
+        if (changed) {
+            FILE* out = fopen(path.c_str(), "w");
+            if (out) {
+                fprintf(out, "%s", j.dump(2).c_str());
+                fclose(out);
                 log("[config] Updated log_config.json with new options");
             }
         }
@@ -398,6 +334,7 @@ void loadConfig(const std::string& dir) {
             g_Cfg.input_and_vision_gizmo, g_Cfg.monster_path_gizmo,
             g_Cfg.player_path_gizmo, g_Cfg.camera_gizmo, g_Cfg.monster_dummy_mode);
     } catch (...) {
+        ApplyConfigDefaults();
         log("[config] Failed to parse log_config.json — using defaults");
     }
 }
@@ -407,12 +344,13 @@ void loadConfig(const std::string& dir) {
 // =============================================================================
 std::string Il2CppStringToStd(System_String_o* strObj) {
     if (!strObj) return "?";
-    int len = strObj->fields._stringLength;
-    if (len <= 0 || len >= 1024) return "zero";
-    const uint16_t* chars = &strObj->fields._firstChar;
-    std::string out(len, '\0');
-    for (int i = 0; i < len; ++i)
-        out[i] = (char)chars[i];
+    int32_t len = strObj->fields._stringLength;
+    if (len <= 0 || len > (1 << 20)) return "";
+    const wchar_t* chars = reinterpret_cast<const wchar_t*>(&strObj->fields._firstChar);
+    int sz = WideCharToMultiByte(CP_UTF8, 0, chars, len, nullptr, 0, nullptr, nullptr);
+    if (sz <= 0) return "";
+    std::string out(sz, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, chars, len, out.data(), sz, nullptr, nullptr);
     return out;
 }
 
@@ -489,11 +427,6 @@ std::string adventureActorId(AdventureActor_o* actor) {
     return buf;
 }
 
-std::string adventureActorDisplay(AdventureActor_o* actor) {
-    // Display is now resolved in JS; emit the same key as adventureActorId.
-    return adventureActorId(actor);
-}
-
 // overlay is optional — when provided, its amendments are added on top of the
 // live AttributeList values at serialization time (no mutation of game memory).
 json logAdventureActorAttrsJson(AttributeList_o* attrList, const std::vector<ElemDictEntry>* overlay) {
@@ -517,7 +450,7 @@ json logAdventureActorAttrsJson(AttributeList_o* attrList, const std::vector<Ele
                 if (ov.attributeType != i) continue;
                 switch (ov.mode) {
                     case 0: base_ += ov.value; break;
-                    case 1: abs_  += ov.value; log("attributeType=assign ??"); break; // assign treated as abs
+                    case 1: abs_  += ov.value; break; // assign treated as abs
                     case 2: pct   += ov.value; break;
                 }
             }
@@ -578,6 +511,24 @@ json logAdventureActorSpecialAttrsJson(AdventureActor_o* actor) {
 // =============================================================================
 //  Debug Gizmos
 // =============================================================================
+// AdventureModuleDebugHelper boolean fields, by offset. One table feeds both
+// the flag writes here and the "any gizmo enabled" guard in GetDebugHelperInstance
+// (proxy.cpp).
+const std::vector<GizmoFlag> g_GizmoFlags = {
+    { 0x28, &LogConfig::player_gizmo             },
+    { 0x29, &LogConfig::monster_gizmo            },
+    { 0x2A, &LogConfig::bullet_gizmo             },
+    { 0x2B, &LogConfig::hitbox_gizmo             },
+    { 0x2C, &LogConfig::hearing_gizmo_for_player },
+    { 0x2D, &LogConfig::hearing_gizmo_for_monster},
+    { 0x2E, &LogConfig::vision_gizmo_for_player  },
+    { 0x2F, &LogConfig::vision_gizmo_for_monster },
+    { 0x30, &LogConfig::input_and_vision_gizmo   },
+    { 0x31, &LogConfig::monster_path_gizmo       },
+    { 0x32, &LogConfig::player_path_gizmo        },
+    { 0x33, &LogConfig::camera_gizmo             },
+};
+
 bool EnableAllDebugGizmos(uintptr_t moduleBase)
 {
     if (!moduleBase) return false;
@@ -590,19 +541,8 @@ bool EnableAllDebugGizmos(uintptr_t moduleBase)
     if (!helper) return false;
     uintptr_t obj = reinterpret_cast<uintptr_t>(helper);
 
-    // Enable based on config
-    *(char *)(obj + 0x28) = g_Cfg.player_gizmo ? 1 : 0; // PlayerGizmo
-    *(char *)(obj + 0x29) = g_Cfg.monster_gizmo ? 1 : 0; // MonsterGizmo
-    *(char *)(obj + 0x2A) = g_Cfg.bullet_gizmo ? 1 : 0; // BulletGizmo
-    *(char *)(obj + 0x2B) = g_Cfg.hitbox_gizmo ? 1 : 0; // HitboxGizmo
-    *(char *)(obj + 0x2C) = g_Cfg.hearing_gizmo_for_player ? 1 : 0; // HearingGizmoForPlayer
-    *(char *)(obj + 0x2D) = g_Cfg.hearing_gizmo_for_monster ? 1 : 0; // HearingGizmoForMonster
-    *(char *)(obj + 0x2E) = g_Cfg.vision_gizmo_for_player ? 1 : 0; // VisionGizmoForPlayer
-    *(char *)(obj + 0x2F) = g_Cfg.vision_gizmo_for_monster ? 1 : 0; // VisionGizmoForMonster
-    *(char *)(obj + 0x30) = g_Cfg.input_and_vision_gizmo ? 1 : 0; // InputAndVisionGizmo
-    *(char *)(obj + 0x31) = g_Cfg.monster_path_gizmo ? 1 : 0; // MonsterPathGizmo
-    *(char *)(obj + 0x32) = g_Cfg.player_path_gizmo ? 1 : 0; // PlayerPathGizmo
-    *(char *)(obj + 0x33) = g_Cfg.camera_gizmo ? 1 : 0; // CameraGizmo
+    for (const auto& g : g_GizmoFlags)
+        *reinterpret_cast<char*>(obj + g.offset) = g_Cfg.*(g.enabled) ? 1 : 0;
 
     return true;
 }
@@ -678,12 +618,10 @@ void BuildBuffJson(const char* type, int32_t configId, AdventureActor_o* owner, 
 
     if (owner) {
         j["Owner"] = adventureActorId(owner);
-        j["OwnerDisplay"] = adventureActorDisplay(owner);
     }
 
     if (fromActor) {
         j["Source"] = adventureActorId(fromActor);
-        j["SourceDisplay"] = adventureActorDisplay(fromActor);
     }
 
     j["ConfigId"] = configId;
@@ -760,17 +698,34 @@ static std::unordered_set<int32_t> CollectDictKeys(void* dictPtr) {
     return keys;
 }
 
+// Enumerate the EffectValue ids for `baseId` at each level (ids advance by +10
+// per level) as [{"l":level,"v":valueConfigId}, ...]. Stops after the first gap
+// past the first hit. Empty input / baseId yields an empty array.
+static json EnumerateValueConfigIds(const std::unordered_set<int32_t>& keys, int32_t baseId) {
+    json options = json::array();
+    if (keys.empty() || baseId <= 0) return options;
+    bool anyFound = false;
+    for (int lvl = 0; lvl <= 50; ++lvl) {
+        int32_t vid = baseId + lvl * 10;
+        if (keys.count(vid)) {
+            anyFound = true;
+            json ve;
+            ve["l"] = lvl;
+            ve["v"] = vid;
+            options.push_back(ve);
+        } else if (anyFound) {
+            break;
+        }
+    }
+    return options;
+}
+
 // Build a JSON object listing all active AdventureEffects on an actor.
-json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
+json BuildEffectListJson(ActorEffectManage_o* effectManage,
                           GameDataController_o* gdc,
-                          FnGetEffectValue GetEffectValue,
-                          FnGetOnceAttr GetOnceAttr,
-                          FnGetValueConfigId GetValueConfigId,
-                          FnGetOnceAdditionalAttributeValue GetAttrValue,
                           AdventureActor_o* resolveActor,
                           const EffectSnapshot* effectSnapshot,
                           const std::unordered_set<int32_t>* appliedHittedAttrFix) {
-    //ActorEffectManage has a list of Effects, each effect has a list of its derivative effects that are actually active
     json j;
     if (!effectManage) return j;
 
@@ -781,14 +736,6 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
     std::unordered_set<int32_t> effectValueKeys;
     if (gdc && gdc->fields.EffectValue_Map) {
         effectValueKeys = CollectDictKeys(gdc->fields.EffectValue_Map);
-    } else {
-        static bool once2 = false;
-        if (!once2) {
-            once2 = true;
-            log("[LVLMAP] MISSING: gdc=%p fields.EffectValue_Map=%p",
-                (void*)gdc,
-                (void*)(gdc ? gdc->fields.EffectValue_Map : nullptr));
-        }
     }
 
     auto* entriesArr = effectsDict->fields._entries;
@@ -843,20 +790,7 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
                 if (!e.ownerId.empty())
                     je["owner"] = e.ownerId;
                 json allValueOptions = json::array();
-                if (!effectValueKeys.empty() && e.configId > 0) {
-                    bool anyFound = false;
-                    for (int lvl = 0; lvl <= 50; ++lvl) {
-                        int32_t vid = e.configId + lvl * 10;
-                        if (effectValueKeys.count(vid)) {
-                            anyFound = true;
-                            json ve;
-                            ve["l"] = lvl;
-                            ve["v"] = vid;
-                            allValueOptions.push_back(ve);
-                        } else if (anyFound) break;
-                    }
-                }
-                WriteLevelMapEntry(e.configId, 0, 0, allValueOptions);
+                WriteLevelMapEntry(e.configId, 0, 0, EnumerateValueConfigIds(effectValueKeys, e.configId));
                 effects.push_back(je);
             }
         }
@@ -876,16 +810,6 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
                 AdventureEffect_o* effect = reinterpret_cast<AdventureEffect_o*>(e.value);
                 if (!effect || effect->fields.removed) continue;
                 dictIds.insert(effect->fields.id);
-                // TEMP DEBUG: stack state of the watch-list effects at dump time
-                auto* cfg = effect->fields._effectConfig_k__BackingField;
-                int32_t cid = cfg ? cfg->fields.id_ : 0;
-                if (cid == 3008026 || cid == 3008006) {
-                    auto* st = effect->fields._effectStack;
-                    debugEffectLog("[dump-time] actor=%s configId=%d instId=%d stackSize=%d trigger=%d",
-                        actorId.c_str(), cid, effect->fields.id,
-                        (st && st->fields._array) ? st->fields._size : -1,
-                        cfg ? cfg->fields.trigger_ : -1);
-                }
             }
         }
         for (auto instId : *effectSnapshot) {
@@ -921,18 +845,7 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
                     }
                     int32_t ltd = effectCfg ? effectCfg->fields.levelTypeData_ : 0;
                     int32_t ld = effectCfg ? effectCfg->fields.levelData_ : 0;
-                    json allValueOptions = json::array();
-                    if (!effectValueKeys.empty() && baseConfigId > 0) {
-                        bool anyFound = false;
-                        for (int lvl = 0; lvl <= 50; ++lvl) {
-                            int32_t vid = baseConfigId + lvl * 10;
-                            if (effectValueKeys.count(vid)) { anyFound = true;
-                                json ve; ve["l"] = lvl; ve["v"] = vid;
-                                allValueOptions.push_back(ve);
-                            } else if (anyFound) break;
-                        }
-                    }
-                    WriteLevelMapEntry(baseConfigId, ltd, ld, allValueOptions);
+                    WriteLevelMapEntry(baseConfigId, ltd, ld, EnumerateValueConfigIds(effectValueKeys, baseConfigId));
                     auto* stack = effect->fields._effectStack;
                     if (stack && stack->fields._array) {
                         auto* array = stack->fields._array;
@@ -956,7 +869,7 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
                 }
             }
             if (!usedLive) {
-                InstanceSnapInfo info;
+                InstanceSnapInfo info{};  // value-init: the configId-only fallback leaves the other fields unset
                 if (!GetInstanceSnapInfo(instId, actorId, info)) {
                     int32_t cfgId = GetConfigForInstance(instId);
                     if (cfgId <= 0) continue;
@@ -967,18 +880,7 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
                 je["sourceType"] = info.sourceType;
                 je["damage"] = info.damage;
                 if (!info.ownerId.empty()) je["owner"] = info.ownerId;
-                json allValueOptions = json::array();
-                if (!effectValueKeys.empty() && info.configId > 0) {
-                    bool anyFound = false;
-                    for (int lvl = 0; lvl <= 50; ++lvl) {
-                        int32_t vid = info.configId + lvl * 10;
-                        if (effectValueKeys.count(vid)) { anyFound = true;
-                            json ve; ve["l"] = lvl; ve["v"] = vid;
-                            allValueOptions.push_back(ve);
-                        } else if (anyFound) break;
-                    }
-                }
-                WriteLevelMapEntry(info.configId, info.levelTypeData, info.levelData, allValueOptions);
+                WriteLevelMapEntry(info.configId, info.levelTypeData, info.levelData, EnumerateValueConfigIds(effectValueKeys, info.configId));
                 effects.push_back(je);
             }
         }
@@ -1010,31 +912,7 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
             int32_t levelTypeData = effectCfg ? effectCfg->fields.levelTypeData_ : 0;
             int32_t levelData = effectCfg ? effectCfg->fields.levelData_ : 0;
 
-            // Enumerate all possible value config IDs for this effect at different levels
-            json allValueOptions = json::array();
-            if (!effectValueKeys.empty() && baseConfigId > 0) {
-                static bool once3 = false;
-                bool anyFound = false;
-                for (int lvl = 0; lvl <= 50; ++lvl) {
-                    int32_t vid = baseConfigId + lvl * 10;
-                    if (effectValueKeys.count(vid)) {
-                        anyFound = true;
-                        json ve;
-                        ve["l"] = lvl;
-                        ve["v"] = vid;
-                        allValueOptions.push_back(ve);
-                    } else if (anyFound) {
-                        break;
-                    }
-                }
-                if (!once3 && anyFound) {
-                    once3 = true;
-                    log("[LVLMAP] baseConfigId=%d first key at lvl=0 vid=%d found=%d keysample=%zu",
-                        baseConfigId, baseConfigId + 0*10, (int)(effectValueKeys.count(baseConfigId)),
-                        effectValueKeys.size() > 0 ? *(effectValueKeys.begin()) : 0);
-                }
-            }
-            WriteLevelMapEntry(baseConfigId, levelTypeData, levelData, allValueOptions);
+            WriteLevelMapEntry(baseConfigId, levelTypeData, levelData, EnumerateValueConfigIds(effectValueKeys, baseConfigId));
 
             auto* stack = effect->fields._effectStack; // System_Collections_Generic_Stack_AdventureEffectBase__o*
             if (stack && stack->fields._array) {
@@ -1143,24 +1021,7 @@ json BuildAdditionalAttrDictJson(
                     fromActor, baseId, lt, ld, nullptr);
                 entry["valueConfigId"] = currentValueConfigId;
 
-                // Enumerate all possible value config IDs for this attribute at different levels
-                json allValueOptions = json::array();
-                if (!attrValueKeys.empty() && baseId > 0) {
-                    bool anyFound = false;
-                    for (int lvl = 0; lvl <= 50; ++lvl) {
-                        int32_t vid = baseId + lvl * 10;
-                        if (attrValueKeys.count(vid)) {
-                            anyFound = true;
-                            json ve;
-                            ve["l"] = lvl;
-                            ve["v"] = vid;
-                            allValueOptions.push_back(ve);
-                        } else if (anyFound) {
-                            break;
-                        }
-                    }
-                }
-                WriteLevelMapEntry(baseId, lt, ld, allValueOptions);
+                WriteLevelMapEntry(baseId, lt, ld, EnumerateValueConfigIds(attrValueKeys, baseId));
 
                 // ── Applied check (data-driven, mirrors the game's gating) ──
                 // The melody value rows are ELEMENT-KEYED: e.g. "Wings of
@@ -1211,11 +1072,6 @@ json BuildAdditionalAttrDictJson(
 
 
 
-static inline double RoundTo(double value, int decimals) {
-    double factor = std::pow(10.0, decimals);
-    return std::round(value * factor) / factor;
-}
-
 void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_Client_HitDamage_o* hitDamageConfig,
                   int32_t skillLevel, bool isCrit, bool isDot, int32_t* hudColorIndex, int64_t* skillPercentAmend,
                   int64_t* talentGroupPercentAmend, int64_t* skillAbsAmend, int64_t* talentGroupAbsAmend, int64_t* perkIntensityRatio,
@@ -1229,7 +1085,6 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
                   System_Collections_Generic_Dictionary_int__int__o* toAttrDict,
                   GameDataController_o* gdc,
                   FnGetOnceAttr GetOnceAttr, FnGetValueConfigId GetValueConfigId,
-                  FnGetEffectValue GetEffectValue,
                   FnGetOnceAdditionalAttributeValue GetAttrValue,
                   const EffectSnapshot* effectSnapshot,
                   const std::string* snapshotTime,
@@ -1256,11 +1111,9 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
 
     if (fromActor) {
         j["Attacker"] = adventureActorId(fromActor);
-        j["AttackerDisplay"] = adventureActorDisplay(fromActor);
     }
     if (toActor) {
         j["Defender"] = adventureActorId(toActor);
-        j["DefenderDisplay"] = adventureActorDisplay(toActor);
     }
 
     if (hitDamageConfig) {
@@ -1307,20 +1160,20 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
     dmgParams["hudColor"]                = hudColorIndex ? *hudColorIndex : -1;
     auto toDbl = [](int64_t* p) -> double { return p ? (double)(*p) / FDP_ONE : 0.0; };
     dmgParams["skillPercentAmend"]       = Round(toDbl(skillPercentAmend));
-    dmgParams["talentGroupPercentAmend"] = RoundTo(toDbl(talentGroupPercentAmend), 4);
-    dmgParams["skillAbsAmend"]           = RoundTo(toDbl(skillAbsAmend), 4);
-    dmgParams["talentGroupAbsAmend"]     = RoundTo(toDbl(talentGroupAbsAmend), 4);
-    dmgParams["perkIntensityRatio"]      = RoundTo(toDbl(perkIntensityRatio), 4);
-    dmgParams["slotDmgRatio"]            = RoundTo(toDbl(slotDmgRatio), 4);
-    dmgParams["fromEE"]                  = RoundTo(toDbl(fromEE), 4);
-    dmgParams["erAmend"]                 = RoundTo(toDbl(erAmend), 4);
-    dmgParams["defAmend"]                = RoundTo(toDbl(defAmend), 4);
-    dmgParams["rcdSlotDmgRatio"]         = RoundTo(toDbl(rcdSlotDmgRatio), 4);
-    dmgParams["toEERCD"]                 = RoundTo(toDbl(toEERCD), 4);
-    dmgParams["skillIntensityRatio"]     = RoundTo(toDbl(skillIntensityRatio), 4);
-    dmgParams["toughnessBrokenDmgRatio"] = RoundTo(toDbl(toughnessBrokenDmgRatio), 4);
-    dmgParams["critRatio"]               = RoundTo(toDbl(critRatio), 4);
-    dmgParams["envAmendRatio"]           = RoundTo(toDbl(envAmendRatio), 4);
+    dmgParams["talentGroupPercentAmend"] = Round(toDbl(talentGroupPercentAmend), 4);
+    dmgParams["skillAbsAmend"]           = Round(toDbl(skillAbsAmend), 4);
+    dmgParams["talentGroupAbsAmend"]     = Round(toDbl(talentGroupAbsAmend), 4);
+    dmgParams["perkIntensityRatio"]      = Round(toDbl(perkIntensityRatio), 4);
+    dmgParams["slotDmgRatio"]            = Round(toDbl(slotDmgRatio), 4);
+    dmgParams["fromEE"]                  = Round(toDbl(fromEE), 4);
+    dmgParams["erAmend"]                 = Round(toDbl(erAmend), 4);
+    dmgParams["defAmend"]                = Round(toDbl(defAmend), 4);
+    dmgParams["rcdSlotDmgRatio"]         = Round(toDbl(rcdSlotDmgRatio), 4);
+    dmgParams["toEERCD"]                 = Round(toDbl(toEERCD), 4);
+    dmgParams["skillIntensityRatio"]     = Round(toDbl(skillIntensityRatio), 4);
+    dmgParams["toughnessBrokenDmgRatio"] = Round(toDbl(toughnessBrokenDmgRatio), 4);
+    dmgParams["critRatio"]               = Round(toDbl(critRatio), 4);
+    dmgParams["envAmendRatio"]           = Round(toDbl(envAmendRatio), 4);
     dmgParams["finalDamage"]             = finalDamage;
     j["DamageParams"]                    = dmgParams;
 
@@ -1355,14 +1208,14 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
 
     if (fromActor && g_Cfg.on_hit_effect_list) {
         ActorEffectManage_o* effectManage = fromActor->fields.effectManage;
-        json effects = BuildEffectListJson(effectManage, g_Cfg.on_hit_effect_list_information, gdc, GetEffectValue, GetOnceAttr, GetValueConfigId, GetAttrValue, fromActor, effectSnapshot, appliedHittedAttrFix);
+        json effects = BuildEffectListJson(effectManage, gdc, fromActor, effectSnapshot, appliedHittedAttrFix);
         if (!effects.empty())
             j["AttackerEffects"] = effects;
     }
 
     if (toActor && g_Cfg.on_hit_effect_list) {
         ActorEffectManage_o* effectManage = toActor->fields.effectManage;
-        json effects = BuildEffectListJson(effectManage, g_Cfg.on_hit_effect_list_information, gdc, GetEffectValue, GetOnceAttr, GetValueConfigId, GetAttrValue, toActor, nullptr, appliedHittedAttrFix);
+        json effects = BuildEffectListJson(effectManage, gdc, toActor, nullptr, appliedHittedAttrFix);
         if (!effects.empty())
             j["DefenderEffects"] = effects;
     }
@@ -1528,18 +1381,6 @@ struct Il2CppObjectArrayRef {
     il2cpp_array_size_t max_length;
     void* m_Items[65535];
 };
-
-static std::string ReadIl2CppUTF16(System_String_o* s) {
-    if (!s) return "";
-    int32_t len = s->fields._stringLength;
-    if (len <= 0 || len > 1 << 20) return "";
-    const wchar_t* chars = reinterpret_cast<const wchar_t*>(&s->fields._firstChar);
-    int sz = WideCharToMultiByte(CP_UTF8, 0, chars, len, nullptr, 0, nullptr, nullptr);
-    if (sz <= 0) return "";
-    std::string out(sz, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, chars, len, out.data(), sz, nullptr, nullptr);
-    return out;
-}
 
 // The collector chunk. Mirrors the game's own origin computation:
 //  - PlayerCharData.lua:CalCharacterAttrBattle (line 1690) — general modes
@@ -1880,7 +1721,7 @@ static std::string RunLuaDoString(const char* chunk, const char* label) {
                 void* texc = nullptr;
                 void* tret = p_runtime_invoke(ts, exc, nullptr, &texc);
                 if (tret && !texc)
-                    msg = ReadIl2CppUTF16(reinterpret_cast<System_String_o*>(tret));
+                    msg = Il2CppStringToStd(reinterpret_cast<System_String_o*>(tret));
             }
         }
         log("[origin] DoString failed: %.400s", msg.c_str());
@@ -1891,7 +1732,7 @@ static std::string RunLuaDoString(const char* chunk, const char* label) {
         log("[origin] DoString returned empty");
         return "";
     }
-    std::string res = ReadIl2CppUTF16(reinterpret_cast<System_String_o*>(arr->m_Items[0]));
+    std::string res = Il2CppStringToStd(reinterpret_cast<System_String_o*>(arr->m_Items[0]));
     if (res.rfind("ERR:", 0) == 0) {
         log("[origin] chunk error: %.200s", res.c_str());
         return "";
@@ -2342,6 +2183,7 @@ bool GetInstanceSnapInfo(int32_t instanceId, const std::string& actorId, Instanc
     if (it == g_ScopedSnapInfoMap.end()) {
         auto oldIt = g_InstanceConfigMap.find(instanceId);
         if (oldIt != g_InstanceConfigMap.end()) {
+            out = InstanceSnapInfo{};  // zero the fields the caller expects set
             out.configId = oldIt->second;
             return true;
         }

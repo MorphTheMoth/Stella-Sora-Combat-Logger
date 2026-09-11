@@ -14,21 +14,9 @@
 
 using json = nlohmann::json;
 
-// Forward declarations – actual definitions are in game_structs.h
-struct AdventureActor_o;
-struct ActorEffectManage_o;
-struct Nova_Client_HitDamage_o;
-struct Nova_Client_EffectValue_o;
-struct Nova_Client_OnceAdditionalAttributeValue_o;
-struct AttributeList_o;
-struct GameDataController_o;
-struct Nova_Client_OnceAdditionalAttribute_o;
-struct System_Collections_Generic_Dictionary_int__int__o;
-struct ActorAdditionalAttrInfo_o;
 // Function pointer types shared between proxy.cpp and logging.cpp
 using FnGetOnceAttr                      = Nova_Client_OnceAdditionalAttribute_o* (__fastcall*)(GameDataController_o*, int32_t, void*);
 using FnGetValueConfigId                 = int32_t                                (__fastcall*)(AdventureActor_o*, int32_t, int32_t, int32_t, void*);
-using FnGetEffectValue                   = Nova_Client_EffectValue_o*             (__fastcall*)(GameDataController_o*, int32_t, void*);
 using FnGetOnceAdditionalAttributeValue  = Nova_Client_OnceAdditionalAttributeValue_o* (__fastcall*)(GameDataController_o*, int32_t, void*);
 
 struct LogConfig {
@@ -40,7 +28,6 @@ struct LogConfig {
     bool on_hit_defender_stats;
     bool on_hit_buff_list;
     bool on_hit_effect_list;
-    bool on_hit_effect_list_information;
     bool on_hit_attacker_attr_dict;
     bool on_hit_defender_attr_dict;
     bool player_gizmo;
@@ -69,7 +56,6 @@ extern std::atomic<int64_t>            g_CombatStartWallMs; // wall-clock fallba
 // Basic logging
 void log(const char* fmt, ...);
 void logJson(const json& j);
-void debugEffectLog(const char* fmt, ...);
 std::string gameTime();
 void loadConfig(const std::string& dir);
 
@@ -109,7 +95,6 @@ const char* AttrName(int i);
 
 // Actor logging
 std::string adventureActorId(AdventureActor_o* actor);
-std::string adventureActorDisplay(AdventureActor_o* actor);
 struct ElemDictEntry { int32_t attributeType; int32_t elementOrDamageType; bool isElementType; int32_t mode; double value; };
 json logAdventureActorAttrsJson(AttributeList_o* attrList, const std::vector<ElemDictEntry>* overlay = nullptr);
 json logAdventureActorSpecialAttrsJson(AdventureActor_o* actor);
@@ -123,7 +108,7 @@ struct SnapshotEntry {
     std::string gameTime;
 };
 
-// Per-effect snapshot data stored at effect init / execute time
+// Per-effect snapshot data stored at effect init time (Hook_EffectOnInit).
 struct InstanceSnapInfo {
     int32_t configId;
     int32_t levelTypeData;
@@ -178,12 +163,8 @@ extern std::unordered_map<std::string, MinionLink> g_MinionToPlayer;
 // JSON builders for different event types
 void BuildBuffJson(const char* type, int32_t configId, AdventureActor_o* owner, AdventureActor_o* fromActor, int isAdd, int32_t buffNum = 0);
 json BuildBuffListJson(AdventureActor_o* fromActor);
-json BuildEffectListJson(ActorEffectManage_o* effectManage, bool includeDetails,
+json BuildEffectListJson(ActorEffectManage_o* effectManage,
                           GameDataController_o* gdc = nullptr,
-                          FnGetEffectValue GetEffectValue = nullptr,
-                          FnGetOnceAttr GetOnceAttr = nullptr,
-                          FnGetValueConfigId GetValueConfigId = nullptr,
-                          FnGetOnceAdditionalAttributeValue GetAttrValue = nullptr,
                           AdventureActor_o* resolveActor = nullptr,
                           const EffectSnapshot* effectSnapshot = nullptr,
                           const std::unordered_set<int32_t>* appliedHittedAttrFix = nullptr);
@@ -213,7 +194,6 @@ void BuildHitJson(
     System_Collections_Generic_Dictionary_int__int__o* toAttrDict,
     GameDataController_o* gdc,
     FnGetOnceAttr GetOnceAttr, FnGetValueConfigId GetValueConfigId,
-    FnGetEffectValue GetEffectValue = nullptr,
     FnGetOnceAdditionalAttributeValue GetAttrValue = nullptr,
     const EffectSnapshot* effectSnapshot = nullptr,
     const std::string* snapshotTime = nullptr,
@@ -226,6 +206,12 @@ void BuildResetJson();
 // Utility
 std::string GetLocalAppDataPath();
 void InitializeLogger();
+
+// Gizmo flag table: {offset within AdventureModuleDebugHelper, LogConfig flag}.
+// Defined in logging.cpp; shared by EnableAllDebugGizmos (writes the flag bytes)
+// and GetDebugHelperInstance in proxy.cpp ("any gizmo enabled" early-out).
+struct GizmoFlag { uintptr_t offset; bool LogConfig::* enabled; };
+extern const std::vector<GizmoFlag> g_GizmoFlags;
 
 // HITTED_ADDITIONAL_ATTR_FIX (effectType 45) applied tracking.
 // These effects persist in the actor's effectsDict but only mutate the shared

@@ -151,33 +151,23 @@ static ProtoReader MakeReader(System_Byte_array* body) {
 }
 
 // =============================================================================
-//  JSON helpers
-// =============================================================================
-static json arr()  { return json::array(); }
-static json obj()  { return json::object(); }
-
-// =============================================================================
 //  ChangeInfo parser (simplified — extracts type_urls from Any entries)
 // =============================================================================
 static json ParseChangeInfo(ProtoReader r) {
-    json result = obj();
-    json props = arr();
+    json result = json::object();
+    json props = json::array();
 
     int field, wire;
     while (r.tag(field, wire)) {
         if (field == 1 && wire == 2) {
             // repeated Any props
             auto sub = r.sub();
-            json prop = obj();
+            json prop = json::object();
             int pf, pw;
             std::string typeUrl;
             while (sub.tag(pf, pw)) {
                 if (pf == 1 && pw == 2) {
                     typeUrl = sub.str();
-                } else if (pf == 2 && pw == 2) {
-                    uint64_t n = sub.p[0] | ((uint64_t)(sub.p[1]) << 8);
-                    // Try to peek value length from the Any's value bytes
-                    sub.skip(pw);
                 } else {
                     sub.skip(pw);
                 }
@@ -197,7 +187,7 @@ static json ParseChangeInfo(ProtoReader r) {
 //  Sub-note skill info
 // =============================================================================
 static json ParseSubNoteSkillInfo(ProtoReader r) {
-    json j = obj();
+    json j = json::object();
     int field, wire;
     while (r.tag(field, wire)) {
         switch (field) {
@@ -215,7 +205,7 @@ static json ParseSubNoteSkillInfo(ProtoReader r) {
 //  ActiveSecondaryChange
 // =============================================================================
 static json ParseActiveSecondaryChange(ProtoReader r) {
-    json j = obj();
+    json j = json::object();
     int field, wire;
     while (r.tag(field, wire)) {
         switch (field) {
@@ -231,8 +221,8 @@ static json ParseActiveSecondaryChange(ProtoReader r) {
 //  TowerChangeData
 // =============================================================================
 static json ParseTowerChangeData(ProtoReader r) {
-    json j = obj();
-    json infos = arr(), secondaries = arr();
+    json j = json::object();
+    json infos = json::array(), secondaries = json::array();
     int field, wire;
     while (r.tag(field, wire)) {
         if (field == 1 && wire == 2) {
@@ -248,11 +238,9 @@ static json ParseTowerChangeData(ProtoReader r) {
     return j;
 }
 
-// =============================================================================
-//  ItemTpl
-// =============================================================================
+// {tid: uint32, qty: int32} — shared by ItemTpl, TowerItemInfo and TowerResInfo.
 static json ParseItemTpl(ProtoReader r) {
-    json j = obj();
+    json j = json::object();
     int field, wire;
     while (r.tag(field, wire)) {
         switch (field) {
@@ -264,42 +252,15 @@ static json ParseItemTpl(ProtoReader r) {
     return j;
 }
 
-// =============================================================================
-//  TowerItemInfo / PotentialInfo / TowerResInfo
-// =============================================================================
-static json ParseTowerItemInfo(ProtoReader r) {
-    json j = obj();
+// {<idKey>: uint32, level: uint32} — shared by PotentialInfo (tid) and
+// BuildPotential (potentialId).
+static json ParseIdLevel(ProtoReader r, const char* idKey) {
+    json j = json::object();
     int field, wire;
     while (r.tag(field, wire)) {
         switch (field) {
-            case 1: j["tid"] = (uint32_t)r.varint(); break;
-            case 2: j["qty"] = (int32_t)r.varint();   break;
-            default: r.skip(wire); break;
-        }
-    }
-    return j;
-}
-
-static json ParsePotentialInfo(ProtoReader r) {
-    json j = obj();
-    int field, wire;
-    while (r.tag(field, wire)) {
-        switch (field) {
-            case 1: j["tid"]   = (uint32_t)r.varint(); break;
-            case 2: j["level"] = (int32_t)r.varint();   break;
-            default: r.skip(wire); break;
-        }
-    }
-    return j;
-}
-
-static json ParseTowerResInfo(ProtoReader r) {
-    json j = obj();
-    int field, wire;
-    while (r.tag(field, wire)) {
-        switch (field) {
-            case 1: j["tid"] = (uint32_t)r.varint(); break;
-            case 2: j["qty"] = (int32_t)r.varint();   break;
+            case 1: j[idKey]   = (uint32_t)r.varint(); break;
+            case 2: j["level"] = (uint32_t)r.varint(); break;
             default: r.skip(wire); break;
         }
     }
@@ -307,7 +268,7 @@ static json ParseTowerResInfo(ProtoReader r) {
 }
 
 static json ParseFateCardInfo(ProtoReader r) {
-    json j = obj();
+    json j = json::object();
     int field, wire;
     while (r.tag(field, wire)) {
         switch (field) {
@@ -326,16 +287,16 @@ static json ParseFateCardInfo(ProtoReader r) {
 //  StarTowerBag
 // =============================================================================
 static json ParseStarTowerBag(ProtoReader r) {
-    json j = obj();
-    json items = arr(), potentials = arr(), res = arr(), fateCards = arr();
+    json j = json::object();
+    json items = json::array(), potentials = json::array(), res = json::array(), fateCards = json::array();
     int field, wire;
     while (r.tag(field, wire)) {
         if (field == 1 && wire == 2) {
-            items.push_back(ParseTowerItemInfo(r.sub()));
+            items.push_back(ParseItemTpl(r.sub()));
         } else if (field == 2 && wire == 2) {
-            potentials.push_back(ParsePotentialInfo(r.sub()));
+            potentials.push_back(ParseIdLevel(r.sub(), "tid"));
         } else if (field == 3 && wire == 2) {
-            res.push_back(ParseTowerResInfo(r.sub()));
+            res.push_back(ParseItemTpl(r.sub()));
         } else if (field == 4 && wire == 2) {
             fateCards.push_back(ParseFateCardInfo(r.sub()));
         } else {
@@ -353,18 +314,18 @@ static json ParseStarTowerBag(ProtoReader r) {
 //  StarTowerCharGem
 // =============================================================================
 static json ParseStarTowerCharGem(ProtoReader r) {
-    json j = obj();
+    json j = json::object();
     int field, wire;
     while (r.tag(field, wire)) {
         switch (field) {
             case 1:
                 if (wire == 2) j["attributes"] = r.packed_uint32();
-                else { json a = arr(); a.push_back((uint32_t)r.varint()); j["attributes"] = a; }
+                else { json a = json::array(); a.push_back((uint32_t)r.varint()); j["attributes"] = a; }
                 break;
             case 2: j["slotId"] = (uint32_t)r.varint(); break;
             case 3:
                 if (wire == 2) j["overlockCount"] = r.packed_uint32();
-                else { json a = arr(); a.push_back((uint32_t)r.varint()); j["overlockCount"] = a; }
+                else { json a = json::array(); a.push_back((uint32_t)r.varint()); j["overlockCount"] = a; }
                 break;
             default: r.skip(wire); break;
         }
@@ -376,8 +337,8 @@ static json ParseStarTowerCharGem(ProtoReader r) {
 //  StarTowerChar
 // =============================================================================
 static json ParseStarTowerChar(ProtoReader r) {
-    json j = obj();
-    json gems = arr();
+    json j = json::object();
+    json gems = json::array();
     int field, wire;
     while (r.tag(field, wire)) {
         switch (field) {
@@ -386,7 +347,7 @@ static json ParseStarTowerChar(ProtoReader r) {
             case 3: j["level"]         = (uint32_t)r.varint(); break;
             case 4:
                 if (wire == 2) j["skillLvs"] = r.packed_uint32();
-                else { json a = arr(); a.push_back((uint32_t)r.varint()); j["skillLvs"] = a; }
+                else { json a = json::array(); a.push_back((uint32_t)r.varint()); j["skillLvs"] = a; }
                 break;
             case 5: j["affinityLevel"] = (uint32_t)r.varint(); break;
             case 6: j["advance"]       = (uint32_t)r.varint(); break;
@@ -405,7 +366,7 @@ static json ParseStarTowerChar(ProtoReader r) {
 //  StarTowerDisc
 // =============================================================================
 static json ParseStarTowerDisc(ProtoReader r) {
-    json j = obj();
+    json j = json::object();
     int field, wire;
     while (r.tag(field, wire)) {
         switch (field) {
@@ -423,8 +384,8 @@ static json ParseStarTowerDisc(ProtoReader r) {
 //  StarTowerMeta
 // =============================================================================
 static json ParseStarTowerMeta(ProtoReader r) {
-    json j = obj();
-    json chars = arr(), discs = arr();
+    json j = json::object();
+    json chars = json::array(), discs = json::array();
     int field, wire;
     while (r.tag(field, wire)) {
         switch (field) {
@@ -438,12 +399,12 @@ static json ParseStarTowerMeta(ProtoReader r) {
             case 8:  if (wire == 2) j["clientData"] = r.str(); else r.skip(wire); break;
             case 9:
                 if (wire == 2) j["activeSecondaryIds"] = r.packed_uint32();
-                else { json a = arr(); a.push_back((uint32_t)r.varint()); j["activeSecondaryIds"] = a; }
+                else { json a = json::array(); a.push_back((uint32_t)r.varint()); j["activeSecondaryIds"] = a; }
                 break;
             case 10: j["npcInteractions"]  = (uint32_t)r.varint(); break;
             case 11:
                 if (wire == 2) j["towerGrowthNodes"] = r.packed_uint32();
-                else { json a = arr(); a.push_back((uint32_t)r.varint()); j["towerGrowthNodes"] = a; }
+                else { json a = json::array(); a.push_back((uint32_t)r.varint()); j["towerGrowthNodes"] = a; }
                 break;
             case 12: j["resurrectionCnt"]  = (uint32_t)r.varint(); break;
             case 14: j["totalTime"]        = (uint32_t)r.varint(); break;
@@ -465,7 +426,7 @@ static json ParseStarTowerMeta(ProtoReader r) {
 //  StarTowerRoomData
 // =============================================================================
 static json ParseStarTowerRoomData(ProtoReader r) {
-    json j = obj();
+    json j = json::object();
     int field, wire;
     while (r.tag(field, wire)) {
         switch (field) {
@@ -485,7 +446,7 @@ static json ParseStarTowerRoomData(ProtoReader r) {
 //  Case type parsers
 // =============================================================================
 static json ParseBattleCase(ProtoReader r) {
-    json j = obj(); j["caseType"] = 1;
+    json j = json::object(); j["caseType"] = 1;
     int field, wire;
     while (r.tag(field, wire)) {
         switch (field) {
@@ -499,7 +460,7 @@ static json ParseBattleCase(ProtoReader r) {
 }
 
 static json ParseDoorCase(ProtoReader r) {
-    json j = obj(); j["caseType"] = 2;
+    json j = json::object(); j["caseType"] = 2;
     int field, wire;
     while (r.tag(field, wire)) {
         switch (field) {
@@ -512,13 +473,13 @@ static json ParseDoorCase(ProtoReader r) {
 }
 
 static json ParseSelectPotentialCase(ProtoReader r) {
-    json j = obj(); j["caseType"] = 3;
-    json infos = arr();
+    json j = json::object(); j["caseType"] = 3;
+    json infos = json::array();
     int field, wire;
     while (r.tag(field, wire)) {
         switch (field) {
             case 1:
-                if (wire == 2) infos.push_back(ParsePotentialInfo(r.sub()));
+                if (wire == 2) infos.push_back(ParseIdLevel(r.sub(), "tid"));
                 else r.skip(wire);
                 break;
             case 2:  j["teamLevel"]   = (uint32_t)r.varint();  break;
@@ -535,7 +496,7 @@ static json ParseSelectPotentialCase(ProtoReader r) {
 }
 
 static json ParseSelectSpecialPotentialCase(ProtoReader r) {
-    json j = obj(); j["caseType"] = 7;
+    json j = json::object(); j["caseType"] = 7;
     int field, wire;
     while (r.tag(field, wire)) {
         switch (field) {
@@ -551,7 +512,7 @@ static json ParseSelectSpecialPotentialCase(ProtoReader r) {
 }
 
 static json ParseNPCAffinityInfo(ProtoReader r) {
-    json j = obj();
+    json j = json::object();
     int field, wire;
     while (r.tag(field, wire)) {
         switch (field) {
@@ -564,8 +525,8 @@ static json ParseNPCAffinityInfo(ProtoReader r) {
 }
 
 static json ParseNpcEventCase(ProtoReader r) {
-    json j = obj(); j["caseType"] = 6;
-    json optionsList = arr(), npcInfos = arr(), failedArr = arr();
+    json j = json::object(); j["caseType"] = 6;
+    json optionsList = json::array(), npcInfos = json::array(), failedArr = json::array();
     int field, wire;
     while (r.tag(field, wire)) {
         switch (field) {
@@ -587,8 +548,8 @@ static json ParseNpcEventCase(ProtoReader r) {
     return j;
 }
 
-static json ParseRecoveryHPCase(ProtoReader r) {
-    json j = obj(); j["caseType"] = 8;
+static json ParseRecoveryHPCase(ProtoReader r, int caseType) {
+    json j = json::object(); j["caseType"] = caseType;
     int field, wire;
     while (r.tag(field, wire)) {
         switch (field) {
@@ -599,20 +560,24 @@ static json ParseRecoveryHPCase(ProtoReader r) {
     return j;
 }
 
-static json ParseNpcRecoveryHPCase(ProtoReader r) {
-    json j = obj(); j["caseType"] = 9;
-    int field, wire;
-    while (r.tag(field, wire)) {
-        switch (field) {
-            case 1: j["effectId"] = (uint32_t)r.varint(); break;
-            default: r.skip(wire); break;
-        }
+// {npcId, level, rewards: repeated ItemTpl} — shared by SettleDataResp
+// npcReward and GiveUpResp.reward.
+static json ParseNpcReward(ProtoReader r) {
+    json rew = json::object();
+    int rf, rw;
+    while (r.tag(rf, rw)) {
+        if (rf == 1) rew["npcId"] = (uint32_t)r.varint();
+        else if (rf == 2) rew["level"] = (uint32_t)r.varint();
+        else if (rf == 3) {
+            if (!rew.contains("rewards")) rew["rewards"] = json::array();
+            rew["rewards"].push_back(ParseItemTpl(r.sub()));
+        } else r.skip(rw);
     }
-    return j;
+    return rew;
 }
 
 static json ParseHawkerGoods(ProtoReader r) {
-    json j = obj();
+    json j = json::object();
     int field, wire;
     while (r.tag(field, wire)) {
         switch (field) {
@@ -631,8 +596,8 @@ static json ParseHawkerGoods(ProtoReader r) {
 }
 
 static json ParseHawkerCase(ProtoReader r) {
-    json j = obj(); j["caseType"] = 10;
-    json list = arr();
+    json j = json::object(); j["caseType"] = 10;
+    json list = json::array();
     int field, wire;
     while (r.tag(field, wire)) {
         switch (field) {
@@ -652,7 +617,7 @@ static json ParseHawkerCase(ProtoReader r) {
 }
 
 static json ParseStrengthenMachineCase(ProtoReader r) {
-    json j = obj(); j["caseType"] = 11;
+    json j = json::object(); j["caseType"] = 11;
     int field, wire;
     while (r.tag(field, wire)) {
         switch (field) {
@@ -666,7 +631,7 @@ static json ParseStrengthenMachineCase(ProtoReader r) {
 }
 
 static json ParseSyncHPCase(ProtoReader r) {
-    json j = obj(); j["caseType"] = 13;
+    json j = json::object(); j["caseType"] = 13;
     return j;
 }
 
@@ -689,8 +654,8 @@ static json ParseOneRoomCase(ProtoReader r) {
                 case 5:  caseData = ParseSelectPotentialCase(r.sub());         break;
                 case 6:  caseData = ParseSelectPotentialCase(r.sub());         break; // FateCard
                 case 8:  caseData = ParseNpcEventCase(r.sub());                break;
-                case 9:  caseData = ParseRecoveryHPCase(r.sub());              break;
-                case 10: caseData = ParseNpcRecoveryHPCase(r.sub());           break;
+                case 9:  caseData = ParseRecoveryHPCase(r.sub(), 8);           break;
+                case 10: caseData = ParseRecoveryHPCase(r.sub(), 9);           break;
                 case 11: caseData = ParseHawkerCase(r.sub());                  break;
                 case 12: caseData = ParseStrengthenMachineCase(r.sub());       break;
                 case 15: caseData = ParseSyncHPCase(r.sub());                  break;
@@ -705,7 +670,7 @@ static json ParseOneRoomCase(ProtoReader r) {
         caseData["id"] = caseId;
         return caseData;
     }
-    json j = obj();
+    json j = json::object();
     j["id"] = caseId;
     return j;
 }
@@ -714,8 +679,8 @@ static json ParseOneRoomCase(ProtoReader r) {
 //  StarTowerRoom
 // =============================================================================
 static json ParseStarTowerRoom(ProtoReader r) {
-    json j = obj();
-    json cases = arr();
+    json j = json::object();
+    json cases = json::array();
     int field, wire;
     while (r.tag(field, wire)) {
         if (field == 1 && wire == 2) {
@@ -734,7 +699,7 @@ static json ParseStarTowerRoom(ProtoReader r) {
 //  StarTowerInfo (top-level in apply resp)
 // =============================================================================
 static json ParseStarTowerInfo(ProtoReader r) {
-    json j = obj();
+    json j = json::object();
     int field, wire;
     while (r.tag(field, wire)) {
         if (field == 1 && wire == 2) {
@@ -754,7 +719,7 @@ static json ParseStarTowerInfo(ProtoReader r) {
 //  StarTowerBuildBrief / BuildDetail / BuildPotential / TowerBuildChar
 // =============================================================================
 static json ParseTowerBuildChar(ProtoReader r) {
-    json j = obj();
+    json j = json::object();
     int field, wire;
     while (r.tag(field, wire)) {
         switch (field) {
@@ -766,22 +731,9 @@ static json ParseTowerBuildChar(ProtoReader r) {
     return j;
 }
 
-static json ParseBuildPotential(ProtoReader r) {
-    json j = obj();
-    int field, wire;
-    while (r.tag(field, wire)) {
-        switch (field) {
-            case 1: j["potentialId"] = (uint32_t)r.varint(); break;
-            case 2: j["level"]       = (uint32_t)r.varint(); break;
-            default: r.skip(wire); break;
-        }
-    }
-    return j;
-}
-
 static json ParseStarTowerBuildBrief(ProtoReader r) {
-    json j = obj();
-    json chars = arr();
+    json j = json::object();
+    json chars = json::array();
     int field, wire;
     while (r.tag(field, wire)) {
         switch (field) {
@@ -804,13 +756,13 @@ static json ParseStarTowerBuildBrief(ProtoReader r) {
 }
 
 static json ParseStarTowerBuildDetail(ProtoReader r) {
-    json j = obj();
-    json potentials = arr(), subNotes = arr();
+    json j = json::object();
+    json potentials = json::array(), subNotes = json::array();
     int field, wire;
     while (r.tag(field, wire)) {
         switch (field) {
             case 1:
-                if (wire == 2) potentials.push_back(ParseBuildPotential(r.sub()));
+                if (wire == 2) potentials.push_back(ParseIdLevel(r.sub(), "potentialId"));
                 else r.skip(wire);
                 break;
             case 2:
@@ -827,7 +779,7 @@ static json ParseStarTowerBuildDetail(ProtoReader r) {
 }
 
 static json ParseStarTowerBuildInfo(ProtoReader r) {
-    json j = obj();
+    json j = json::object();
     int field, wire;
     while (r.tag(field, wire)) {
         if (field == 1 && wire == 2) {
@@ -847,7 +799,7 @@ static json ParseStarTowerBuildInfo(ProtoReader r) {
 //  VictoryData
 // =============================================================================
 static json ParseVictoryData(ProtoReader r) {
-    json j = obj();
+    json j = json::object();
     int field, wire;
     while (r.tag(field, wire)) {
         switch (field) {
@@ -861,27 +813,11 @@ static json ParseVictoryData(ProtoReader r) {
 }
 
 // =============================================================================
-//  NPCAffinityChange
-// =============================================================================
-static json ParseNPCAffinityChange(ProtoReader r) {
-    json j = obj();
-    int field, wire;
-    while (r.tag(field, wire)) {
-        switch (field) {
-            case 1: j["npcId"]    = (uint32_t)r.varint(); break;
-            case 2: j["affinity"] = (uint32_t)r.varint(); break;
-            default: r.skip(wire); break;
-        }
-    }
-    return j;
-}
-
-// =============================================================================
 //  Success (InteractSelectResp.Resp)
 // =============================================================================
 static json ParseSuccess(ProtoReader r) {
-    json j = obj();
-    json items = arr(), fateCards = arr(), subNotes = arr(), affinities = arr();
+    json j = json::object();
+    json items = json::array(), fateCards = json::array(), subNotes = json::array(), affinities = json::array();
     int field, wire;
     while (r.tag(field, wire)) {
         switch (field) {
@@ -900,7 +836,7 @@ static json ParseSuccess(ProtoReader r) {
                 break;
             case 5: j["optionsParamId"] = (uint32_t)r.varint();  break;
             case 6:
-                if (wire == 2) affinities.push_back(ParseNPCAffinityChange(r.sub()));
+                if (wire == 2) affinities.push_back(ParseNPCAffinityInfo(r.sub()));
                 else r.skip(wire);
                 break;
             default: r.skip(wire); break;
@@ -917,7 +853,7 @@ static json ParseSuccess(ProtoReader r) {
 //  InteractSelectResp
 // =============================================================================
 static json ParseInteractSelectResp(ProtoReader r) {
-    json j = obj();
+    json j = json::object();
     int field, wire;
     while (r.tag(field, wire)) {
         if (field == 1 && wire == 2) {
@@ -941,8 +877,8 @@ static json ParseInteractSelectResp(ProtoReader r) {
 //  SettleDataResp
 // =============================================================================
 static json ParseSettleDataResp(ProtoReader r) {
-    json j = obj();
-    json awards = arr(), rewards = arr(), items = arr();
+    json j = json::object();
+    json awards = json::array(), rewards = json::array(), items = json::array();
     int field, wire;
     while (r.tag(field, wire)) {
         switch (field) {
@@ -957,33 +893,21 @@ static json ParseSettleDataResp(ProtoReader r) {
             case 3:
                 if (wire == 2) {
                     auto sub = r.sub();
-                    json award = obj();
+                    json award = json::object();
                     int af, aw;
                     while (sub.tag(af, aw)) {
                         if (af == 1) award["towerId"] = (uint32_t)sub.varint();
                         else if (af == 2) {
-                            if (!award.contains("rewards")) award["rewards"] = arr();
+                            if (!award.contains("rewards")) award["rewards"] = json::array();
                             award["rewards"].push_back(ParseItemTpl(sub.sub()));
                         } else sub.skip(aw);
                     }
                     awards.push_back(award);
                 } else r.skip(wire);
                 break;
-            case 4: {
-                auto sub = r.sub();
-                json reward = obj();
-                int rf, rw;
-                while (sub.tag(rf, rw)) {
-                    if (rf == 1) reward["npcId"] = (uint32_t)sub.varint();
-                    else if (rf == 2) reward["level"] = (uint32_t)sub.varint();
-                    else if (rf == 3) {
-                        if (!reward.contains("rewards")) reward["rewards"] = arr();
-                        reward["rewards"].push_back(ParseItemTpl(sub.sub()));
-                    } else sub.skip(rw);
-                }
-                rewards.push_back(reward);
+            case 4:
+                rewards.push_back(ParseNpcReward(r.sub()));
                 break;
-            }
             case 5:  j["npcInteraction"] = (uint32_t)r.varint(); break;
             case 14: j["totalTime"]      = (uint32_t)r.varint(); break;
             case 15: j["totalDamages"]   = r.packed_uint64();    break;
@@ -1005,7 +929,7 @@ static json ParseSettleDataResp(ProtoReader r) {
 // =============================================================================
 static void LogStarTowerReq(int16_t sendId, System_Byte_array* body) {
     if (!body || body->max_length == 0) {
-        json j = obj();
+        json j = json::object();
         j["msgId"] = (int)sendId;
         LogStarJson("SEND", j);
         return;
@@ -1015,7 +939,7 @@ static void LogStarTowerReq(int16_t sendId, System_Byte_array* body) {
 
     if (sendId == 4601) {
         // StarTowerApplyReq
-        json j = obj();
+        json j = json::object();
         j["msgId"] = 4601;
         int field, wire;
         while (r.tag(field, wire)) {
@@ -1035,7 +959,7 @@ static void LogStarTowerReq(int16_t sendId, System_Byte_array* body) {
 
     } else if (sendId == 4607) {
         // StarTowerInteractReq
-        json j = obj();
+        json j = json::object();
         j["msgId"] = 4607;
         int field, wire;
         while (r.tag(field, wire)) {
@@ -1044,7 +968,7 @@ static void LogStarTowerReq(int16_t sendId, System_Byte_array* body) {
             } else if (wire == 2) {
                 switch (field) {
                     case 2: { // EnterReq
-                        json enter = obj();
+                        json enter = json::object();
                         auto sr = r.sub();
                         int ef, ew;
                         while (sr.tag(ef, ew)) {
@@ -1064,7 +988,7 @@ static void LogStarTowerReq(int16_t sendId, System_Byte_array* body) {
                         break;
                     }
                     case 3: { // BattleEndReq
-                        json battle = obj();
+                        json battle = json::object();
                         auto sr = r.sub();
                         int bf, bw;
                         while (sr.tag(bf, bw)) {
@@ -1085,7 +1009,7 @@ static void LogStarTowerReq(int16_t sendId, System_Byte_array* body) {
                         break;
                     }
                     case 4: { // SelectReq
-                        json sel = obj();
+                        json sel = json::object();
                         auto sr = r.sub();
                         int sf, sw;
                         while (sr.tag(sf, sw)) {
@@ -1100,7 +1024,7 @@ static void LogStarTowerReq(int16_t sendId, System_Byte_array* body) {
                         break;
                     }
                     case 5: { // RecoveryHPReq
-                        json rec = obj();
+                        json rec = json::object();
                         auto sr = r.sub();
                         int rf, rw;
                         while (sr.tag(rf, rw)) {
@@ -1114,7 +1038,7 @@ static void LogStarTowerReq(int16_t sendId, System_Byte_array* body) {
                         break;
                     }
                     case 6: { // HawkerReq
-                        json hawk = obj();
+                        json hawk = json::object();
                         auto sr = r.sub();
                         int hf, hw;
                         while (sr.tag(hf, hw)) {
@@ -1138,7 +1062,7 @@ static void LogStarTowerReq(int16_t sendId, System_Byte_array* body) {
 
     } else {
         // 4610 (info_req) or 4613 (give_up_req) — empty
-        json j = obj();
+        json j = json::object();
         j["msgId"] = (int)sendId;
         LogStarJson("SEND", j);
     }
@@ -1151,7 +1075,7 @@ static void LogStarTowerApplyResp(System_Byte_array* body) {
     if (!body || body->max_length == 0) return;
     auto r = MakeReader(body);
 
-    json j = obj();
+    json j = json::object();
     int field, wire;
     while (r.tag(field, wire)) {
         switch (field) {
@@ -1163,10 +1087,10 @@ static void LogStarTowerApplyResp(System_Byte_array* body) {
                     if (infoJson.contains("meta")) {
                         j["teamLevel"] = infoJson["meta"].value("teamLevel", 0u);
                         j["charHp"]    = infoJson["meta"].value("charHp", 0u);
-                        j["chars"]     = infoJson["meta"].value("chars", arr());
-                        j["discs"]     = infoJson["meta"].value("discs", arr());
-                        j["activeSecondaryIds"] = infoJson["meta"].value("activeSecondaryIds", arr());
-                        j["towerGrowthNodes"]   = infoJson["meta"].value("towerGrowthNodes", arr());
+                        j["chars"]     = infoJson["meta"].value("chars", json::array());
+                        j["discs"]     = infoJson["meta"].value("discs", json::array());
+                        j["activeSecondaryIds"] = infoJson["meta"].value("activeSecondaryIds", json::array());
+                        j["towerGrowthNodes"]   = infoJson["meta"].value("towerGrowthNodes", json::array());
                     }
                     if (infoJson.contains("room") && infoJson["room"].contains("data")) {
                         j["floor"]    = infoJson["room"]["data"].value("floor", 0u);
@@ -1178,7 +1102,7 @@ static void LogStarTowerApplyResp(System_Byte_array* body) {
             case 4: j["coinQty"]     = (uint32_t)r.varint(); break;
             case 5:
                 if (wire == 2) {
-                    if (!j.contains("infos")) j["infos"] = arr();
+                    if (!j.contains("infos")) j["infos"] = json::array();
                     j["infos"].push_back(ParseSubNoteSkillInfo(r.sub()));
                 } else r.skip(wire);
                 break;
@@ -1196,14 +1120,14 @@ static void LogStarTowerInteractResp(System_Byte_array* body) {
     if (!body || body->max_length == 0) return;
     auto r = MakeReader(body);
 
-    json j = obj();
+    json j = json::object();
     int field, wire;
     while (r.tag(field, wire)) {
         switch (field) {
             case 1: j["caseId"] = (uint32_t)r.varint(); break;
             case 2:
                 if (wire == 2) {
-                    if (!j.contains("cases")) j["cases"] = arr();
+                    if (!j.contains("cases")) j["cases"] = json::array();
                     j["cases"].push_back(ParseOneRoomCase(r.sub()));
                 } else r.skip(wire);
                 break;
@@ -1282,8 +1206,8 @@ static void LogStarTowerGiveUpResp(System_Byte_array* body) {
     if (!body || body->max_length == 0) return;
     auto r = MakeReader(body);
 
-    json j = obj();
-    json rewards = arr();
+    json j = json::object();
+    json rewards = json::array();
     int field, wire;
     while (r.tag(field, wire)) {
         switch (field) {
@@ -1295,25 +1219,13 @@ static void LogStarTowerGiveUpResp(System_Byte_array* body) {
                 if (wire == 2) j["build"] = ParseStarTowerBuildInfo(r.sub());
                 else r.skip(wire);
                 break;
-            case 3: {
-                auto sr = r.sub();
-                json rew = obj();
-                int rf, rw;
-                while (sr.tag(rf, rw)) {
-                    if (rf == 1) rew["npcId"] = (uint32_t)sr.varint();
-                    else if (rf == 2) rew["level"] = (uint32_t)sr.varint();
-                    else if (rf == 3) {
-                        if (!rew.contains("rewards")) rew["rewards"] = arr();
-                        rew["rewards"].push_back(ParseItemTpl(sr.sub()));
-                    } else sr.skip(rw);
-                }
-                rewards.push_back(rew);
+            case 3:
+                rewards.push_back(ParseNpcReward(r.sub()));
                 break;
-            }
             case 4:  j["npcInteraction"] = (uint32_t)r.varint(); break;
             case 5:
                 if (wire == 2) {
-                    if (!j.contains("towerRewards")) j["towerRewards"] = arr();
+                    if (!j.contains("towerRewards")) j["towerRewards"] = json::array();
                     j["towerRewards"].push_back(ParseItemTpl(r.sub()));
                 } else r.skip(wire);
                 break;

@@ -8,11 +8,8 @@ void InitHttpLogger(const std::string& logDir);
 // Call at shutdown
 void ShutdownHttpLogger();
 
-// printf-style line logger (thread-safe, timestamped)
+// printf-style line logger (thread-safe; no per-line timestamp)
 void LogHttp(const char* fmt, ...);
-
-// Loads CharGemAttrValue.json + Item language file for attribute name resolution.
-void BuildGemAttrTable(const std::string& dataRoot);
 
 // Installs all HTTP-layer MinHook hooks. Call after MH_Initialize().
 void InstallHttpHooks(uintptr_t base);
