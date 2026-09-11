@@ -907,12 +907,20 @@
         </div>
         <div class="sidebar-section" id="sidebarFilters">
             <div class="sidebar-label">Filters</div>
-            <div class="sidebar-btn-row">
+            <div class="sidebar-btn-row" id="logTypeRow">
                 <button class="type-filter-btn active" data-type="Hit" onclick="toggleTypeFilter(this)">Hits</button>
                 <button class="type-filter-btn" data-type="Buff" onclick="toggleTypeFilter(this)">Buffs</button>
                 <button class="type-filter-btn" data-type="Effect" onclick="toggleTypeFilter(this)">Effects</button>
                 <button class="type-filter-btn active" data-type="Skill Cast" onclick="toggleTypeFilter(this)">Skill Casts</button>
             </div>
+            <div id="eiSearchBlock" class="hidden">
+                <input type="text" id="eiSearchInput" placeholder="Search" oninput="eiOnSearchInput()" autocomplete="off" spellcheck="false">
+                <div class="sidebar-ei-chips hidden" id="eiZeroGainWrap">
+                    <button class="ei-src-chip ei-chip-src" id="eiZeroGainBtn" onclick="eiToggleZeroGain()" title="Show/hide effects that contribute 0% damage gain">Show 0% gain effects</button>
+                </div>
+            </div>
+            <!-- Shared by the Log tab and the Dmg Calc / Effect Impact / Analytics
+                 tabs — one filter state (filterCore.js) drives both domains. -->
             <select id="charFilter" onchange="onCharFilterChange()">
                 <option value="">All Characters</option>
             </select>
@@ -923,25 +931,6 @@
                 <option value="">All Damage Types</option>
             </select>
             <select id="defenderFilter" onchange="onDefenderFilterChange()">
-                <option value="">All Defenders</option>
-            </select>
-        </div>
-        <div class="sidebar-section hidden" id="sidebarDcFilters">
-            <div class="sidebar-label">Filters</div>
-            <input type="text" id="eiSearchInput" placeholder="Search" oninput="eiOnSearchInput()" autocomplete="off" spellcheck="false">
-            <div class="sidebar-ei-chips hidden" id="eiZeroGainWrap">
-                <button class="ei-src-chip ei-chip-src" id="eiZeroGainBtn" onclick="eiToggleZeroGain()" title="Show/hide effects that contribute 0% damage gain">Show 0% gain effects</button>
-            </div>
-            <select id="dcCharFilter" onchange="dcOnCharFilterChange()">
-                <option value="">All Characters</option>
-            </select>
-            <select id="dcSkillFilter" onchange="dcOnSkillFilterChange()">
-                <option value="">All Skills</option>
-            </select>
-            <select id="dcDamageTypeFilter" onchange="dcOnDamageTypeFilterChange()">
-                <option value="">All Damage Types</option>
-            </select>
-            <select id="dcDefenderFilter" onchange="dcOnDefenderFilterChange()">
                 <option value="">All Defenders</option>
             </select>
         </div>
@@ -1199,6 +1188,7 @@
 
     <script src="tableResolver.js"></script>
     <script src="dataLoader.js"></script>
+    <script src="filterCore.js"></script>
     <script src="virtlist.js"></script>
     <script src="log.js"></script>
     <script src="analytics.js"></script>

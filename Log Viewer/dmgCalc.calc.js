@@ -161,6 +161,7 @@ function dcEnsureSkillLevel(charId, slot, loggedL) {
 window.dcResetSimState = function () {
     dcPotLevels.clear();
     dcSkillLevels.clear();
+    dcNoteLevels.clear();
     if (typeof dcEffectsDisabled !== 'undefined') dcEffectsDisabled.clear();
     if (typeof dcEffectLevelOverrides !== 'undefined') dcEffectLevelOverrides.clear();
     dcInferredRoles.clear();          // role evidence belongs to the opened log
@@ -302,6 +303,34 @@ function dcGetLevelOverride(e, side, disabledSet, charId, fromAttrDict) {
     }
 
     // ── Potential-scaled rows ────────────────────────────────────────────
+    // ── Note rows (SubNoteSkill, levelTypeData 5) ────────────────
+    // The note's level = the collected note count (record's notes list); the
+    // logged valueConfigId is configId + level*10 (levelMap lt-5 ladder).
+    // Raw battle entries don't carry levelTypeData — resolve it here.
+    // Disabling a support disc's bonus-note row drops its grant from the
+    // level (dcNoteRowBonus), mirroring the emblem pot/skill bonus rows.
+    {
+        const noteLm = resolveLevelMap(e.configId);
+        if (noteLm.levelTypeData === 5 && noteLm.levelData != null) {
+            const curL = (e.valueConfigId != null && e.valueConfigId > e.configId)
+                ? Math.round((e.valueConfigId - e.configId) / 10) : 0;
+            const st = dcEnsureNoteLevel(noteLm.levelData, curL);
+            if (!st) return null;
+            const L = dcNoteEffectiveLevel(st, disabledSet);
+            if (L === curL || L <= 0) return null;
+            const newVcId = e.configId + L * 10;
+            const sv = readVal(newVcId);
+            if (!sv || sv.value == null) return null;   // ladder row missing → keep logged
+            const stCur = readVal(e.valueConfigId);
+            return {
+                newValueConfigId: newVcId,
+                newValue: sv.value,
+                newAttrType: stCur?.attrType ?? e.attrType,
+                newSubType: stCur?.subType ?? e.subType,
+            };
+        }
+    }
+
     // Level source: stamped on collected rows; raw battle entries resolve
     // through the family map.
     const potId = e.levelSource != null ? e.levelSource
@@ -466,6 +495,120 @@ function dcSkillMaxLevel(st, disabledSet) {
 // extended cap (base max + enabled bonus).
 function dcSkillEffectiveLevel(st, disabledSet) {
     return Math.min(Math.max(st.recordLv + dcSkillRowBonus(st, disabledSet) + (st.change || 0), 0), dcSkillMaxLevel(st, disabledSet));
+}
+
+// ─── Note level table (SubNoteSkill) ─────────────────────────────────────────
+// Single source of truth for every note ("Melody of …") level:
+//   effective level = recordLv (record qty minus disc grants) + bonus
+//   (enabled disc-grant rows) + change (user ±).
+// The record's `notes` list ([noteId, qty]) carries the note counts the server
+// computed, and the logged note-effect levels equal it (valueConfigId =
+// <effectId> + level*10, the same scheme as skill-scaled rows). Those counts
+// ALREADY include the fixed bonus notes the support discs grant — the DLL
+// doesn't log the grants themselves (only the disc ids), so they are
+// reconstructed from the datamine (discBonusNotesById in tableResolver.js:
+// Disc.json SubNoteSkillGroupId → SubNoteSkillPromoteGroup max-Phase entry)
+// and surfaced as display-only rows (buildRecordDiscNoteEffects, configId
+// 960000000 + discStatsIdx*1000 + noteIdx). Disabling one drops its grant
+// from the level — the same model as the emblem pot/skill bonus rows.
+// NOTE: the phase ladder isn't recoverable from a disc id, so the MAX-phase
+// grant is assumed — a lower-phase disc's disable over-subtracts.
+const dcNoteLevels = new Map();   // noteId -> { noteId, recordLv, bonusByRow, change }
+
+// Synthetic row key for a disc's bonus-note row — MUST stay in sync with
+// buildRecordDiscNoteEffects (tableResolver.js): configId 960000000 +
+// discStatsIdx * 1000 + noteIdx, collected under side 'attacker',
+// valueConfigId 0. di is the disc's index in the record's discStats
+// (equipped order; indexes >= 3 are the support discs).
+function dcDiscNoteRowKey(di, noteIdx) {
+    return `attacker:${960000000 + Number(di) * 1000 + Number(noteIdx)}:0`;
+}
+
+// Per-disc grants from the active record: Map noteId -> [[rowKey, count], ...].
+// Shared by dcRebuildNoteLevels and dcEnsureNoteLevel so lazily-created
+// entries (logs whose Origin carries discStats but no notes list) still
+// decompose correctly.
+function dcNoteGrantRows() {
+    const grants = new Map();
+    const rec = (typeof getOriginRecord === 'function') ? getOriginRecord() : null;
+    (rec?.discStats || []).forEach((d, di) => {
+        if (di < 3) return;   // first three discs = main — they don't grant notes
+        const list = (typeof discBonusNotesFor === 'function') ? discBonusNotesFor(d.id) : [];
+        list.forEach((n, ni) => {
+            if (!n.count) return;
+            if (!grants.has(n.noteId)) grants.set(n.noteId, []);
+            grants.get(n.noteId).push([dcDiscNoteRowKey(di, ni), n.count]);
+        });
+    });
+    return grants;
+}
+
+// Rebuild the note level table from the active record (Origin event). User
+// changes survive rebuilds; notes the record doesn't list are dropped (they
+// are lazily re-created from logged rows by dcEnsureNoteLevel).
+function dcRebuildNoteLevels() {
+    const prev = new Map(dcNoteLevels);
+    dcNoteLevels.clear();
+    const rec = (typeof getOriginRecord === 'function') ? getOriginRecord() : null;
+    const grants = dcNoteGrantRows();
+    for (const entry of (rec?.notes || [])) {
+        const noteId = Number(Array.isArray(entry) ? entry[0] : entry?.noteId);
+        const qty = Number(Array.isArray(entry) ? entry[1] : entry?.qty) || 0;
+        if (!noteId || dcNoteLevels.has(noteId)) continue;
+        const bonusByRow = grants.get(noteId) || [];
+        let total = 0;
+        for (const [, lv] of bonusByRow) total += lv;
+        const old = prev.get(noteId);
+        dcNoteLevels.set(noteId, {
+            noteId,
+            recordLv: Math.max(qty - total, 0),   // base = record qty minus disc grants
+            bonusByRow,
+            change: old ? (old.change || 0) : 0,
+        });
+    }
+    // Logs without a record log: keep the synthetic entries created by
+    // dcEnsureNoteLevel (same rationale as dcRebuildPotLevels).
+    for (const [noteId, old] of prev) {
+        if (!dcNoteLevels.has(noteId)) dcNoteLevels.set(noteId, old);
+    }
+}
+
+// Lazy reconstruction (logs without a record log): the first note row parsed
+// synthesizes its level-table entry with the logged level as Record Lv. The
+// record's disc grants (if the Origin has discStats) are still decomposed out
+// of it so the fake rows stay functional; logs with no record data get no
+// bonus rows — nothing to disable.
+function dcEnsureNoteLevel(noteId, loggedL) {
+    if (noteId == null) return null;
+    noteId = Number(noteId);
+    let st = dcNoteLevels.get(noteId);
+    if (!st) {
+        const bonusByRow = (typeof dcNoteGrantRows === 'function') ? (dcNoteGrantRows().get(noteId) || []) : [];
+        let total = 0;
+        for (const [, lv] of bonusByRow) total += lv;
+        st = { noteId, recordLv: Math.max((loggedL || 0) - total, 0), bonusByRow, change: 0 };
+        dcNoteLevels.set(noteId, st);
+    }
+    return st;
+}
+
+// Sum of the disc-grant rows not disabled in the sidebar.
+function dcNoteRowBonus(st, disabledSet) {
+    const dis = disabledSet ?? dcEffectsDisabled;
+    let bonus = 0;
+    for (const [rowKey, lv] of (st.bonusByRow || [])) {
+        if (rowKey != null && dis && dis.has(rowKey)) continue;
+        bonus += lv;
+    }
+    return bonus;
+}
+
+// Effective note level: record base + enabled disc grants + user change.
+// Cap 0..99 (the SubNoteSkill Scores ladder has 99 entries); the value-table
+// lookup in dcGetLevelOverride keeps any overrun inert (missing ladder row →
+// logged level kept).
+function dcNoteEffectiveLevel(st, disabledSet) {
+    return Math.min(Math.max(st.recordLv + dcNoteRowBonus(st, disabledSet) + (st.change || 0), 0), 99);
 }
 
 // Which tracked skill-slot state does a levelTypeData-3 config scale with?
@@ -787,6 +930,7 @@ function dcCollectAttrFixEffects(dcFiltered) {
     const seen = new Map(); // key -> entry
     dcRebuildPotLevels();   // rebuild the potential level table from the record
     dcRebuildSkillLevels(); // rebuild the skill level table from the record
+    dcRebuildNoteLevels();  // rebuild the note level table from the record
     dcEnsureHitLevels();    // lazy record reconstruction from the hits themselves
     for (const ev of dcFiltered) {
         const evCharId = dcEventCharId(ev);   // attacker charId (skill-level owner)
@@ -868,6 +1012,14 @@ function dcCollectAttrFixEffects(dcFiltered) {
                             levelSource,
                             _gemLevel: e._gemLevel ?? null,
                             _skillAddLv: e._skillAddLv ?? null,
+                            // disc bonus-note rows: granted count + note id
+                            // (record page / EI composite-impact resolution)
+                            _noteAdd: e._noteAdd ?? null,
+                            _noteId: e._noteId ?? null,
+                            // stat the note's effect changes (per-level value × grant)
+                            _noteAttrType: e._noteAttrType ?? null,
+                            _noteSubType: e._noteSubType ?? 1,
+                            _notePerVal: e._notePerVal ?? null,
                             // owning character (attacker) — drives skill-scaled
                             // (levelTypeData 3) level resolution for this row.
                             // Record rows keep their own _charId (emblem rows are
@@ -1039,7 +1191,7 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides) {
     if (charName && typeof dcCharsDisabled !== 'undefined' && dcCharsDisabled.has(charName)) {
         return { aStats: origA, dStats: origD, _potentialsDisabled: true };
     }
-    if (dcEffectsDisabled.size === 0 && !(dcEffectLevelOverrides?.size) && dcPotLevels.size === 0 && dcSkillLevels.size === 0) return { aStats: origA, dStats: origD };
+    if (dcEffectsDisabled.size === 0 && !(dcEffectLevelOverrides?.size) && dcPotLevels.size === 0 && dcSkillLevels.size === 0 && dcNoteLevels.size === 0) return { aStats: origA, dStats: origD };
 
     // Attacker charId — owner of attacker-side skill-scaled effects
     const attackerCharId = dcEventCharId(ev);
@@ -1152,7 +1304,7 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides) {
     // ── Level overrides ──────────────────────────────────────────────
     // For effects with a level override (and not disabled), remove old
     // contribution and add the new level's contribution.
-    if ((dcEffectLevelOverrides && dcEffectLevelOverrides.size > 0) || dcPotLevels.size > 0 || dcSkillLevels.size > 0) {
+    if ((dcEffectLevelOverrides && dcEffectLevelOverrides.size > 0) || dcPotLevels.size > 0 || dcSkillLevels.size > 0 || dcNoteLevels.size > 0) {
         for (const { side, list, attrDict, statMap } of sides) {
             // effects
             if (list?.length) {

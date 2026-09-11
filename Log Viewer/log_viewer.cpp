@@ -356,6 +356,7 @@ static const char* const kStellaDataFiles[] = {
     "EN/bin/Effect.json",
     "EN/bin/Item.json",
     "EN/bin/SubNoteSkill.json",
+    "EN/bin/SubNoteSkillPromoteGroup.json",
     "EN/bin/AffinityLevel.json",
     "EN/bin/EffectValue.json",
     "EN/bin/TravelerDuelChallengeAffix.json",

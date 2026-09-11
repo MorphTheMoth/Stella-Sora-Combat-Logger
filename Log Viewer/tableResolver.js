@@ -215,6 +215,19 @@ let originRecord = null;   // latest Origin event — carries across rooms until
 // "Item.<discId>.1" (raw disc-table id, e.g. Item.214024.1) and
 // "Item.21<discId>.1" (item-tid style, as used by the disc-buff decoder).
 const discLangNames = new Map();
+// Support-disc bonus notes (Boss Blitz): discId -> [{ noteId, count }] from
+// Disc.json's SubNoteSkillGroupId + the SubNoteSkillPromoteGroup entry with
+// the highest Phase (the DLL logs only the disc id — the phase ladder isn't
+// logged, so the max-phase grant is used). The granted notes are part of the
+// record's `notes` counts (the logged note levels equal them), so they are
+// surfaced as display-only rows (buildRecordDiscNoteEffects) whose disable
+// drops the grant from the note level (dcNoteLevels, dmgCalc.calc.js).
+const discBonusNotesById = new Map();
+// SubNoteSkill id -> display name ("Melody of Burst"), from SubNoteSkill lang
+const subNoteNamesById = new Map();
+// SubNoteSkill id -> first EffectId (e.g. 90013 → 90013001; the per-level
+// ladder in EffectValue is configId + level*10)
+const subNoteEffectIdByNote = new Map();
 // Emblem (gem) parse tables — filled inside initTables:
 //   gemAttrValueById: CharGemAttrValue id -> {attrType, first, second, value}
 //   potentialById:    potential id  -> Potential.json row (MaxLevel/EffectGroupId/Build)
@@ -248,6 +261,30 @@ window.resetRecordState = function () {
 function resolveRecordDiscName(discId) {
     const id = String(discId);
     return discLangNames.get(id) || discLangNames.get('21' + id) || `Disc ${id}`;
+}
+
+// Support-disc bonus-note grants (max Phase), discId -> [{ noteId, count }].
+function discBonusNotesFor(discId) {
+    return discBonusNotesById.get(Number(discId)) || [];
+}
+
+// Display name of a note (SubNoteSkill lang), e.g. 90013 → "Melody of Burst".
+function subNoteName(noteId) {
+    return subNoteNamesById.get(Number(noteId)) || `Note ${noteId}`;
+}
+
+// Stat label of a disc bonus-note row: the note effect's per-level stat value
+// (EffectValue at the ladder's level 1 — every SubNoteSkill ladder is linear,
+// verified across the datamine) × the granted notes, plus the attr/subType it
+// applies to. Returns null when the note's effect has no numeric attr — the
+// display then falls back to "+N notes".
+function discNoteStatOf(ef) {
+    if (ef._noteAdd == null || ef._notePerVal == null) return null;
+    const total = ef._notePerVal * ef._noteAdd;
+    const isSmall = Math.abs(total) < 15;
+    const val = isSmall ? (total * 100).toFixed(2) + '%' : String(+total.toPrecision(8));
+    const attr = (ef._noteAttrType != null && attrName(ef._noteAttrType) !== '?') ? attrName(ef._noteAttrType) : null;
+    return { attr, val, subType: ef._noteSubType ?? 1 };
 }
 
 // Convert the origin's discStats into effect-like rows, one per changed stat:
@@ -285,6 +322,47 @@ function buildRecordDiscEffects(origin) {
         }
     });
     origin._discRows = rows;
+    return rows;
+}
+
+// Support-disc bonus notes as display-only rows (one per granted note type):
+// "<disc name> : Note <note name>". The rows carry no stat — disabling one
+// drops the disc's grant from the granted note's level (dcNoteLevels in
+// dmgCalc.calc.js keys the row by configId, same pattern as the emblem skill
+// rows). Only discs from index 3 on (the support discs) grant notes; the
+// main discs' contributions are the logged Melody/Harmony buffs instead.
+// The grant size comes from the max Phase SubNoteSkillPromoteGroup entry —
+// the DLL logs only the disc id, so the phase ladder isn't recoverable and
+// a lower-phase disc's disable over-subtracts (see discBonusNotesById).
+function buildRecordDiscNoteEffects(origin) {
+    if (origin._discNoteRows) return origin._discNoteRows;
+    const rows = [];
+    (origin.discStats || []).forEach((d, di) => {
+        if (di < 3) return;   // main discs don't grant notes
+        const discName = resolveRecordDiscName(d.id);
+        const grants = discBonusNotesFor(d.id);
+        grants.forEach((n, ni) => {
+            // Stat the note's effect changes (per-level value from EffectValue's
+            // level-1 ladder entry) — the row's display shows it × the grant
+            // (e.g. "Ult Dmg 3.22% | +7 notes") without applying anything.
+            const effId = subNoteEffectIdByNote.get(n.noteId);
+            const per = effId != null ? effectValueTable.get(effId + 10) : null;
+            rows.push({
+                configId: 960000000 + di * 1000 + ni,   // synthetic, collision-free (dcDiscNoteRowKey)
+                valueConfigId: 0,
+                name: `${discName} : Note ${subNoteName(n.noteId)}`,
+                attrType: null, subType: null, value: null,
+                source: 'Discs', effectType: null, count: 1,
+                isRecordEffect: true, displayOnly: true, allValueConfigIds: [],
+                _noteAdd: n.count,
+                _noteId: n.noteId,
+                _noteAttrType: per?.attrType ?? null,
+                _noteSubType: per?.subType ?? 1,
+                _notePerVal: per?.value ?? null,
+            });
+        });
+    });
+    origin._discNoteRows = rows;
     return rows;
 }
 
@@ -513,6 +591,7 @@ function enrichHit(ev) {
             // own contributions).
             ev.AttackerRecord = { effects: [
                 ...buildRecordDiscEffects(originRecord),
+                ...buildRecordDiscNoteEffects(originRecord),
                 ...buildRecordBuildEffects(originRecord),
                 ...buildRecordEmblemEffects(originRecord, String(attackerId)),
             ] };
@@ -1453,7 +1532,7 @@ async function initTables() {
         jBuff, jBuffValue, jWord, jWordLang, jTalent, jTalentLang,
         jOnceAttr, jOnceAttrValue, jScoreBoss, jScoreBossLang,
         jPotential, jMonsterSkin, jSecSkillLang, jBlitz, jDiscIP,
-        jGemAttrValue,
+        jGemAttrValue, jDisc, jSubNotePromote,
     ] = await Promise.all([
         loadJson(`${_dataRoot}character.json`,               'char'),
         loadJson(`${bin}HitDamage.json`,                     'hit'),
@@ -1485,6 +1564,8 @@ async function initTables() {
         loadJson(`${_dataRoot}blitz.json`,                   'blitz'),
         loadJson(`${lang}DiscIP.json`,                       'discIP'),
         loadJson(`${bin}CharGemAttrValue.json`,              'gemAttrValue'),
+        loadJson(`${bin}Disc.json`,                          'disc'),
+        loadJson(`${bin}SubNoteSkillPromoteGroup.json`,      'subNotePromote'),
     ]);
 
     // lang/Item.json doubles as the item-language map used by disc/potential decoding
@@ -1502,6 +1583,48 @@ async function initTables() {
             // 8-digit item tids carry the "21" disc prefix — also index the raw id
             if (digits.length === 8 && digits.startsWith('21') && !discLangNames.has(digits.slice(2)))
                 discLangNames.set(digits.slice(2), jItemLangRoot[k]);
+        }
+    }
+
+    // Support-disc bonus notes: Disc.json SubNoteSkillGroupId → the
+    // SubNoteSkillPromoteGroup entry with the highest Phase → its
+    // SubNoteSkills JSON ("{"90013":7,...}" — note id → granted count).
+    discBonusNotesById.clear();
+    if (jDisc && jSubNotePromote) {
+        const maxPhaseByGroup = new Map();   // GroupId -> { phase, val }
+        for (const [, val] of Object.entries(jSubNotePromote)) {
+            const gid = parseInt(val.GroupId, 10);
+            if (!gid) continue;
+            const phase = Number(val.Phase) || 0;
+            const cur = maxPhaseByGroup.get(gid);
+            if (!cur || phase > cur.phase) maxPhaseByGroup.set(gid, { phase, val });
+        }
+        for (const [, d] of Object.entries(jDisc)) {
+            const discId = parseInt(d.Id, 10);
+            const gid = parseInt(d.SubNoteSkillGroupId, 10);
+            if (!discId || !gid) continue;
+            const best = maxPhaseByGroup.get(gid);
+            if (!best) continue;
+            let parsed = null;
+            try { parsed = JSON.parse(best.val.SubNoteSkills || '{}'); } catch (e) { /* malformed */ }
+            if (!parsed) continue;
+            const list = Object.keys(parsed)
+                .map(k => ({ noteId: parseInt(k, 10), count: parseInt(parsed[k], 10) || 0 }))
+                .filter(n => n.noteId > 0 && n.count > 0)
+                .sort((a, b) => a.noteId - b.noteId);
+            if (list.length) discBonusNotesById.set(discId, list);
+        }
+    }
+    // Note display names ("Melody of Burst") for the disc bonus-note rows
+    subNoteNamesById.clear();
+    subNoteEffectIdByNote.clear();
+    if (jSubNote) {
+        for (const [, val] of Object.entries(jSubNote)) {
+            const id = parseInt(val.Id, 10);
+            if (!id) continue;
+            subNoteNamesById.set(id, jSubNoteLang?.[val.Name] ?? val.Name ?? '?');
+            const eid = (val.EffectId ?? [])[0];
+            if (eid) subNoteEffectIdByNote.set(id, Number(eid));
         }
     }
 

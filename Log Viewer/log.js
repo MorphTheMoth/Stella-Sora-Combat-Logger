@@ -4,221 +4,23 @@ function esc(s) {
     return String(s).replace(/[&<>"']/g, c => m[c]);
 }
 
-function effType(ev) {
-    if (ev._effType === undefined)
-        ev._effType = (ev.Type === 'Buff' && ev.SubType === 'Effect') ? 'Effect' : ev.Type;
-    return ev._effType;
-}
+// Per-event derived fields (effType/getChars/getSkillName/getDefender) and
+// the shared filter state (typeFilter/charFilter/skillFilter/damageTypeFilter/
+// defenderFilter/defenderAuto) live in filterCore.js — the Log tab and the
+// hit-based tabs (Dmg Calc / Effect Impact / Analytics) filter through the
+// same shared state and the same four <select> elements.
 
-// Derived fields are computed once per event and cached on it, so the filter
-// passes never re-derive string ops / allocate Sets for every event per pass.
-function getChars(ev) {
-    if (ev._chars !== undefined) return ev._chars;
-    const s = [];
-    if (ev.Type==='Hit') { if(ev.AttackerDisplay) s.push(ev.AttackerDisplay); }
-    else if (ev.Type==='Buff') {
-        if(ev.OwnerDisplay||ev.Owner) s.push(cleanOwner(ev.OwnerDisplay||ev.Owner));
-        if(ev.SourceDisplay||ev.Source) s.push(cleanOwner(ev.SourceDisplay||ev.Source));
-    } else if (ev.Type==='Skill Cast') { if(ev.Owner) s.push(ev.Owner); }
-    ev._chars = s;
-    return s;
-}
-function getSkillName(ev) {
-    if (ev._skillName !== undefined) return ev._skillName;
-    let n = null;
-    if (ev.Type==='Hit') n = (ev.HitConfig||{}).skillTitle||null;
-    else if (ev.Type==='Buff') n = ev.Name||null;
-    else if (ev.Type==='Skill Cast') n = ev.Name||null;
-    ev._skillName = n;
-    return n;
-}
-function getDefender(ev) {
-    if (ev._defenders !== undefined) return ev._defenders;
-    let d = [];
-    if (ev.Type === 'Hit') {
-        const name = ev.DefenderDisplay || ev.Defender;
-        if (name) d = [cleanOwner(name)];
-    }
-    ev._defenders = d;
-    return d;
-}
-
-// ─── Filter state ─────────────────
-let typeFilter = new Set(['Hit', 'Skill Cast']);
-let charFilter = '', skillFilter = '', damageTypeFilter = '', defenderFilter = '';
-// Auto mode keeps the defender filter glued to the most-hit defender as new
-// events stream in. Disabled the moment the user picks a defender manually,
-// re-enabled only when the user switches to a different (saved) log.
-let defenderAuto = true;
 let filteredDirty = false;
 let pendingResetOpen = false;
 let refreshTimer = null;
 // Number of allEvents entries already folded through the filter pipeline.
 let foldedCount = 0;
 
-// Cached option sets for the sidebar dropdowns (grown incrementally while
-// live events stream in, recomputed wholesale when the filters change).
-const charOptionsSet = new Set();
-const skillOptionsSet = new Set();
-const dmgTypeOptionsSet = new Set();
-const defenderCounts = new Map();
-let defenderCountsComputed = false;
-const selectBuiltSizes = { char: -1, skill: -1, dmgtype: -1, defender: -1 };
-
-function valueInSet(set, val) {
-    if (val === undefined || val === null || val === '') return false;
-    for (const v of set) if (String(v) === String(val)) return true;
-    return false;
-}
-
-function rebuildSelect(selId, builtKey, opts) {
-    const { set, emptyLabel, format, sortFn, MAX, currentVal } = opts;
-    if (set.size === selectBuiltSizes[builtKey]) {
-        const sel = document.getElementById(selId);
-        if (sel && !valueInSet(set, sel.value)) sel.value = '';
-        return;
-    }
-    selectBuiltSizes[builtKey] = set.size;
-    const sel = document.getElementById(selId);
-    if (!sel) return;
-    let html = `<option value="">${emptyLabel}</option>`;
-    const items = [...set].sort(sortFn);
-    for (const v of items) {
-        const text = String(format ? format(v) : v);
-        const disp = text.length > MAX ? text.slice(0, MAX) + '…' : text;
-        html += `<option value="${esc(String(v))}"${text.length > MAX ? ` title="${esc(text)}"` : ''}>${esc(disp)}</option>`;
-    }
-    sel.innerHTML = html;
-    sel.value = valueInSet(set, currentVal) ? String(currentVal) : '';
-}
-
-function sortNumeric(a, b) { return Number(a) - Number(b); }
-
-function refreshSelects(force) {
-    if (force) {
-        selectBuiltSizes.char = -1;
-        selectBuiltSizes.skill = -1;
-        selectBuiltSizes.dmgtype = -1;
-        selectBuiltSizes.defender = -1;
-    }
-    rebuildSelect('charFilter', 'char', { set: charOptionsSet, emptyLabel: 'All Characters', MAX: 28, currentVal: charFilter });
-    rebuildSelect('skillFilter', 'skill', { set: skillOptionsSet, emptyLabel: 'All Skills', MAX: 28, currentVal: skillFilter });
-    rebuildSelect('damageTypeFilter', 'dmgtype', { set: dmgTypeOptionsSet, emptyLabel: 'All Damage Types', format: dtName, sortFn: sortNumeric, MAX: 28, currentVal: damageTypeFilter });
-    rebuildSelect('defenderFilter', 'defender', { set: new Set(defenderCounts.keys()), emptyLabel: 'All Defenders', MAX: 28, currentVal: defenderFilter });
-}
-
-// ─── Filter predicates ──────────────────────
-function matchesTypeChar(ev) {
-    if (ev.Type === 'Reset' || ev.Type === 'Record') return true;
-    if (typeFilter.size > 0 && !typeFilter.has(effType(ev))) return false;
-    if (charFilter && !getChars(ev).includes(charFilter)) return false;
-    return true;
-}
-function matchesSkill(ev) {
-    if (ev.Type === 'Reset' || ev.Type === 'Record') return true;
-    return !skillFilter || getSkillName(ev) === skillFilter;
-}
-function matchesDmgType(ev) {
-    if (ev.Type === 'Reset' || ev.Type === 'Record') return true;
-    if (!damageTypeFilter) return true;
-    return !!(ev.HitConfig && ev.HitConfig.damageType != null && String(ev.HitConfig.damageType) === damageTypeFilter);
-}
-function matchesDefender(ev) {
-    if (ev.Type === 'Reset' || ev.Type === 'Record') return true;
-    if (!defenderFilter) return true;
-    const d = getDefender(ev);
-    return d.includes(defenderFilter) || d.length === 0;
-}
-function computeDefenderCounts() {
-    defenderCounts.clear();
-    for (let i = 0; i < allEvents.length; i++) {
-        const d = getDefender(allEvents[i]);
-        for (let k = 0; k < d.length; k++)
-            defenderCounts.set(d[k], (defenderCounts.get(d[k]) || 0) + 1);
-    }
-    defenderCountsComputed = true;
-}
-
-// In auto mode, keep the defender filter glued to the defender that has taken
-// the most hits so far. Returns true if the filter changed and needs a refilter.
-function followAutoDefender() {
-    if (!defenderAuto) return false;
-    if (!defenderCountsComputed) computeDefenderCounts();
-    let top = '', best = 0;
-    for (const [d, c] of defenderCounts) { if (c > best) { best = c; top = d; } }
-    if (!top) return false;
-    if (defenderFilter === top) return false;
-    defenderFilter = top;
-    const sel = document.getElementById('defenderFilter');
-    if (sel) sel.value = top;
-    return true;
-}
-
-// Re-enable defender auto mode (used when switching to a different log).
-function reenableDefenderAuto() {
-    defenderAuto = true;
-    defenderFilter = '';
-    defenderCountsComputed = false;
-    const sel = document.getElementById('defenderFilter');
-    if (sel) sel.value = '';
-}
-
-// Blank every filter back to its default (used when switching logs, so stale
-// values from the previous log don't carry over to the new one).
-function resetFilters() {
-    typeFilter = new Set(['Hit', 'Skill Cast']);
-    charFilter = '';
-    skillFilter = '';
-    damageTypeFilter = '';
-    document.querySelectorAll('.type-filter-btn').forEach(b => {
-        b.classList.toggle('active', typeFilter.has(b.dataset.type));
-    });
-    ['charFilter', 'skillFilter', 'damageTypeFilter'].forEach(id => {
-        const sel = document.getElementById(id);
-        if (sel) sel.value = '';
-    });
-    reenableDefenderAuto();
-    dcCharFilter = '';
-    dcSkillFilter = '';
-    dcDamageTypeFilter = '';
-    dcDefenderFilter = '';
-    ['dcCharFilter', 'dcSkillFilter', 'dcDamageTypeFilter', 'dcDefenderFilter'].forEach(id => {
-        const sel = document.getElementById(id);
-        if (sel) sel.value = '';
-    });
-}
-
-// Full filter recompute. Rebuilds the dropdown option sets from scratch,
-// preserving the old applyFilters() ordering (skill options come from the
-// type+char filtered list, damage-type options from the type+char+skill list).
+// The shared filter engine (option sets, canonicalization, defender
+// auto-follow, select rendering) lives in filterCore.js; the Log tab uses the
+// 'log' domain of it.
 function computeFilteredFull() {
-    charOptionsSet.clear();
-    dmgTypeOptionsSet.clear();
-    defenderCounts.clear();
-    defenderCountsComputed = true;
-    const typeChar = [];
-    for (let i = 0; i < allEvents.length; i++) {
-        const ev = allEvents[i];
-        const chars = getChars(ev);
-        for (let k = 0; k < chars.length; k++) charOptionsSet.add(chars[k]);
-        const defs = getDefender(ev);
-        for (let k = 0; k < defs.length; k++) defenderCounts.set(defs[k], (defenderCounts.get(defs[k]) || 0) + 1);
-        if (matchesTypeChar(ev)) typeChar.push(ev);
-    }
-    skillOptionsSet.clear();
-    for (let i = 0; i < typeChar.length; i++) {
-        const n = getSkillName(typeChar[i]);
-        if (n) skillOptionsSet.add(n);
-    }
-    const out = [];
-    for (let i = 0; i < typeChar.length; i++) {
-        const ev = typeChar[i];
-        if (!matchesSkill(ev)) continue;
-        if (ev.Type === 'Hit' && ev.HitConfig && ev.HitConfig.damageType != null)
-            dmgTypeOptionsSet.add(String(ev.HitConfig.damageType));
-        if (matchesDmgType(ev) && matchesDefender(ev)) out.push(ev);
-    }
-    return out;
+    return fcRefilterDomain('log');
 }
 
 // ─── Search state ─────────────────
@@ -271,7 +73,7 @@ function refilterAndRender(resetScroll = false, resetOpen = true) {
     if (resetScroll || resetOpen) {
         container.scrollTop = 0;
     }
-    refreshSelects(true);
+    fcRenderSelects('log', true);
     vl.render();
 }
 
@@ -288,7 +90,7 @@ function scheduleLogRefresh() {
 
 function foldIncremental() {
     const start = foldedCount;
-    if (start >= allEvents.length) { updateStats(); refreshSelects(false); return; }
+    if (start >= allEvents.length) { updateStats(); fcRenderSelects('log', false); return; }
     // A Fenwick can't be grown by copy after adds; grow geometrically via a full
     // rebuild from `heights` so appends stay amortized O(1). Rebuilds happen
     // before any of this batch's appends, so all adds use the new capacity.
@@ -298,17 +100,9 @@ function foldIncremental() {
     for (let i = start; i < allEvents.length; i++) {
         const ev = allEvents[i];
         foldedCount = i + 1;
-        const chars = getChars(ev);
-        for (let k = 0; k < chars.length; k++) charOptionsSet.add(chars[k]);
-        const defs = getDefender(ev);
-        for (let k = 0; k < defs.length; k++) defenderCounts.set(defs[k], (defenderCounts.get(defs[k]) || 0) + 1);
-        if (!matchesTypeChar(ev)) continue;
-        const sn = getSkillName(ev);
-        if (sn) skillOptionsSet.add(sn);
-        if (!matchesSkill(ev)) continue;
-        if (ev.Type === 'Hit' && ev.HitConfig && ev.HitConfig.damageType != null)
-            dmgTypeOptionsSet.add(String(ev.HitConfig.damageType));
-        if (!matchesDmgType(ev) || !matchesDefender(ev)) continue;
+        // fcFoldEvent folds the event into the 'log' domain's option sets and
+        // applies the current filters in the same order as fcFullPass.
+        if (!fcFoldEvent(ev)) continue;
         filtered.push(ev);
         vl.appendHeight(vl.heightFor(ev._origIndex) + vl.extraHeight(ev._origIndex));
     }
@@ -324,7 +118,7 @@ function foldIncremental() {
         updateSearchCount();
     }
     updateStats();
-    refreshSelects(false);
+    fcRenderSelects('log', false);
     vl.render();
 }
 
@@ -332,7 +126,7 @@ function flushLogRefresh() {
     const resetOpen = pendingResetOpen;
     pendingResetOpen = false;
     if (resetOpen) filteredDirty = true;
-    if (followAutoDefender()) filteredDirty = true;
+    if (fcFollowAutoDefender('log')) filteredDirty = true;
     if (filteredDirty) {
         filteredDirty = false;
         refilterAndRender(resetOpen, resetOpen);
@@ -342,7 +136,7 @@ function flushLogRefresh() {
     }
     // Auto mode can only pick a defender once counts exist. If the pass above
     // just populated them, follow the top defender once more and re-filter.
-    if (followAutoDefender()) {
+    if (fcFollowAutoDefender('log')) {
         refilterAndRender(false, false);
     }
 }
@@ -536,7 +330,7 @@ function createEventDiv(ev, filteredIdx) {
     const h3 = document.createElement('h3');
 
     let typeText = ev.Type;
-    if (ev.Type === 'Buff') typeText = ev.SubType === 'Effect' ? 'Effect' : (ev.Action === 'Add' ? 'Buff Add' : 'Buff Remove');
+    if (ev.Type === 'Buff') typeText = ev.SubType === 'Effect' ? (ev.Action === 'Add' ? 'Effect Add' : 'Effect Remove') : (ev.Action === 'Add' ? 'Buff Add' : 'Buff Remove');
     h3.innerHTML = `<span class="time">${esc(ev.Time||'--:--')}</span> <span class="type">${esc(typeText)}</span>`;
 
     let desc = '';
@@ -545,7 +339,8 @@ function createEventDiv(ev, filteredIdx) {
         const attName = esc(ev.AttackerDisplay||ev.Attacker||'?');
         const skillStr = hitSkillStr(ev.HitConfig, esc);
         const baseMult = dp.skillPercentAmend!=null ? ` [${(dp.skillPercentAmend/10000).toFixed(2)}%]` : '';
-        const snapAge = ev.SnapshotAt ? ` [${((parseTimeToMs(ev.Time)-parseTimeToMs(ev.SnapshotAt))/1000).toFixed(3)}s ago]` : '';
+        const snapAgeSec = ev.SnapshotAt ? (parseTimeToMs(ev.Time)-parseTimeToMs(ev.SnapshotAt))/1000 : null;
+        const snapAge = snapAgeSec ? ` [${snapAgeSec.toFixed(3)}s ago]` : '';
         desc = `${attName}${skillStr}${baseMult}${snapAge} - Dmg: ${Number(dp.finalDamage).toLocaleString()}`;
     } else if (ev.Type === 'Buff') {
         const owner = cleanOwner(ev.OwnerDisplay||ev.Owner||'?');
@@ -610,7 +405,7 @@ function normalizeSearch(s) {
 function getEventSearchText(ev) {
     if (ev._searchText !== undefined) return ev._searchText;
     let typeText = ev.Type || '';
-    if (ev.Type === 'Buff') typeText = ev.SubType === 'Effect' ? 'Effect' : (ev.Action === 'Add' ? 'Buff Add' : 'Buff Remove');
+    if (ev.Type === 'Buff') typeText = ev.SubType === 'Effect' ? (ev.Action === 'Add' ? 'Effect Add' : 'Effect Remove') : (ev.Action === 'Add' ? 'Buff Add' : 'Buff Remove');
     const parts = [typeText];
 
     if (ev.Type === 'Hit') {
@@ -729,30 +524,47 @@ window.toggleTypeFilter = function(btn) {
         typeFilter.add(type);
     }
     btn.classList.toggle('active', typeFilter.has(type));
-    refilterAndRender(true);
+    fcRefilterActiveDomain(true);
 };
+
+// Shared <select> handlers — the same four selects drive both filter domains
+// (the applied value carries across tab switches). The refilter is applied to
+// the ACTIVE domain; the other domain's list is marked dirty and recomputed
+// on its next render (tab entry / streaming hook).
+function fcRefilterActiveDomain(resetScroll) {
+    if (fcActiveDomain() === 'hits') {
+        // Dmg Calc / Effect Impact / Analytics share the hits domain.
+        if (typeof dcHideCharDeltas === 'function') dcHideCharDeltas();
+        if (typeof dcRefilterAndRender === 'function') dcRefilterAndRender(resetScroll);
+        if (typeof dcNotifyAnalytics === 'function') dcNotifyAnalytics();
+        fcDirtyLog = true;
+    } else {
+        fcDirtyHits = true;
+        refilterAndRender(true, true);
+    }
+}
 
 window.onCharFilterChange = function() {
     charFilter = document.getElementById('charFilter').value;
     skillFilter = '';
     document.getElementById('skillFilter').value = '';
-    refilterAndRender(true);
+    fcRefilterActiveDomain(true);
 };
 
 window.onSkillFilterChange = function() {
     skillFilter = document.getElementById('skillFilter').value;
-    refilterAndRender(true);
+    fcRefilterActiveDomain(true);
 };
 
 window.onDamageTypeFilterChange = function() {
     damageTypeFilter = document.getElementById('damageTypeFilter').value;
-    refilterAndRender(true);
+    fcRefilterActiveDomain(true);
 };
 
 window.onDefenderFilterChange = function() {
     defenderAuto = false;
     defenderFilter = document.getElementById('defenderFilter').value;
-    refilterAndRender(true);
+    fcRefilterActiveDomain(true);
 };
 
 // ─── Tab switching ────────────────
@@ -766,18 +578,33 @@ window.switchTab = function(tab) {
     if (tab === 'analytics') {
         // Build the shared dmgCalc hit set so the right sidebar (totals, char
         // list, effects panel) and the Analytics charts reflect the same data.
-        if (typeof dcRefilterAndRender === 'function') dcRefilterAndRender(false, false);
+        if (typeof dcRefilterAndRender === 'function') dcRefilterAndRender(false);
         if (typeof eiRenderSidebarChips === 'function') eiRenderSidebarChips();
         Analytics.refresh();
     }
+    // Merged sidebar: one filter section, with per-domain rows shown/hidden.
+    const isLogDomain = tab === 'log' || tab === 'record';
+    const isHitsDomain = tab === 'dmgcalc' || tab === 'effectimpact' || tab === 'analytics';
     const sbFilters = document.getElementById('sidebarFilters');
-    const sbDcFilters = document.getElementById('sidebarDcFilters');
-    if (sbFilters) sbFilters.classList.toggle('hidden', tab !== 'log');
-    if (sbDcFilters) sbDcFilters.classList.toggle('hidden', tab !== 'dmgcalc' && tab !== 'effectimpact' && tab !== 'analytics');
+    if (sbFilters) sbFilters.classList.toggle('hidden', tab === 'record');
+    const logTypeRow = document.getElementById('logTypeRow');
+    if (logTypeRow) logTypeRow.classList.toggle('hidden', !isLogDomain);
+    const eiSearchBlock = document.getElementById('eiSearchBlock');
+    if (eiSearchBlock) eiSearchBlock.classList.toggle('hidden', !isHitsDomain);
     const sbEiFilters = document.getElementById('sidebarEiFilters');
     if (sbEiFilters) sbEiFilters.classList.toggle('hidden', tab !== 'effectimpact');
     const eiZeroGainWrap = document.getElementById('eiZeroGainWrap');
     if (eiZeroGainWrap) eiZeroGainWrap.classList.toggle('hidden', tab !== 'effectimpact');
     const sbDcStats = document.getElementById('sidebarDcStats');
-    if (sbDcStats) sbDcStats.classList.toggle('hidden', tab !== 'dmgcalc' && tab !== 'effectimpact' && tab !== 'analytics');
+    if (sbDcStats) sbDcStats.classList.toggle('hidden', !isHitsDomain);
+    // The shared selects carry per-domain option lists — re-render them for
+    // the newly active domain (a diff no-op when the lists already match,
+    // so an open popup survives).
+    if (typeof fcRenderSelects === 'function') fcRenderSelects(isHitsDomain ? 'hits' : 'log', false);
+    // If the shared filters changed while another domain was active, refilter
+    // the newly active domain's list here.
+    if (isLogDomain && fcDirtyLog && typeof refilterAndRender === 'function') {
+        fcDirtyLog = false;
+        refilterAndRender(false, false);
+    }
 };

@@ -134,11 +134,20 @@ async function loadSavedLogsList() {
 }
 
 // Wipe client-side log state (used by saved-log switch, clear, cut, resync).
+// This is the single invalidating path — every wipe (saved-log switch, clear,
+// cut, server-truncation resync) funnels through here, so the filter state,
+// search and Effect Impact toggles always reset with the log instead of
+// leaking stale values into the next one.
 function resetClientState() {
     // Record + dmg-calc sim state belong to the opened log — drop them so a
     // previously opened log's record never survives a swap (the Origin event
     // of the new log repopulates everything it carries on reparse).
     if (typeof resetRecordState === 'function') resetRecordState();
+    // Dmg Calc sidebar simulation toggles (char/disc/quick toggles, field
+    // bonuses) also belong to the opened log.
+    if (typeof dcResetUiState === 'function') dcResetUiState();
+    // Shared filter state + selects + search + EI toggles (filterCore.js).
+    if (typeof fcResetFilters === 'function') fcResetFilters();
     allEvents = [];
     filtered = [];
     if (window.logVL) {
@@ -158,8 +167,6 @@ window.onSavedLogChange = async function() {
     currentLogName = currentSavedLog || 'Live';
     stopLiveUpdates();
 
-    reenableDefenderAuto();
-    resetFilters();
     resetClientState();
     refilterAndRender(true, true);
     await fetchLevelMap(currentSavedLog);

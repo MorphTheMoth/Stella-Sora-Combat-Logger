@@ -165,10 +165,23 @@ function renderRecordData(panel, rec, synthetic) {
     // once after the characters: first three discs = main, the rest = support.
     const dStats = rec.discStats || [];
     if (dStats.length) {
+        // Support discs (index >= 3) grant fixed bonus notes into the build's
+        // note counts — same reconstruction the Dmg Calc sidebar's disc
+        // bonus-note rows use (max-Phase grant, tableResolver.js
+        // discBonusNotesById). Main discs don't grant notes.
         const discLine = d => {
             const parts = Object.entries(d.attrs || {})
                 .map(([k, v]) => `${statName(k)} ${fmtVal(k, v)}`).join(', ');
-            return parts ? `${resolveRecordDiscName(d.id)}: ${parts}` : resolveRecordDiscName(d.id);
+            let noteTxt = '';
+            if (typeof discBonusNotesFor === 'function') {
+                const di = dStats.indexOf(d);
+                if (di >= 3) {
+                    const grants = discBonusNotesFor(d.id)
+                        .map(n => `${subNoteName(n.noteId)} +${n.count}`);
+                    if (grants.length) noteTxt = ` (${grants.join(', ')})`;
+                }
+            }
+            return (parts ? `${resolveRecordDiscName(d.id)}: ${parts}` : resolveRecordDiscName(d.id)) + noteTxt;
         };
         html.push('<div class="rec-char rec-discs">');
         html.push('<div class="rec-sub">Discs</div>');

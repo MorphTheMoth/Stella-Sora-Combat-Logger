@@ -57,16 +57,34 @@ window.dcRenameCompare = function(id) {
 };
 
 // ─── DC filter state ─────────────────────────────────────────────────────────
-let dcCharFilter = '';
-let dcSkillFilter = '';
-let dcDamageTypeFilter = '';
-let dcDefenderFilter = '';
-let dcSearchQuery = '';
+// The four filters (char/skill/damage type/defender) and the sidebar search
+// text are SHARED with the Log tab — they live in filterCore.js as
+// charFilter/skillFilter/damageTypeFilter/defenderFilter/fcSearchQuery, and
+// the same <select> elements drive both domains.
 
 // Per-field bonus values (user-typed numbers added to all hits)
 const dcBonus = {};
 DC_FIELDS.forEach(f => { dcBonus[f.key] = 0; });
 ['genDmg','intensity','finalDmg','genDmgRcd','toughnessBroken'].forEach(k => { dcBonus[k] = 0; });
+
+// Full reset of the Dmg Calc sidebar UI state — called on log swap / clear
+// (resetClientState): every toggle below belongs to the opened log's hits.
+window.dcResetUiState = function() {
+    dcCharsDisabled.clear();
+    dcCharEffectKeys.clear();
+    dcGroupEffectKeys.clear();
+    dcPotsMaxLvl6.active = false; dcPotsMaxLvl6.prev.clear();
+    dcPotsAllLvl6.active = false; dcPotsAllLvl6.prev.clear();
+    dcDisabled.clear();
+    for (const k of Object.keys(dcBonus)) dcBonus[k] = 0;
+    dcCompares.length = 0;
+    for (const k of Object.keys(dcSourceOpenStates)) delete dcSourceOpenStates[k];
+    // Page-load state for the per-char deltas (shown automatically on the
+    // next char-list render — do NOT call dcHideCharDeltas here, it would
+    // flip the flag back off).
+    dcShowCharDeltas = true;
+    _dcCharDeltaCache = null;
+};
 
 // ─── DC effects panel state ───────────────────────────────────────────────────
 // Set of "side:configId:valueConfigId" keys for effects the user disabled
@@ -140,6 +158,11 @@ function dcLevelCouplingKeys() {
     const s = new Set();
     for (const st of dcPotLevels.values()) if (st.potKey) s.add(st.potKey);
     for (const st of dcSkillLevels.values()) {
+        for (const [rowKey] of (st.bonusByRow || [])) if (rowKey != null) s.add(rowKey);
+    }
+    // Disc bonus-note rows: disabling one changes the note level table
+    // (dcNoteLevels) — the note effects rescale on every hit that carries them.
+    for (const st of dcNoteLevels.values()) {
         for (const [rowKey] of (st.bonusByRow || [])) if (rowKey != null) s.add(rowKey);
     }
     _dcCouplingKeys = { version: dcStateVersion, keys: s };
@@ -279,7 +302,15 @@ function renderEffectsPanel() {
                     } else if (ef.isPotRow) {
                         valStr = `+${ef.linkPotential.addLv} lv`;
                     } else if (ef.displayOnly) {
-                        valStr = `+${ef._skillAddLv || 0} lv`;
+                        if (ef._noteAdd != null) {
+                            const st = (typeof discNoteStatOf === 'function') ? discNoteStatOf(ef) : null;
+                            const notes = `+${ef._noteAdd} note${ef._noteAdd !== 1 ? 's' : ''}`;
+                            valStr = st
+                                ? `${st.attr ? st.attr + ' ' : ''}${st.val} | ${notes}`
+                                : notes;
+                        } else {
+                            valStr = `+${ef._skillAddLv || 0} lv`;
+                        }
                     } else {
                         const override = dcGetLevelOverride(ef, ef.side);
                         const raw = override ? override.newValue : ef.value;
@@ -464,7 +495,7 @@ function dcDiscNameOf(name) {
 
 // groupKey: 'bossblitz' / 'talents' match by source; 'disc:<name>' matches
 // every Discs-source row belonging to that disc (stat rows + Melody/Harmony
-// buffs). Matchers receive (source, name).
+// buffs + bonus-note rows). Matchers receive (source, name).
 function dcGroupSourceMatcher(groupKey) {
     if (groupKey.startsWith('disc:')) {
         const disc = groupKey.slice(5);
@@ -613,8 +644,10 @@ const DC_QUICK_TOGGLES = [
 // ── Per-disc quick toggles ────────────────────────────────────────────
 // One toggle per disc that has effects/stat rows in the current filter.
 // Disabling a disc removes ALL of its contributions at once: its
-// "<disc> : Stat n" stat rows (tableResolver.js buildRecordDiscEffects)
-// and its "<disc>: Melody|Harmony N" buff rows (disc-buff decoder), i.e.
+// "<disc> : Stat n" stat rows (tableResolver.js buildRecordDiscEffects),
+// its "<disc>: Melody|Harmony N" buff rows (disc-buff decoder) and its
+// "<disc> : Note <name>" bonus-note rows (buildRecordDiscNoteEffects —
+// disabling those drops the granted notes from the note level table), i.e.
 // every effect whose source is 'Discs' and whose name starts with the
 // disc name before the first ':' (dcDiscNameOf).
 // Disc toggles are listed ABOVE the static quick toggles, separated by a
@@ -646,7 +679,7 @@ function dcQuickToggleList() {
         const gkey = `disc:${disc}`;
         return {
             label: disc,
-            title: `Disable all effects and stat changes of the disc "${disc}" (stat rows + Melody/Harmony buffs)`,
+            title: `Disable all effects and stat changes of the disc "${disc}" (stat rows + Melody/Harmony buffs + bonus notes)`,
             enableStyle: false,
             strikeWhenActive: true,
             isActive: () => dcGroupEffectKeys.has(gkey),
@@ -1085,6 +1118,27 @@ window.dcChangeEffectLevel = function(key, direction) {
         }
     }
 
+    // Note row (SubNoteSkill, levelTypeData 5): its level lives in the note
+    // level table (record base + disc grants + change) — step the CHANGE so
+    // every effect entry of that note moves with it (same model as the
+    // potential rows below). Clamped to the SubNoteSkill ladder domain 0..99.
+    if (ef.levelTypeData === 5 && ef.levelData != null) {
+        let st = dcNoteLevels.get(Number(ef.levelData));
+        if (!st) {
+            const curL0 = (ef.valueConfigId != null && ef.valueConfigId > ef.configId)
+                ? Math.round((ef.valueConfigId - ef.configId) / 10) : 0;
+            st = dcEnsureNoteLevel(ef.levelData, curL0);
+            if (!st) return;
+        }
+        const curEff = dcNoteEffectiveLevel(st);
+        const newL = Math.min(Math.max(curEff + direction, 0), 99);
+        if (newL === curEff) return;
+        st.change = (st.change || 0) + (newL - curEff);
+        dcHideCharDeltas();
+        dcApplyAndRender();
+        return;
+    }
+
     // Potential entry: its level lives in the potential's level table
     // (recordLv + bonus + change) — step the CHANGE and every effect of that
     // potential moves with it. Clamped to the ladder range 0..9.
@@ -1441,7 +1495,8 @@ function dcCreateEventDiv(ev, fi) {
     const attName  = esc(ev.AttackerDisplay || ev.Attacker || '?');
     const skillStr  = hitSkillStr(hc, esc);
     const baseMult  = dp.skillPercentAmend != null ? ` [${(dp.skillPercentAmend/10000).toFixed(2)}%]` : '';
-    const snapAge = ev.SnapshotAt ? ` [${((parseTimeToMs(ev.Time)-parseTimeToMs(ev.SnapshotAt))/1000).toFixed(3)}s ago]` : '';
+    const snapAgeSec = ev.SnapshotAt ? (parseTimeToMs(ev.Time)-parseTimeToMs(ev.SnapshotAt))/1000 : null;
+    const snapAge = snapAgeSec ? ` [${snapAgeSec.toFixed(3)}s ago]` : '';
 
     const div = document.createElement('div');
     div.className = 'event dc-event' + (isOpen ? ' open' : '');
@@ -1512,83 +1567,16 @@ function dcCreateEventDiv(ev, fi) {
 }
 
 // ─── Filter helpers ───────────────────────────────────────────────────────────
-function dcBuildCharFilter() {
-    const all = new Set();
-    allEvents.filter(e => e.Type === 'Hit').forEach(e => {
-        if (e.AttackerDisplay) all.add(e.AttackerDisplay);
-    });
-    fillSelectOptions(document.getElementById('dcCharFilter'), all,
-        { emptyLabel: 'All Characters', keepVal: dcCharFilter, keepVanished: true });
-}
-
-function dcBuildSkillFilter(evs) {
-    const all = new Set();
-    evs.forEach(e => {
-        const n = (e.HitConfig || {}).skillTitle;
-        if (n) all.add(n);
-    });
-    fillSelectOptions(document.getElementById('dcSkillFilter'), all,
-        { emptyLabel: 'All Skills', keepVal: dcSkillFilter, keepVanished: true, max: 28 });
-}
-
-function dcBuildDamageTypeFilter(evs) {
-    const all = new Set();
-    evs.forEach(e => {
-        if (e.HitConfig && e.HitConfig.damageType != null) {
-            all.add(e.HitConfig.damageType);
-        }
-    });
-    fillSelectOptions(document.getElementById('dcDamageTypeFilter'), all,
-        { emptyLabel: 'All Damage Types', keepVal: dcDamageTypeFilter, keepVanished: true,
-          format: dtName, sortFn: (a, b) => a - b, max: 28 });
-}
-
-function dcBuildDefenderFilter(autoSelect = false) {
-    const dmgTotals = {};
-    allEvents.filter(e => e.Type === 'Hit').forEach(e => {
-        const name = e.DefenderDisplay || e.Defender;
-        if (!name) return;
-        const key = cleanOwner(name);
-        const dmg = (e.DamageParams && e.DamageParams.finalDamage) || 0;
-        dmgTotals[key] = (dmgTotals[key] || 0) + dmg;
-    });
-    const all = Object.keys(dmgTotals);
-    const sel = document.getElementById('dcDefenderFilter');
-    fillSelectOptions(sel, all, { emptyLabel: 'All Defenders', keepVal: dcDefenderFilter, max: 28 });
-    // No selection yet → default to the defender that took the most damage.
-    const top = all.sort((a, b) => dmgTotals[b] - dmgTotals[a])[0] || '';
-    if (autoSelect || (!dcDefenderFilter && top)) {
-        sel.value = top;
-        dcDefenderFilter = top;
-    }
-}
-
-// Build a haystack for a hit matching the header title shown in the list,
-// e.g. "Flora - Flutter Flare (#1) [209.00%]".
-function dcHitSearchText(ev) {
-    const hc = ev.HitConfig || {};
-    const dp = ev.DamageParams || {};
-    const attName = ev.AttackerDisplay || ev.Attacker || '?';
-    const baseMult = dp.skillPercentAmend != null ? ` [${(dp.skillPercentAmend / 10000).toFixed(2)}%]` : '';
-    return `${attName}${hitSkillStr(hc)}${baseMult}`.toLowerCase();
-}
-
+// The dropdowns and the filter state are shared with the Log tab
+// (filterCore.js). dcApplyFilters runs the 'hits' domain full pass: option
+// sets (char/defender included — the old dcBuildCharFilter/dcBuildDefender
+// pair only ran on tab entry, which is why new characters could be missing
+// from the sidebar lists while sitting on another tab), then the shared
+// sidebar search on top, then the defender auto-follow glue (most damage).
 function dcApplyFilters() {
-    let evs = allEvents.filter(e => e.Type === 'Hit');
-    if (dcCharFilter) evs = evs.filter(e => (e.AttackerDisplay || '') === dcCharFilter);
-    dcBuildSkillFilter(evs);
-    if (dcSkillFilter) evs = evs.filter(e => ((e.HitConfig || {}).skillTitle || '') === dcSkillFilter);
-    dcBuildDamageTypeFilter(evs);
-    if (dcDamageTypeFilter) evs = evs.filter(e => e.HitConfig && String(e.HitConfig.damageType) === dcDamageTypeFilter);
-    if (dcDefenderFilter) {
-        evs = evs.filter(e => {
-            const name = e.DefenderDisplay || e.Defender;
-            if (!name) return true;
-            const key = cleanOwner(name);
-            return key === dcDefenderFilter;
-        });
-    }
-    const q = dcSearchQuery.trim().toLowerCase();
+    let evs = fcFullPass('hits');
+    if (fcFollowAutoDefender('hits')) evs = fcFullPass('hits');
+    const q = fcSearchQuery.trim().toLowerCase();
     if (q) {
         const cached = new Map();
         evs = evs.filter(e => {
@@ -1600,39 +1588,14 @@ function dcApplyFilters() {
     return evs;
 }
 
-window.dcOnCharFilterChange = function() {
-    dcCharFilter = document.getElementById('dcCharFilter').value;
-    dcSkillFilter = '';
-    document.getElementById('dcSkillFilter').value = '';
-    dcHideCharDeltas();
-    dcRefilterAndRender(true, false);
-    dcNotifyAnalytics();
-};
-window.dcOnSkillFilterChange = function() {
-    dcSkillFilter = document.getElementById('dcSkillFilter').value;
-    dcHideCharDeltas();
-    dcRefilterAndRender(true, false);
-    dcNotifyAnalytics();
-};
-window.dcOnDamageTypeFilterChange = function() {
-    dcDamageTypeFilter = document.getElementById('dcDamageTypeFilter').value;
-    dcHideCharDeltas();
-    dcRefilterAndRender(true, false);
-    dcNotifyAnalytics();
-};
-
-window.dcOnDefenderFilterChange = function() {
-    dcDefenderFilter = document.getElementById('dcDefenderFilter').value;
-    dcHideCharDeltas();
-    dcRefilterAndRender(true, false);
-    dcNotifyAnalytics();
-};
-
 // ─── Refilter / rebuild ───────────────────────────────────────────────────────
-function dcRefilterAndRender(resetScroll = false, autoSelectDefender = true) {
-    dcBuildCharFilter();
-    dcBuildDefenderFilter(autoSelectDefender);
+// The filtered list + select options come from the shared core; the defender
+// auto-follow lives inside dcApplyFilters (fcFollowAutoDefender re-runs the
+// pass when the glued defender changes).
+function dcRefilterAndRender(resetScroll = false) {
     dcFiltered = dcApplyFilters();
+    fcDirtyHits = false;   // the hits domain just recomputed
+    fcRenderSelects('hits', true);   // shared selects: rebuild with hits-domain options
     if (resetScroll) {
         dcVL.reset();
         dcContainer.scrollTop = 0;
@@ -1678,6 +1641,7 @@ let _dcLastEffectKeys = null;
 window.dcRefreshIfVisible = function() {
     if (document.getElementById('dmgCalcPanel').classList.contains('visible')) {
         dcFiltered = dcApplyFilters();
+        fcRenderSelects('hits', false);
         dcVL.setFiltered(dcFiltered);
         dcVL.build();
 
@@ -1705,6 +1669,7 @@ window.dcRefreshIfVisible = function() {
         // Keep the shared right sidebar (totals, char list, effects panel) and
         // the effect-source chips fresh while the Dmg Calc panel itself is hidden.
         dcFiltered = dcApplyFilters();
+        fcRenderSelects('hits', false);
         dcBumpCalcVersion();
         dcRenderTotals();
         dcRenderCharList();

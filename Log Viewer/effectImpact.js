@@ -8,8 +8,9 @@ let eiSortDir   = -1;           // -1 = descending, 1 = ascending
 let eiLastData  = [];           // cached row data for re-sort without recompute
 // Which source groups are hidden (filter-checkboxes); default all visible
 const eiHiddenSources = new Set();
-// Free-text search query used to filter the effect-impact rows by effect name
-let eiSearchQuery = '';
+// Free-text search query used to filter the effect-impact rows by effect
+// name — SHARED with the Dmg Calc sidebar search (fcSearchQuery in
+// filterCore.js; the same #eiSearchInput drives both domains).
 // When true, effects whose dmg gain is exactly 0% are hidden from the table.
 // Default true = the "Show 0% gain effects" chip in the Filters sidebar starts
 // off (dimmed), so zero-gain effects are hidden until the chip is enabled.
@@ -293,6 +294,35 @@ function eiComputeEffect(ef, baseline) {
         return { totalWith, totalWithout, hitCount, affectedHits, maxStacks: 1, isAdded };
     }
 
+    // ── Disc bonus-note rows: composite impact ─────────────────────
+    // A disc-note shortcut row (buildRecordDiscNoteEffects configId 960000000
+    // + discStatsIdx*1000 + noteIdx, display-only, no stat of its own) removes
+    // the disc's granted notes from the note level table when disabled
+    // (dcNoteRowBonus → dcNoteEffectiveLevel). That rescales every effect
+    // entry of that note (Effect.json levelTypeData 5, LevelData = noteId), so
+    // like the emblem skill rows the impact is computed as an explicit
+    // both-directions recompute (off = key added to the disabled set, on = key
+    // removed).
+    if (ef.displayOnly && ef.configId >= 960000000 && ef.configId < 961000000 && ef._noteId != null) {
+        const noteId = Number(ef._noteId);
+        // Effect configId → note id (levelMap lt-5 entries: LevelData = noteId)
+        const noteLevelDataOf = (cid) => {
+            const lm = resolveLevelMap(cid);
+            return lm.levelTypeData === 5 ? lm.levelData : null;
+        };
+        const hasFamily = (ev) => eiEffectFamily(ev).some(e =>
+            e.configId != null && noteLevelDataOf(e.configId) === noteId);
+        for (let i = 0; i < baseline.length; i++) {
+            const { ev, withDmg } = baseline[i];
+            if (!hasFamily(ev)) { totalWith += withDmg; totalWithout += withDmg; continue; }
+            affectedHits++;
+            const [withD, withoutD] = bothDirections(ev);
+            totalWith += withD;
+            totalWithout += withoutD;
+        }
+        return { totalWith, totalWithout, hitCount, affectedHits, maxStacks: 1, isAdded };
+    }
+
     // coeff: subtract the effect (-1) when it's normally present; add it (+1) when it's disabled
     const coeff = isAdded ? 1 : -1;
 
@@ -386,7 +416,7 @@ function eiRenderTable() {
     let rows = [...eiLastData];
 
     // Apply free-text search filter (matches effect name, case-insensitive)
-    const q = eiSearchQuery.trim().toLowerCase();
+    const q = fcSearchQuery.trim().toLowerCase();
     if (q) {
         rows = rows.filter(r => (r.ef.name || '').toLowerCase().includes(q));
     }
@@ -430,9 +460,11 @@ function eiRenderTable() {
     // by the member values otherwise.
     //   Potentials: same name + same source (one potential ladder).
     //   Discs:      all rows of one disc — its "<disc> : Stat n" stat rows
-    //               (tableResolver.js buildRecordDiscEffects) and its
+    //               (tableResolver.js buildRecordDiscEffects), its
     //               "<disc>: Melody|Harmony N - ..." effect rows (disc-buff
-    //               decoder) — chained by the disc name before the first ':'.
+    //               decoder) and its "<disc> : Note <name>" bonus-note rows
+    //               (buildRecordDiscNoteEffects) — chained by the disc name
+    //               before the first ':'.
     const siblingGroups = new Map(); // key `${source}\u0000${chainName}` -> rows[]
     const unitOf = new Map();        // row -> its sibling group (if any)
     const addToSiblingGroup = (key, r) => {
@@ -571,7 +603,17 @@ function eiRenderTable() {
                 // the actual change the emblem grants (record gems "pots": [[potIdx, +levels]])
                 ? `<span class="ei-attr"></span><span class="ei-val">+${ef.linkPotential.addLv} lv</span>`
                 : ef.displayOnly
-                ? `<span class="ei-attr"></span><span class="ei-val">+${ef._skillAddLv || 0} lv</span>`
+                ? (ef._noteAdd != null
+                    // disc bonus-note row: the note effect's stat × grant, in the
+                    // same white-attr + value form as the stat entries, with the
+                    // notes kept as a suffix ("Ult Dmg  +3.22% | +7 notes")
+                    ? (() => {
+                        const st = (typeof discNoteStatOf === 'function') ? discNoteStatOf(ef) : null;
+                        const notes = `+${ef._noteAdd} note${ef._noteAdd !== 1 ? 's' : ''}`;
+                        const valPart = st ? `+${st.val} | ${notes}` : notes;
+                        return `<span class="ei-attr">${esc(st?.attr ?? '')}</span><span class="ei-val">${valPart}</span>`;
+                    })()
+                    : `<span class="ei-attr"></span><span class="ei-val">+${ef._skillAddLv || 0} lv</span>`)
                 : ef.isPotentialsGroup
                 ? `<span class="ei-attr">Hit Damage</span><span class="ei-val">${ef.value.map(num => `${num}%`).join(', ')}</span>`
                 : (() => {
@@ -717,11 +759,10 @@ function eiRenderSidebarChips() {
 window.eiOnSearchInput = function() {
     const el = document.getElementById('eiSearchInput');
     const v = el ? el.value : '';
-    eiSearchQuery = v;
-    dcSearchQuery = v;
+    fcSearchQuery = v;
     const dcVisible = document.getElementById('dmgCalcPanel').classList.contains('visible');
     const eiVisible = document.getElementById('eiPanel').classList.contains('visible');
-    if (dcVisible) dcRefilterAndRender(true, false);
+    if (dcVisible) dcRefilterAndRender(true);
     if (eiVisible) eiRenderTable();
     if (typeof activeTab !== 'undefined' && activeTab === 'analytics' && typeof Analytics !== 'undefined') Analytics.refresh();
 };
@@ -738,6 +779,11 @@ window.switchTab = function(tab) {
     document.getElementById('tabEffectImpact').classList.toggle('active', tab === 'effectimpact');
     document.getElementById('eiPanel').classList.toggle('visible', tab === 'effectimpact');
     if (tab === 'effectimpact') {
+        // Recompute the shared hits-domain filtered list first (the shared
+        // filters may have changed while another tab was active), then the
+        // shared right sidebar surfaces.
+        if (typeof dcApplyFilters === 'function') dcFiltered = dcApplyFilters();
+        if (typeof fcDirtyHits !== 'undefined') fcDirtyHits = false;   // just recomputed
         eiRender();
         if (typeof renderEffectsPanel === 'function') renderEffectsPanel();
         if (typeof dcRenderTotals === 'function') dcRenderTotals();
