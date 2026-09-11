@@ -139,6 +139,15 @@
         .sidebar .dc-char-btn:hover { background: #353535; color: #ccc; }
         .sidebar .dc-char-btn.on { color: #b07070; border-color: #4a3030; }
         .sidebar .dc-char-btn.on:hover { background: #2e2020; color: #cc8888; border-color: #5a3535; }
+        /* Calculate All — twice the size of the row buttons above */
+        .sidebar .dc-calc-all-btn {
+            flex-shrink: 0; width: auto; min-width: 120px;
+            padding: 4px 14px; margin: 0;
+            border: 1px solid #3a3a3a; border-radius: 3px;
+            background: #2a2a2a; color: #999; font-size: 12px; cursor: pointer;
+            transition: background 0.12s, color 0.12s;
+        }
+        .sidebar .dc-calc-all-btn:hover { background: #353535; color: #ccc; }
         .sidebar .dc-quick-sep {
             border-top: 1px solid #2c2c2c;
             margin: 6px 0;
@@ -1178,9 +1187,9 @@
                 <button id="dcDisableAllBtn" onclick="dcDisableAllEffects()" title="Disable all effects in the Effects panel">Disable All</button>
                 <button id="dcEnableAllBtn" onclick="dcEnableAllEffects()" title="Enable all effects in the Effects panel">Enable All</button>
             </div>
-            <div class="sidebar-label" style="margin-top:10px">Quick Toggles</div>
+            <div class="sidebar-label" style="margin-top:10px;display:flex;align-items:center;justify-content:space-between;gap:8px">Quick Toggles <button class="dc-calc-all-btn" onclick="dcCalculateCharDeltas()" title="Compute the per-character / quick-toggle Total Calc deltas (one extra simulation pass each); cleared as soon as the simulation state changes.">Calculate All</button></div>
             <div id="dcCharsList">
-                <!-- rendered by dcRenderCharList() -->
+                <!-- rendered by dcRenderCharList() (chars, then quick toggles) -->
             </div>
             <div class="dc-effects-panel" id="dcEffectsPanel">
                 <!-- rendered by renderEffectsPanel() -->

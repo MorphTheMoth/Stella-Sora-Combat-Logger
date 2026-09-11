@@ -163,6 +163,8 @@ window.dcResetSimState = function () {
     dcSkillLevels.clear();
     if (typeof dcEffectsDisabled !== 'undefined') dcEffectsDisabled.clear();
     if (typeof dcEffectLevelOverrides !== 'undefined') dcEffectLevelOverrides.clear();
+    // Drop cached per-hit calc results (defined in dmgCalc.ui.js).
+    if (typeof dcBumpCalcVersion === 'function') dcBumpCalcVersion();
 };
 
 // Synthetic record for logs without a record log — shaped like an Origin
