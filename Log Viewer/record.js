@@ -174,11 +174,11 @@ function renderRecordData(panel, rec, synthetic) {
         html.push('<div class="rec-sub">Discs</div>');
         html.push('<div class="rec-sub" style="margin-top:4px">Main discs</div>');
         html.push('<ul class="rec-disc-list">' +
-            dStats.slice(0, 3).map(d => `<li>${escapeHtml(discLine(d))}</li>`).join('') + '</ul>');
+            dStats.slice(0, 3).map(d => `<li>${esc(discLine(d))}</li>`).join('') + '</ul>');
         if (dStats.length > 3) {
             html.push('<div class="rec-sub" style="margin-top:4px">Support discs</div>');
             html.push('<ul class="rec-disc-list">' +
-                dStats.slice(3).map(d => `<li>${escapeHtml(discLine(d))}</li>`).join('') + '</ul>');
+                dStats.slice(3).map(d => `<li>${esc(discLine(d))}</li>`).join('') + '</ul>');
         }
         // Build stats, deduped across the team (identical in practice)
         const uniqBuilds = [];
@@ -188,16 +188,11 @@ function renderRecordData(panel, rec, synthetic) {
         if (uniqBuilds.length) {
             html.push('<div class="rec-sub" style="margin-top:8px">Build</div>');
             html.push('<ul class="rec-disc-list">' + uniqBuilds.map(([nm, b]) =>
-                `<li>${escapeHtml(uniqBuilds.length > 1 ? `${nm}: ${b}` : b)}</li>`).join('') + '</ul>');
+                `<li>${esc(uniqBuilds.length > 1 ? `${nm}: ${b}` : b)}</li>`).join('') + '</ul>');
         }
         html.push('</div>');
     }
 
     html.push('</div>');
     panel.innerHTML = html.join('');
-}
-
-function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, m =>
-        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
 }

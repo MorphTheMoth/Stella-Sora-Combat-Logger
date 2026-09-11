@@ -5,7 +5,6 @@ window.ST = window.ST || {};
 // ── Data stores ──
 ST.charNames = {};
 ST.noteNames = {};
-ST.characterData = {}; // charId -> { id, name, portrait }
 ST.runs = [];
 ST.allPotentialEvents = [];
 ST.allNoteEvents = [];
@@ -219,8 +218,6 @@ ST._initialLoadDone = false;
     for (var r = 0; r < ST.runs.length; r++) {
         ST._processRun(ST.runs[r], r);
     }
-
-    ST._rebuildFilters();
 };
 
 ST._processRun = function(run, runIdx) {
@@ -398,7 +395,6 @@ ST._processEvent = function(run, ev, state, pendingNpcEvents) {
         state._shopPending = true;
     }
 
-    // Update floor from enter
     if (json.action === 'enter' && json.room && json.room.data) {
         var rd = json.room.data;
         if (rd.floor !== undefined) state.floor = rd.floor;
@@ -645,13 +641,6 @@ ST._processCases = function(run, state, pendingNpcEvents, cases) {
             });
         }
     });
-};
-
-// ── Filter rebuild ──
-
-ST._rebuildFilters = function() {
-    // Called after data is loaded to populate filter dropdowns
-    // Tabs have their own filter renderers
 };
 
 // ── Tab switching ──

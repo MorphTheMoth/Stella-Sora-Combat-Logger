@@ -31,11 +31,26 @@ const DC_FORMULA_KEYS = [
 ];
 
 // ─── effectType constants ─────────────────────────────────────────────────────
-const ATTR_FIX = 12;
-const PLAYER_ATTR_FIX = 37;
-const HITTED_ADDITIONAL_ATTR_FIX = 45;
-const ELEMENTTYPE_ATTR_FIX = 52;
-const ELEMENTTYPE_ATTR_PERCENT_FIX = 54;
+// Resolved by name from the enum dump table (tableResolver.js
+// EFFECT_TYPE_NAMES, mirroring docs/Enums.md) so the ids can never drift from
+// the game's effectType enum — e.g. 54 is HITTED_ADDITIONAL_ELEMENTTYPE_ATTR_FIX
+// while ELEMENTTYPE_ATTR_PERCENT_FIX is 56.
+const EFFECT_ID_BY_NAME = {};
+for (const [id, name] of Object.entries(EFFECT_TYPE_NAMES)) EFFECT_ID_BY_NAME[name] = Number(id);
+const ATTR_FIX = EFFECT_ID_BY_NAME.ATTR_FIX;
+const PLAYER_ATTR_FIX = EFFECT_ID_BY_NAME.PLAYER_ATTR_FIX;
+const HITTED_ADDITIONAL_ATTR_FIX = EFFECT_ID_BY_NAME.HITTED_ADDITIONAL_ATTR_FIX;
+const ELEMENTTYPE_ATTR_FIX = EFFECT_ID_BY_NAME.ELEMENTTYPE_ATTR_FIX;
+const ELEMENTTYPE_ATTR_PERCENT_FIX = EFFECT_ID_BY_NAME.ELEMENTTYPE_ATTR_PERCENT_FIX;
+// ATTR_FIX-family effectTypes: their subType is 1=Base / 2=Pct / 3=Abs.
+const ATTR_FAMILY_TYPES = new Set([ATTR_FIX, HITTED_ADDITIONAL_ATTR_FIX, PLAYER_ATTR_FIX]);
+
+// True when an effect/hit source string belongs to the Potentials family
+// (buildHitTable names these "<char> Potentials"; the collector's synthetic
+// groups use source "Potentials").
+function dcIsPotentialsSource(src) {
+    return typeof src === 'string' && src.includes('Potentials');
+}
 // ── Emblem-pot-driven level overrides ────────────────────────────────────────
 // ─── Potential level table ────────────────────────────────────────────────────
 // Single source of truth for every potential-related level:
@@ -447,9 +462,6 @@ function dcSkillEffectiveLevel(st, disabledSet) {
     return Math.min(Math.max(st.recordLv + dcSkillRowBonus(st, disabledSet) + (st.change || 0), 0), dcSkillMaxLevel(st, disabledSet));
 }
 
-// Effective level the game would use for a hit scaling by hitConfig
-// levelTypeData/levelData — 3 = skill slot (skill-level table), 1 = perk
-// (the potential's level table). Returns null when untracked/unchanged.
 // Which tracked skill-slot state does a levelTypeData-3 config scale with?
 // ActionKey 2 (B) is a SHARED slot: the caster's slot dict is role-adjusted
 // at battle setup — PlayerCharData:CalCharacterAttrBattle (lua:1704) removes
@@ -492,6 +504,9 @@ function dcAttackerRoleSlot(charId) {
     return null;
 }
 
+// Effective level the game would use for a hit scaling by hitConfig
+// levelTypeData/levelData — 3 = skill slot (skill-level table), 1 = perk
+// (the potential's level table). Returns null when untracked/unchanged.
 function dcHitScalingLevel(hc, charId, disabledSet) {
     if (!hc) return null;
     if (hc.levelTypeData === 3) {
@@ -814,7 +829,7 @@ function dcCollectAttrFixEffects(dcFiltered) {
     const potentialsHitsGroups = new Map(); // skillTitle -> { count }
     for (const ev of dcFiltered) {
         const src = ev.source ?? ev.HitConfig?.source ?? '';
-        if (!src.includes('Potentials')) continue;
+        if (!dcIsPotentialsSource(src)) continue;
         const skillTitle = ev.HitConfig?.skillTitle ?? 'Unknown';
         if (!potentialsHitsGroups.has(skillTitle)) {
             potentialsHitsGroups.set(skillTitle, { count: 0, multipliers: [], source: src });
@@ -847,6 +862,45 @@ function dcCollectAttrFixEffects(dcFiltered) {
     return [...seen.values()];
 }
 
+// ─── Effect value application (shared by all override paths) ────────────────
+// Apply one effect's value contribution to a stat map keyed by attr id
+// (sign: +1 adds the contribution, -1 removes it).
+// eff descriptor (a raw effect entry or an override-adjusted one):
+//   attrType / subType / effectType — which stat and how it applies
+//   isRecord    — record rows are Origin-domain flat values → base goes to `origin`
+//   bySubType   — apply by subType unconditionally, skipping the effectType
+//                 family checks (attrDict rows whose effectType may be null)
+//   allowUnknown — element-typed rows still match by element, everything else
+//                 (incl. the ATTR_FIX family) falls through to the bySubType
+//                 application (attrDict rows in the disable path)
+// value is the contribution WITHOUT sign (e.g. e.value * count); when
+// `overrideValue` is set it replaces it for the ATTR_FIX family only — the
+// element-typed families (subType = element id) always use the logged value.
+// Unknown effectTypes only apply through the bySubType fallback.
+function dcApplyEffectValue(statMap, eff, value, sign, hitElementType, overrideValue) {
+    const attrType = eff.attrType;
+    if (attrType == null || value == null) return;
+    let stat = statMap.get(attrType);
+    if (!stat) { stat = { origin: 0, base: 0, pct: 0, abs: 0 }; statMap.set(attrType, stat); }
+    const et = eff.effectType;
+    const isRecord = eff.isRecord ?? eff.isRecordEffect;
+    if (!eff.bySubType && !eff.allowUnknown && ATTR_FAMILY_TYPES.has(et)) {
+        const v = overrideValue != null ? overrideValue : value;
+        if (eff.subType === 1) { if (isRecord) stat.origin = (stat.origin || 0) + sign * v; else stat.base = (stat.base || 0) + sign * v; }
+        else if (eff.subType === 2) stat.pct = (stat.pct || 0) + sign * v;
+        else if (eff.subType === 3) stat.abs = (stat.abs || 0) + sign * v;
+    } else if (!eff.bySubType && et === ELEMENTTYPE_ATTR_FIX) {
+        if (hitElementType === eff.subType) stat.base = (stat.base || 0) + sign * value;
+    } else if (!eff.bySubType && et === ELEMENTTYPE_ATTR_PERCENT_FIX) {
+        if (hitElementType === eff.subType) stat.pct = (stat.pct || 0) + sign * value;
+    } else if (eff.bySubType || eff.allowUnknown) {
+        // attrDict entries and unknown effectTypes: apply by subType unconditionally
+        if (eff.subType === 1) stat.base = (stat.base || 0) + sign * value;
+        else if (eff.subType === 2) stat.pct = (stat.pct || 0) + sign * value;
+        else if (eff.subType === 3) stat.abs = (stat.abs || 0) + sign * value;
+    }
+}
+
 // ─── Effect overrides ─────────────────────────────────────────────────────────
 // Apply disabled effects to a cloned copy of the stat arrays.
 // dcEffectLevelOverrides: Map<key, {newValueConfigId,newValue,newAttrType,newSubType}>
@@ -869,7 +923,7 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides) {
     // If this hit belongs to a disabled Potentials group, zero all its stats so
     // calcDamage produces 0 for this hit.
     const evSrc = ev.source ?? ev.HitConfig?.source ?? '';
-    if (evSrc.includes('Potentials')) {
+    if (dcIsPotentialsSource(evSrc)) {
         const skillTitle = ev.HitConfig?.skillTitle ?? 'Unknown';
         if (dcEffectsDisabled.has(`potentials:${skillTitle}`)) {
             return { aStats: origA, dStats: origD, _potentialsDisabled: true };
@@ -943,23 +997,9 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides) {
                 const attrId = e.attrType;
                 if (attrId == null || e.value == null) continue;
                 const count = countMap.get(e.configId) || 1;
-                let stat = statMap.get(attrId);
-                if (!stat) {
-                    stat = { origin: 0, base: 0, pct: 0, abs: 0 };
-                    statMap.set(attrId, stat);
-                }
-                // subType: 1=Base, 2=Pct, 3=Abs
                 const lvlOv = dcGetLevelOverride(e, side, dcEffectsDisabled, attackerCharId);
                 const disVal = lvlOv ? lvlOv.newValue : e.value;
-                if ([ATTR_FIX, HITTED_ADDITIONAL_ATTR_FIX, PLAYER_ATTR_FIX].includes(e.effectType)) {
-                    if (e.subType === 1) { if (e.isRecordEffect) stat.origin = (stat.origin || 0) - disVal * count; else stat.base = (stat.base || 0) - disVal * count; }
-                    else if (e.subType === 2) stat.pct = (stat.pct || 0) - disVal * count;
-                    else if (e.subType === 3) stat.abs = (stat.abs || 0) - disVal * count;
-                } else if (e.effectType === ELEMENTTYPE_ATTR_FIX) {
-                    if (ev.HitConfig.elementType === e.subType) stat.base = (stat.base || 0) - e.value * count;
-                } else if (e.effectType === ELEMENTTYPE_ATTR_PERCENT_FIX) {
-                    if (ev.HitConfig.elementType === e.subType) stat.pct = (stat.pct || 0) - e.value * count;
-                }
+                dcApplyEffectValue(statMap, e, e.value * count, -1, ev.HitConfig.elementType, disVal * count);
             }
         }
 
@@ -975,22 +1015,8 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides) {
                 if (seenInHit.has(key)) continue;
                 seenInHit.add(key);
                 if (!dcEffectsDisabled.has(key)) continue;
-                let stat = statMap.get(e.attrType);
-                if (!stat) {
-                    stat = { origin: 0, base: 0, pct: 0, abs: 0 };
-                    statMap.set(e.attrType, stat);
-                }
                 const stacks = e.stacks != null ? e.stacks : 1;
-                if (e.effectType === ELEMENTTYPE_ATTR_FIX) {
-                    if (ev.HitConfig.elementType === e.subType) stat.base = (stat.base || 0) - e.value * stacks;
-                } else if (e.effectType === ELEMENTTYPE_ATTR_PERCENT_FIX) {
-                    if (ev.HitConfig.elementType === e.subType) stat.pct = (stat.pct || 0) - e.value * stacks;
-                } else {
-                    // attrDict entries: apply by subType unconditionally (effectType may be null/undefined)
-                    if (e.subType === 1) stat.base = (stat.base || 0) - e.value * stacks;
-                    else if (e.subType === 2) stat.pct = (stat.pct || 0) - e.value * stacks;
-                    else if (e.subType === 3) stat.abs = (stat.abs || 0) - e.value * stacks;
-                }
+                dcApplyEffectValue(statMap, Object.assign({ allowUnknown: true }, e), e.value * stacks, -1, ev.HitConfig.elementType);
             }
         }
     }
@@ -1020,34 +1046,14 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides) {
                     if (attrId == null || e.value == null) continue;
                     const count = countMap.get(e.configId) || 1;
 
-                    // Remove old contribution
-                    let stat = statMap.get(attrId);
-                    if (!stat) { stat = { origin: 0, base: 0, pct: 0, abs: 0 }; statMap.set(attrId, stat); }
-                    if ([ATTR_FIX, HITTED_ADDITIONAL_ATTR_FIX, PLAYER_ATTR_FIX].includes(e.effectType)) {
-                        if (e.subType === 1) { if (e.isRecordEffect) stat.origin = (stat.origin || 0) - e.value * count; else stat.base = (stat.base || 0) - e.value * count; }
-                        else if (e.subType === 2) stat.pct = (stat.pct || 0) - e.value * count;
-                        else if (e.subType === 3) stat.abs = (stat.abs || 0) - e.value * count;
-                    } else if (e.effectType === ELEMENTTYPE_ATTR_FIX) {
-                        if (ev.HitConfig.elementType === e.subType) stat.base = (stat.base || 0) - e.value * count;
-                    } else if (e.effectType === ELEMENTTYPE_ATTR_PERCENT_FIX) {
-                        if (ev.HitConfig.elementType === e.subType) stat.pct = (stat.pct || 0) - e.value * count;
-                    }
-
-                    // Add new contribution
-                    const newAttrId = override.newAttrType != null ? override.newAttrType : attrId;
-                    let newStat = statMap.get(newAttrId);
-                    if (!newStat) { newStat = { origin: 0, base: 0, pct: 0, abs: 0 }; statMap.set(newAttrId, newStat); }
-                    const ns = override.newSubType != null ? override.newSubType : e.subType;
-                    const nv = override.newValue;
-                    if ([ATTR_FIX, HITTED_ADDITIONAL_ATTR_FIX, PLAYER_ATTR_FIX].includes(e.effectType)) {
-                        if (ns === 1) { if (e.isRecordEffect) newStat.origin = (newStat.origin || 0) + nv * count; else newStat.base = (newStat.base || 0) + nv * count; }
-                        else if (ns === 2) newStat.pct = (newStat.pct || 0) + nv * count;
-                        else if (ns === 3) newStat.abs = (newStat.abs || 0) + nv * count;
-                    } else if (e.effectType === ELEMENTTYPE_ATTR_FIX) {
-                        if (ev.HitConfig.elementType === ns) newStat.base = (newStat.base || 0) + nv * count;
-                    } else if (e.effectType === ELEMENTTYPE_ATTR_PERCENT_FIX) {
-                        if (ev.HitConfig.elementType === ns) newStat.pct = (newStat.pct || 0) + nv * count;
-                    }
+                    // Remove old contribution, add the new level's contribution
+                    dcApplyEffectValue(statMap, e, e.value * count, -1, ev.HitConfig.elementType);
+                    dcApplyEffectValue(statMap, {
+                        attrType: override.newAttrType != null ? override.newAttrType : attrId,
+                        subType: override.newSubType != null ? override.newSubType : e.subType,
+                        effectType: e.effectType,
+                        isRecord: e.isRecordEffect,
+                    }, override.newValue * count, 1, ev.HitConfig.elementType);
                 }
             }
 
@@ -1069,21 +1075,15 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides) {
                     const stacks = e.stacks != null ? e.stacks : 1;
 
                     // Remove old
-                    let stat = statMap.get(e.attrType);
-                    if (!stat) { stat = { origin: 0, base: 0, pct: 0, abs: 0 }; statMap.set(e.attrType, stat); }
-                    if (e.subType === 1) stat.base = (stat.base || 0) - e.value * stacks;
-                    else if (e.subType === 2) stat.pct = (stat.pct || 0) - e.value * stacks;
-                    else if (e.subType === 3) stat.abs = (stat.abs || 0) - e.value * stacks;
+                    dcApplyEffectValue(statMap, Object.assign({}, e, { bySubType: true }), e.value * stacks, -1, ev.HitConfig.elementType);
 
                     // Add new
-                    const newAttrId = override.newAttrType != null ? override.newAttrType : e.attrType;
-                    let newStat = statMap.get(newAttrId);
-                    if (!newStat) { newStat = { origin: 0, base: 0, pct: 0, abs: 0 }; statMap.set(newAttrId, newStat); }
-                    const ns = override.newSubType != null ? override.newSubType : e.subType;
-                    const nv = override.newValue;
-                    if (ns === 1) newStat.base = (newStat.base || 0) + nv * stacks;
-                    else if (ns === 2) newStat.pct = (newStat.pct || 0) + nv * stacks;
-                    else if (ns === 3) newStat.abs = (newStat.abs || 0) + nv * stacks;
+                    dcApplyEffectValue(statMap, {
+                        attrType: override.newAttrType != null ? override.newAttrType : e.attrType,
+                        subType: override.newSubType != null ? override.newSubType : e.subType,
+                        effectType: e.effectType,
+                        bySubType: true,
+                    }, override.newValue * stacks, 1, ev.HitConfig.elementType);
                 }
             }
         }

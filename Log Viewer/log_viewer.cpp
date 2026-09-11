@@ -40,7 +40,6 @@ using json = nlohmann::json;
 static std::mutex log_mutex;
 static void HttpLog(int status, const std::string& method, const std::string& uri,
                     const std::string& query, const std::string& remote_addr) {
-    // Timestamp: HH:MM:SS
     time_t now = time(nullptr);
     struct tm* t = localtime(&now);
     char ts[16];
@@ -931,7 +930,6 @@ static bool SaveCurrentLog(const std::string& name, std::string& errMsg) {
         }
     }
 
-    // Write merged result
     {
         std::ofstream out(savedLmPath, std::ios::trunc);
         if (out.is_open()) {
@@ -1449,7 +1447,6 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
             if (hFind != INVALID_HANDLE_VALUE) {
                 do {
                     std::string fname = fd.cFileName;
-                    // Strip ".txt" suffix
                     if (fname.size() > 4)
                         names.push_back(fname.substr(0, fname.size() - 4));
                 } while (FindNextFileA(hFind, &fd));

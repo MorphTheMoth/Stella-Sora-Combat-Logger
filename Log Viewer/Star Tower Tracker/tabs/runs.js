@@ -252,7 +252,6 @@ ST._renderRunEconomy = function(run) {
         }
     }
 
-    // Build the table
     var floors = Object.keys(floorData).map(Number).sort(function(a, b) { return a - b; });
     if (floors.length === 0) return '';
 

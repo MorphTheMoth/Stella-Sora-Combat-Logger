@@ -53,9 +53,6 @@ const EFFECT_SUBTYPE_NAMES = { 1:'Base', 2:'Pct', 3:'Abs' };
 
 function effectTypeName(v) { return v != null ? (EFFECT_TYPE_NAMES[v] || v + ' (?)') : ''; }
 function effectSubTypeName(v, mainType = 12) {
-
-  if (effectTypeName(mainType).includes("ATTR") && [12, 52, 54].includes(effectTypeName(mainType)))
-    console.log(`Weird effect type: ${effectTypeName(mainType)}, subType: ${v}`)
   if (mainType == 52) return 'Base';
   if (mainType == 54) return 'Pct';
   return v != null ? (EFFECT_SUBTYPE_NAMES[v] || v + ' (?)') : '';
@@ -890,7 +887,7 @@ function buildEffectTable(dataFiles) {
 
     const {
         jEffect, jItem, jItemLang, jSubNote, jSubNoteLang,
-        jAffinityLevel, jEffectValue, jAffix, jAffixLang,
+        jAffinityLevel, jAffix, jAffixLang,
         jBuff, jBuffValue, jWord, jWordLang, jTalent, jTalentLang,
         jScoreBoss, jScoreBossLang, jItemLangRoot, jItemRoot,
         jOnceAttr, jSecSkillLang, jChar, jSkill,
@@ -1367,7 +1364,9 @@ function buildSkillTable(jChar, jSkill, jSkillLang) {
 
 // ─── Public init ─────────────────────────────────────────────────────────────
 
-async function initTables(dataRoot) {
+async function initTables() {
+    // NOTE: the data root is fixed to the DLL server's API prefix (_dataRoot);
+    // callers pass no argument (the old dataRoot parameter was never used).
     const bin  = `${_dataRoot}EN/bin/`;
     const lang = `${_dataRoot}EN/language/en_US/`;
 
@@ -1429,7 +1428,6 @@ async function initTables(dataRoot) {
             if (digits.length === 8 && digits.startsWith('21') && !discLangNames.has(digits.slice(2)))
                 discLangNames.set(digits.slice(2), jItemLangRoot[k]);
         }
-        console.log(`[tableResolver] disc names: ${discLangNames.size}`);
     }
 
     // Emblem parse tables
@@ -1480,7 +1478,7 @@ async function initTables(dataRoot) {
 
     buildEffectTable({
         jEffect, jItem, jItemLang, jSubNote, jSubNoteLang,
-        jAffinityLevel, jEffectValue, jAffix, jAffixLang,
+        jAffinityLevel, jAffix, jAffixLang,
         jBuff, jBuffValue, jWord, jWordLang, jTalent, jTalentLang,
         jOnceAttr, jScoreBoss, jScoreBossLang,
         jItemRoot, jItemLangRoot, jSecSkillLang,
@@ -1489,5 +1487,4 @@ async function initTables(dataRoot) {
 
     buildSkillTable(jChar, jSkill, jSkillLang);
 
-    console.log(`[tableResolver] Ready — actors:${actorNameMap.size} hits:${hitTable.size} effects:${effectTable.size} skills:${skillTable.size}`);
 }

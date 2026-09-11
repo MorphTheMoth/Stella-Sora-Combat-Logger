@@ -4,17 +4,10 @@
 
 // ─── DC shared state ──────────────────────────────────────────────────────────
 let dcFiltered = [];
-let dcOpenStates = {};
-let dcMeasuredHeights = {};
-let dcSubOpenStates = {};
-let dcHeights = [];
-let dcFenwick = null;
-let dcTotalHeight = 0;
 
 // Which formula fields are "disabled" (struck through)
 const dcDisabled = new Set();
 
-// ─── DC filter state ──────────────────────────────────────────────────────────
 // ─── DC compare state ────────────────────────────────────────────────────────
 // Each compare snapshots the Total Calc at click time; its row then shows the
 // live difference between the current Total Calc and that snapshot.
@@ -63,6 +56,7 @@ window.dcRenameCompare = function(id) {
     });
 };
 
+// ─── DC filter state ─────────────────────────────────────────────────────────
 let dcCharFilter = '';
 let dcSkillFilter = '';
 let dcDamageTypeFilter = '';
@@ -81,73 +75,65 @@ const dcEffectsDisabled = new Set();
 const dcCharsDisabled = new Set();
 // Map<key, {newValueConfigId,newValue,newAttrType,newSubType}> for level-overridden effects
 const dcEffectLevelOverrides = new Map();
-// Whether the effects panel is open
 
 // Which source sections are open; default collapsed (keys added on first toggle)
 const dcSourceOpenStates = {};
 
-// ─── Virtual scroll constants & DOM refs ─────────────────────────────────────
-const DC_EST    = 60;
-const DC_BUFFER = 20;
-
+// ─── Virtual list ─────────────────────────────────────────────────────────────
+// Shared VirtList (virtlist.js) — same engine as the Log tab's list; the dc
+// rows additionally refresh their computed header cells on every render.
 const dcContainer = document.getElementById('dcScrollContainer');
 const dcContent   = document.getElementById('dcScrollContent');
 const dcSpacer    = document.getElementById('dcScrollSpacer');
-
-// ─── Fenwick tree ─────────────────────────────────────────────────────────────
-class DcFenwick {
-    constructor(size) { this.size = size; this.tree = new Array(size + 1).fill(0); }
-    add(idx, delta) {
-        for (let i = idx + 1; i <= this.size; i += i & -i) this.tree[i] += delta;
+const dcVL = new VirtList({
+    est: 60,
+    buffer: 20,
+    container: dcContainer,
+    content: dcContent,
+    spacer: dcSpacer,
+    buildBody: buildEventBody,
+    createRow: dcCreateEventDiv,
+    refreshRow: (el, ev) => {
+        // Refresh calc values in header (bonuses may have changed)
+        const fvRow = el.querySelector('.dc-fields-row');
+        if (!fvRow) return;
+        const fields  = calcHitFields(ev, null, dcEffectsDisabled, dcEffectLevelOverrides);
+        const calcDmg = calcDamage(fields, dcBonus, dcDisabled);
+        dcFillHeader(fvRow, [
+            el.querySelector('.dc-result-cell'),
+            el.querySelector('.dc-game-cell'),
+            el.querySelector('.dc-diff-cell'),
+        ], fields, calcDmg);
+    },
+    subKeyPrefix: 'dc_',
+});
+// ─── Delegated clicks (effects panel + character list) ─────────────────────
+// Rows/buttons ride on data attributes instead of inline onclick string
+// interpolation, so keys/sources containing quotes can't break the markup.
+const dcEffectsPanelEl = document.getElementById('dcEffectsPanel');
+if (dcEffectsPanelEl) dcEffectsPanelEl.addEventListener('click', e => {
+    const lvlBtn = e.target.closest('.dc-lvl-btn');
+    if (lvlBtn) {
+        e.stopPropagation();
+        if (lvlBtn.dataset.charid != null) {
+            dcChangeSkillLevel(Number(lvlBtn.dataset.charid), Number(lvlBtn.dataset.slot), Number(lvlBtn.dataset.dir));
+        } else {
+            const row = lvlBtn.closest('.dc-effect-row');
+            if (row && row.dataset.key) dcChangeEffectLevel(row.dataset.key, Number(lvlBtn.dataset.dir));
+        }
+        return;
     }
-    prefixSum(idx) {
-        if (idx < 0) return 0;
-        if (idx >= this.size) idx = this.size - 1;
-        let s = 0;
-        for (let i = idx + 1; i > 0; i -= i & -i) s += this.tree[i];
-        return s;
-    }
-}
+    const row = e.target.closest('.dc-effect-row');
+    if (row && row.dataset.key !== undefined) { dcToggleEffect(row.dataset.key); return; }
+    const sec = e.target.closest('.dc-source-toggle');
+    if (sec && sec.dataset.gkey !== undefined) dcToggleSourceSection(sec.dataset.gkey);
+});
 
-function dcBuildFenwick() {
-    dcFenwick = new DcFenwick(dcFiltered.length);
-    dcHeights = new Array(dcFiltered.length);
-    let sum = 0;
-    for (let i = 0; i < dcFiltered.length; i++) {
-        const orig = dcFiltered[i]._origIndex;
-        const h = (dcOpenStates[orig] && dcMeasuredHeights[orig]) ? dcMeasuredHeights[orig] : DC_EST;
-        dcHeights[i] = h;
-        dcFenwick.add(i, h);
-        sum += h;
-    }
-    dcTotalHeight = sum;
-    dcSpacer.style.height = dcTotalHeight + 'px';
-}
-
-function dcUpdateHeight(idx, newH) {
-    const old = dcHeights[idx];
-    if (Math.abs(old - newH) < 0.5) return 0;
-    dcHeights[idx] = newH;
-    const delta = newH - old;
-    dcFenwick.add(idx, delta);
-    dcTotalHeight += delta;
-    dcSpacer.style.height = dcTotalHeight + 'px';
-    return delta;
-}
-
-function dcFindIndex(target) {
-    if (!dcFiltered.length) return 0;
-    const clamped = Math.max(0, Math.min(target, dcTotalHeight));
-    if (clamped <= 0) return 0;
-    if (clamped >= dcTotalHeight) return dcFiltered.length - 1;
-    let lo = 0, hi = dcFiltered.length - 1, ans = 0;
-    while (lo <= hi) {
-        const mid = (lo + hi) >> 1;
-        if (dcFenwick.prefixSum(mid) >= clamped) { ans = mid; hi = mid - 1; }
-        else lo = mid + 1;
-    }
-    return ans;
-}
+const dcCharsListEl = document.getElementById('dcCharsList');
+if (dcCharsListEl) dcCharsListEl.addEventListener('click', e => {
+    const btn = e.target.closest('.dc-char-btn');
+    if (btn && btn.dataset.char) dcToggleChar(btn.dataset.char);
+});
 
 // ─── Effects panel render ─────────────────────────────────────────────────────
 function renderEffectsPanel() {
@@ -172,8 +158,7 @@ function renderEffectsPanel() {
         function renderGroup(gkey, label, groupEffects) {
             if (!groupEffects.length) return '';
             const isOpen = dcSourceOpenStates[gkey] === true;
-            const escapedGkey = gkey.replace(/'/g, "\\'");
-            let g = `<div class="dc-source-toggle" onclick="dcToggleSourceSection('${escapedGkey}')">
+            let g = `<div class="dc-source-toggle" data-gkey="${esc(gkey)}">
                 <span class="dc-source-arrow">${isOpen ? '▾' : '▸'}</span><span>${esc(label)}</span>
                 <span class="dc-source-count">${groupEffects.length}</span>
             </div>`;
@@ -201,7 +186,6 @@ function renderEffectsPanel() {
                     }
 
                     const hasLevels = !ef.isPotentialsGroup && ef.allValueConfigIds && ef.allValueConfigIds.length > 1 && ef.currentLevelIdx >= 0;
-                    const escKey = ef.key.replace(/'/g, "\\'");
                     let effectiveLevelIdx = ef.currentLevelIdx;
                     if (hasLevels) {
                         const effOverride = dcGetLevelOverride(ef, ef.side);
@@ -223,16 +207,16 @@ function renderEffectsPanel() {
                     if (hasLevels) {
                         levelBtns = `
                             <button class="dc-lvl-btn${effectiveLevelIdx <= 0 ? ' dc-lvl-disabled' : ''}"
-                                onclick="event.stopPropagation();dcChangeEffectLevel('${escKey}',-1)"
+                                data-dir="-1"
                                 title="Decrease level">−</button>
                             <span class="dc-lvl-indicator">${effectiveLevelIdx + 1}/${maxLvl + 1}</span>
                             <button class="dc-lvl-btn${effectiveLevelIdx >= maxLvl ? ' dc-lvl-disabled' : ''}"
-                                onclick="event.stopPropagation();dcChangeEffectLevel('${escKey}',1)"
+                                data-dir="1"
                                 title="Increase level">+</button>`;
                     }
 
                     g += `<div class="dc-effect-row${disabled ? ' disabled' : ''}"
-                        onclick="dcToggleEffect('${ef.key}')"
+                        data-key="${esc(ef.key)}"
                         title="${esc(ef.name)} — ${esc(valStr).replace(/"/g,'&quot;')}">
                         <span class="dc-effect-row-name">${esc(ef.name)}</span>
                         <span class="dc-effect-row-val">${valStr}</span>
@@ -309,8 +293,7 @@ function dcRenderSkillLevels() {
         // dcToggleSourceSection's generic flip behaves
         if (!(gkey in dcSourceOpenStates)) dcSourceOpenStates[gkey] = true;
         const isOpen = dcSourceOpenStates[gkey] === true;
-        const escapedGkey = gkey.replace(/'/g, "\\'");
-        html += `<div class="dc-source-toggle" onclick="dcToggleSourceSection('${escapedGkey}')">`
+        html += `<div class="dc-source-toggle" data-gkey="${esc(gkey)}">`
             + `<span class="dc-source-arrow">${isOpen ? '▾' : '▸'}</span><span>${esc(cname)} Skills</span>`
             + `<span class="dc-source-count">${sts.length}</span></div>`;
         if (!isOpen) continue;
@@ -328,8 +311,8 @@ function dcRenderSkillLevels() {
                 + `<span class="dc-effect-row-name">${esc(name)}</span>`
                 + `<span class="dc-effect-row-val">Lv ${eff}/${max}${marker}</span>`
                 + `<span class="dc-effect-row-lvl">`
-                + `<button class="dc-lvl-btn${eff <= 0 ? ' dc-lvl-disabled' : ''}" onclick="dcChangeSkillLevel(${cid},${st.slot},-1)" title="Decrease skill level">−</button>`
-                + `<button class="dc-lvl-btn${eff >= max ? ' dc-lvl-disabled' : ''}" onclick="dcChangeSkillLevel(${cid},${st.slot},1)" title="Increase skill level">+</button>`
+                + `<button class="dc-lvl-btn${eff <= 0 ? ' dc-lvl-disabled' : ''}" data-charid="${cid}" data-slot="${st.slot}" data-dir="-1" title="Decrease skill level">−</button>`
+                + `<button class="dc-lvl-btn${eff >= max ? ' dc-lvl-disabled' : ''}" data-charid="${cid}" data-slot="${st.slot}" data-dir="1" title="Increase skill level">+</button>`
                 + `</span></div>`;
         }
     }
@@ -360,10 +343,6 @@ const dcGroupEffectKeys = new Map();
 // revert cleanly (undefined = there was no override before)
 const dcPotsMaxLvl6 = { active: false, prev: new Map() };
 const dcPotsAllLvl6 = { active: false, prev: new Map() };
-
-function dcIsPotentialSource(src) {
-    return typeof src === 'string' && src.includes('Potentials');
-}
 
 function dcGroupSourceMatcher(groupKey) {
     return groupKey === 'bossblitz'
@@ -420,6 +399,16 @@ function dcSyncQuickToggles() {
     if (dcPotsAllLvl6.active) dcPotsApply(dcPotsAllLvl6, false);
 }
 
+// Re-render every Dmg Calc surface after a state change (effects panel,
+// formula bar + totals, hit list, effect-impact panel, analytics).
+function dcApplyAndRender() {
+    renderEffectsPanel();
+    renderFormulaBar();
+    dcVL.render();
+    dcRefreshEI();
+    dcNotifyAnalytics();
+}
+
 window.dcToggleGroupDisable = function(groupKey) {
     if (!dcGroupEffectKeys.has(groupKey)) {
         const matcher = dcGroupSourceMatcher(groupKey);
@@ -434,33 +423,21 @@ window.dcToggleGroupDisable = function(groupKey) {
         if (keys) keys.forEach(k => dcEffectsDisabled.delete(k));
         dcGroupEffectKeys.delete(groupKey);
     }
-    renderEffectsPanel();
-    renderFormulaBar();
-    dcRender();
-    dcRefreshEI();
-    dcNotifyAnalytics();
+    dcApplyAndRender();
 };
 
 window.dcTogglePotsMaxLvl6 = function() {
     dcPotsMaxLvl6.active = !dcPotsMaxLvl6.active;
     if (dcPotsMaxLvl6.active) dcPotsApply(dcPotsMaxLvl6, true);
     else dcPotsRevert(dcPotsMaxLvl6);
-    renderEffectsPanel();
-    renderFormulaBar();
-    dcRender();
-    dcRefreshEI();
-    dcNotifyAnalytics();
+    dcApplyAndRender();
 };
 
 window.dcTogglePotsAllLvl6 = function() {
     dcPotsAllLvl6.active = !dcPotsAllLvl6.active;
     if (dcPotsAllLvl6.active) dcPotsApply(dcPotsAllLvl6, false);
     else dcPotsRevert(dcPotsAllLvl6);
-    renderEffectsPanel();
-    renderFormulaBar();
-    dcRender();
-    dcRefreshEI();
-    dcNotifyAnalytics();
+    dcApplyAndRender();
 };
 
 // Descriptors for the quick-toggle rows rendered under the character list
@@ -574,10 +551,10 @@ function dcRenderCharList() {
     const el = document.getElementById('dcCharsList');
     if (!el) return;
     // Only attackers that actually deal Source Type = 'Player' hits
-    // (sourceType 1 == 'Player', see damageSourceNames in dataLoader.js).
-    // This hides enemy/monster actors like "..._Actor (skinId=...)".
+    // (see isPlayerHit in dataLoader.js). This hides enemy/monster actors
+    // like "..._Actor (skinId=...)".
     const chars = new Set();
-    allEvents.filter(e => e.Type === 'Hit' && (e.HitConfig || {}).sourceType === 1).forEach(e => {
+    allEvents.filter(isPlayerHit).forEach(e => {
         const n = e.AttackerDisplay || e.Attacker;
         if (n) chars.add(n);
     });
@@ -594,7 +571,6 @@ function dcRenderCharList() {
 
     let html = list.map(name => {
         const off = dcCharsDisabled.has(name);
-        const escName = name.replace(/'/g, "\\'");
         const delta = deltas[name] || 0;
         // Same convention as the sidebar Compare rows: how much larger the
         // current Total Calc is than the Total Calc with this char disabled.
@@ -606,7 +582,7 @@ function dcRenderCharList() {
             <span class="dc-char-name" title="${esc(name)}">${esc(name)}</span>
             ${deltaStr}
             <span class="dc-char-spacer"></span>
-            <button class="dc-char-btn${off ? ' on' : ''}" onclick="dcToggleChar('${escName}')">${off ? 'Enable' : 'Disable'}</button>
+            <button class="dc-char-btn${off ? ' on' : ''}" data-char="${esc(name)}">${off ? 'Enable' : 'Disable'}</button>
         </div>`;
     }).join('');
 
@@ -645,33 +621,21 @@ window.dcToggleChar = function(name) {
             dcCharEffectKeys.delete(name);
         }
     }
-    renderEffectsPanel();
-    renderFormulaBar();
-    dcRender();
-    dcRefreshEI();
-    dcNotifyAnalytics();
+    dcApplyAndRender();
 };
 
 window.dcDisableAllEffects = function() {
     const effects = dcCollectAttrFixEffects(dcFiltered);
     if (effects.length === 0) return;
     effects.forEach(ef => dcEffectsDisabled.add(ef.key));
-    renderEffectsPanel();
-    renderFormulaBar();
-    dcRender();
-    dcRefreshEI();
-    dcNotifyAnalytics();
+    dcApplyAndRender();
 };
 
 window.dcEnableAllEffects = function() {
     dcEffectsDisabled.clear();
     for (const keys of dcCharEffectKeys.values()) keys.forEach(k => dcEffectsDisabled.add(k));
     for (const keys of dcGroupEffectKeys.values()) keys.forEach(k => dcEffectsDisabled.add(k));
-    renderEffectsPanel();
-    renderFormulaBar();
-    dcRender();
-    dcRefreshEI();
-    dcNotifyAnalytics();
+    dcApplyAndRender();
 };
 
 window.dcToggleSourceSection = function(gkey) {
@@ -682,11 +646,7 @@ window.dcToggleSourceSection = function(gkey) {
 window.dcToggleEffect = function(key) {
     if (dcEffectsDisabled.has(key)) dcEffectsDisabled.delete(key);
     else dcEffectsDisabled.add(key);
-    renderEffectsPanel();
-    renderFormulaBar();
-    dcRender();
-    dcRefreshEI();
-    dcNotifyAnalytics();
+    dcApplyAndRender();
 };
 
 // Reset a potential's user change to 0 (record page click).
@@ -694,11 +654,7 @@ window.dcResetPotLevelChange = function(potId) {
     const st = dcPotLevels.get(Number(potId));
     if (!st || !st.change) return;
     st.change = 0;
-    renderEffectsPanel();
-    renderFormulaBar();
-    dcRender();
-    dcRefreshEI();
-    dcNotifyAnalytics();
+    dcApplyAndRender();
 };
 
 // ± a character's skill-slot level (Skill Levels section / skill-scaled
@@ -712,11 +668,7 @@ window.dcChangeSkillLevel = function(charId, slot, direction) {
     const newL = Math.min(Math.max(curL + direction, 0), max);
     if (newL === curL) return;
     st.change = (st.change || 0) + (newL - curL);
-    renderEffectsPanel();
-    renderFormulaBar();
-    dcRender();
-    dcRefreshEI();
-    dcNotifyAnalytics();
+    dcApplyAndRender();
 };
 
 // Reset a skill's user change to 0 (record page click).
@@ -724,11 +676,7 @@ window.dcResetSkillLevelChange = function(charId, slot) {
     const st = dcSkillLevels.get(`${Number(charId)}:${Number(slot)}`);
     if (!st || !st.change) return;
     st.change = 0;
-    renderEffectsPanel();
-    renderFormulaBar();
-    dcRender();
-    dcRefreshEI();
-    dcNotifyAnalytics();
+    dcApplyAndRender();
 };
 
 window.dcChangeEffectLevel = function(key, direction) {
@@ -774,11 +722,7 @@ window.dcChangeEffectLevel = function(key, direction) {
         const newL = Math.min(Math.max(curL + direction, 0), 9);
         if (newL === curL) return;
         st.change = (st.change || 0) + (newL - curL);
-        renderEffectsPanel();
-        renderFormulaBar();
-        dcRender();
-        dcRefreshEI();
-        dcNotifyAnalytics();
+        dcApplyAndRender();
         return;
     }
 
@@ -826,11 +770,7 @@ window.dcChangeEffectLevel = function(key, direction) {
         });
     }
 
-    renderEffectsPanel();
-    renderFormulaBar();
-    dcRender();
-    dcRefreshEI();
-    dcNotifyAnalytics();
+    dcApplyAndRender();
 };
 
 
@@ -905,8 +845,7 @@ function getCalcHits() {
     const evs = dcApplyFilters();
     const out = [];
     for (const ev of evs) {
-        const hc = ev.HitConfig || {};
-        if (hc.sourceType !== 1) continue; // player hits only
+        if (!isPlayerHit(ev)) continue; // player hits only
         const fields = calcHitFields(ev, null, dcEffectsDisabled, dcEffectLevelOverrides);
         const calcDmg = calcDamage(fields, dcBonus, dcDisabled);
         out.push({
@@ -1043,7 +982,7 @@ window.dcToggleField = function(key) {
     if (dcDisabled.has(key)) dcDisabled.delete(key);
     else dcDisabled.add(key);
     renderFormulaBar();
-    dcRender();
+    dcVL.render();
     dcRefreshEI();
     dcNotifyAnalytics();
 };
@@ -1052,7 +991,7 @@ window.dcSetBonus = function(key, val) {
     const n = parseFloat(val);
     dcBonus[key] = isNaN(n) ? 0 : n;
     renderFormulaBar();
-    dcRender();
+    dcVL.render();
     dcRefreshEI();
     dcNotifyAnalytics();
 };
@@ -1064,9 +1003,47 @@ const DISPLAY_ORDER = [
     'penRes','effectiveDef','defAmend','envAmend'
 ];
 
+// Fill a dc event header: the per-field value cells inside `fvRow` (children
+// in DISPLAY_ORDER order) and the calc/game/diff result cells. Shared by
+// dcCreateEventDiv (fresh div) and dcRender (refreshing visible rows after a
+// bonus/toggle change) so the two paths can't drift apart.
+function dcFillHeader(fvRow, resultCells, fields, calcDmg) {
+    const fvs = hitFieldValues(fields, dcBonus);
+    const cells = fvRow.querySelectorAll('.dc-field-cell');
+    let ci = 0;
+    for (const key of DISPLAY_ORDER) {
+        const cell = cells[ci++];
+        if (!cell) continue;
+        const fv = fvs.find(f => f.key === key);
+        const showBonus = dcBonus[key] || 0;
+        const rawVal = fv ? fv.val : null;
+        const skipBonusLabel = (key === 'effectiveDef' || key === 'defAmend');
+        cell.innerHTML = (showBonus !== 0 && !skipBonusLabel)
+            ? `${fmtVal(rawVal, key)} <span class="dc-bonus-label">(${fmtVal(showBonus, key) >= 0 ? '+' : ''}${fmtVal(showBonus, key)})</span>`
+            : fmtVal(rawVal, key);
+        const isDisplayOnly = key === 'effectiveDef' || DC_FIELDS.find(f => f.key === key)?.display_only;
+        cell.className = 'dc-field-cell' +
+            (dcDisabled.has(key) ? ' dc-disabled' : '') +
+            (isDisplayOnly ? ' dc-display-only' : '');
+        cell.dataset.key = key;
+    }
+    const [calcCell, gameCell, diffCell] = resultCells;
+    if (calcCell) calcCell.innerHTML = `<span class="dc-calc">${Math.round(calcDmg).toLocaleString()}</span>`;
+    if (gameCell) gameCell.innerHTML = `<span class="dc-game">${Number(fields.finalDamage).toLocaleString()}</span>`;
+    if (diffCell) {
+        const diffPct = fields.finalDamage > 0 ? ((calcDmg / fields.finalDamage - 1) * 100) : null;
+        if (diffPct != null) {
+            const cls = Math.abs(diffPct) < 0.05 ? 'dc-diff-close' : diffPct < 1 ? 'dc-diff-neg' : 'dc-diff-pos';
+            diffCell.innerHTML = `<span class="${cls}">${diffPct >= 0 ? '+' : ''}${diffPct.toFixed(1)}%</span>`;
+        } else {
+            diffCell.innerHTML = '';
+        }
+    }
+}
+
 function dcCreateEventDiv(ev, fi) {
     const oi = ev._origIndex;
-    const isOpen = dcOpenStates[oi] || false;
+    const isOpen = dcVL.openStates[oi] || false;
     const hc = ev.HitConfig   || {};
     const dp = ev.DamageParams || {};
 
@@ -1074,15 +1051,13 @@ function dcCreateEventDiv(ev, fi) {
     const calcDmg  = calcDamage(fields, dcBonus, dcDisabled);
 
     const attName  = esc(ev.AttackerDisplay || ev.Attacker || '?');
-    const skillPart = hc.skillTitle ? esc(hc.skillTitle) : '';
-    const hitPart   = hc.hitNum != null ? ` (#${hc.hitNum})` : '';
-    const skillStr  = (skillPart || hitPart) ? ` - ${skillPart}${hitPart}` : '';
+    const skillStr  = hitSkillStr(hc, esc);
     const baseMult  = dp.skillPercentAmend != null ? ` [${(dp.skillPercentAmend/10000).toFixed(2)}%]` : '';
     const snapAge = ev.SnapshotAt ? ` [${((parseTimeToMs(ev.Time)-parseTimeToMs(ev.SnapshotAt))/1000).toFixed(3)}s ago]` : '';
 
     const div = document.createElement('div');
     div.className = 'event dc-event' + (isOpen ? ' open' : '');
-    div.style.top = dcFenwick.prefixSum(fi - 1) + 'px';
+    div.style.top = dcVL.topOf(fi) + 'px';
     div.dataset.origIndex     = oi;
     div.dataset.filteredIndex = fi;
 
@@ -1102,50 +1077,30 @@ function dcCreateEventDiv(ev, fi) {
     // Field values row
     const fvRow = document.createElement('div');
     fvRow.className = 'dc-fields-row';
-
-    const fvs = hitFieldValues(fields, dcBonus);
+    // Cells are pre-tagged with dc-field-cell so dcFillHeader's
+    // querySelectorAll finds them in DISPLAY_ORDER order.
     for (let i = 0; i < DISPLAY_ORDER.length; i++) {
-        const key = DISPLAY_ORDER[i];
-        const fvEntry = fvs.find(f => f.key === key);
-        const bonus = dcBonus[key] || 0;
-        const rawVal = fvEntry ? fvEntry.val : null;
-        const skipBonusLabel = (key === 'effectiveDef' || key === 'defAmend');
-        const dispVal = (bonus !== 0 && !skipBonusLabel)
-            ? `${fmtVal(rawVal, key)} <span class="dc-bonus-label">(+${fmtVal(bonus, key)})</span>`
-            : fmtVal(rawVal, key);
-        const dis = dcDisabled.has(key);
-        const isDisplayOnly = key === 'effectiveDef' || DC_FIELDS.find(f => f.key === key)?.display_only;
         const cell = document.createElement('div');
-        cell.className = 'dc-field-cell' + (dis ? ' dc-disabled' : '') + (isDisplayOnly ? ' dc-display-only' : '');
-        cell.dataset.key = key;
-        cell.innerHTML = dispVal;
+        cell.className = 'dc-field-cell';
         fvRow.appendChild(cell);
     }
 
     // Result cells
     const calcCell = document.createElement('div');
     calcCell.className = 'dc-field-cell dc-result-cell';
-    calcCell.innerHTML = `<span class="dc-calc">${Math.round(calcDmg).toLocaleString()}</span>`;
-
     const gameCell = document.createElement('div');
     gameCell.className = 'dc-field-cell dc-game-cell';
-    gameCell.innerHTML = `<span class="dc-game">${Number(fields.finalDamage).toLocaleString()}</span>`;
-
-    const diffPct = fields.finalDamage > 0
-        ? ((calcDmg / fields.finalDamage - 1) * 100)
-        : null;
     const diffCell = document.createElement('div');
     diffCell.className = 'dc-field-cell dc-diff-cell';
-    if (diffPct != null) {
-        const cls = Math.abs(diffPct) < 0.05 ? 'dc-diff-close' : diffPct < 1 ? 'dc-diff-neg' : 'dc-diff-pos';
-        diffCell.innerHTML = `<span class="${cls}">${diffPct >= 0 ? '+' : ''}${diffPct.toFixed(1)}%</span>`;
-    }
 
     const resultStack = document.createElement('div');
     resultStack.className = 'dc-result-stack';
     resultStack.appendChild(calcCell);
     resultStack.appendChild(gameCell);
     resultStack.appendChild(diffCell);
+
+    // Fill the per-field cells + result stack (shared with dcRender's refresh)
+    dcFillHeader(fvRow, [calcCell, gameCell, diffCell], fields, calcDmg);
 
     const arrow = document.createElement('span');
     arrow.className = 'arrow';
@@ -1156,7 +1111,7 @@ function dcCreateEventDiv(ev, fi) {
     header.appendChild(fvRow);
     header.appendChild(resultStack);
 
-    header.addEventListener('click', e => { e.stopPropagation(); dcToggleEvent(oi); });
+    header.addEventListener('click', e => { e.stopPropagation(); dcVL.toggleEvent(oi); });
 
     // ── Body ──
     const body = document.createElement('div');
@@ -1168,207 +1123,14 @@ function dcCreateEventDiv(ev, fi) {
     return div;
 }
 
-function dcToggleEvent(origIndex) {
-    const el = dcContent.querySelector(`.dc-event[data-orig-index="${origIndex}"]`);
-    if (!el) return;
-    const fi = parseInt(el.dataset.filteredIndex);
-    const savedScroll = dcContainer.scrollTop;
-    const wasOpen = dcOpenStates[origIndex] || false;
-
-    if (wasOpen) {
-        dcOpenStates[origIndex] = false;
-        el.querySelector('.event-body').innerHTML = '';
-        el.classList.remove('open');
-        const topOfThis = dcFenwick.prefixSum(fi - 1);
-        const rel = savedScroll - topOfThis;
-        const delta = dcUpdateHeight(fi, DC_EST);
-        delete dcMeasuredHeights[origIndex];
-        dcShiftAfter(fi, delta);
-        dcContainer.scrollTop = topOfThis + rel;
-    } else {
-        dcOpenStates[origIndex] = true;
-        const body = el.querySelector('.event-body');
-        body.innerHTML = buildEventBody(allEvents[origIndex]);
-        el.classList.add('open');
-        requestAnimationFrame(() => {
-            const actual = el.getBoundingClientRect().height;
-            if (actual > 0) {
-                dcMeasuredHeights[origIndex] = actual;
-                const delta = dcUpdateHeight(fi, actual);
-                if (Math.abs(delta) > 0.5) {
-                    dcShiftAfter(fi, delta);
-                    const maxScroll = dcTotalHeight - dcContainer.clientHeight;
-                    dcContainer.scrollTop = Math.min(savedScroll, Math.max(0, maxScroll));
-                    dcRender();
-                }
-            }
-        });
-    }
-}
-
-function dcShiftAfter(startFi, delta) {
-    dcContent.querySelectorAll('.dc-event').forEach(el => {
-        const idx = parseInt(el.dataset.filteredIndex);
-        if (!isNaN(idx) && idx > startFi) {
-            el.style.top = (parseFloat(el.style.top) + delta) + 'px';
-        }
-    });
-}
-
-// Sub-section toggle inside dc event body
-dcContent.addEventListener('click', e => {
-    const toggle = e.target.closest('.collapsible-toggle');
-    if (!toggle) return;
-    e.stopPropagation();
-    const targetId = toggle.dataset.target;
-    const contentEl = document.getElementById(targetId);
-    if (!contentEl) return;
-    const isOpen = toggle.classList.toggle('open');
-    contentEl.style.display = isOpen ? 'block' : 'none';
-
-    const eventDiv = toggle.closest('.dc-event');
-    if (!eventDiv) return;
-    const oi = parseInt(eventDiv.dataset.origIndex);
-    const fi = parseInt(eventDiv.dataset.filteredIndex);
-    const key = `dc_${oi}_${targetId}`;
-    dcSubOpenStates[key] = isOpen;
-
-    const savedScroll = dcContainer.scrollTop;
-    requestAnimationFrame(() => {
-        const actual = eventDiv.getBoundingClientRect().height;
-        if (actual > 0 && !isNaN(fi)) {
-            const delta = dcUpdateHeight(fi, actual);
-            dcMeasuredHeights[oi] = actual;
-            if (Math.abs(delta) > 0.5) dcShiftAfter(fi, delta);
-        }
-        const maxScroll = dcTotalHeight - dcContainer.clientHeight;
-        dcContainer.scrollTop = Math.min(savedScroll, Math.max(0, maxScroll));
-    });
-});
-
-// ─── Virtual scroll render ────────────────────────────────────────────────────
-function dcRender() {
-    if (!dcFiltered.length) { dcContent.innerHTML = ''; return; }
-
-    const scrollTop = dcContainer.scrollTop;
-    const viewH = dcContainer.clientHeight;
-    const startIdx = dcFindIndex(scrollTop);
-    let start = Math.max(0, startIdx - DC_BUFFER);
-    const endIdx = dcFindIndex(scrollTop + viewH);
-    let end = Math.min(dcFiltered.length, endIdx + DC_BUFFER);
-    if (start >= dcFiltered.length) start = Math.max(0, dcFiltered.length - 1);
-
-    const neededOrig = new Set();
-    const origToFi = new Map();
-    for (let i = start; i < end; i++) {
-        neededOrig.add(dcFiltered[i]._origIndex);
-        origToFi.set(dcFiltered[i]._origIndex, i);
-    }
-
-    const existing = dcContent.querySelectorAll('.dc-event');
-    for (const el of existing) {
-        const oi = parseInt(el.dataset.origIndex);
-        if (neededOrig.has(oi)) {
-            const fi = origToFi.get(oi);
-            el.dataset.filteredIndex = fi;
-            const newTop = dcFenwick.prefixSum(fi - 1);
-            if (el.style.top !== newTop + 'px') el.style.top = newTop + 'px';
-            const shouldOpen = dcOpenStates[oi] || false;
-            const isOpen = el.classList.contains('open');
-            if (shouldOpen !== isOpen) {
-                el.classList.toggle('open', shouldOpen);
-                const body = el.querySelector('.event-body');
-                if (body) {
-                    if (shouldOpen && body.innerHTML.trim() === '') body.innerHTML = buildEventBody(allEvents[oi]);
-                    else if (!shouldOpen) body.innerHTML = '';
-                }
-            }
-            // Refresh calc values in header (bonuses may have changed)
-            const fvRow = el.querySelector('.dc-fields-row');
-            if (fvRow) {
-                const ev = allEvents[oi];
-                const fields  = calcHitFields(ev, null, dcEffectsDisabled, dcEffectLevelOverrides);
-                const calcDmg = calcDamage(fields, dcBonus, dcDisabled);
-                const fvs     = hitFieldValues(fields, dcBonus);
-                const cells   = fvRow.querySelectorAll('.dc-field-cell');
-                let ci = 0;
-                for (const key of DISPLAY_ORDER) {
-                    const cell = cells[ci++];
-                    if (!cell) continue;
-                    const fv = fvs.find(f => f.key === key);
-                    const showBonus = dcBonus[key] || 0;
-                    const rawVal = fv ? fv.val : null;
-                    const skipBonusLabel = (key === 'effectiveDef' || key === 'defAmend');
-                    cell.innerHTML = (showBonus !== 0 && !skipBonusLabel)
-                        ? `${fmtVal(rawVal, key)} <span class="dc-bonus-label">(${fmtVal(showBonus, key) >= 0 ? '+' : ''}${fmtVal(showBonus, key)})</span>`
-                        : fmtVal(rawVal, key);
-                    const isDisplayOnly = key === 'effectiveDef' || DC_FIELDS.find(f => f.key === key)?.display_only;
-                    cell.className = 'dc-field-cell' +
-                        (dcDisabled.has(key) ? ' dc-disabled' : '') +
-                        (isDisplayOnly ? ' dc-display-only' : '');
-                }
-                const calcCell = el.querySelector('.dc-result-cell');
-                const gameCell = el.querySelector('.dc-game-cell');
-                const diffCell = el.querySelector('.dc-diff-cell');
-                if (calcCell) calcCell.innerHTML = `<span class="dc-calc">${Math.round(calcDmg).toLocaleString()}</span>`;
-                if (gameCell) gameCell.innerHTML = `<span class="dc-game">${Number(fields.finalDamage).toLocaleString()}</span>`;
-                if (diffCell) {
-                    const diffPct = fields.finalDamage > 0 ? ((calcDmg / fields.finalDamage - 1) * 100) : null;
-                    if (diffPct != null) {
-                        const cls = Math.abs(diffPct) < 0.05 ? 'dc-diff-close' : diffPct < 1 ? 'dc-diff-neg' : 'dc-diff-pos';
-                        diffCell.innerHTML = `<span class="${cls}">${diffPct >= 0 ? '+' : ''}${diffPct.toFixed(1)}%</span>`;
-                    }
-                }
-            }
-            neededOrig.delete(oi);
-        } else {
-            el.remove();
-        }
-    }
-
-    for (const oi of neededOrig) {
-        const fi = dcFiltered.findIndex(e => e._origIndex === oi);
-        if (fi === -1) continue;
-        const div = dcCreateEventDiv(allEvents[oi], fi);
-        dcContent.appendChild(div);
-    }
-}
-
-let dcScrollScheduled = false;
-dcContainer.addEventListener('scroll', () => {
-    if (dcScrollScheduled) return;
-    dcScrollScheduled = true;
-    requestAnimationFrame(() => { dcRender(); dcScrollScheduled = false; });
-});
-
 // ─── Filter helpers ───────────────────────────────────────────────────────────
 function dcBuildCharFilter() {
     const all = new Set();
     allEvents.filter(e => e.Type === 'Hit').forEach(e => {
         if (e.AttackerDisplay) all.add(e.AttackerDisplay);
     });
-    const sel = document.getElementById('dcCharFilter');
-    const prev = dcCharFilter;
-    sel.innerHTML = '<option value="">All Characters</option>';
-    [...all].sort().forEach(c => {
-        const o = document.createElement('option');
-        o.value = c; o.textContent = c; sel.appendChild(o);
-    });
-    if ([...sel.options].some(o => o.value === prev)) {
-        sel.value = prev;
-        dcCharFilter = prev;
-    } else if (!prev) {
-        sel.value = '';
-        dcCharFilter = '';
-    } else {
-        // prev has no hits under the other active filters — keep it in the
-        // list so it stays visible and can be changed back to All instead
-        // of leaving the filter stuck on a value with no matching option.
-        const o = document.createElement('option');
-        o.value = prev; o.textContent = prev;
-        sel.appendChild(o);
-        sel.value = prev;
-    }
+    fillSelectOptions(document.getElementById('dcCharFilter'), all,
+        { emptyLabel: 'All Characters', keepVal: dcCharFilter, keepVanished: true });
 }
 
 function dcBuildSkillFilter(evs) {
@@ -1377,34 +1139,8 @@ function dcBuildSkillFilter(evs) {
         const n = (e.HitConfig || {}).skillTitle;
         if (n) all.add(n);
     });
-    const sel = document.getElementById('dcSkillFilter');
-    const prev = dcSkillFilter;
-    sel.innerHTML = '<option value="">All Skills</option>';
-    const MAX = 28;
-    [...all].sort().forEach(s => {
-        const o = document.createElement('option');
-        o.value = s;
-        o.textContent = s.length > MAX ? s.slice(0, MAX) + '…' : s;
-        o.title = s;
-        sel.appendChild(o);
-    });
-    if ([...sel.options].some(o => o.value === prev)) {
-        sel.value = prev;
-        dcSkillFilter = prev;
-    } else if (!prev) {
-        sel.value = '';
-        dcSkillFilter = '';
-    } else {
-        // prev skill has no hits under the other active filters (e.g. char
-        // switched) — keep it in the list so it stays visible and can be
-        // changed back to All instead of leaving the filter stuck.
-        const o = document.createElement('option');
-        o.value = prev;
-        o.textContent = prev.length > MAX ? prev.slice(0, MAX) + '…' : prev;
-        o.title = prev;
-        sel.appendChild(o);
-        sel.value = prev;
-    }
+    fillSelectOptions(document.getElementById('dcSkillFilter'), all,
+        { emptyLabel: 'All Skills', keepVal: dcSkillFilter, keepVanished: true, max: 28 });
 }
 
 function dcBuildDamageTypeFilter(evs) {
@@ -1414,37 +1150,9 @@ function dcBuildDamageTypeFilter(evs) {
             all.add(e.HitConfig.damageType);
         }
     });
-    const sel = document.getElementById('dcDamageTypeFilter');
-    const prev = dcDamageTypeFilter;
-    sel.innerHTML = '<option value="">All Damage Types</option>';
-    const MAX = 28;
-    [...all].sort((a, b) => a - b).forEach(dt => {
-        const o = document.createElement('option');
-        o.value = dt;
-        const label = dtName(dt);
-        o.textContent = label.length > MAX ? label.slice(0, MAX) + '…' : label;
-        o.title = label;
-        sel.appendChild(o);
-    });
-    if ([...sel.options].some(o => o.value === prev)) {
-        sel.value = prev;
-        dcDamageTypeFilter = prev;
-    } else if (!prev) {
-        sel.value = '';
-        dcDamageTypeFilter = '';
-    } else {
-        // prev damage type has no hits under the other active filters (e.g.
-        // AA picked for Chitose, then switched to a char with no AA hits) —
-        // keep it in the list so it stays visible and can be changed back
-        // to All instead of leaving the filter stuck.
-        const o = document.createElement('option');
-        o.value = prev;
-        const prevLabel = dtName(prev);
-        o.textContent = prevLabel.length > MAX ? prevLabel.slice(0, MAX) + '…' : prevLabel;
-        o.title = prevLabel;
-        sel.appendChild(o);
-        sel.value = prev;
-    }
+    fillSelectOptions(document.getElementById('dcDamageTypeFilter'), all,
+        { emptyLabel: 'All Damage Types', keepVal: dcDamageTypeFilter, keepVanished: true,
+          format: dtName, sortFn: (a, b) => a - b, max: 28 });
 }
 
 function dcBuildDefenderFilter(autoSelect = false) {
@@ -1452,31 +1160,16 @@ function dcBuildDefenderFilter(autoSelect = false) {
     allEvents.filter(e => e.Type === 'Hit').forEach(e => {
         const name = e.DefenderDisplay || e.Defender;
         if (!name) return;
-        const key = cleanOwner ? cleanOwner(name) : name;
+        const key = cleanOwner(name);
         const dmg = (e.DamageParams && e.DamageParams.finalDamage) || 0;
         dmgTotals[key] = (dmgTotals[key] || 0) + dmg;
     });
     const all = Object.keys(dmgTotals);
     const sel = document.getElementById('dcDefenderFilter');
-    const prev = dcDefenderFilter;
-    sel.innerHTML = '<option value="">All Defenders</option>';
-    const MAX = 28;
-    [...all].sort().forEach(c => {
-        const o = document.createElement('option');
-        o.value = c;
-        o.textContent = c.length > MAX ? c.slice(0, MAX) + '…' : c;
-        o.title = c;
-        sel.appendChild(o);
-    });
-    if (autoSelect) {
-        const top = all.sort((a, b) => dmgTotals[b] - dmgTotals[a])[0] || '';
-        sel.value = top;
-        dcDefenderFilter = top;
-    } else if ([...sel.options].some(o => o.value === prev)) {
-        sel.value = prev;
-        dcDefenderFilter = prev;
-    } else if (!prev) {
-        const top = all.sort((a, b) => dmgTotals[b] - dmgTotals[a])[0] || '';
+    fillSelectOptions(sel, all, { emptyLabel: 'All Defenders', keepVal: dcDefenderFilter, max: 28 });
+    // No selection yet → default to the defender that took the most damage.
+    const top = all.sort((a, b) => dmgTotals[b] - dmgTotals[a])[0] || '';
+    if (autoSelect || (!dcDefenderFilter && top)) {
         sel.value = top;
         dcDefenderFilter = top;
     }
@@ -1488,11 +1181,8 @@ function dcHitSearchText(ev) {
     const hc = ev.HitConfig || {};
     const dp = ev.DamageParams || {};
     const attName = ev.AttackerDisplay || ev.Attacker || '?';
-    const skillPart = hc.skillTitle ? hc.skillTitle : '';
-    const hitPart = hc.hitNum != null ? ` (#${hc.hitNum})` : '';
-    const skillStr = (skillPart || hitPart) ? ` - ${skillPart}${hitPart}` : '';
     const baseMult = dp.skillPercentAmend != null ? ` [${(dp.skillPercentAmend / 10000).toFixed(2)}%]` : '';
-    return `${attName}${skillStr}${baseMult}`.toLowerCase();
+    return `${attName}${hitSkillStr(hc)}${baseMult}`.toLowerCase();
 }
 
 function dcApplyFilters() {
@@ -1506,7 +1196,7 @@ function dcApplyFilters() {
         evs = evs.filter(e => {
             const name = e.DefenderDisplay || e.Defender;
             if (!name) return true;
-            const key = cleanOwner ? cleanOwner(name) : name;
+            const key = cleanOwner(name);
             return key === dcDefenderFilter;
         });
     }
@@ -1552,19 +1242,17 @@ function dcRefilterAndRender(resetScroll = false, autoSelectDefender = true) {
     dcBuildDefenderFilter(autoSelectDefender);
     dcFiltered = dcApplyFilters();
     if (resetScroll) {
-        dcOpenStates = {};
-        dcMeasuredHeights = {};
-        dcSubOpenStates = {};
-        dcContent.innerHTML = '';
+        dcVL.reset();
         dcContainer.scrollTop = 0;
     }
-    dcBuildFenwick();
+    dcVL.setFiltered(dcFiltered);
+    dcVL.build();
     dcSyncCharEffectKeys();
     dcSyncQuickToggles();
     renderFormulaBar();
     renderEffectsPanel();
     document.getElementById('stats').textContent = `${dcFiltered.length} hits`;
-    dcRender();
+    dcVL.render();
     dcRefreshEI();
 }
 
@@ -1586,7 +1274,8 @@ let _dcLastEffectKeys = null;
 window.dcRefreshIfVisible = function() {
     if (document.getElementById('dmgCalcPanel').classList.contains('visible')) {
         dcFiltered = dcApplyFilters();
-        dcBuildFenwick();
+        dcVL.setFiltered(dcFiltered);
+        dcVL.build();
 
         // Update totals in the formula bar without rebuilding the whole thing
         let totalCalc = 0, totalGame = 0;
@@ -1612,7 +1301,7 @@ window.dcRefreshIfVisible = function() {
         }
 
         document.getElementById('stats').textContent = `${dcFiltered.length} hits`;
-        dcRender();
+        dcVL.render();
     } else if (typeof activeTab !== 'undefined' && (activeTab === 'analytics' || activeTab === 'effectimpact')) {
         // Keep the shared right sidebar (totals, char list, effects panel) and
         // the effect-source chips fresh while the Dmg Calc panel itself is hidden.

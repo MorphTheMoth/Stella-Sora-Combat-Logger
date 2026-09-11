@@ -7,6 +7,46 @@ function dtName(v){ return v!=null ? (damageTypeNames[v]||v+' (?)') : ''; }
 function elName(v){ return v!=null ? (elementTypeNames[v]||v+' (?)') : ''; }
 function htName(v){ return v==1?'Actor':v==2?'Weapon':v==5?'Area':'Unknown'; }
 function cleanOwner(s){ return s ? s.replace(/^\[|\]$/g,'') : '?'; }
+
+// Player-hit predicate: Source Type 1 = 'Player' (damageSourceNames above).
+// Shared by the Analytics fallback, getCalcHits and the Dmg Calc char list.
+function isPlayerHit(ev) {
+    return ev.Type === 'Hit' && (ev.HitConfig || {}).sourceType === 1;
+}
+
+// Hit header suffix " - <skillTitle> (#<hitNum>)" — shared by the Log and Dmg
+// Calc event headers and the Dmg Calc search haystack. Pass escFn (esc) when
+// the string goes into HTML.
+function hitSkillStr(hc, escFn) {
+    const skillPart = (hc && hc.skillTitle) ? (escFn ? escFn(hc.skillTitle) : hc.skillTitle) : '';
+    const hitPart = hc && hc.hitNum != null ? ` (#${hc.hitNum})` : '';
+    return (skillPart || hitPart) ? ` - ${skillPart}${hitPart}` : '';
+}
+
+// Rebuild a filter <select>'s options. keepVal is restored when still present;
+// a vanished value falls back to the empty option unless keepVanished re-appends
+// it (so the filter can't get stuck on an invisible entry). format/sortFn/max
+// control labels; a truncated label gets the full text as title.
+function fillSelectOptions(sel, values, opts) {
+    const o = opts || {};
+    const max = o.max;
+    const keep = o.keepVal != null ? String(o.keepVal) : '';
+    sel.innerHTML = `<option value="">${o.emptyLabel || 'All'}</option>`;
+    const addOption = (v, label) => {
+        const disp = (max != null && label.length > max) ? label.slice(0, max) + '…' : label;
+        const el = document.createElement('option');
+        el.value = String(v);
+        el.textContent = disp;
+        if (max != null) el.title = label;
+        sel.appendChild(el);
+    };
+    [...values].sort(o.sortFn || undefined).forEach(v => addOption(v, o.format ? o.format(v) : String(v)));
+    if (o.keepVanished && keep && ![...sel.options].some(el => el.value === keep)) {
+        addOption(keep, o.format ? o.format(keep) : keep);
+    }
+    sel.value = keep && [...sel.options].some(el => el.value === keep) ? keep : '';
+}
+
 function parseTimeToMs(t) {
     if (!t) return 0;
     const m = t.match(/(\d+):(\d+)\.(\d+)/);
@@ -21,8 +61,6 @@ let filtered = [];
 // Level map: configId → { lt: levelTypeData, ld: levelData, vc: [{l, v}] }
 let levelMap = new Map();
 
-const EST = 40;
-const BUFFER = 20;
 const POLL_MS = 50;
 let autoClearOnRestart = localStorage.getItem('autoClearOnRestart') === 'true';
 document.getElementById('autoClearBtn')?.classList.toggle('active', autoClearOnRestart);
@@ -32,14 +70,8 @@ window.toggleAutoClear = function() {
     document.getElementById('autoClearBtn').classList.toggle('active', autoClearOnRestart);
 };
 
-let openStates = {};
-let measuredHeights = {};
-let subOpenStates = {};
-let heights = [];
-let fenwick = null;
-let totalHeightCached = 0;
-let lastFetchCount = 0;
 let currentSavedLog = null;
+let lastFetchCount = 0;
 let currentLogName = 'Live'; // display name for the log currently being served
 let pendingAutoClear = false;
 let serverTotal = Infinity; // server's total logical line count (from meta frames); Infinity = unknown yet
@@ -82,91 +114,6 @@ async function fetchLevelMap(savedLogName) {
     }
 }
 
-// ─── Fenwick tree ─────────────────
-class Fenwick {
-    constructor(size) {
-        this.size = size;
-        this.tree = new Array(size + 1).fill(0);
-    }
-    add(idx, delta) {
-        if (idx < 0 || idx >= this.size) return;
-        for (let i = idx + 1; i <= this.size; i += i & -i) {
-            this.tree[i] += delta;
-        }
-    }
-    prefixSum(idx) {
-        if (idx < 0) return 0;
-        if (idx >= this.size) idx = this.size - 1;
-        let sum = 0;
-        for (let i = idx + 1; i > 0; i -= i & -i) {
-            sum += this.tree[i];
-        }
-        return sum;
-    }
-}
-
-function buildFenwick(minCapacity) {
-    const spacer = document.getElementById('scrollSpacer');
-    // Capacity grows geometrically (via minCapacity from the fold path) so
-    // appends are amortized O(1); a Fenwick can't be "grown by copy" once it
-    // has pending adds, so growth is always a full rebuild from `heights`.
-    const capacity = Math.max(minCapacity || 0, allEvents.length, 1);
-    fenwick = new Fenwick(capacity);
-    heights = new Array(filtered.length);
-    let sum = 0;
-    for (let i = 0; i < filtered.length; i++) {
-        const orig = filtered[i]._origIndex;
-        const eventH = (openStates[orig] && measuredHeights[orig]) ? measuredHeights[orig] : EST;
-        const spacerH = spacerByOrig.get(orig) || 0;
-        const h = eventH + spacerH;
-        heights[i] = h;
-        fenwick.tree[i + 1] = h;
-        sum += h;
-    }
-    // O(n) build: propagate children into parents across the full capacity so
-    // that cells beyond `filtered.length` are consistent for later appends.
-    for (let i = 1; i <= fenwick.size; i++) {
-        const p = i + (i & -i);
-        if (p <= fenwick.size) fenwick.tree[p] += fenwick.tree[i];
-    }
-    totalHeightCached = sum;
-    spacer.style.height = totalHeightCached + 'px';
-}
-
-function updateHeightAtIndex(idx, newEventHeight) {
-    const spacer = document.getElementById('scrollSpacer');
-    const orig = filtered[idx]._origIndex;
-    const spacerH = spacerByOrig.get(orig) || 0;
-    const newTotal = newEventHeight + spacerH;
-    const old = heights[idx];
-    if (Math.abs(old - newTotal) < 0.5) return 0;
-    heights[idx] = newTotal;
-    const delta = newTotal - old;
-    fenwick.add(idx, delta);
-    totalHeightCached += delta;
-    spacer.style.height = totalHeightCached + 'px';
-    return delta;
-}
-
-function findIndexForOffset(target) {
-    if (filtered.length === 0) return 0;
-    const clamped = Math.max(0, Math.min(target, totalHeightCached));
-    if (clamped <= 0) return 0;
-    if (clamped >= totalHeightCached) return filtered.length - 1;
-
-    let lo = 0, hi = filtered.length - 1, ans = 0;
-    while (lo <= hi) {
-        const mid = (lo + hi) >> 1;
-        if (fenwick.prefixSum(mid) >= clamped) {
-            ans = mid;
-            hi = mid - 1;
-        } else {
-            lo = mid + 1;
-        }
-    }
-    return ans;
-}
-
 // ─── Saved Logs ───────────────────
 async function loadSavedLogsList() {
     try {
@@ -194,14 +141,13 @@ function resetClientState() {
     if (typeof resetRecordState === 'function') resetRecordState();
     allEvents = [];
     filtered = [];
+    if (window.logVL) {
+        window.logVL.reset();
+        window.logVL.setFiltered(filtered);
+    }
     foldedCount = 0;
     lastFetchCount = 0;
     backlogDone = false;
-    openStates = {};
-    measuredHeights = {};
-    subOpenStates = {};
-    spacerByOrig.clear();
-    document.getElementById('scrollContent').innerHTML = '';
     closeSearch();
 }
 
@@ -328,7 +274,7 @@ let _fetching = false;
 let _levelMapPollCount = 0;
 let _es = null;
 let _esFallbackTimer = null;
-const LEVELMAP_POLL_INTERVAL = 40; // re-fetch every ~2s (40 * 50ms)
+const LEVELMAP_POLL_INTERVAL = 40; // re-fetch every POLL_MS * 40 ≈ 2s (50ms tick)
 const SSE_FALLBACK_MS = 4000;       // if SSE never opens, one-shot fetchLog fallback
 
 // ─── SSE live updates ───────────────────────────────────────────────────────
@@ -435,7 +381,6 @@ function handleMeta(data) {
     }
     if (t < lastFetchCount) {
         // The server log was truncated/cleared externally — resync from scratch.
-        console.log('Server log truncated (total ' + t + ' < ' + lastFetchCount + '), resyncing');
         resetClientState();
         lastFetchCount = 0;
         stopLiveUpdates();
@@ -479,7 +424,8 @@ function handleRawBatch(events, count) {
     if (window.dcRefreshIfVisible) window.dcRefreshIfVisible();
 }
 
-// One-shot fetchLog kept for the SSE fallback path.
+// One-shot fetchLog kept for the SSE fallback path; the batch handling is
+// shared with the SSE path via handleRawBatch.
 async function fetchLog(incremental = false) {
     if (_fetching) return;
     _fetching = true;
@@ -497,34 +443,14 @@ async function fetchLog(incremental = false) {
         const t = allEvents.length;
         const res = await fetch(url, { cache: 'no-cache' });
         const text = await res.text();
-        if (allEvents.length != t) {
-            console.log("Event count mismatch after fetching, dropping new events");
-            return;
-        }
+        if (allEvents.length != t) return; // another append raced the fetch
 
         const { events, count } = parseRawBatch(text);
-        const nextAfter = incremental ? lastFetchCount + count : count;
-        if (events.length > 0) {
-            if (incremental && lastFetchCount > 0) {
-                appendEvents(events);
-                if (autoClearOnRestart && !currentSavedLog && events.some(e => e.Type === 'Reset')) {
-                    pendingAutoClear = true;
-                } else if (pendingAutoClear && events.length > 0) {
-                    pendingAutoClear = false;
-                    window.clearLog(true);
-                    return;
-                }
-            } else {
-                if (allEvents.length > 0) resetClientState();
-                appendEvents(events);
-                filteredDirty = true;
-                pendingResetOpen = true;
-            }
-            scheduleLogRefresh();
-        }
-        lastFetchCount = nextAfter;
+        // Same initial-load vs incremental branching as the SSE path
+        // (handleRawBatch keys off lastFetchCount, which is 0 until the
+        // first batch is consumed — matching fetchLog's old split).
+        handleRawBatch(events, count);
         if (!incremental) backlogDone = true;
-        if (window.dcRefreshIfVisible) window.dcRefreshIfVisible();
     } catch (err) {
         console.error('fetch error', err);
     } finally {
@@ -545,6 +471,6 @@ initTables().then(() => {
     fetchLevelMap(currentSavedLog);
     startLiveUpdates();
     if (typeof updateStats === 'function') updateStats();
-    setInterval(pollLevelMap, 50);
+    setInterval(pollLevelMap, POLL_MS);
     loadSavedLogsList();
 });

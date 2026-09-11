@@ -129,10 +129,6 @@ function matchesDefender(ev) {
     const d = getDefender(ev);
     return d.includes(defenderFilter) || d.length === 0;
 }
-function matchesFilter(ev) {
-    return matchesTypeChar(ev) && matchesSkill(ev) && matchesDmgType(ev) && matchesDefender(ev);
-}
-
 function computeDefenderCounts() {
     defenderCounts.clear();
     for (let i = 0; i < allEvents.length; i++) {
@@ -230,12 +226,24 @@ let searchQuery = '';
 let searchMatches = [];
 let searchMatchIdx = -1;
 
-// ─── Spacer state ─────────────────
+// ─── Virtual list ───────────────────
+// Shared VirtList (virtlist.js) owns the Fenwick height index, DOM recycling,
+// sub-section toggling, open/close state and the row-spacer feature.
 const SPACER_HEIGHT = 60;
-const spacerByOrig = new Map();
-
 const container = document.getElementById('scrollContainer');
 const content = document.getElementById('scrollContent');
+const vl = window.logVL = new VirtList({
+    est: 40,
+    buffer: 20,
+    container,
+    content,
+    spacer: document.getElementById('scrollSpacer'),
+    spacerHeight: SPACER_HEIGHT,
+    buildBody: buildEventBody,
+    createRow: createEventDiv,
+    decorate: applySearchHighlight,
+    subKeyPrefix: '',
+});
 
 // ─── Filter / Rerender ──────────────────────
 function updateStats() {
@@ -251,15 +259,11 @@ function fixSearchIdx() {
 }
 
 function refilterAndRender(resetScroll = false, resetOpen = true) {
-    if (resetOpen) {
-        openStates = {};
-        measuredHeights = {};
-        subOpenStates = {};
-        content.innerHTML = '';
-    }
+    if (resetOpen) vl.reset();
     filtered = computeFilteredFull();
+    vl.setFiltered(filtered);
     foldedCount = allEvents.length;
-    buildFenwick();
+    vl.build(allEvents.length);
     buildSearchMatches();
     fixSearchIdx();
     updateSearchCount();
@@ -268,7 +272,7 @@ function refilterAndRender(resetScroll = false, resetOpen = true) {
         container.scrollTop = 0;
     }
     refreshSelects(true);
-    render();
+    vl.render();
 }
 
 // ─── Coalesced live updates ─────────────────
@@ -288,8 +292,8 @@ function foldIncremental() {
     // A Fenwick can't be grown by copy after adds; grow geometrically via a full
     // rebuild from `heights` so appends stay amortized O(1). Rebuilds happen
     // before any of this batch's appends, so all adds use the new capacity.
-    if (!fenwick || allEvents.length > fenwick.size)
-        buildFenwick(fenwick ? Math.max(fenwick.size * 2, allEvents.length) : allEvents.length);
+    if (!vl.fenwick || allEvents.length > vl.fenwick.size)
+        vl.build(vl.fenwick ? Math.max(vl.fenwick.size * 2, allEvents.length) : allEvents.length);
     const searchStartFi = filtered.length;
     for (let i = start; i < allEvents.length; i++) {
         const ev = allEvents[i];
@@ -305,17 +309,10 @@ function foldIncremental() {
         if (ev.Type === 'Hit' && ev.HitConfig && ev.HitConfig.damageType != null)
             dmgTypeOptionsSet.add(String(ev.HitConfig.damageType));
         if (!matchesDmgType(ev) || !matchesDefender(ev)) continue;
-        const fi = filtered.length;
         filtered.push(ev);
-        const orig = ev._origIndex;
-        const eventH = (openStates[orig] && measuredHeights[orig]) ? measuredHeights[orig] : EST;
-        const spacerH = spacerByOrig.get(orig) || 0;
-        const h = eventH + spacerH;
-        heights.push(h);
-        totalHeightCached += h;
-        fenwick.add(fi, h);
+        vl.appendHeight(vl.heightFor(ev._origIndex) + vl.extraHeight(ev._origIndex));
     }
-    document.getElementById('scrollSpacer').style.height = totalHeightCached + 'px';
+    vl.syncSpacer();
     if (searchQuery) {
         const q = normalizeSearch(searchQuery.toLowerCase());
         for (let fi = searchStartFi; fi < filtered.length; fi++) {
@@ -328,7 +325,7 @@ function foldIncremental() {
     }
     updateStats();
     refreshSelects(false);
-    render();
+    vl.render();
 }
 
 function flushLogRefresh() {
@@ -351,6 +348,60 @@ function flushLogRefresh() {
 }
 
 // ─── Body builders ──────────────────────────
+// ─── Shared side-section builders (attacker/defender mirrors) ─────────
+// One collapsible sub-table: open-state lives in vl.subOpenStates under
+// "<oi>_<key>-<oi>" (key: abuffs/aeffects/aattrdict/astats and the d* twins).
+function sideSection(oi, key, label, headerRow, rows, wide) {
+    if (!rows) return '';
+    const open = vl.subOpenStates[`${oi}_${key}-${oi}`] ? ' open' : '';
+    return `<div class="collapsible-toggle${open}" data-target="${key}-${oi}">${label}</div>
+        <div class="collapsible-content" id="${key}-${oi}" style="${open ? 'display:block' : ''}"><table${wide ? ` class="${wide}"` : ''}>${headerRow}${rows}</table></div>`;
+}
+
+// Buff rows: Name / Stacks / Left / Total / ID (identical for both sides)
+function buffRows(buffs) {
+    return (buffs || []).map(b =>
+        `<tr><td>${esc(b.name)}</td><td>${b.stacks||'1'}</td><td>${b.leftTime!=null?b.leftTime.toFixed(1)+'s':'inf'}</td><td>${b.totalTime!=null?b.totalTime.toFixed(1)+'s':'-'}</td><td>${b.configId}</td></tr>`
+    ).join('') || '';
+}
+
+// Effect rows: dedupe by configId with a hit-local count (identical for both sides)
+function effectRows(effects) {
+    if (!effects?.length) return '';
+    const m = new Map();
+    effects.forEach(e => { const id = e.configId; if (!m.has(id)) m.set(id, { e, count: 0 }); m.get(id).count++; });
+    let h = '';
+    m.forEach((v, id) => {
+        const e = v.e;
+        const etName = e.effectType != null ? effectTypeName(e.effectType) : '';
+        const atName = e.attrType != null ? attrName(e.attrType) : '';
+        const stName = e.subType != null ? effectSubTypeName(e.subType, e.effectType) : '';
+        const raw = e.value;
+        const val = raw != null ? (Math.abs(raw) < 15 ? (raw*100).toFixed(2)+'%' : raw) : '';
+        const inherited = e.fromOwnerSnapshot ? ' style="background:#2a2a2a"' : '';
+        h += `<tr${inherited}><td>${esc(e.name)}</td><td>${v.count}</td><td>${esc(etName)}</td><td>${esc(atName)}</td><td>${esc(stName)}</td><td>${val}</td><td>${id}</td></tr>`;
+    });
+    return h;
+}
+
+// Attr-dict rows: Name / Stacks / Attr / SubType / Value / Value Config ID / Attr ID
+function attrDictRows(list) {
+    return (list || []).map(a => {
+        const atName = a.attrType != null ? attrName(a.attrType) : '';
+        const stName = a.subType != null ? effectSubTypeName(a.subType) : '';
+        const raw = a.value;
+        const val = raw != null ? (Math.abs(raw) < 15 ? (raw*100).toFixed(2)+'%' : raw) : '';
+        return `<tr><td>${esc(a.name || String(a.attrId))}</td><td>${a.stacks}</td><td>${esc(atName)}</td><td>${esc(stName)}</td><td>${val}</td><td>${a.valueConfigId}</td><td>${a.attrId}</td></tr>`;
+    }).join('') || '';
+}
+
+// Stat rows: Name / Origin / Base / Pct / Abs / LimPct (skips fully-empty entries)
+function statsRows(attrs) {
+    return (attrs || []).filter(a => a.origin!=null || a.base!=null || a.pct!=null || a.abs!=null || a.limPct!=null)
+        .map(a => `<tr><td>${esc(a.name)}</td><td>${a.origin!=null?a.origin:''}</td><td>${a.base!=null?a.base:''}</td><td>${a.pct!=null?a.pct:''}</td><td>${a.abs!=null?a.abs:''}</td><td>${a.limPct!=null?a.limPct:''}</td></tr>`)
+        .join('') || '';
+}
+
 function buildEventBody(ev) {
     const oi = ev._origIndex;
     if (ev.Type === 'Hit') return hitBody(ev, oi);
@@ -392,8 +443,8 @@ function hitBody(ev, oi) {
         ${ev.SummonAttrType !== undefined ? `<tr><th>Summon Attr Type</th><td>${ev.UseSummonHit ? 'Live' : ev.SummonAttrType === 1 ? 'inherit' : ev.SummonAttrType === 2 ? 'inheritByInitialSnapshot' : ev.SummonAttrType}</td></tr>` : ''}
     </table></div>`;
 
-    h+=`<div class="section"><div class="collapsible-toggle${subOpenStates[`${oi}_dmg-${oi}`] ? ' open' : ''}" data-target="dmg-${oi}">Damage Calculation</div>
-    <div class="collapsible-content" id="dmg-${oi}" style="${subOpenStates[`${oi}_dmg-${oi}`] ? 'display:block' : ''}"><table class="kv">
+    h+=`<div class="section"><div class="collapsible-toggle${vl.subOpenStates[`${oi}_dmg-${oi}`] ? ' open' : ''}" data-target="dmg-${oi}">Damage Calculation</div>
+    <div class="collapsible-content" id="dmg-${oi}" style="${vl.subOpenStates[`${oi}_dmg-${oi}`] ? 'display:block' : ''}"><table class="kv">
         <tr><th>Final Damage</th><td><strong>${Number(dp.finalDamage).toLocaleString()}</strong></td></tr>
         <tr><th>Crit Ratio</th><td>${dp.critRatio!=null?dp.critRatio.toFixed(4):''}</td></tr>
         <tr><th>Base Multiplier</th><td>${dp.skillPercentAmend!=null?(dp.skillPercentAmend/10000).toFixed(2)+'%':''}</td></tr>
@@ -408,76 +459,42 @@ function hitBody(ev, oi) {
     </table></div></div>`;
 
     h+=`<div class="section"><h4>Attacker: ${esc(ev.AttackerDisplay||ev.Attacker||'?')}</h4>`;
-    if(ev.AttackerBuffs?.buffs?.length) {
-        h+=`<div class="collapsible-toggle${subOpenStates[`${oi}_abuffs-${oi}`] ? ' open' : ''}" data-target="abuffs-${oi}">Attacker Buffs (${ev.AttackerBuffs.buffs.length})</div>
-        <div class="collapsible-content" id="abuffs-${oi}" style="${subOpenStates[`${oi}_abuffs-${oi}`] ? 'display:block' : ''}"><table><tr><th>Name</th><th>Stacks</th><th>Left</th><th>Total</th><th>ID</th></tr>`;
-        ev.AttackerBuffs.buffs.forEach(b=>{ h+=`<tr><td>${esc(b.name)}</td><td>${b.stacks||'1'}</td><td>${b.leftTime!=null?b.leftTime.toFixed(1)+'s':'inf'}</td><td>${b.totalTime!=null?b.totalTime.toFixed(1)+'s':'-'}</td><td>${b.configId}</td></tr>`; });
-        h+=`</table></div>`;
-    }
-    if(ev.AttackerEffects?.effects?.length) {
-        h+=`<div class="collapsible-toggle${subOpenStates[`${oi}_aeffects-${oi}`] ? ' open' : ''}" data-target="aeffects-${oi}">Attacker Effects (${ev.AttackerEffects.effects.length})</div>
-        <div class="collapsible-content" id="aeffects-${oi}" style="${subOpenStates[`${oi}_aeffects-${oi}`] ? 'display:block' : ''}"><table class="wide-name"><tr><th>Name</th><th>Count</th><th>Type</th><th>Attr</th><th>SubType</th><th>Value</th><th>ID</th></tr>`;
-        const m=new Map(); ev.AttackerEffects.effects.forEach(e=>{ const id=e.configId; if(!m.has(id)) m.set(id,{e,count:0}); m.get(id).count++; });
-        m.forEach((v,id)=>{ const e=v.e; const etName=e.effectType!=null?effectTypeName(e.effectType):''; const atName=e.attrType!=null?attrName(e.attrType):''; const stName=e.subType!=null?effectSubTypeName(e.subType, e.effectType):''; const raw=e.value; const val=raw!=null?(Math.abs(raw)<15?(raw*100).toFixed(2)+'%':raw):''; const inherited=e.fromOwnerSnapshot?' style="background:#2a2a2a"':''; h+=`<tr${inherited}><td>${esc(e.name)}</td><td>${v.count}</td><td>${esc(etName)}</td><td>${esc(atName)}</td><td>${esc(stName)}</td><td>${val}</td><td>${id}</td></tr>`; });
-        h+=`</table></div>`;
-    }
+    if(ev.AttackerBuffs?.buffs?.length)
+        h += sideSection(oi, 'abuffs', `Attacker Buffs (${ev.AttackerBuffs.buffs.length})`, '<tr><th>Name</th><th>Stacks</th><th>Left</th><th>Total</th><th>ID</th></tr>', buffRows(ev.AttackerBuffs.buffs));
+    if(ev.AttackerEffects?.effects?.length)
+        h += sideSection(oi, 'aeffects', `Attacker Effects (${ev.AttackerEffects.effects.length})`, '<tr><th>Name</th><th>Count</th><th>Type</th><th>Attr</th><th>SubType</th><th>Value</th><th>ID</th></tr>', effectRows(ev.AttackerEffects.effects), 'wide-name');
     if(ev.AttackerRecord?.effects?.length) {
         const recRows  = ev.AttackerRecord.effects.filter(e=>e.source==='Discs'||e.source==='Record Stats');
         const embRows  = ev.AttackerRecord.effects.filter(e=>e.source!=='Discs'&&e.source!=='Record Stats');
         const recRowHtml = (e)=>{ const atName=e.attrType!=null?attrName(e.attrType):'\u2014'; const raw=e.value; const val=raw!=null?(Math.abs(raw)<15?(raw*100).toFixed(2)+'%':raw.toLocaleString()):''; return `<tr><td>${esc(e.name)}</td><td>${esc(atName)}</td><td>${val}</td></tr>`; };
         if(recRows.length) {
-            h+=`<div class="collapsible-toggle${subOpenStates[`${oi}_arecord-${oi}`] ? ' open' : ''}" data-target="arecord-${oi}">Attacker Record (${recRows.length})</div>
-            <div class="collapsible-content" id="arecord-${oi}" style="${subOpenStates[`${oi}_arecord-${oi}`] ? 'display:block' : ''}"><table class="wide-name"><tr><th>Name</th><th>Attr</th><th>Value</th></tr>`;
+            h+=`<div class="collapsible-toggle${vl.subOpenStates[`${oi}_arecord-${oi}`] ? ' open' : ''}" data-target="arecord-${oi}">Attacker Record (${recRows.length})</div>
+            <div class="collapsible-content" id="arecord-${oi}" style="${vl.subOpenStates[`${oi}_arecord-${oi}`] ? 'display:block' : ''}"><table class="wide-name"><tr><th>Name</th><th>Attr</th><th>Value</th></tr>`;
             recRows.forEach(e=>{ h+=recRowHtml(e); });
             h+=`</table></div>`;
         }
         if(embRows.length) {
-            h+=`<div class="collapsible-toggle${subOpenStates[`${oi}_aemb-${oi}`] ? ' open' : ''}" data-target="aemb-${oi}">Emblems (${embRows.length})</div>
-            <div class="collapsible-content" id="aemb-${oi}" style="${subOpenStates[`${oi}_aemb-${oi}`] ? 'display:block' : ''}"><table class="wide-name"><tr><th>Name</th><th>Attr</th><th>Value</th></tr>`;
+            h+=`<div class="collapsible-toggle${vl.subOpenStates[`${oi}_aemb-${oi}`] ? ' open' : ''}" data-target="aemb-${oi}">Emblems (${embRows.length})</div>
+            <div class="collapsible-content" id="aemb-${oi}" style="${vl.subOpenStates[`${oi}_aemb-${oi}`] ? 'display:block' : ''}"><table class="wide-name"><tr><th>Name</th><th>Attr</th><th>Value</th></tr>`;
             embRows.forEach(e=>{ h+=recRowHtml(e); });
             h+=`</table></div>`;
         }
     }
-    if(ev.AttackerAttrDict?.length) {
-        h+=`<div class="collapsible-toggle${subOpenStates[`${oi}_aattrdict-${oi}`] ? ' open' : ''}" data-target="aattrdict-${oi}">Attacker Attr Dict (${ev.AttackerAttrDict.length})</div>
-        <div class="collapsible-content" id="aattrdict-${oi}" style="${subOpenStates[`${oi}_aattrdict-${oi}`] ? 'display:block' : ''}"><table class="wide-name"><tr><th>Name</th><th>Stacks</th><th>Attr</th><th>SubType</th><th>Value</th><th>Value Config ID</th><th>Attr ID</th></tr>`;
-        ev.AttackerAttrDict.forEach(a=>{ const atName=a.attrType!=null?attrName(a.attrType):''; const stName=a.subType!=null?effectSubTypeName(a.subType):''; const raw=a.value; const val=raw!=null?(Math.abs(raw)<15?(raw*100).toFixed(2)+'%':raw):''; h+=`<tr><td>${esc(a.name||String(a.attrId))}</td><td>${a.stacks}</td><td>${esc(atName)}</td><td>${esc(stName)}</td><td>${val}</td><td>${a.valueConfigId}</td><td>${a.attrId}</td></tr>`; });
-        h+=`</table></div>`;
-    }
-    if(ev.AttackerStats?.attrs?.length) {
-        h+=`<div class="collapsible-toggle${subOpenStates[`${oi}_astats-${oi}`] ? ' open' : ''}" data-target="astats-${oi}">Attacker Stats</div>
-        <div class="collapsible-content" id="astats-${oi}" style="${subOpenStates[`${oi}_astats-${oi}`] ? 'display:block' : ''}"><table><tr><th>Name</th><th>Origin</th><th>Base</th><th>Pct</th><th>Abs</th><th>LimPct</th></tr>`;
-        ev.AttackerStats.attrs.forEach(a=>{ if (a.origin==null&&a.base==null&&a.pct==null&&a.abs==null&&a.limPct==null) return; h+=`<tr><td>${esc(a.name)}</td><td>${a.origin!=null?a.origin:''}</td><td>${a.base!=null?a.base:''}</td><td>${a.pct!=null?a.pct:''}</td><td>${a.abs!=null?a.abs:''}</td><td>${a.limPct!=null?a.limPct:''}</td></tr>`; });
-        h+=`</table></div>`;
-    }
+    if(ev.AttackerAttrDict?.length)
+        h += sideSection(oi, 'aattrdict', `Attacker Attr Dict (${ev.AttackerAttrDict.length})`, '<tr><th>Name</th><th>Stacks</th><th>Attr</th><th>SubType</th><th>Value</th><th>Value Config ID</th><th>Attr ID</th></tr>', attrDictRows(ev.AttackerAttrDict), 'wide-name');
+    if(ev.AttackerStats?.attrs?.length)
+        h += sideSection(oi, 'astats', 'Attacker Stats', '<tr><th>Name</th><th>Origin</th><th>Base</th><th>Pct</th><th>Abs</th><th>LimPct</th></tr>', statsRows(ev.AttackerStats.attrs));
     h+=`</div>`;
 
     h+=`<div class="section"><h4>Defender: ${esc(ev.DefenderDisplay||ev.Defender||'?')}</h4>`;
-    if(ev.DefenderBuffs?.buffs?.length) {
-        h+=`<div class="collapsible-toggle${subOpenStates[`${oi}_dbuffs-${oi}`] ? ' open' : ''}" data-target="dbuffs-${oi}">Defender Buffs (${ev.DefenderBuffs.buffs.length})</div>
-        <div class="collapsible-content" id="dbuffs-${oi}" style="${subOpenStates[`${oi}_dbuffs-${oi}`] ? 'display:block' : ''}"><table><tr><th>Name</th><th>Stacks</th><th>Left</th><th>Total</th><th>ID</th></tr>`;
-        ev.DefenderBuffs.buffs.forEach(b=>{ h+=`<tr><td>${esc(b.name)}</td><td>${b.stacks||'1'}</td><td>${b.leftTime!=null?b.leftTime.toFixed(1)+'s':'inf'}</td><td>${b.totalTime!=null?b.totalTime.toFixed(1)+'s':'-'}</td><td>${b.configId}</td></tr>`; });
-        h+=`</table></div>`;
-    }
-    if(ev.DefenderEffects?.effects?.length) {
-        h+=`<div class="collapsible-toggle${subOpenStates[`${oi}_deffects-${oi}`] ? ' open' : ''}" data-target="deffects-${oi}">Defender Effects (${ev.DefenderEffects.effects.length})</div>
-        <div class="collapsible-content" id="deffects-${oi}" style="${subOpenStates[`${oi}_deffects-${oi}`] ? 'display:block' : ''}"><table class="wide-name"><tr><th>Name</th><th>Count</th><th>Type</th><th>Attr</th><th>SubType</th><th>Value</th><th>ID</th></tr>`;
-        const m=new Map(); ev.DefenderEffects.effects.forEach(e=>{ const id=e.configId; if(!m.has(id)) m.set(id,{e,count:0}); m.get(id).count++; });
-        m.forEach((v,id)=>{ const e=v.e; const etName=e.effectType!=null?effectTypeName(e.effectType):''; const atName=e.attrType!=null?attrName(e.attrType):''; const stName=e.subType!=null?effectSubTypeName(e.subType, e.effectType):''; const raw=e.value; const val=raw!=null?(Math.abs(raw)<15?(raw*100).toFixed(2)+'%':raw):''; const inherited=e.fromOwnerSnapshot?' style="background:#2a2a2a"':''; h+=`<tr${inherited}><td>${esc(e.name)}</td><td>${v.count}</td><td>${esc(etName)}</td><td>${esc(atName)}</td><td>${esc(stName)}</td><td>${val}</td><td>${id}</td></tr>`; });
-        h+=`</table></div>`;
-    }
-    if(ev.DefenderAttrDict?.length) {
-        h+=`<div class="collapsible-toggle${subOpenStates[`${oi}_dattrdict-${oi}`] ? ' open' : ''}" data-target="dattrdict-${oi}">Defender Attr Dict (${ev.DefenderAttrDict.length})</div>
-        <div class="collapsible-content" id="dattrdict-${oi}" style="${subOpenStates[`${oi}_dattrdict-${oi}`] ? 'display:block' : ''}"><table class="wide-name"><tr><th>Name</th><th>Stacks</th><th>Attr</th><th>SubType</th><th>Value</th><th>Value Config ID</th><th>Attr ID</th></tr>`;
-        ev.DefenderAttrDict.forEach(a=>{ const atName=a.attrType!=null?attrName(a.attrType):''; const stName=a.subType!=null?effectSubTypeName(a.subType):''; const raw=a.value; const val=raw!=null?(Math.abs(raw)<15?(raw*100).toFixed(2)+'%':raw):''; h+=`<tr><td>${esc(a.name||String(a.attrId))}</td><td>${a.stacks}</td><td>${esc(atName)}</td><td>${esc(stName)}</td><td>${val}</td><td>${a.valueConfigId}</td><td>${a.attrId}</td></tr>`; });
-        h+=`</table></div>`;
-    }
-    if(ev.DefenderStats?.attrs?.length) {
-        h+=`<div class="collapsible-toggle${subOpenStates[`${oi}_dstats-${oi}`] ? ' open' : ''}" data-target="dstats-${oi}">Defender Stats</div>
-        <div class="collapsible-content" id="dstats-${oi}" style="${subOpenStates[`${oi}_dstats-${oi}`] ? 'display:block' : ''}"><table><tr><th>Name</th><th>Origin</th><th>Base</th><th>Pct</th><th>Abs</th><th>LimPct</th></tr>`;
-        ev.DefenderStats.attrs.forEach(a=>{ if (a.origin==null&&a.base==null&&a.pct==null&&a.abs==null&&a.limPct==null) return; h+=`<tr><td>${esc(a.name)}</td><td>${a.origin!=null?a.origin:''}</td><td>${a.base!=null?a.base:''}</td><td>${a.pct!=null?a.pct:''}</td><td>${a.abs!=null?a.abs:''}</td><td>${a.limPct!=null?a.limPct:''}</td></tr>`; });
-        h+=`</table></div>`;
-    }
+    if(ev.DefenderBuffs?.buffs?.length)
+        h += sideSection(oi, 'dbuffs', `Defender Buffs (${ev.DefenderBuffs.buffs.length})`, '<tr><th>Name</th><th>Stacks</th><th>Left</th><th>Total</th><th>ID</th></tr>', buffRows(ev.DefenderBuffs.buffs));
+    if(ev.DefenderEffects?.effects?.length)
+        h += sideSection(oi, 'deffects', `Defender Effects (${ev.DefenderEffects.effects.length})`, '<tr><th>Name</th><th>Count</th><th>Type</th><th>Attr</th><th>SubType</th><th>Value</th><th>ID</th></tr>', effectRows(ev.DefenderEffects.effects), 'wide-name');
+    if(ev.DefenderAttrDict?.length)
+        h += sideSection(oi, 'dattrdict', `Defender Attr Dict (${ev.DefenderAttrDict.length})`, '<tr><th>Name</th><th>Stacks</th><th>Attr</th><th>SubType</th><th>Value</th><th>Value Config ID</th><th>Attr ID</th></tr>', attrDictRows(ev.DefenderAttrDict), 'wide-name');
+    if(ev.DefenderStats?.attrs?.length)
+        h += sideSection(oi, 'dstats', 'Defender Stats', '<tr><th>Name</th><th>Origin</th><th>Base</th><th>Pct</th><th>Abs</th><th>LimPct</th></tr>', statsRows(ev.DefenderStats.attrs));
     h+=`</div>`;
     return h;
 }
@@ -507,10 +524,10 @@ function skillBody(ev) {
 // ─── Create DOM element for an event ─────────
 function createEventDiv(ev, filteredIdx) {
     const oi = ev._origIndex;
-    const isOpen = openStates[oi] || false;
+    const isOpen = vl.openStates[oi] || false;
     const div = document.createElement('div');
     div.className = 'event' + (isOpen ? ' open' : '') + (ev.Type === 'Reset' || ev.Type === 'Record' ? ' event-reset' : '');
-    div.style.top = fenwick.prefixSum(filteredIdx - 1) + 'px';
+    div.style.top = vl.topOf(filteredIdx) + 'px';
     div.dataset.origIndex = oi;
     div.dataset.filteredIndex = filteredIdx;
 
@@ -524,11 +541,9 @@ function createEventDiv(ev, filteredIdx) {
 
     let desc = '';
     if (ev.Type === 'Hit') {
-        const hc=ev.HitConfig||{}, dp=ev.DamageParams||{};
+        const dp = ev.DamageParams || {};
         const attName = esc(ev.AttackerDisplay||ev.Attacker||'?');
-        const skillPart = hc.skillTitle ? esc(hc.skillTitle) : '';
-        const hitPart = hc.hitNum!=null ? ` (#${hc.hitNum})` : '';
-        const skillStr = (skillPart||hitPart) ? ` - ${skillPart}${hitPart}` : '';
+        const skillStr = hitSkillStr(ev.HitConfig, esc);
         const baseMult = dp.skillPercentAmend!=null ? ` [${(dp.skillPercentAmend/10000).toFixed(2)}%]` : '';
         const snapAge = ev.SnapshotAt ? ` [${((parseTimeToMs(ev.Time)-parseTimeToMs(ev.SnapshotAt))/1000).toFixed(3)}s ago]` : '';
         desc = `${attName}${skillStr}${baseMult}${snapAge} - Dmg: ${Number(dp.finalDamage).toLocaleString()}`;
@@ -550,7 +565,7 @@ function createEventDiv(ev, filteredIdx) {
 
     header.addEventListener('click', (e) => {
         e.stopPropagation();
-        toggleMainEvent(oi);
+        vl.toggleEvent(oi);
     });
 
     const body = document.createElement('div');
@@ -564,168 +579,15 @@ function createEventDiv(ev, filteredIdx) {
 
     const trigger = document.createElement('div');
     trigger.className = 'spacer-trigger';
-    trigger.addEventListener('click', e => { e.stopPropagation(); toggleSpacer(oi); });
+    trigger.addEventListener('click', e => { e.stopPropagation(); vl.toggleSpacer(oi); });
     div.appendChild(trigger);
 
     return div;
 }
 
-// ─── Toggle main event ──────────────────────
-function toggleMainEvent(origIndex) {
-    const eventDiv = content.querySelector(`.event[data-orig-index="${origIndex}"]`);
-    if (!eventDiv) return;
-
-    const filteredIdx = parseInt(eventDiv.dataset.filteredIndex);
-
-    const savedScroll = container.scrollTop;
-    const wasOpen = openStates[origIndex] || false;
-
-    if (wasOpen) {
-        openStates[origIndex] = false;
-        const body = eventDiv.querySelector('.event-body');
-        if (body) body.innerHTML = '';
-
-        const topOfThis = fenwick.prefixSum(filteredIdx - 1);
-        const relativeScroll = savedScroll - topOfThis;
-
-        eventDiv.classList.remove('open');
-        const delta = updateHeightAtIndex(filteredIdx, EST);
-        delete measuredHeights[origIndex];
-        shiftElementsAfter(filteredIdx, delta);
-
-        container.scrollTop = topOfThis + relativeScroll;
-    } else {
-        openStates[origIndex] = true;
-        const ev = allEvents[origIndex];
-        const body = eventDiv.querySelector('.event-body');
-        if (body) body.innerHTML = buildEventBody(ev);
-        eventDiv.classList.add('open');
-
-        requestAnimationFrame(() => {
-            const actual = eventDiv.getBoundingClientRect().height;
-            if (actual > 0) {
-                measuredHeights[origIndex] = actual;
-                const delta = updateHeightAtIndex(filteredIdx, actual);
-                if (Math.abs(delta) > 0.5) {
-                    shiftElementsAfter(filteredIdx, delta);
-                    const maxScroll = totalHeightCached - container.clientHeight;
-                    container.scrollTop = Math.min(savedScroll, Math.max(0, maxScroll));
-                    render();
-                }
-            }
-        });
-    }
-}
-
-function shiftElementsAfter(startIndex, delta) {
-    const events = content.querySelectorAll('.event');
-    for (const ev of events) {
-        const idx = parseInt(ev.dataset.filteredIndex);
-        if (!isNaN(idx) && idx > startIndex) {
-            ev.style.top = (parseFloat(ev.style.top) + delta) + 'px';
-        }
-    }
-    renderSpacers();
-}
-
-// ─── Sub-section toggle ──────────────────────
-content.addEventListener('click', e => {
-    const toggle = e.target.closest('.collapsible-toggle');
-    if (!toggle) return;
-    e.stopPropagation();
-
-    const targetId = toggle.dataset.target;
-    const contentEl = document.getElementById(targetId);
-    if (!contentEl) return;
-
-    const isOpen = toggle.classList.toggle('open');
-    contentEl.style.display = isOpen ? 'block' : 'none';
-
-    const eventDiv = toggle.closest('.event');
-    if (!eventDiv) return;
-    const oi = parseInt(eventDiv.dataset.origIndex);
-    const filteredIdx = parseInt(eventDiv.dataset.filteredIndex);
-    const key = `${oi}_${targetId}`;
-    subOpenStates[key] = isOpen;
-
-    const savedScroll = container.scrollTop;
-    requestAnimationFrame(() => {
-        const actual = eventDiv.getBoundingClientRect().height;
-        if (actual > 0 && !isNaN(filteredIdx)) {
-            const delta = updateHeightAtIndex(filteredIdx, actual);
-            measuredHeights[oi] = actual;
-            if (Math.abs(delta) > 0.5) {
-                shiftElementsAfter(filteredIdx, delta);
-            }
-        }
-        const maxScroll = totalHeightCached - container.clientHeight;
-        container.scrollTop = Math.min(savedScroll, Math.max(0, maxScroll));
-    });
-});
-
-// ─── Virtual scroll render ────────────────────
-function render() {
-    if (!filtered.length) {
-        content.innerHTML = '';
-        return;
-    }
-
-    const scrollTop = container.scrollTop;
-    const viewH = container.clientHeight;
-    const startIdx = findIndexForOffset(scrollTop);
-    let start = Math.max(0, startIdx - BUFFER);
-    const endIdx = findIndexForOffset(scrollTop + viewH);
-    let end = Math.min(filtered.length, endIdx + BUFFER);
-    if (start >= filtered.length) start = Math.max(0, filtered.length - 1);
-
-    const neededOrig = new Set();
-    for (let i = start; i < end; i++) {
-        neededOrig.add(filtered[i]._origIndex);
-    }
-
-    // Build a fresh orig→filteredIndex map so we never use stale dataset values
-    const origToFi = new Map();
-    for (let i = start; i < end; i++) {
-        origToFi.set(filtered[i]._origIndex, i);
-    }
-
-    const existing = content.querySelectorAll('.event');
-    for (const el of existing) {
-        const oi = parseInt(el.dataset.origIndex);
-        if (neededOrig.has(oi)) {
-            const fi = origToFi.get(oi);
-            el.dataset.filteredIndex = fi; // keep dataset in sync
-            const newTop = fenwick.prefixSum(fi - 1);
-            if (el.style.top !== newTop + 'px') {
-                el.style.top = newTop + 'px';
-            }
-            const shouldOpen = openStates[oi] || false;
-            const isOpen = el.classList.contains('open');
-            if (shouldOpen !== isOpen) {
-                el.classList.toggle('open', shouldOpen);
-                const body = el.querySelector('.event-body');
-                if (body) {
-                    if (shouldOpen && body.innerHTML.trim() === '') {
-                        body.innerHTML = buildEventBody(allEvents[oi]);
-                    } else if (!shouldOpen) {
-                        body.innerHTML = '';
-                    }
-                }
-            }
-            neededOrig.delete(oi);
-        } else {
-            el.remove();
-        }
-    }
-
-    for (const oi of neededOrig) {
-        const fi = origToFi.get(oi);
-        if (fi === undefined || fi === -1) continue;
-        const ev = allEvents[oi];
-        const div = createEventDiv(ev, fi);
-        content.appendChild(div);
-    }
-
+// ─── Search helpers ───────────────
+// Per-row search highlight sweep, run by vl.render() via cfg.decorate.
+function applySearchHighlight() {
     if (searchQuery) {
         const matchSet = new Set(searchMatches);
         const currentFi = searchMatchIdx >= 0 ? searchMatches[searchMatchIdx] : -1;
@@ -739,22 +601,8 @@ function render() {
             el.classList.remove('search-match', 'search-current');
         });
     }
-
-    renderSpacers();
 }
 
-// ─── Scroll handler ────────────────────────
-let scrollScheduled = false;
-container.addEventListener('scroll', () => {
-    if (scrollScheduled) return;
-    scrollScheduled = true;
-    requestAnimationFrame(() => {
-        render();
-        scrollScheduled = false;
-    });
-});
-
-// ─── Search helpers ───────────────
 function normalizeSearch(s) {
     return s.replace(/[,.]/g, '');
 }
@@ -808,9 +656,9 @@ function updateSearchCount() {
 }
 
 function scrollToMatch(fi) {
-    const top = fenwick.prefixSum(fi - 1);
+    const top = vl.topOf(fi);
     const orig = filtered[fi]._origIndex;
-    const itemH = (heights[fi] - (spacerByOrig.get(orig) || 0)) || EST;
+    const itemH = (vl.heights[fi] - (vl.spacerByOrig.get(orig) || 0)) || vl.cfg.est;
     const viewH = container.clientHeight;
     const scrollTop = container.scrollTop;
 
@@ -820,7 +668,7 @@ function scrollToMatch(fi) {
         container.scrollTop = top + itemH - viewH;
     }
 
-    render();
+    vl.render();
 }
 
 window.navigateSearch = function(dir) {
@@ -842,7 +690,7 @@ window.closeSearch = function() {
     searchMatchIdx = -1;
     document.getElementById('searchInput').value = '';
     updateSearchCount();
-    render();
+    vl.render();
 };
 
 document.getElementById('searchInput').addEventListener('input', e => {
@@ -851,7 +699,7 @@ document.getElementById('searchInput').addEventListener('input', e => {
     searchMatchIdx = searchMatches.length > 0 ? 0 : -1;
     updateSearchCount();
     if (searchMatchIdx >= 0) scrollToMatch(searchMatches[searchMatchIdx]);
-    else render();
+    else vl.render();
 });
 
 document.getElementById('searchInput').addEventListener('keydown', e => {
@@ -871,53 +719,6 @@ document.addEventListener('keydown', e => {
         closeSearch();
     }
 });
-
-// ─── Spacer logic ─────────────────
-function toggleSpacer(orig) {
-    const fi = filtered.findIndex(e => e._origIndex === orig);
-    if (fi === -1) return;
-
-    const currentSpacerH = spacerByOrig.get(orig) || 0;
-    const eventOnlyH = heights[fi] - currentSpacerH;
-
-    if (spacerByOrig.has(orig)) {
-        spacerByOrig.delete(orig);
-    } else {
-        spacerByOrig.set(orig, SPACER_HEIGHT);
-    }
-
-    const savedScroll = container.scrollTop;
-    const delta = updateHeightAtIndex(fi, eventOnlyH);
-    shiftElementsAfter(fi, delta);
-    const maxScroll = totalHeightCached - container.clientHeight;
-    container.scrollTop = Math.min(savedScroll, Math.max(0, maxScroll));
-    render();
-}
-
-function renderSpacers() {
-    content.querySelectorAll('.event-spacer').forEach(el => el.remove());
-    if (spacerByOrig.size === 0) return;
-
-    content.querySelectorAll('.event').forEach(el => {
-        const oi = parseInt(el.dataset.origIndex);
-        const fi = parseInt(el.dataset.filteredIndex);
-        const sh = spacerByOrig.get(oi) || 0;
-        if (sh === 0) return;
-
-        const actualEventH = el.getBoundingClientRect().height;
-        const topOfSlot = fenwick.prefixSum(fi - 1);
-        const spacerTop = topOfSlot + actualEventH;
-        const spacerBottom = topOfSlot + heights[fi];
-        const renderedH = Math.max(1, spacerBottom - spacerTop);
-
-        const sd = document.createElement('div');
-        sd.className = 'event-spacer';
-        sd.style.top = spacerTop + 'px';
-        sd.style.height = renderedH + 'px';
-        sd.addEventListener('click', () => toggleSpacer(oi));
-        content.appendChild(sd);
-    });
-}
 
 // ─── Filter handlers ─────────────
 window.toggleTypeFilter = function(btn) {
@@ -969,7 +770,6 @@ window.switchTab = function(tab) {
         if (typeof eiRenderSidebarChips === 'function') eiRenderSidebarChips();
         Analytics.refresh();
     }
-    // Toggle sidebar sections
     const sbFilters = document.getElementById('sidebarFilters');
     const sbDcFilters = document.getElementById('sidebarDcFilters');
     if (sbFilters) sbFilters.classList.toggle('hidden', tab !== 'log');

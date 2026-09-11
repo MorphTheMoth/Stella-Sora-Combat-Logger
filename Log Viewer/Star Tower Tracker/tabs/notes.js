@@ -560,7 +560,6 @@ ST.buildModelComparison = function(events) {
     var selectedModel = ST.noteFilters.model || 'hn0_5';
     var totalRows = 0;
 
-    // Build group summary rows
     var html = '<div class="chart-card"><h3>Model Comparison (' + ncEvents.length + ' events)</h3>' +
         '<div style="font-size:11px;color:#666;margin-bottom:8px;line-height:1.6">' +
             'Each group shows the <strong>best</strong> Correct P% model within its family. Click to expand and see all ' +

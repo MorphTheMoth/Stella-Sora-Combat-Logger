@@ -115,12 +115,9 @@ const Analytics = (() => {
             charResolveCache[name] = (async () => {
                 const id = getCharId(name);
                 if (!id) { console.warn(`[charColor] no charId found for "${name}"`); charColorCache[name] = '#888888'; return; }
-                console.log(`[charColor] fetching colors for "${name}" (charId=${id})`);
                 if (!charDomCache[id]) charDomCache[id] = getDominantColors(id).catch(e => { console.warn(`[charColor] image failed for ${id}:`, e); return []; });
                 const list = await charDomCache[id];
-                console.log(`[charColor] dominant colors for "${name}":`, list);
                 charColorCache[name] = list.length ? list[0].hex : '#888888';
-                console.log(`[charColor] assigned "${name}" → ${charColorCache[name]}`);
             })();
         });
         await Promise.all(charNames.map(n => charResolveCache[n]).filter(Boolean));
@@ -144,9 +141,7 @@ const Analytics = (() => {
         if (typeof getCalcHits === 'function') {
             _calcHitsCache = getCalcHits();
         } else {
-            _calcHitsCache = allEvents.filter(ev =>
-                ev.Type === 'Hit' && (ev.HitConfig || {}).sourceType === 1
-            );
+            _calcHitsCache = allEvents.filter(isPlayerHit);
         }
         return _calcHitsCache;
     }
@@ -168,20 +163,14 @@ const Analytics = (() => {
     }
 
     // ── Chart 1: Damage Share ─────────────────────────────────────
-    function buildSlices() {
-        const groupBy     = document.getElementById('dsGroupBy').value;
-        const granularity = document.getElementById('dsGranularity').value;
-        const metric      = document.getElementById('dsMetric').value;
-        const filterChar  = document.getElementById('dsFilterChar').value;
-        const filterType  = document.getElementById('dsFilterType').value;
-        const filterDef   = document.getElementById('dsFilterDefender').value;
-        const sortBy      = document.getElementById('dsSort').value;
-
-        const map = {};
-        let hitCounts = {};
+    // ── Shared hit grouping (Damage Share chart + Metrics Table) ─────
+    // Filters the processed player hits by char/type/defender and buckets
+    // them by groupBy ('char'|'dmgtype') × granularity ('none'|'skill'|'hit').
+    // Returns [{ key, groupName, char, dmgtype, skillTitle, hitList }].
+    function collectHitGroups({ groupBy, granularity, filterChar, filterType, filterDef }) {
+        const map = new Map();
         getPlayerHits().forEach(ev => {
             const hc      = ev.HitConfig || {};
-            const dp      = ev.DamageParams || {};
             const char    = getCharName(ev);
             const dmgtype = getDmgTypeName(ev);
             const def     = getDefenderName(ev);
@@ -205,19 +194,37 @@ const Analytics = (() => {
                     : `${groupName}|${hc.skillTitle || '?'}|#${hc.hitNum ?? '?'}`;
             }
 
-            if (!map[key]) { map[key] = { groupName, char, dmgtype, skillTitle: hc.skillTitle || '?', value: 0 }; hitCounts[key] = 0; }
-            const dmg    = Number(dp.finalDamage) || 0;
-            const mult   = dp.skillPercentAmend != null ? dp.skillPercentAmend / 10000 : 0;
-            const energy = Number(hc.energyCharge) || 0;
-            map[key].value += metric === 'dmg' ? dmg : metric === 'multiplier' || metric === 'singlemv' ? mult : metric === 'energyCharge' || metric === 'singleec' ? energy : 1;
-            if (metric === 'singlemv' || metric === 'singleec') hitCounts[key]++;
+            if (!map.has(key)) map.set(key, { key, groupName, char, dmgtype, skillTitle: hc.skillTitle || '?', hitList: [] });
+            map.get(key).hitList.push(ev);
         });
+        return [...map.values()];
+    }
 
-        let slices = Object.entries(map).map(([key, d]) => ({
-            ...d,
-            label: key.split('|').join(' › '),
-            value: (metric === 'singlemv' || metric === 'singleec') && hitCounts[key] > 0 ? d.value / hitCounts[key] : d.value
-        }));
+    function buildSlices() {
+        const groupBy     = document.getElementById('dsGroupBy').value;
+        const granularity = document.getElementById('dsGranularity').value;
+        const metric      = document.getElementById('dsMetric').value;
+        const filterChar  = document.getElementById('dsFilterChar').value;
+        const filterType  = document.getElementById('dsFilterType').value;
+        const filterDef   = document.getElementById('dsFilterDefender').value;
+        const sortBy      = document.getElementById('dsSort').value;
+
+        // per-hit value: damage / MV / energy / count (1)
+        const perHit = metric === 'dmg' ? (ev) => Number((ev.DamageParams || {}).finalDamage) || 0
+            : metric === 'multiplier' || metric === 'singlemv' ? (ev) => ((ev.DamageParams || {}).skillPercentAmend != null ? ev.DamageParams.skillPercentAmend / 10000 : 0)
+            : metric === 'energyCharge' || metric === 'singleec' ? (ev) => Number((ev.HitConfig || {}).energyCharge) || 0
+            : () => 1;
+        // Base MV / Hit Energy are per-hit averages of their total counterparts
+        const averaged = metric === 'singlemv' || metric === 'singleec';
+
+        let slices = collectHitGroups({ groupBy, granularity, filterChar, filterType, filterDef }).map(g => {
+            const total = g.hitList.reduce((sum, ev) => sum + perHit(ev), 0);
+            return {
+                groupName: g.groupName, char: g.char, dmgtype: g.dmgtype, skillTitle: g.skillTitle,
+                label: g.key.split('|').join(' › '),
+                value: averaged && g.hitList.length > 0 ? total / g.hitList.length : total,
+            };
+        });
 
         if (sortBy === 'value')   slices.sort((a, b) => b.value - a.value);
         else if (sortBy === 'char')    slices.sort((a, b) => a.char.localeCompare(b.char) || b.value - a.value);
@@ -332,41 +339,29 @@ const Analytics = (() => {
         renderLegend('legendDmgShare', labels, values, colors, metric);
     }
 
-    function updateDmgShareFilters() {
-        const hits = getPlayerHits();
-        const chars = new Set(), types = new Set(), defs = new Set();
+    // ── Shared char/type/defender filter dropdowns ────────────────────
+    // Populates the <ds|mt>Filter{Char,Type,Defender} selects from the
+    // processed player hits (shared by the Damage Share chart and the
+    // Metrics Table, whose controls are identical). Defenders default to
+    // the one that took the most damage, preserving the current selection.
+    function updateHitFilterDropdowns(prefix) {
+        const chars = new Set(), types = new Set();
         const defDmg = {};
-        hits.forEach(ev => {
+        getPlayerHits().forEach(ev => {
             chars.add(getCharName(ev));
             types.add(getDmgTypeName(ev));
             const d = getDefenderName(ev);
-            defs.add(d);
             defDmg[d] = (defDmg[d] || 0) + (Number((ev.DamageParams || {}).finalDamage) || 0);
         });
 
-        const selChar = document.getElementById('dsFilterChar');
-        const selType = document.getElementById('dsFilterType');
-        const selDef  = document.getElementById('dsFilterDefender');
-        const curChar = selChar.value, curType = selType.value, curDef = selDef.value;
+        fillSelectOptions(document.getElementById(prefix + 'FilterChar'), chars, { keepVal: document.getElementById(prefix + 'FilterChar').value });
+        fillSelectOptions(document.getElementById(prefix + 'FilterType'), types, { keepVal: document.getElementById(prefix + 'FilterType').value });
 
-        selChar.innerHTML = '<option value="">All</option>';
-        [...chars].sort().forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = n; selChar.appendChild(o); });
+        fillDefenderSelect(document.getElementById(prefix + 'FilterDefender'), defDmg);
+    }
 
-        selType.innerHTML = '<option value="">All</option>';
-        [...types].sort().forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = n; selType.appendChild(o); });
-
-        selDef.innerHTML = '<option value="">All</option>';
-        [...defs].sort().forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = n; selDef.appendChild(o); });
-
-        if ([...selChar.options].some(o => o.value === curChar)) selChar.value = curChar;
-        if ([...selType.options].some(o => o.value === curType)) selType.value = curType;
-
-        if (!curDef && defs.size > 0) {
-            const topDef = Object.entries(defDmg).sort((a, b) => b[1] - a[1])[0]?.[0] || '';
-            selDef.value = topDef;
-        } else if ([...selDef.options].some(o => o.value === curDef)) {
-            selDef.value = curDef;
-        }
+    function updateDmgShareFilters() {
+        updateHitFilterDropdowns('ds');
     }
 
     // ── Chart 4: Metrics Table ────────────────────────────────────
@@ -388,10 +383,6 @@ const Analytics = (() => {
         return [...document.querySelectorAll('.mt-cb:checked')].map(cb => cb.value);
     }
 
-    function isFloatMetric(m) {
-        return m === 'multiplier' || m === 'singlemv' || m === 'mvTypePerSec';
-    }
-
     function formatMetricValue(m, v) {
         if (m === 'hits') return Number(v).toLocaleString();
         if (m === 'multiplier' || m === 'singlemv') return v.toFixed(2) + '%';
@@ -405,26 +396,15 @@ const Analytics = (() => {
         const filterChar  = document.getElementById('mtFilterChar').value;
         const filterType  = document.getElementById('mtFilterType').value;
         const filterDef   = document.getElementById('mtFilterDefender').value;
-        const metrics     = getSelectedMetrics();
 
-        // First collect filtered hits so we can compute global duration once
-        const allHits = getPlayerHits();
-        const filtered = [];
-        for (const ev of allHits) {
-            const char    = getCharName(ev);
-            const dmgtype = getDmgTypeName(ev);
-            const def     = getDefenderName(ev);
-            if (filterChar && char !== filterChar) continue;
-            if (filterType && dmgtype !== filterType) continue;
-            if (filterDef  && def   !== filterDef)   continue;
-            filtered.push(ev);
-        }
+        const groups = collectHitGroups({ groupBy, granularity, filterChar, filterType, filterDef });
 
-        // Global fight duration (seconds) from filtered hits' Time fields
+        // Global fight duration (seconds) from all filtered hits' Time fields
         let durationSec = 0;
-        if (filtered.length) {
+        const filteredHits = groups.flatMap(g => g.hitList);
+        if (filteredHits.length) {
             let minMs = Infinity, maxMs = -Infinity;
-            for (const ev of filtered) {
+            for (const ev of filteredHits) {
                 const ms = typeof parseTimeToMs === 'function' ? parseTimeToMs(ev.Time) : 0;
                 if (ms < minMs) minMs = ms;
                 if (ms > maxMs) maxMs = ms;
@@ -437,71 +417,42 @@ const Analytics = (() => {
             durationSec = 1;
         }
 
-        const map = {};
-        const hitCounts = {};
-        filtered.forEach(ev => {
-            const hc      = ev.HitConfig || {};
-            const dp      = ev.DamageParams || {};
-            const char    = getCharName(ev);
-            const dmgtype = getDmgTypeName(ev);
-
-            const groupName = groupBy === 'char' ? char : dmgtype;
-
-            let key;
-            if (granularity === 'none') {
-                key = groupName;
-            } else if (granularity === 'skill') {
-                key = groupBy === 'dmgtype'
-                    ? `${groupName}|${char}`
-                    : `${groupName}|${hc.skillTitle || '?'}`;
-            } else {
-                key = groupBy === 'dmgtype'
-                    ? `${groupName}|${char}|${hc.skillTitle || '?'} #${hc.hitNum ?? '?'}`
-                    : `${groupName}|${hc.skillTitle || '?'}|#${hc.hitNum ?? '?'}`;
+        return groups.map(g => {
+            const values = { dmg: 0, multiplier: 0, singlemv: 0, hits: 0, energyCharge: 0, singleec: 0, mvTypePerSec: 0 };
+            for (const ev of g.hitList) {
+                const hc      = ev.HitConfig || {};
+                const dp      = ev.DamageParams || {};
+                const dmg     = Number(dp.finalDamage) || 0;
+                const mult    = dp.skillPercentAmend != null ? dp.skillPercentAmend / 10000 : 0;
+                const energy  = Number(hc.energyCharge) || 0;
+                values.dmg          += dmg;
+                values.multiplier   += mult;
+                values.singlemv     += mult;
+                values.hits         += 1;
+                values.energyCharge += energy;
+                values.singleec     += energy;
+                // MV * Type% * TypeR%  (Type% = dmgTypePct, TypeR% = dmgTypeTakenPct)
+                let tPct = 1, tR = 1;
+                if (ev._fields) {
+                    tPct = ev._fields.dmgTypePct != null ? ev._fields.dmgTypePct : 1;
+                    tR   = ev._fields.dmgTypeTakenPct != null ? ev._fields.dmgTypeTakenPct : 1;
+                } else if (typeof calcHitFields === 'function') {
+                    try {
+                        const f = calcHitFields(ev);
+                        tPct = f.dmgTypePct != null ? f.dmgTypePct : 1;
+                        tR   = f.dmgTypeTakenPct != null ? f.dmgTypeTakenPct : 1;
+                    } catch {}
+                }
+                values.mvTypePerSec += mult * tPct * tR;
             }
-
-            if (!map[key]) {
-                map[key] = {
-                    groupName, char, dmgtype,
-                    skillTitle: hc.skillTitle || '?',
-                    values: { dmg: 0, multiplier: 0, singlemv: 0, hits: 0, energyCharge: 0, singleec: 0, mvTypePerSec: 0 }
-                };
-                hitCounts[key] = 0;
-            }
-            const dmg    = Number(dp.finalDamage) || 0;
-            const mult   = dp.skillPercentAmend != null ? dp.skillPercentAmend / 10000 : 0;
-            const energy = Number(hc.energyCharge) || 0;
-            map[key].values.dmg          += dmg;
-            map[key].values.multiplier   += mult;
-            map[key].values.singlemv     += mult;
-            map[key].values.hits         += 1;
-            map[key].values.energyCharge += energy;
-            map[key].values.singleec     += energy;
-            // MV * Type% * TypeR%  (Type% = dmgTypePct, TypeR% = dmgTypeTakenPct)
-            let tPct = 1, tR = 1;
-            if (ev._fields) {
-                tPct = ev._fields.dmgTypePct != null ? ev._fields.dmgTypePct : 1;
-                tR   = ev._fields.dmgTypeTakenPct != null ? ev._fields.dmgTypeTakenPct : 1;
-            } else if (typeof calcHitFields === 'function') {
-                try {
-                    const f = calcHitFields(ev);
-                    tPct = f.dmgTypePct != null ? f.dmgTypePct : 1;
-                    tR   = f.dmgTypeTakenPct != null ? f.dmgTypeTakenPct : 1;
-                } catch {}
-            }
-            map[key].values.mvTypePerSec += mult * tPct * tR;
-            hitCounts[key]++;
-        });
-
-        return Object.entries(map).map(([key, d]) => {
-            const hits = hitCounts[key] || 0;
+            const hits = g.hitList.length;
             if (hits > 0) {
-                d.values.singlemv = d.values.singlemv / hits;
-                d.values.singleec = d.values.singleec / hits;
+                values.singlemv = values.singlemv / hits;
+                values.singleec = values.singleec / hits;
             }
             // Convert summed weighted MV to per-second
-            d.values.mvTypePerSec = durationSec > 0 ? d.values.mvTypePerSec / durationSec : 0;
-            return { key, ...d };
+            values.mvTypePerSec = durationSec > 0 ? values.mvTypePerSec / durationSec : 0;
+            return { key: g.key, groupName: g.groupName, char: g.char, dmgtype: g.dmgtype, skillTitle: g.skillTitle, values };
         });
     }
 
@@ -588,93 +539,49 @@ const Analytics = (() => {
     }
 
     function updateMetricsTableFilters() {
-        const hits = getPlayerHits();
-        const chars = new Set(), types = new Set(), defs = new Set();
-        const defDmg = {};
-        hits.forEach(ev => {
-            chars.add(getCharName(ev));
-            types.add(getDmgTypeName(ev));
-            const d = getDefenderName(ev);
-            defs.add(d);
-            defDmg[d] = (defDmg[d] || 0) + (Number((ev.DamageParams || {}).finalDamage) || 0);
-        });
-
-        const selChar = document.getElementById('mtFilterChar');
-        const selType = document.getElementById('mtFilterType');
-        const selDef  = document.getElementById('mtFilterDefender');
-        const curChar = selChar.value, curType = selType.value, curDef = selDef.value;
-
-        selChar.innerHTML = '<option value="">All</option>';
-        [...chars].sort().forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = n; selChar.appendChild(o); });
-
-        selType.innerHTML = '<option value="">All</option>';
-        [...types].sort().forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = n; selType.appendChild(o); });
-
-        selDef.innerHTML = '<option value="">All</option>';
-        [...defs].sort().forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = n; selDef.appendChild(o); });
-
-        if ([...selChar.options].some(o => o.value === curChar)) selChar.value = curChar;
-        if ([...selType.options].some(o => o.value === curType)) selType.value = curType;
-
-        if (!curDef && defs.size > 0) {
-            const topDef = Object.entries(defDmg).sort((a, b) => b[1] - a[1])[0]?.[0] || '';
-            selDef.value = topDef;
-        } else if ([...selDef.options].some(o => o.value === curDef)) {
-            selDef.value = curDef;
-        }
+        updateHitFilterDropdowns('mt');
     }
-
 
     function getActiveSrcs() {
         const srcs = [];
         document.querySelectorAll('.bp-src-btn').forEach(btn => {
             if (btn.dataset.active === '1') srcs.push(btn.dataset.src);
         });
-        return srcs.length ? srcs : [];
+        return srcs;
     }
 
+    // ── Buff/effect items per hit, by source ─────────────────────────
+    // src: 'attackerBuffs' | 'defenderBuffs' | 'attackerEffects' |
+    //      'defenderEffects' | 'attackerAttrDict' | 'defenderAttrDict'
+    // The event field mirrors the source name (AttackerBuffs, …); buffs are
+    // listed per stack, effects/attr dicts are deduped per hit with a stack
+    // sum (effects count entries, attr dicts sum their `stacks`).
     function getBuffItems(ev, src) {
-        if (src === 'attackerBuffs'  && ev.AttackerBuffs?.buffs)
-            return ev.AttackerBuffs.buffs.map(b => ({ id: String(b.id ?? b.configId ?? b.name), name: b.name, stacks: Number(b.stack ?? b.stacks ?? b.count ?? 1) }));
-        if (src === 'defenderBuffs'  && ev.DefenderBuffs?.buffs)
-            return ev.DefenderBuffs.buffs.map(b => ({ id: String(b.id ?? b.configId ?? b.name), name: b.name, stacks: Number(b.stack ?? b.stacks ?? b.count ?? 1) }));
-        if (src === 'attackerEffects' && ev.AttackerEffects?.effects) {
-            const m = new Map();
-            ev.AttackerEffects.effects.forEach(e => {
+        const field = src.charAt(0).toUpperCase() + src.slice(1);   // 'attackerBuffs' → 'AttackerBuffs'
+        const container = ev[field];
+        if (!container) return [];
+        if (src.endsWith('Buffs')) {
+            return (container.buffs || []).map(b => ({
+                id: String(b.id ?? b.configId ?? b.name),
+                name: b.name,
+                stacks: Number(b.stack ?? b.stacks ?? b.count ?? 1),
+            }));
+        }
+        const m = new Map();
+        if (src.endsWith('Effects')) {
+            (container.effects || []).forEach(e => {
                 const id = String(e.configId ?? e.id ?? e.name);
                 if (!m.has(id)) m.set(id, { name: e.name, stacks: 0 });
                 m.get(id).stacks++;
             });
-            return [...m.entries()].map(([id, v]) => ({ id, name: v.name, stacks: v.stacks }));
-        }
-        if (src === 'defenderEffects' && ev.DefenderEffects?.effects) {
-            const m = new Map();
-            ev.DefenderEffects.effects.forEach(e => {
-                const id = String(e.configId ?? e.id ?? e.name);
-                if (!m.has(id)) m.set(id, { name: e.name, stacks: 0 });
-                m.get(id).stacks++;
-            });
-            return [...m.entries()].map(([id, v]) => ({ id, name: v.name, stacks: v.stacks }));
-        }
-        if (src === 'attackerAttrDict' && ev.AttackerAttrDict?.length) {
-            const m = new Map();
-            ev.AttackerAttrDict.forEach(a => {
+        } else if (src.endsWith('AttrDict')) {
+            container.forEach(a => {
                 const id = String(a.attrId) + ':' + (a.slotNum ?? 0);
                 if (!m.has(id)) m.set(id, { name: a.name || id, stacks: 0 });
                 m.get(id).stacks += a.stacks ?? 1;
             });
-            return [...m.entries()].map(([id, v]) => ({ id, name: v.name, stacks: v.stacks }));
         }
-        if (src === 'defenderAttrDict' && ev.DefenderAttrDict?.length) {
-            const m = new Map();
-            ev.DefenderAttrDict.forEach(a => {
-                const id = String(a.attrId) + ':' + (a.slotNum ?? 0);
-                if (!m.has(id)) m.set(id, { name: a.name || id, stacks: 0 });
-                m.get(id).stacks += a.stacks ?? 1;
-            });
-            return [...m.entries()].map(([id, v]) => ({ id, name: v.name, stacks: v.stacks }));
-        }
-        return [];
+        return [...m.entries()].map(([id, v]) => ({ id, name: v.name, stacks: v.stacks }));
     }
 
     const srcPfx    = { attackerBuffs: '[AB]', attackerEffects: '[AE]', defenderBuffs: '[DB]', defenderEffects: '[DE]', attackerAttrDict: '[AA]', defenderAttrDict: '[DA]' };
@@ -695,6 +602,18 @@ const Analytics = (() => {
         return stacking;
     }
 
+    // Populate a defender filter select from a name → weight map (hits or
+    // damage taken). Without a current selection it defaults to the heaviest
+    // defender; an out-of-list selection is dropped to All.
+    // Shared by updateHitFilterDropdowns (ds/mt) and updateBuffPickDropdown.
+    function fillDefenderSelect(sel, defMap) {
+        const curDef = sel.value;
+        fillSelectOptions(sel, Object.keys(defMap), { keepVal: curDef });
+        if (!curDef && Object.keys(defMap).length > 0) {
+            sel.value = Object.entries(defMap).sort((a, b) => b[1] - a[1])[0]?.[0] || '';
+        }
+    }
+
     function updateBuffPickDropdown() {
         const viewBy = document.getElementById('bpViewBy').value;
         const activeSrcs = getActiveSrcs();
@@ -702,36 +621,16 @@ const Analytics = (() => {
         const allHits = getPlayerHits();
 
         const charSel = document.getElementById('bpFilterChar');
-        const curChar = charSel.value;
-        const allChars = new Set(allHits.map(ev => getCharName(ev)));
-        charSel.innerHTML = '<option value="">All</option>';
-        [...allChars].sort().forEach(c => {
-            const o = document.createElement('option');
-            o.value = c; o.textContent = c; charSel.appendChild(o);
-        });
-        charSel.value = [...charSel.options].some(o => o.value === curChar) ? curChar : '';
+        fillSelectOptions(charSel, new Set(allHits.map(ev => getCharName(ev))), { keepVal: charSel.value });
 
         // Populate defender filter, default to defender with most hits
         const defSel = document.getElementById('bpFilterDefender');
-        const curDef = defSel.value;
         const defHits = {};
         allHits.forEach(ev => {
             const d = getDefenderName(ev);
             defHits[d] = (defHits[d] || 0) + 1;
         });
-        const allDefs = Object.keys(defHits).sort();
-        defSel.innerHTML = '<option value="">All</option>';
-        allDefs.forEach(d => {
-            const o = document.createElement('option');
-            o.value = d; o.textContent = d; defSel.appendChild(o);
-        });
-        if (!curDef && allDefs.length > 0) {
-            const topDef = Object.entries(defHits).sort((a, b) => b[1] - a[1])[0]?.[0] || '';
-            defSel.value = topDef;
-        } else if ([...defSel.options].some(o => o.value === curDef)) {
-            defSel.value = curDef;
-        }
-
+        fillDefenderSelect(defSel, defHits);
         const defFilterVal = defSel.value;
         const hits = allHits
             .filter(ev => !charSel.value || getCharName(ev) === charSel.value)
@@ -1114,13 +1013,14 @@ const Analytics = (() => {
         // ignored floor(), and made "Your total" disagree with the Damage Share
         // totals. Now we derive the non-crit base from the logged finalDamage so
         // actualTotal is exact and expected/variance use the same base.
+        // One pass builds both the aggregate stats below and the per-hit variance
+        // entries consumed by the Monte Carlo simulation further down.
         let totalBaseDmg = 0;      // Σ base_i  (non-crit damage per hit)
-        let expectedExtra = 0;    // Σ base_i*(cd_i-1)*cr_i
         let actualExtra = 0;      // Σ base_i*(cd_i-1) where isCrit
         let actualTotal = 0;      // Σ logged finalDamage (exact)
-        let varianceSum = 0;
-        let varianceSqSum = 0;
         let critHits = 0;
+        // Variance-carrying entries: { cr, s, varI, mean } (s = base*(cd-1))
+        const entries = [];
 
         for (const ev of hits) {
             const fields = ev._fields;
@@ -1132,20 +1032,22 @@ const Analytics = (() => {
             // This implicitly includes all additive/multiplicative terms and floor.
             const base = (fields.isCrit && cd !== 0 && cd !== 1) ? fd / cd : fd;
             totalBaseDmg += base;
-            const extra = base * (cd - 1); // 0 when cd==1
-            expectedExtra += extra * cr;
-            if (fields.isCrit) { actualExtra += extra; critHits++; }
-            const p = cr, s = extra;
-            const varI = p * (1 - p) * s * s;
-            varianceSum += varI;
-            varianceSqSum += varI * varI;
+            const s = base * (cd - 1); // 0 when cd==1
+            if (fields.isCrit) { actualExtra += s; critHits++; }
+            if (cr && s) {
+                const varI = cr * (1 - cr) * s * s;
+                entries.push({ cr, s, varI, mean: s * cr });
+            }
         }
 
-        if (expectedExtra === 0) {
+        if (!entries.length) {
             container.innerHTML = '<div class="chart-empty">No crit-variable hits (crit rate is 0 or crit damage is 1)</div>';
             return;
         }
 
+        const expectedExtra = entries.reduce((a, e) => a + e.mean, 0);
+        const varianceSum = entries.reduce((a, e) => a + e.varI, 0);
+        const varianceSqSum = entries.reduce((a, e) => a + e.varI * e.varI, 0);
         const stddev = Math.sqrt(Math.max(0, varianceSum));
         const nEff = varianceSum > 0 && varianceSqSum > 0 ? varianceSum * varianceSum / varianceSqSum : 0;
         const expectedTotal = totalBaseDmg + expectedExtra;
@@ -1162,18 +1064,7 @@ const Analytics = (() => {
         // Thousands of hits but 50 dominate variance -> nEff≈50, Normal is too tight
         // and full MC over 3k hits (3k*15k=45M draws) is heavy. We keep only the
         // variance-dominant hits exactly and fold the long tail into a Normal.
-        const allEntries = [];
-        for (const ev of hits) {
-            const f = ev._fields;
-            const cr = f.critRate, cd = f.critDmg ?? 1;
-            if (!cr || cd === 1) continue;
-            const fd = Number((ev.DamageParams||{}).finalDamage)||0;
-            const base = (f.isCrit && cd!==1) ? fd/cd : fd;
-            const s = base*(cd-1);
-            if (!s) continue;
-            const varI = cr*(1-cr)*s*s;
-            allEntries.push({cr, s, varI, mean: s*cr});
-        }
+        const allEntries = entries;
         allEntries.sort((a,b)=>b.varI-a.varI);
         const totalVar = allEntries.reduce((a,e)=>a+e.varI,0);
         // Keep hits covering 99.5% variance, cap at 400 (burst: ~50 kept, rest folded)
@@ -1187,7 +1078,6 @@ const Analytics = (() => {
         }
         // If we pruned nothing, keep is allEntries
         const simEntries = keep.length? keep : allEntries;
-        const keptVarFrac = totalVar? cumVar/totalVar : 1;
         // Adaptive trials based on kept size (not raw N) — burst keeps ~50 -> 30k cheap
         let trials = 30000;
         if (simEntries.length > 300) trials = 20000;
@@ -1227,8 +1117,6 @@ const Analytics = (() => {
             pracErrPct = 1.96*se; // MC sampling 95% CI
             pctLower = Math.max(0, myPct - pracErrPct);
             pctUpper = Math.min(100, myPct + pracErrPct);
-            // annotate how much variance was pruned (for tooltip/debug)
-            // console.log(`[critDist] N=${allEntries.length} kept=${simEntries.length} varKept=${(keptVarFrac*100).toFixed(1)}% trials=${trials}`);
         } else {
             zScore = stddev>0 ? (actualExtra-expectedExtra)/stddev : 0;
             myPct = _normalCdf(zScore)*100;
@@ -1331,10 +1219,8 @@ const Analytics = (() => {
         refreshBuffChart,
         refreshCritDist,
         refreshMetricsTable,
-        onGroupByChange: refreshDmgShareChart,
         onBpViewByChange,
         onBpSrcToggle,
-        refreshDamageTypeChart: refreshDmgShareChart
     };
 })();
 

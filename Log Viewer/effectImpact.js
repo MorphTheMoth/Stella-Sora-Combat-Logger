@@ -82,44 +82,26 @@ function eiResolveEffectDelta(ev, ef) {
 }
 
 // Build a patched { aStats, dStats } that applies `delta` to withOverrides.
-// Only the one stat object that changes is cloned; all others are shared by reference.
+// statMap entries are shared by reference except the one stat that changes,
+// which is cloned (copy-on-write) before dcApplyEffectValue mutates it.
 // coeff: -1 to subtract (remove effect), +1 to add.
 function eiPatchStats(withOverrides, ef, ev, delta, coeff) {
     const isAttacker = ef.side === 'attacker';
     const srcArr   = isAttacker ? withOverrides.aStats : withOverrides.dStats;
     const otherArr = isAttacker ? withOverrides.dStats : withOverrides.aStats;
 
-    let found = false;
-    const newArr = srcArr.map((s, idx) => {
-        if (idx !== delta.attrType) return s; // share reference — no clone needed
-        found = true;
-        const copy = Object.assign({}, s);
-        if (ef.fromAttrDict || [ATTR_FIX, HITTED_ADDITIONAL_ATTR_FIX, PLAYER_ATTR_FIX].includes(ef.effectType)) {
-          if (delta.subType === 1)      { if (ef.isRecordEffect) copy.origin = (copy.origin || 0) + delta.amount * coeff; else copy.base = (copy.base || 0) + delta.amount * coeff; }
-          else if (delta.subType === 2) copy.pct  = (copy.pct  || 0) + delta.amount * coeff;
-          else if (delta.subType === 3) copy.abs  = (copy.abs  || 0) + delta.amount * coeff;
-        } else if (ef.effectType === ELEMENTTYPE_ATTR_FIX) {
-            if (ev.HitConfig.elementType === delta.subType) copy.base = (copy.base || 0) + delta.amount * coeff;
-        } else if (ef.effectType === ELEMENTTYPE_ATTR_PERCENT_FIX) {
-            if (ev.HitConfig.elementType === delta.subType) copy.pct  = (copy.pct  || 0) + delta.amount * coeff;
-        }
-        return copy;
-    });
+    const statMap = new Map(srcArr.map((s, idx) => [idx, s]));
+    const target = statMap.get(delta.attrType);
+    if (target) statMap.set(delta.attrType, Object.assign({}, target));
+    dcApplyEffectValue(statMap, {
+        attrType: delta.attrType,
+        subType: delta.subType,
+        effectType: ef.effectType,
+        isRecord: ef.isRecordEffect,
+        bySubType: !!ef.fromAttrDict,
+    }, delta.amount, coeff, ev.HitConfig.elementType);
 
-    // Stat didn't exist in the array yet — append a new entry.
-    if (!found) {
-        const fresh = { origin: 0, base: 0, pct: 0, abs: 0 };
-        if (ef.fromAttrDict || [ATTR_FIX, HITTED_ADDITIONAL_ATTR_FIX, PLAYER_ATTR_FIX].includes(ef.effectType)) {
-          if (delta.subType === 1)      { if (ef.isRecordEffect) fresh.origin = delta.amount * coeff; else fresh.base = delta.amount * coeff; }
-          else if (delta.subType === 2) fresh.pct  = delta.amount * coeff;
-          else if (delta.subType === 3) fresh.abs  = delta.amount * coeff;
-        } else if (ef.effectType === ELEMENTTYPE_ATTR_FIX) {
-            if (ev.HitConfig.elementType === delta.subType) fresh.base = delta.amount * coeff;
-        } else if (ef.effectType === ELEMENTTYPE_ATTR_PERCENT_FIX) {
-            if (ev.HitConfig.elementType === delta.subType) fresh.pct  = delta.amount * coeff;
-        }
-        newArr.push(fresh);
-    }
+    const newArr = [...statMap.values()];
 
     return isAttacker
         ? { aStats: newArr, dStats: otherArr, _potentialsDisabled: withOverrides._potentialsDisabled }
@@ -154,6 +136,15 @@ function eiGetBaseline() {
 // For each affected hit: resolve the delta once, patch only the changed stat,
 // then recompute. Unaffected hits reuse withDmg directly (zero extra work).
 // Returns { totalWith, totalWithout, hitCount, affectedHits, maxStacks, isAdded }
+// All effect entries a hit carries — attacker + defender + attacker record.
+// Composite rows match against this whole family (potential effects can sit on
+// either side, e.g. Annihilation Echo lowers the boss's resistance).
+function eiEffectFamily(ev) {
+    return (ev.AttackerEffects?.effects || [])
+        .concat(ev.DefenderEffects?.effects || [])
+        .concat(ev.AttackerRecord?.effects || []);
+}
+
 function eiComputeEffect(ef, baseline) {
     let totalWith    = 0;
     let totalWithout = 0;
@@ -168,9 +159,8 @@ function eiComputeEffect(ef, baseline) {
         for (let i = 0; i < baseline.length; i++) {
             const { ev, withOverrides, withDmg } = baseline[i];
             totalWith += withDmg;
-            const evSrc   = ev.source ?? ev.HitConfig?.source ?? '';
             const evSkill = ev.HitConfig?.skillTitle ?? 'Unknown';
-            if (evSrc.includes('Potentials') && evSkill === ef.skillTitle) {
+            if (dcIsPotentialsSource(ev.source ?? ev.HitConfig?.source) && evSkill === ef.skillTitle) {
                 affectedHits++;
                 if (isAdded) {
                     // Group is currently disabled — baseline already has these hits
@@ -216,36 +206,34 @@ function eiComputeEffect(ef, baseline) {
     // disabled-set state:
     //   row disabled  → totalWith = pot-off,  totalWithout = pot-on
     //   row enabled   → totalWith = pot-on,   totalWithout = pot-off
+    // Both directions are computed with a temp disabled set: off = the row's
+    // key added to the disabled set, on = the key removed.
+    // dcGetLevelOverride threads the set through.
+    const bothDirections = (ev) => {
+        const offSet = new Set(dcEffectsDisabled); offSet.add(ef.key);
+        const onSet  = new Set(dcEffectsDisabled); onSet.delete(ef.key);
+        const offDmg = calcDamage(calcHitFields(ev,
+            dcApplyEffectOverrides(ev, offSet, dcEffectLevelOverrides),
+            offSet, dcEffectLevelOverrides), dcBonus, dcDisabled);
+        const onDmg  = calcDamage(calcHitFields(ev,
+            dcApplyEffectOverrides(ev, onSet,  dcEffectLevelOverrides),
+            onSet,  dcEffectLevelOverrides), dcBonus, dcDisabled);
+        return isAdded ? [offDmg, onDmg] : [onDmg, offDmg];
+    };
     if (ef.isPotRow && ef.linkPotential) {
         // Potential effects may sit on either side (e.g. Annihilation Echo
         // lowers the BOSS's resistance → entries in DefenderEffects). Entries
         // match by EXACT effect id (two potentials can share an id bucket).
-        const hasFamily = (ev) => {
-            const fam = (ev.AttackerEffects?.effects || [])
-                .concat(ev.DefenderEffects?.effects || [])
-                .concat(ev.AttackerRecord?.effects || []);
-            return fam.some(e => e.configId != null && dcEffectPot.get(e.configId) === ef.linkPotential.potId);
-        };
-        // Both directions are computed with a temp disabled set: off = the pot
-        // row's key added (emblem bonus excluded from the level formula),
-        // on = the key removed. dcGetLevelOverride threads the set through.
+        const potId = ef.linkPotential.potId;
+        const hasFamily = (ev) =>
+            eiEffectFamily(ev).some(e => e.configId != null && dcEffectPot.get(e.configId) === potId);
         for (let i = 0; i < baseline.length; i++) {
             const { ev, withDmg } = baseline[i];
             if (!hasFamily(ev)) { totalWith += withDmg; totalWithout += withDmg; continue; }
             affectedHits++;
-            const offSet = new Set(dcEffectsDisabled); offSet.add(ef.key);
-            const onSet  = new Set(dcEffectsDisabled); onSet.delete(ef.key);
-            const offOv = dcApplyEffectOverrides(ev, offSet, dcEffectLevelOverrides);
-            const offDmg = calcDamage(calcHitFields(ev, offOv, offSet, dcEffectLevelOverrides), dcBonus, dcDisabled);
-            const onOv  = dcApplyEffectOverrides(ev, onSet,  dcEffectLevelOverrides);
-            const onDmg  = calcDamage(calcHitFields(ev, onOv,  onSet,  dcEffectLevelOverrides), dcBonus, dcDisabled);
-            if (offDmg === onDmg && i === 0) {
-                console.warn('[EI] pot row recompute flat:', ef.name,
-                    '| table rows:', dcPotLevels.size, '| potKey:', ef.key,
-                    '| bonus present:', !dcEffectsDisabled.has(ef.key));
-            }
-            if (isAdded) { totalWith += offDmg; totalWithout += onDmg; }
-            else         { totalWith += onDmg;  totalWithout += offDmg; }
+            const [withD, withoutD] = bothDirections(ev);
+            totalWith += withD;
+            totalWithout += withoutD;
         }
         return { totalWith, totalWithout, hitCount, affectedHits, maxStacks: 1, isAdded };
     }
@@ -276,10 +264,7 @@ function eiComputeEffect(ef, baseline) {
             const hc = ev.HitConfig || {};
             if (hc.levelTypeData === 3 && evChar === charId
                 && dcSkillSlotFor(hc.levelData, hc.mainOrSupport) === slot) return true;
-            const fam = (ev.AttackerEffects?.effects || [])
-                .concat(ev.DefenderEffects?.effects || [])
-                .concat(ev.AttackerRecord?.effects || []);
-            for (const e of fam) {
+            for (const e of eiEffectFamily(ev)) {
                 if (!allowedEffectTypes.includes(e.effectType)) continue;
                 const rawSlot = (e.levelTypeData === 3) ? e.levelData : dcSkillScaled.get(e.configId);
                 if (rawSlot == null) continue;
@@ -301,16 +286,9 @@ function eiComputeEffect(ef, baseline) {
             const { ev, withDmg } = baseline[i];
             if (!hasFamily(ev)) { totalWith += withDmg; totalWithout += withDmg; continue; }
             affectedHits++;
-            const offSet = new Set(dcEffectsDisabled); offSet.add(ef.key);
-            const onSet  = new Set(dcEffectsDisabled); onSet.delete(ef.key);
-            const offDmg = calcDamage(calcHitFields(ev,
-                dcApplyEffectOverrides(ev, offSet, dcEffectLevelOverrides),
-                offSet, dcEffectLevelOverrides), dcBonus, dcDisabled);
-            const onDmg  = calcDamage(calcHitFields(ev,
-                dcApplyEffectOverrides(ev, onSet,  dcEffectLevelOverrides),
-                onSet,  dcEffectLevelOverrides), dcBonus, dcDisabled);
-            if (isAdded) { totalWith += offDmg; totalWithout += onDmg; }
-            else         { totalWith += onDmg;  totalWithout += offDmg; }
+            const [withD, withoutD] = bothDirections(ev);
+            totalWith += withD;
+            totalWithout += withoutD;
         }
         return { totalWith, totalWithout, hitCount, affectedHits, maxStacks: 1, isAdded };
     }
@@ -350,13 +328,8 @@ function eiComputeEffect(ef, baseline) {
 // Build rows for all effects.
 // Baseline is computed once and shared across all eiComputeEffect calls.
 function eiComputeAll() {
-    const t0 = performance.now();
-
     const effects = dcCollectAttrFixEffects(dcFiltered);
-
-    const t1 = performance.now();
     const baseline = eiGetBaseline();
-    const t2 = performance.now();
 
     const rows = effects.map(ef => {
         const { totalWith, totalWithout, hitCount, affectedHits, maxStacks, isAdded } = eiComputeEffect(ef, baseline);
@@ -370,14 +343,6 @@ function eiComputeAll() {
         return { ef, totalWith, totalWithout, dmgDelta, pctImpact, hitCoverage, affectedHits, hitCount, maxStacks, isAdded };
     });
 
-    const t3 = performance.now();
-    console.log(
-        `[EffectImpact] compute done | ` +
-        `collectEffects: ${(t1 - t0).toFixed(1)}ms | ` +
-        `baseline (${baseline.length} hits): ${(t2 - t1).toFixed(1)}ms | ` +
-        `effects (${effects.length}): ${(t3 - t2).toFixed(1)}ms | ` +
-        `total: ${(t3 - t0).toFixed(1)}ms`
-    );
 
     return rows;
 }
@@ -408,11 +373,8 @@ function eiRender() {
     // dcFiltered / dcBonus / dcDisabled / dcEffectsDisabled are always picked up.
     eiInvalidateCache();
 
-    const _eiRenderStart = performance.now();
     setTimeout(() => {
         eiLastData = eiComputeAll();
-        const _eiRenderEnd = performance.now();
-        console.log(`[EffectImpact] tab render total: ${(_eiRenderEnd - _eiRenderStart).toFixed(1)}ms`);
         eiRenderTable();
     }, 0);
 }
@@ -460,20 +422,7 @@ function eiRenderTable() {
     };
 
     // Collect all unique source keys (source name only — groups attacker+defender together)
-    const allSourceKeys = [];
-    const seenKeys = new Set();
-    const sortedForKeys = [...rows].sort((a, b) => {
-        const srcA = a.ef.source ?? 'Unknown';
-        const srcB = b.ef.source ?? 'Unknown';
-        return srcA.localeCompare(srcB);
-    });
-    for (const r of sortedForKeys) {
-        const srcKey = r.ef.source ?? 'Unknown';
-        if (!seenKeys.has(srcKey)) {
-            seenKeys.add(srcKey);
-            allSourceKeys.push({ srcKey, source: r.ef.source ?? 'Unknown' });
-        }
-    }
+    const allSourceKeys = eiCollectSourceKeys(rows.map(r => r.ef));
 
     // ── Sibling grouping (Potentials + Discs) ────────────────────────────────
     // Rows belonging to the same "chain" are sorted as one unit: forced
@@ -495,7 +444,7 @@ function eiRenderTable() {
     for (const r of rows) {
         if (r.ef.isPotentialsGroup) continue;
         const src = r.ef.source ?? '';
-        if (src.includes('Potentials')) {
+        if (dcIsPotentialsSource(src)) {
             addToSiblingGroup(`${src}\u0000${r.ef.name}`, r);
         } else if (src === 'Discs') {
             const nm = r.ef.name ?? '';
@@ -570,16 +519,7 @@ function eiRenderTable() {
 
     // Render source filter chips into sidebar
     const chipsEl = document.getElementById('eiFilterChips');
-    if (chipsEl) {
-        let chipsHtml = '';
-        for (const { srcKey, source } of allSourceKeys) {
-            const active = !eiHiddenSources.has(srcKey);
-            const escapedKey = srcKey.replace(/'/g, "\\'");
-            chipsHtml += `<button class="ei-src-chip ei-chip-src ${active ? 'ei-chip-active' : ''}" onclick="eiToggleSourceFilter('${escapedKey}')">${esc(source)}</button>`;
-        }
-        chipsHtml += `<button class="ei-chip-all" onclick="eiShowAllSources()">All</button>`;
-        chipsEl.innerHTML = chipsHtml;
-    }
+    if (chipsEl) chipsEl.innerHTML = eiSourceChipsHtml(allSourceKeys);
 
     let html = `
     <div class="ei-header-bar">
@@ -679,9 +619,8 @@ function eiRenderTable() {
                 : '';
 
             // First row in group gets the rowspan source cell
-            const escapedSrcKey = srcKey.replace(/'/g, "\\'");
             const sourceCellHtml = j === i
-                ? `<td class="ei-td ei-td-source" rowspan="${groupSize}" onclick="eiToggleSourceFilter('${escapedSrcKey}')"><span class="ei-source-name">${esc(ef.source ?? 'Unknown')}</span></td>`
+                ? `<td class="ei-td ei-td-source" rowspan="${groupSize}" data-ei-src="${esc(srcKey)}"><span class="ei-source-name">${esc(ef.source ?? 'Unknown')}</span></td>`
                 : '';
 
             html += `<tr class="ei-row">
@@ -735,26 +674,44 @@ window.eiToggleZeroGain = function() {
     if (panel && panel.classList.contains('visible') && eiLastData.length) eiRenderTable();
 };
 
+// ─── Source filter chips (shared by the EI table and the Analytics sidebar) ──
+// Unique source keys in sorted order (source name only — attacker+defender
+// grouped together).
+function eiCollectSourceKeys(efs) {
+    const seen = new Set();
+    const allSourceKeys = [];
+    for (const ef of efs) {
+        const srcKey = ef.source ?? 'Unknown';
+        if (!seen.has(srcKey)) { seen.add(srcKey); allSourceKeys.push({ srcKey, source: ef.source ?? 'Unknown' }); }
+    }
+    allSourceKeys.sort((a, b) => a.srcKey.localeCompare(b.srcKey));
+    return allSourceKeys;
+}
+
+function eiSourceChipsHtml(sourceKeys) {
+    let html = '';
+    for (const { srcKey, source } of sourceKeys) {
+        const active = !eiHiddenSources.has(srcKey);
+        html += `<button class="ei-src-chip ei-chip-src ${active ? 'ei-chip-active' : ''}" data-ei-src="${esc(srcKey)}">${esc(source)}</button>`;
+    }
+    return html + `<button class="ei-chip-all" onclick="eiShowAllSources()">All</button>`;
+}
+
+// Delegated clicks for the chip rows and the table's rowspan source cells
+// (data-ei-src replaces the old inline eiToggleSourceFilter('…') strings,
+// which broke on source names containing a quote).
+document.addEventListener('click', e => {
+    const el = e.target.closest('[data-ei-src]');
+    if (el) eiToggleSourceFilter(el.dataset.eiSrc);
+});
+
 // Render the effect-source filter chips into the left sidebar (used by the
 // Analytics tab, which surfaces the Effect Impact source filters too).
 function eiRenderSidebarChips() {
     const chipsEl = document.getElementById('eiFilterChips');
     if (!chipsEl) return;
     const effects = dcCollectAttrFixEffects(dcFiltered);
-    const seen = new Set();
-    const allSourceKeys = [];
-    for (const ef of effects) {
-        const srcKey = ef.source ?? 'Unknown';
-        if (!seen.has(srcKey)) { seen.add(srcKey); allSourceKeys.push({ srcKey, source: ef.source ?? 'Unknown' }); }
-    }
-    let html = '';
-    for (const { srcKey, source } of allSourceKeys) {
-        const active = !eiHiddenSources.has(srcKey);
-        const escapedKey = srcKey.replace(/'/g, "\\'");
-        html += `<button class="ei-src-chip ei-chip-src ${active ? 'ei-chip-active' : ''}" onclick="eiToggleSourceFilter('${escapedKey}')">${esc(source)}</button>`;
-    }
-    html += `<button class="ei-chip-all" onclick="eiShowAllSources()">All</button>`;
-    chipsEl.innerHTML = html;
+    chipsEl.innerHTML = eiSourceChipsHtml(eiCollectSourceKeys(effects));
 }
 
 window.eiOnSearchInput = function() {
