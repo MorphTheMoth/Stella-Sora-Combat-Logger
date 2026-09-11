@@ -4,7 +4,7 @@ How effects, attributes, and snapshots work for actor / weapon / area hits.
 
 > **Update note (2026-08-01):** verified against the post-update binary
 > (`decompiled.c` from the Il2CppInspectorRedux/Ghidra pipeline, RVAs from
-> `out_new/script.json`). The attribute **store moved from
+> `il2cppDumper_out/script.json`). The attribute **store moved from
 > `specialAttributeList` to `attributeList`**, the element/damage-type dict
 > moved from `ActorElementInfo.attributeList` to
 > `ActorInfo.attributeWithElementOrDamageTypeDict`, and `AreaEffectEntity`
@@ -86,15 +86,15 @@ decompiled.c line 3636734 (Execute), line 3637281 (Process)
 Builds `_targets` list based on config, then for each target:
 
 ```c
-BaseAttriFix__Process(__this, actor, value, post=false, method);
+BaseAttriFix_Process(this, actor, value, post=false, method);
 ```
 
 `Process` (when `post=false`) modifies the target's **`attributeList`** (in the old build this was `specialAttributeList`):
 
 ```c
 // decompiled.c line ~3637312
-__this_00 = (actor->fields).attributeList;
-AttributeList__ChangeValue(__this_00,
+this_00 = (actor->fields).attributeList;
+AttributeList_ChangeValue(this_00,
     effectTypeFirstSubtype_,   // attribute type (e.g. 1 = ATK)
     effectTypeSecondSubtype_,  // parameter type (1=base, 2=pct, 3=abs)
     val, method);
@@ -104,7 +104,7 @@ AttributeList__ChangeValue(__this_00,
 
 ```c
 // decompiled.c line 3637237
-AttributeList__ChangeValue(entity->attributeList,
+AttributeList_ChangeValue(entity->attributeList,
     effectTypeFirstSubtype_,
     effectTypeSecondSubtype_,
     negatedValue,
@@ -145,7 +145,7 @@ decompiled.c line 3852999, GetBothAllInfo case default
 ```c
 pAVar6 = static_fields->fromActorTemp;
 pAVar8 = (pAVar6->fields).actorInfo;
-ActorAdditionalAttrInfo__AddFrom(
+ActorAdditionalAttrInfo_AddFrom(
     fromAdditionalAttrInfo,
     pAVar6->attributeList,                       // ← LIVE read every hit
     pAVar8->attributeWithElementOrDamageTypeDict,// element/damage type dict
@@ -162,7 +162,7 @@ decompiled.c line ~3853053, GetBothAllInfo case 2
 
 ```c
 pAVar4 = static_fields->fromWeaponTemp;
-ActorAdditionalAttrInfo__AddFrom(
+ActorAdditionalAttrInfo_AddFrom(
     fromAdditionalAttrInfo,
     pAVar4->attributeList,                        // ← CACHED copy
     pAVar4->attributeWithElementOrDamageTypeDict, // ← CACHED copy
@@ -179,7 +179,7 @@ decompiled.c line ~3853086, GetBothAllInfo case 5
 
 ```c
 pAVar5 = static_fields->fromAreaTemp;
-ActorAdditionalAttrInfo__AddFrom(
+ActorAdditionalAttrInfo_AddFrom(
     fromAdditionalAttrInfo,
     pAVar5->attributeList,                        // ← CACHED copy
     pAVar5->attributeWithElementOrDamageTypeDict, // ← CACHED copy
@@ -195,10 +195,10 @@ decompiled.c line ~3853272
 ```
 
 ```c
-ActorAdditionalAttrInfo__AddFrom(
+ActorAdditionalAttrInfo_AddFrom(
     toAdditionalAttrInfo,
-    __this->attributeList,                       // defender live
-    __this->actorInfo->attributeWithElementOrDamageTypeDict,
+    this->attributeList,                       // defender live
+    this->actorInfo->attributeWithElementOrDamageTypeDict,
     method);
 ```
 
@@ -221,11 +221,11 @@ Resolves the stat source with `ActorHelper_IsUseHitFromSummon(owner)` → the su
 
 ```c
 // 1. attributeList ← source->attributeList
-AttributeList__CopyValueFrom(weapon->attributeList, from, method);
+AttributeList_CopyValueFrom(weapon->attributeList, from, method);
 
 // 2. Skill slot levels → bindSkillSlotLevelInfo
-PlayerSkillCd_o* skillCd = LogicEntity__GetLogicComponent<PlayerSkillCd>(owner);
-SkillSlotLevelInfo__CopyValueFrom(weapon->bindSkillSlotLevelInfo, skillCd, method);
+PlayerSkillCd_o* skillCd = LogicEntity_GetLogicComponent<PlayerSkillCd>(owner);
+SkillSlotLevelInfo_CopyValueFrom(weapon->bindSkillSlotLevelInfo, skillCd, method);
 //    (re-done from the summoner when IsPlayerSummoned(owner))
 
 // 3. Element/damage dict ← source->actorInfo->attributeWithElementOrDamageTypeDict
@@ -245,7 +245,7 @@ Three independently gated copies (each runs on `force` or its own dirty flag, se
 
 ```c
 // 1. _attributeListHasChanged || force
-AttributeList__CopyValueFrom(area->attributeList, source->attributeList);
+AttributeList_CopyValueFrom(area->attributeList, source->attributeList);
 //    source = IsUseHitFromSummon(owner) ? summoner : owner
 
 // 2. _attributeWithElementOrDamageTypeHasChanged || force
@@ -253,7 +253,7 @@ AreaEffectEntity_CopyAttributeWithElementOrDamageType(area);
 //    clears area dict, copies source->actorInfo->attributeWithElementOrDamageTypeDict
 
 // 3. _SkillSlotLevelInfoHasChanged || force
-SkillSlotLevelInfo__CopyValueFrom(area->bindSkillSlotLevelInfo, source->PlayerSkillCd);
+SkillSlotLevelInfo_CopyValueFrom(area->bindSkillSlotLevelInfo, source->PlayerSkillCd);
 ```
 
 **Important:** the source is `_owner_k__BackingField` — NOT `_fxPlayer_k__BackingField`. Since the update, `_fxPlayer` holds a real `AdventureFXPlayer` (MonoBehaviour, not an AdventureActor); only the owner has an `attributeList`. (Old build used `_fxPlayer`, which used to point at the owner actor.)
@@ -302,7 +302,7 @@ The snapshots are copied into a **local** `hitSnapshot` before being passed to `
 
 ---
 
-## 7. Relevant RVAs (new binary, out_new/script.json)
+## 7. Relevant RVAs (new binary, il2cppDumper_out/script.json)
 
 | RVA | Function |
 |-----|----------|
@@ -320,31 +320,33 @@ The snapshots are copied into a **local** `hitSnapshot` before being passed to `
 
 ## 8. Key struct locations in decompiled.c (new binary)
 
+Function names in the current `decompiled.c` use the **Il2CppInspectorRedux** naming style: `Namespace_Class_Method` (single underscore, GNU-demangled). The older decompile used `Class__Method` (double underscore, Il2CppDumper-era) — older docs may cite that style. See `docs/il2cpp-ghidra-pipeline.md`.
+
 | Line | Function |
 |------|----------|
-| 3632860 | `AdventureEffect__Clear` |
-| 3634414 | `AdventureEffect__Execute` |
-| 3635030 | `AdventureEffect__OnInit` |
-| 3635139 | `AdventureEffect__PostExecute` |
-| 3631531 | `AdventureEffectBase__OnClear` |
-| 3636734 | `BaseAttriFix__Execute` |
-| 3637237 | `BaseAttriFix__PostExecute` |
-| 3637281 | `BaseAttriFix__Process` |
-| 4106107 | `AttributeList__ChangeValue` |
-| 4105627 | `AttributeEntry__ChangeValue` |
-| 4106539 | `AttributeList__GetAttributeValue` |
-| 4106263 | `AttributeList__CopyOwnerValue` |
-| 3421999 | `ActorAdditionalAttrInfo__AddFrom` |
-| 3852956 | `AdventureActor__GetBothAllInfo` |
-| 3845313 | `AdventureActor__Damage` (damageTypeTemp resolution) |
-| 4767802 | `AdventureWeapon__Setup` |
-| 4669531 | `AreaEffectEntity__CopyAttributeWithElementOrDamageType` |
-| 4669674 | `AreaEffectEntity__CopyBattleData` |
-| 3612911 | `CommonHelper__CalculateNormalDamage` |
-| 4320137 | `PlayerAdventureActor__SavePlayerAttributeSnapshot` |
-| 4311905 | `MonsterSummonInfo__ParseSummonCfg` |
-| 4116945 | `MonsterAdventureActor__SetPlayerSummonAttrInfoBySnapshot` |
-| 4117202 | `MonsterAdventureActor__SetPlayerSummonAttrInfo` |
+| 3632860 | `AdventureEffect_Clear` |
+| 3634414 | `AdventureEffect_Execute` |
+| 3635030 | `AdventureEffect_OnInit` |
+| 3635139 | `AdventureEffect_PostExecute` |
+| 3631531 | `AdventureEffectBase_OnClear` |
+| 3636734 | `BaseAttriFix_Execute` |
+| 3637237 | `BaseAttriFix_PostExecute` |
+| 3637281 | `BaseAttriFix_Process` |
+| 4106107 | `AttributeList_ChangeValue` |
+| 4105627 | `AttributeEntry_ChangeValue` |
+| 4106539 | `AttributeList_GetAttributeValue` |
+| 4106263 | `AttributeList_CopyOwnerValue` |
+| 3421999 | `ActorAdditionalAttrInfo_AddFrom` |
+| 3852956 | `AdventureActor_GetBothAllInfo` |
+| 3845313 | `AdventureActor_Damage` (damageTypeTemp resolution) |
+| 4767802 | `AdventureWeapon_Setup` |
+| 4669531 | `AreaEffectEntity_CopyAttributeWithElementOrDamageType` |
+| 4669674 | `AreaEffectEntity_CopyBattleData` |
+| 3612911 | `CommonHelper_CalculateNormalDamage` |
+| 4320137 | `PlayerAdventureActor_SavePlayerAttributeSnapshot` |
+| 4311905 | `MonsterSummonInfo_ParseSummonCfg` |
+| 4116945 | `MonsterAdventureActor_SetPlayerSummonAttrInfoBySnapshot` |
+| 4117202 | `MonsterAdventureActor_SetPlayerSummonAttrInfo` |
 
 
 

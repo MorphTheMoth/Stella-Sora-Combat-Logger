@@ -7,7 +7,7 @@
 Each decompiled build lives in a versioned subfolder. Outputs per version:
 
 - `Hotfix.dec.dll` — the decrypted .NET assembly (load it in dnSpy / ILSpy / ilspycmd). Produced by `tools/cdph/cdph_dump.py`.
-- `Hotfix.decompiled.cs` — full decompiled C#. Produced with: `ilspycmd -r <Il2CppDumper>/out_new/DummyDll Hotfix.dec.dll -o .`.
+- `Hotfix.decompiled.cs` — full decompiled C#. Produced with: `ilspycmd -r decompilation/il2cppDumper_out/DummyDll Hotfix.dec.dll -o .`.
 
 | Version | Source | Decompiled C# |
 |---------|--------|----------------|
@@ -34,12 +34,12 @@ python3 ../../tools/cdph/cdph_dump.py "<game>/Persistent_Store/Scripts/Hotfix.dl
 # DummyDll = Il2CppDumper stubs for the game's AOT assemblies (Game, GameFramework,
 # TrueSync, spine-*, Unity...). Without them ILSpy can't resolve referenced types
 # and emits ~70k "Unknown result type (missing references)" comments.
-~/.dotnet/tools/ilspycmd -r "<Il2CppDumper>/out_new/DummyDll" Hotfix.dec.dll -o .
+~/.dotnet/tools/ilspycmd -r "decompilation/il2cppDumper_out/DummyDll" Hotfix.dec.dll -o .
 ```
 
 ## Why the decompile needs the DummyDll references
 
-`Hotfix.dll` references the game's IL2CPP-compiled assemblies (`Game`, `GameFramework`, `TrueSync`, `spine-*`, `UIEffect`, ...) which are not shipped as managed DLLs. ILSpy alone shows `//IL_xxxx: Unknown result type (might be due to invalid IL or missing references)` on any call into them — the IL itself is valid, only the referenced types can't be resolved. Passing `Il2CppDumper/out_new/DummyDll` as a reference path fixes that (70k warnings → 4). The 4 remaining sit in one `FP <= FP` comparison pattern (`ILRuntimeAPI.CalcDistanceBetweenMonsterAndPlayer`) — an ILSpy stack-analysis edge case on TrueSync structs, still readable.
+`Hotfix.dll` references the game's IL2CPP-compiled assemblies (`Game`, `GameFramework`, `TrueSync`, `spine-*`, `UIEffect`, ...) which are not shipped as managed DLLs. ILSpy alone shows `//IL_xxxx: Unknown result type (might be due to invalid IL or missing references)` on any call into them — the IL itself is valid, only the referenced types can't be resolved. Passing `decompilation/il2cppDumper_out/DummyDll` as a reference path fixes that (70k warnings → 4). The 4 remaining sit in one `FP <= FP` comparison pattern (`ILRuntimeAPI.CalcDistanceBetweenMonsterAndPlayer`) — an ILSpy stack-analysis edge case on TrueSync structs, still readable.
 
 ## Asset-bundle layer (hit timing / hitbox / weapons)
 

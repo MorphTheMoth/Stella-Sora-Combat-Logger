@@ -232,10 +232,6 @@ This is why a logger should record at least:
 | A summoned-looking special FX object is a minion    | Confirm `MonsterAdventureActor`, `MonsterSummonInfo`, and `IsPlayerSummoned`.      |
 | `leftTime` controls all summon cleanup              | It controls countdown; `summonRelation` separately affects death cleanup.          |
 
-## Pre-Update Difference
-
-Older notes and `old_decompiled.c` describe a different layout and path. The current binary uses `attributeList`, 0x20-byte entries, and a real snapshot element/damage dictionary. The current authoritative locations are the post-update functions cited above. Treat older `specialAttributeList` or five-field-entry descriptions as historical unless a specific old build is being analyzed.
-
 ## Open Questions
 
 The repository does not yet establish:

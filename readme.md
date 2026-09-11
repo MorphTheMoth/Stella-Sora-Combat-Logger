@@ -45,7 +45,7 @@ In `log_config.json` there are toggles for logging and for enabling hitboxes.
 ## Decompilation & asset extraction
 
 - `decompilation/hotfix/` — versioned HybridCLR hotfix decompilations (`1.13/`, `0.5/`).
-- `decompilation/decompiled.c` — AOT engine from `GameAssembly.dll`.
+- `decompilation/decompiled.c` — AOT engine from `GameAssembly.dll` (Ghidra decompile with types/names applied from Il2CppInspectorRedux — see `docs/il2cpp-ghidra-pipeline.md`).
 - `decompilation/CombatAssetsBundles/` — **extracted Unity asset-bundle data**: per-character `char_*_combos.unity3d` (`ComboGroup_Char_*` → `ComboClip_*` with `comboEvents[]` including `activeNormalizedTimeRange`, `hitBoxShape/Width/Length`, `hitDamageId`; read at `decompiled.c:3425183`), weapon prefabs, monster area effects. Run `extract_combat_bundles.py` + `summarize_combos.py` there; see its `ExtractCombatAssetsBundles.md`. `HitRepeatCatalog` synthetic timing is replaced by these clips.
 
 

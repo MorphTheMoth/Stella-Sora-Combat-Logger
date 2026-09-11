@@ -26,7 +26,7 @@ The datamine is auto-updated and strips unreleased content, so anything not in t
 
 ## Hotfix decompile versions in this repository
 
-`decompilation/hotfix/` holds versioned builds. Each folder contains `Hotfix.dec.dll` (decrypted .NET assembly) and `Hotfix.decompiled.cs` (full C# via `ilspycmd -r <Il2CppDumper>/out_new/DummyDll Hotfix.dec.dll -o .`). See `decompilation/hotfix/README.md` and `decompilation/hotfix/scripts/README.md` for the `CDPH`/Obfuz VM decryption, `opstable.json` extraction, and `scripts/rerun.sh` re-run.
+`decompilation/hotfix/` holds versioned builds. Each folder contains `Hotfix.dec.dll` (decrypted .NET assembly) and `Hotfix.decompiled.cs` (full C# via `ilspycmd -r <Il2CppDumper>/out_new/DummyDll Hotfix.dec.dll -o .` — note the stub assemblies must come from Il2CppDumper's `DummyDll/`; Il2CppInspectorRedux does not emit them). See `decompilation/hotfix/README.md` and `decompilation/hotfix/scripts/README.md` for the `CDPH`/Obfuz VM decryption, `opstable.json` extraction, and `scripts/rerun.sh` re-run.
 
 | Folder | Game build / provenance | Size / lines | Commit | What it contains |
 |---|---|---|---|---|

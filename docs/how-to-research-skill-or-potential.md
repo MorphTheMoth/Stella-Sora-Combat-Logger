@@ -19,7 +19,7 @@ A practical guide for finding what a character's skill / potential / disc actual
 |---|----------|-------------------|
 | 1 | `decompilation/hotfix/<version>/Hotfix.decompiled.cs` (default to the highest version — see `decompilation/hotfix/README.md` and `docs/how-to-research-unreleased-characters.md` version table) | The actual **C# implementation of each character's skills**. Each character's code lives in a namespace named `AIScript.Character._[characterid]01` (e.g. Amber → `AIScript.Character._10301`). This is the hot-update (HybridCLR) assembly, fully decompiled — always use `1.14/Hotfix.decompiled.cs` unless you need to prove historical absence. |
 | 2 | `decompilation/decompiled.c` | Ghidra **C decompile of the combat engine** (the AOT `GameAssembly.dll`): damage math (`CalculateNormalDamage`, `GetBothAllInfo`), effect lifecycle, attribute lists. For when you need to know *how* numbers are computed. |
-| 3 | `decompilation/out_new` | **Il2CppDumper output** (`dump.cs` with every type, `DummyDll` stubs, `script.json`, `il2cpp.h`, `stringliteral.json`). Use it to resolve the C# names of the engine types, protobuf messages (e.g. `HitDamage`), and RVAs. |
+| 3 | `decompilation/il2cppDumper_out` | **Il2CppDumper output** (`dump.cs` with every type, `DummyDll` stubs, `script.json`, `il2cpp.h`, `stringliteral.json`). Use it to resolve the C# names of the engine types, protobuf messages (e.g. `HitDamage`), and RVAs. |
 | 4 | `/home/morph/StellaSoraData` | A separate **datamine project** that dumps and aggregates the game's config tables (`EN/bin/*.json`, `CN/bin/*.json`, ... + translated language files under `EN/language/en_US/`). A lot of useful information here, if you find an id, searching in here will give you the raw data tables. |
 | 5 | `character.json` | **Aggregated description of every character**: their skills, potentials, talents, and fixed stats, with EN/CN/JP/KR text and the effect params already resolved to tooltips. Start here. |
 | 6 | `disc.js` | **Aggregated description of every disc** and its effects. Run it (`node disc.js`) to regenerate `disc.json`; the raw tables are `EN/bin/Disc*.json`. |
@@ -38,7 +38,7 @@ A practical guide for finding what a character's skill / potential / disc actual
 2. **Read the aggregated description** — open `character.json` → `[id]` and read `normalAtk`, `skill`, `supportSkill`, `ultimate`, `potential`.
 3. **Dig into the raw tables** for exact numbers.
 4. **Read the real implementation** in `Hotfix.decompiled.cs` under `AIScript.Character._[id]01`.
-5. **If you need combat math** — check docs/damage_flow_analysis.md grep `decompiled.c` / `out_new/dump.cs`.
+5. **If you need combat math** — check docs/damage_flow_analysis.md grep `decompiled.c` / `il2cppDumper_out/dump.cs`.
 
 The rest of this doc walks each step and explains how the ids connect.
 
@@ -196,12 +196,16 @@ Install on this box: `Link to YostarGames/StellaSora_EN/StellaSora_Data/Streamin
 
 When you need to know *how the damage/effect is computed* (not just what it is):
 
-- **`decompilation/decompiled.c`** — Ghidra C output. Grep for the relevant symbols (`AdventureEffect__Execute`, `AttributeList__GetAttributeValue`, `CommonHelper__CalculateNormalDamage`, `AdventureActor__GetBothAllInfo`, ...). Line numbers / RVAs for the current binary are listed in `docs/damage_flow_analysis.md` §7–8.
-- **`decompilation/out_new`** — Il2CppDumper output:
+- **`decompilation/decompiled.c`** — Ghidra C output. Grep for the relevant symbols (`AdventureEffect_Execute`, `AttributeList_GetAttributeValue`, `CommonHelper_CalculateNormalDamage`, `AdventureActor_GetBothAllInfo`, ...). The current decompile was produced with types/names applied from **Il2CppInspectorRedux** metadata, so function names are `Namespace_Class_Method` (single underscore, e.g. `CommonHelper_CalculateNormalDamage`) — NOT the older `Class__Method` double-underscore style. Line numbers / RVAs for the current binary are listed in `docs/damage_flow_analysis.md` §7–8.
+- **`decompilation/il2cppDumper_out`** (symlink to `dll/Il2CppDumper-net7-v6.7.46/out_new`) — Il2CppDumper output:
   - `dump.cs` — every type from every assembly (`Game.dll`, `GameFramework.dll`, ...) with their field layout and protobuf messages (e.g. the `HitDamage` protobuf). Use it to name the structs behind `decompiled.c`.
-  - `DummyDll/` — stub assemblies ILSpy needs to decompile `Hotfix.dec.dll`.
-  - `script.json` — name → RVA map used by the logger's hooks.
-- Pipeline notes: `docs/il2cpp-ghidra-pipeline.md`.
+  - `DummyDll/` — stub assemblies ILSpy needs to decompile `Hotfix.dec.dll` (Il2CppDumper-only output; Il2CppInspectorRedux does not emit stub assemblies).
+  - `script.json` — name → RVA map used by the logger's hooks (`$$`-style names, e.g. `CommonHelper$$CalculateNormalDamage`).
+- **`decompilation/current/inspector/`** (= `decompilation/versions/1.15/inspector/`, symlinked as `decompilation/il2cppDumper_out` for the Dumper half) — Il2CppInspectorRedux output (same binary as `il2cppDumper_out`; coverage is identical — 400,212 methods, 35,511 string literals):
+  - `metadata.json` — address map with per-method demangled name, C signature, `.NET` signature, and `Assembly/Namespace` grouping. Easiest way to resolve method → RVA or find all methods of a class.
+  - `types.cs` — C# view of all types (same content as `dump.cs`, more compact).
+  - `cpp/appdata/il2cpp-types.h` / `il2cpp-functions.h` — C headers with exact RVAs + signatures (the ones applied to the Ghidra project that produced `decompiled.c`).
+  - Pipeline notes: `docs/il2cpp-ghidra-pipeline.md`.
 
 ---
 
@@ -227,7 +231,7 @@ Discs are **not** character-specific; research them from the datamine:
 3. **Raw hit**: `Skill.json["10331000"]["FCPath"]` → `AIScript.Character._10301.SkillScript_B1_Skill`, and `Param1: HitDamage,DamageNum,103310002` → `HitDamage.json["103310002"]` for the exact `SkillPercentAmend` numbers per level.
 4. **Effect**: the desc's "ATK up" part → `EffectValue.json` (or the buffs in `Buff.json`/`BuffValue.json`) — e.g. `10331001` (`EffectTypeParam1: 0.25`).
 5. **Implementation**: open `Hotfix.decompiled.cs`, jump to `namespace AIScript.Character._10301`, read `SkillScript_B1_Skill` — the sweeps, the reload mechanic, the buff application.
-6. **Damage math**: if needed, `decompiled.c` → `CommonHelper__CalculateNormalDamage` / `AdventureActor__GetBothAllInfo` with types from `out_new/dump.cs`.
+6. **Damage math**: if needed, `decompiled.c` → `CommonHelper_CalculateNormalDamage` / `AdventureActor_GetBothAllInfo` (single-underscore Inspector naming) with types from `il2cppDumper_out/dump.cs` or `decompilation/current/inspector/types.cs`.
 
 ---
 
