@@ -1065,15 +1065,16 @@ window.dcChangeEffectLevel = function(key, direction) {
     if (!ef || ef.configId == null) return;
 
     // Skill-scaled effect (levelTypeData 3): its level lives in the owning
-    // character's skill level table — resolve the shared slot 2 by the
-    // attacker's deployment role, then step that slot's CHANGE so the effect
-    // and its hits move together.
+    // character's skill level table — resolve the shared slot 2 by the owner's
+    // deployment role (record team → log inference) / the config's
+    // MainOrSupport flag, then step that slot's CHANGE so the effect and its
+    // hits move together.
     if (ef.levelTypeData === 3 && ef.levelData != null) {
         // owner-based: effects scale with their owner's skill (see
         // dcGetLevelOverride); once-attr rows with the hit's attacker
         const cid = ef.fromAttrDict ? (ef._charId ?? null) : (dcEffectOwnerCharId(ef.configId) ?? ef._charId);
         if (cid != null) {
-            const slot = dcSkillSlotFor(ef.levelData, null, dcAttackerRoleSlot(cid));
+            const slot = dcEffectSkillSlot(ef.configId, ef.levelData, cid);
             // Lazy record reconstruction (logs without a record log): make sure
             // the slot has a level-table entry before stepping it.
             dcEnsureSkillLevel(cid, slot,

@@ -66,6 +66,20 @@ function effectTypeHasAttr(et) {
 // ─── Level map resolution ─────────────────────────────────────────────────────
 // Looks up a configId in the levelMap (populated from /api/levelmap).
 // Returns { levelTypeData, levelData, allValueConfigIds } or defaults.
+// Fallback level metadata straight from the datamine (Effect.json /
+// OnceAdditionalAttribute.json): configId -> { lt, ld, mos }. Consulted when
+// the DLL's levelMap.txt has no entry for a config (old saved logs captured
+// before the level map existed, or effects never seen live) so skill-scaled
+// rows still resolve their slot. The value ladder itself is derived on demand
+// via deriveLevelCandidates (dmgCalc.calc.js).
+const effectLevelMetaFallback = new Map();
+// Effect.json MainOrSupport flag: 1 = MAINCONTROL (authored under the main
+// skill), 2 = SUPPORT (authored under the support skill — e.g. Tilia's
+// 10795002 belongs to support skill 10732000 while 10793005 belongs to main
+// skill 10731000). Used to pin support-authored effects to the support-skill
+// level row when the owner's deployment role is unknown (no record log).
+const effectMainOrSupport = new Map();
+
 function resolveLevelMap(configId) {
     const entry = levelMap.get(configId);
     if (entry && entry.t !== 'hit') {
@@ -75,8 +89,20 @@ function resolveLevelMap(configId) {
             allValueConfigIds: (entry.vc || []).map(v => ({ level: v.l, valueConfigId: v.v }))
         };
     }
+    const fb = effectLevelMetaFallback.get(configId);
+    if (fb) return { levelTypeData: fb.lt, levelData: fb.ld, allValueConfigIds: [] };
     return { levelTypeData: 0, levelData: 0, allValueConfigIds: [] };
 }
+
+// Datamine hit ladder fallback — hitDamageId -> levelMap-style "hit" entry
+// built from the served HitDamage.json (SkillPercentAmend & co. are the same
+// per-level arrays the DLL captures live). Used when the levelMap has no hit
+// entry: saved logs captured by DLL builds older than the hit-level capture
+// (pre Sep 2025) never got one, so without this fallback their hits can
+// never rescale. NOTE: the levelMap entries are version-accurate for the
+// log they were captured with; the datamine fallback reflects the CURRENT
+// game tables (acceptable for old logs — the logged value itself stays).
+const hitLadderFallback = new Map();
 
 // Looks up a hit config ("t":"hit" levelMap entry, keyed by hitDamageId).
 // Returns the entry ({ lt, ld, sp, sa, tp, ta, ap, pi }) or null.
@@ -85,7 +111,8 @@ function resolveLevelMap(configId) {
 // is that level + 1, so sp[skillLevel - 1] reproduces the game's pick.
 function resolveHitLevelMap(hitDamageId) {
     const entry = levelMap.get(Number(hitDamageId));
-    return (entry && entry.t === 'hit') ? entry : null;
+    if (entry && entry.t === 'hit') return entry;
+    return hitLadderFallback.get(Number(hitDamageId)) || null;
 }
 
 // Skill slot (ActionKey) display names — the slots whose levels scale hits
@@ -772,6 +799,7 @@ function buildActorNameMap(jChar, jMonsterSkin) {
 
 function buildHitTable(jHit, jSkill, jLang, jChar, jPotential, jItemRoot) {
     hitTable.clear();
+    hitLadderFallback.clear();
 
     // Build char map from character.json
     const charMap = {};
@@ -786,6 +814,21 @@ function buildHitTable(jHit, jSkill, jLang, jChar, jPotential, jItemRoot) {
         const charName   = charNameFromMap(charMap, charId);
         let   skillTitle = '?';
         let   hitNum     = 0;
+
+        // Per-level ladder fallback (same shape the DLL writes into the
+        // levelMap "t":"hit" entries via WriteHitDamageLevelMapEntry).
+        if (hitEntry.levelTypeData != null) {
+            hitLadderFallback.set(hitId, {
+                t: 'hit',
+                lt: hitEntry.levelTypeData || 0,
+                ld: hitEntry.LevelData || 0,
+                sp: (hitEntry.SkillPercentAmend || []).map(v => parseInt(v, 10) || 0),
+                sa: (hitEntry.SkillAbsAmend || []).map(v => parseInt(v, 10) || 0),
+                tp: (hitEntry.TalentPercentAmend || []).map(v => parseInt(v, 10) || 0),
+                ta: (hitEntry.TalentAbsAmend || []).map(v => parseInt(v, 10) || 0),
+                ap: [], pi: [],
+            });
+        }
 
         const needle = HIT_DAMAGE_PREFIX + hitId;
         for (const [, sval] of Object.entries(jSkill)) {
@@ -955,6 +998,13 @@ function buildEffectTable(dataFiles) {
             if (!('levelTypeData' in effEntry)) continue;
             const configId = parseInt(key, 10);
             const ldt      = effEntry.levelTypeData;
+            // Level metadata + MainOrSupport fallback (used when the DLL's
+            // levelMap lacks the entry — see resolveLevelMap).
+            effectLevelMetaFallback.set(configId, {
+                lt: ldt || 0,
+                ld: effEntry.LevelData || 0,
+            });
+            if (effEntry.MainOrSupport) effectMainOrSupport.set(configId, effEntry.MainOrSupport);
             // Potential linkage: LevelData points at the potential id whose
             // levels drive this effect. Mapping is by EXACT effect id — two
             // potentials can share a ÷1000 id bucket (e.g. Nazuka's pots 31/33
@@ -1119,6 +1169,13 @@ function buildEffectTable(dataFiles) {
     if (jOnceAttr) {
         for (const [oaKey, oaVal] of Object.entries(jOnceAttr)) {
             const configId = parseInt(oaKey, 10);
+            // Level metadata fallback (no MainOrSupport on once-attr rows).
+            if (configId && oaVal.levelTypeData != null) {
+                effectLevelMetaFallback.set(configId, {
+                    lt: oaVal.levelTypeData || 0,
+                    ld: oaVal.LevelData || 0,
+                });
+            }
             // Potential linkage: same contract as the Effect.json loop —
             // LevelData points at the potential id whose levels drive this
             // once-attr row (e.g. Field Pull 13725001 → 513725, Shattering
@@ -1332,10 +1389,28 @@ function buildOnceAttrValueTable(jOnceAttrValue) {
 
 // ─── buildSkillTable ──────────────────────────────────────────────────────────
 
+// skillId -> { charId, role } for the character's own skills — the deployment
+// role evidence used to resolve the shared ActionKey-B slot when a log has no
+// record log (see dcSharedRoleSlot in dmgCalc.calc.js): a cast/hit of the
+// char's `skill` (SkillId, e.g. Tilia 10731000) proves MAIN deployment,
+// `supportSkill` (AssistSkillId, 10732000) proves SUPPORT deployment — the
+// boot binding is PlayerAdventureActor_SetSkillBind (decompiled.c:4320783):
+// B←SkillId when !isAssist, B←AssistSkillId when isAssist.
+const skillRoleOwner = new Map();
+
 function buildSkillTable(jChar, jSkill, jSkillLang) {
     skillTable.clear();
+    skillRoleOwner.clear();
 
     const kSkillTypes = ['normalAtk', 'skill', 'supportSkill', 'ultimate'];
+
+    // Role evidence map from the character's own skill ids
+    for (const [, cval] of Object.entries(jChar)) {
+        const cid = parseInt(cval.id, 10);
+        if (!cid) continue;
+        if (cval.skill?.id)        skillRoleOwner.set(cval.skill.id,        { charId: cid, role: 2 });
+        if (cval.supportSkill?.id) skillRoleOwner.set(cval.supportSkill.id, { charId: cid, role: 3 });
+    }
 
     // Case 1: character skills from character.json
     for (const [, cval] of Object.entries(jChar)) {
