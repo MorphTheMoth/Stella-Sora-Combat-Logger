@@ -238,7 +238,9 @@ if (dcEffectsPanelEl) dcEffectsPanelEl.addEventListener('click', e => {
 const dcCharsListEl = document.getElementById('dcCharsList');
 if (dcCharsListEl) dcCharsListEl.addEventListener('click', e => {
     const btn = e.target.closest('.dc-char-btn');
-    if (btn && btn.dataset.char) dcToggleChar(btn.dataset.char);
+    if (!btn) return;
+    if (btn.dataset.char) dcToggleChar(btn.dataset.char);
+    else if (btn.dataset.group) dcToggleGroupDisable(btn.dataset.group);
 });
 
 // ─── Effects panel render ─────────────────────────────────────────────────────
@@ -451,7 +453,23 @@ const dcGroupEffectKeys = new Map();
 const dcPotsMaxLvl6 = { active: false, prev: new Map() };
 const dcPotsAllLvl6 = { active: false, prev: new Map() };
 
+// Disc name from a disc effect row's name: "<disc>: Melody|Harmony ..." and
+// "<disc> : Stat n" — the part before the first ':' (same convention as the
+// Effect Impact sibling grouping in effectImpact.js).
+function dcDiscNameOf(name) {
+    if (typeof name !== 'string') return null;
+    const c = name.indexOf(':');
+    return c > 0 ? name.slice(0, c).trim() : null;
+}
+
+// groupKey: 'bossblitz' / 'talents' match by source; 'disc:<name>' matches
+// every Discs-source row belonging to that disc (stat rows + Melody/Harmony
+// buffs). Matchers receive (source, name).
 function dcGroupSourceMatcher(groupKey) {
+    if (groupKey.startsWith('disc:')) {
+        const disc = groupKey.slice(5);
+        return (src, name) => src === 'Discs' && dcDiscNameOf(name) === disc;
+    }
     return groupKey === 'bossblitz'
         ? (src) => src === 'Boss Blitz'
         : (src) => typeof src === 'string' && src.includes('Talents');
@@ -494,7 +512,7 @@ function dcSyncQuickToggles() {
         const matcher = dcGroupSourceMatcher(groupKey);
         const newKeys = new Set();
         for (const ef of dcCollectAttrFixEffectsCached()) {
-            if (matcher(ef.source)) newKeys.add(ef.key);
+            if (matcher(ef.source, ef.name)) newKeys.add(ef.key);
         }
         for (const k of newKeys) dcEffectsDisabled.add(k);
         for (const k of keys) {
@@ -524,7 +542,7 @@ window.dcToggleGroupDisable = function(groupKey) {
         const matcher = dcGroupSourceMatcher(groupKey);
         const keys = new Set();
         for (const ef of dcCollectAttrFixEffectsCached()) {
-            if (matcher(ef.source)) keys.add(ef.key);
+            if (matcher(ef.source, ef.name)) keys.add(ef.key);
         }
         dcGroupEffectKeys.set(groupKey, keys);
         keys.forEach(k => dcEffectsDisabled.add(k));
@@ -591,6 +609,58 @@ const DC_QUICK_TOGGLES = [
         groupKey: 'talents',
     },
 ];
+
+// ── Per-disc quick toggles ────────────────────────────────────────────
+// One toggle per disc that has effects/stat rows in the current filter.
+// Disabling a disc removes ALL of its contributions at once: its
+// "<disc> : Stat n" stat rows (tableResolver.js buildRecordDiscEffects)
+// and its "<disc>: Melody|Harmony N" buff rows (disc-buff decoder), i.e.
+// every effect whose source is 'Discs' and whose name starts with the
+// disc name before the first ':' (dcDiscNameOf).
+// Disc toggles are listed ABOVE the static quick toggles, separated by a
+// divider line, and sorted by the disc's position in the origin record's
+// discStats list (equipped order); discs not in the record fall back to
+// alphabetical after the record ones. They only appear at all when the log
+// has a record log (an Origin event) — without one there is no equipped-disc
+// order to show and no disc stats to toggle.
+function dcQuickToggleList() {
+    const rec = (typeof getOriginRecord === 'function') ? getOriginRecord() : null;
+    if (!rec) return [...DC_QUICK_TOGGLES];   // no record log → no disc toggles
+    const discNames = new Set();
+    for (const ef of dcCollectAttrFixEffectsCached()) {
+        if (ef.source !== 'Discs') continue;
+        const n = dcDiscNameOf(ef.name);
+        if (n) discNames.add(n);
+    }
+    const recOrder = new Map();
+    (rec.discStats || []).forEach((d, i) => {
+        const nm = (typeof resolveRecordDiscName === 'function') ? resolveRecordDiscName(d.id) : null;
+        if (nm && !recOrder.has(nm)) recOrder.set(nm, i);
+    });
+    const discEntries = [...discNames].sort((a, b) => {
+        const ia = recOrder.has(a) ? recOrder.get(a) : Infinity;
+        const ib = recOrder.has(b) ? recOrder.get(b) : Infinity;
+        if (ia !== ib) return ia - ib;
+        return a.localeCompare(b);
+    }).map(disc => {
+        const gkey = `disc:${disc}`;
+        return {
+            label: disc,
+            title: `Disable all effects and stat changes of the disc "${disc}" (stat rows + Melody/Harmony buffs)`,
+            enableStyle: false,
+            strikeWhenActive: true,
+            isActive: () => dcGroupEffectKeys.has(gkey),
+            groupKey: gkey,
+            dataGroup: true,   // routed through the delegated click handler
+        };
+    });
+    // Disc toggles first, then a divider, then the static toggles. The
+    // divider marker is skipped by the delta simulation and rendered as a
+    // separator line by dcRenderCharList; with no disc toggles there is no
+    // divider either.
+    if (!discEntries.length) return [...DC_QUICK_TOGGLES];
+    return [...discEntries, { divider: true }, ...DC_QUICK_TOGGLES];
+}
 
 // Effect keys dcToggleChar would disable for this char: the memoized set if
 // the char was toggled before, otherwise computed the same way (source owned
@@ -687,7 +757,8 @@ function dcComputeCharDeltas(list) {
         // mutated level tables, so no dcCachedHitCalc here and no version
         // bump — the changes are restored in `finally`). Group toggles are
         // simulated with an add/remove disabled-set pass, also direct.
-        for (const t of DC_QUICK_TOGGLES) {
+        for (const t of dcQuickToggleList()) {
+            if (t.divider) continue;   // separator marker — not a toggle
             let totalIf;
             if (t.potsState) {
                 const st = t.potsState();
@@ -763,7 +834,7 @@ function dcSimulateGroupToggle(groupKey, active, baseTotal) {
     } else {
         keys = new Set();
         for (const ef of dcCollectAttrFixEffectsCached()) {
-            if (matcher(ef.source)) keys.add(ef.key);
+            if (matcher(ef.source, ef.name)) keys.add(ef.key);
         }
     }
     const merged = new Set(dcEffectsDisabled);
@@ -772,8 +843,22 @@ function dcSimulateGroupToggle(groupKey, active, baseTotal) {
         else merged.add(k);
     }
     if (merged.size === dcEffectsDisabled.size) return baseTotal;   // toggle changes nothing
+    // A toggle key that drives a level table (potential / skill-slot bonus
+    // row) changes hit scaling globally — its what-if pass must visit every
+    // hit, the fast path below may not skip any.
+    let needsFull = false;
+    for (const k of keys) { if (dcLevelCouplingKeys().has(k)) { needsFull = true; break; } }
     let t = 0;
     for (const ev of dcFiltered) {
+        if (!needsFull) {
+            // Fast path (same assumption as the per-char deltas): dcHitCandidateKeys
+            // is a superset of the keys the hit consults, so a hit that carries none
+            // of the toggle's keys is unaffected — reuse its cached base damage.
+            const cand = dcHitCandidateKeys(ev);
+            let affected = false;
+            for (const k of keys) { if (cand.has(k)) { affected = true; break; } }
+            if (!affected) { t += dcCachedHitCalc(ev).d; continue; }
+        }
         const f = calcHitFields(ev, null, merged, dcEffectLevelOverrides);
         t += calcDamage(f, dcBonus, dcDisabled);
     }
@@ -852,9 +937,12 @@ function dcRenderCharList() {
         </div>`;
     }).join('');
 
-    // ── Quick toggles (below the characters, original layout) ──
+    // ── Quick toggles (below the characters) ──
+    // Per-disc toggles first, then a divider line, then the static
+    // entries (Pots Max/All Lvl 6, Boss Blitz, Talents).
     html += `<div class="dc-quick-sep"></div>`;
-    for (const t of DC_QUICK_TOGGLES) {
+    for (const t of dcQuickToggleList()) {
+        if (t.divider) { html += `<div class="dc-quick-sep"></div>`; continue; }
         const active = t.isActive();
         const strike = t.strikeWhenActive && active;
         const label = t.enableStyle
@@ -869,11 +957,16 @@ function dcRenderCharList() {
         const qStr = qpct != null
             ? `<span class="dc-char-delta" title="Current Total Calc vs Total Calc with this toggle ${active ? 'turned off' : 'applied'} (delta: ${qDelta >= 0 ? '+' : ''}${Math.round(qDelta).toLocaleString()})">${qpct >= 0 ? '+' : ''}${qpct.toFixed(1)}%</span>`
             : '';
+        // Disc toggles ride on data-group (delegated handler) — their names
+        // can contain quotes that would break an inline onclick string.
+        const btnAttrs = t.dataGroup
+            ? `data-group="${esc(t.groupKey)}"`
+            : `onclick="${t.onclick}"`;
         html += `<div class="dc-char-row${strike ? ' disabled' : ''}">
             <span class="dc-char-name" title="${esc(t.title)}">${esc(t.label)}</span>
             ${qStr}
             <span class="dc-char-spacer"></span>
-            <button class="dc-char-btn${active ? ' on' : ''}" onclick="${t.onclick}" title="${esc(t.title)}">${label}</button>
+            <button class="dc-char-btn${active ? ' on' : ''}" ${btnAttrs} title="${esc(t.title)}">${label}</button>
         </div>`;
     }
     // Calculate: recomputes the deltas shown next to the characters and
@@ -1564,6 +1657,15 @@ window.switchTab = function(tab) {
     document.getElementById('dmgCalcPanel').classList.toggle('visible', tab === 'dmgcalc');
     if (tab === 'dmgcalc') {
         dcRefilterAndRender(false);
+    }
+    if (tab === 'effectimpact') {
+        // Entering the Effect Impact page recomputes the Quick Toggles /
+        // character deltas (same as the "Calculate All" button), so the
+        // sidebar percentages are fresh instead of stale or hidden after a
+        // recent non-toggle interaction.
+        dcShowCharDeltas = true;
+        dcRefreshCharDeltas();
+        dcRenderCharList();
     }
     _origSwitchTab(tab);
 };
