@@ -1282,7 +1282,7 @@ typedef void*       (*FnIl2CppObjectGetClass)(void*);
 typedef void*       (*FnIl2CppMethodGetParam)(void* method, uint32_t idx);
 typedef void*       (*FnIl2CppClassFromIl2CppType)(void* type);
 typedef void*       (*FnIl2CppArrayNew)(void* arrayClass, il2cpp_array_size_t length);
-typedef void*       (*FnIl2CppArrayClassGet)(void* elementClass);
+typedef void*       (*FnIl2CppArrayClassGet)(void* elementClass, uint32_t rank);
 
 static FnIl2CppDomainGet              p_domain_get            = nullptr;
 static FnIl2CppDomainGetAssemblies    p_domain_get_assemblies = nullptr;
@@ -1695,7 +1695,7 @@ static std::string RunLuaDoString(const char* chunk, const char* label) {
     if (wantsBytes) {
         void* byteCls = FindIl2CppImageClass("Byte", "System", nullptr, 0, nullptr);
         if (!byteCls) { log("[origin] System.Byte class not found"); return ""; }
-        void* arrCls = p_array_class_get(byteCls);
+        void* arrCls = p_array_class_get(byteCls, 1);
         if (!arrCls) { log("[origin] byte[] class not found"); return ""; }
         size_t len = strlen(chunk);
         void* arr = p_array_new(arrCls, (il2cpp_array_size_t)len);
