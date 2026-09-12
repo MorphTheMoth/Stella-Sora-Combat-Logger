@@ -6,8 +6,28 @@
 let eiSortCol   = 'pctImpact'; // 'name' | 'pctImpact' | 'hitCoverage'
 let eiSortDir   = -1;           // -1 = descending, 1 = ascending
 let eiLastData  = [];           // cached row data for re-sort without recompute
-// Which source groups are hidden (filter-checkboxes); default all visible
+// Which source groups are hidden (filter-checkboxes); some sources start hidden
+// (see eiSourceHiddenByDefault below)
 const eiHiddenSources = new Set();
+// Sources hidden by default: Affinity, every "<char> Emblems", every
+// "<char> Talents" (or "Talents"), Discs (stat rows + Melody/Harmony buffs +
+// bonus-note rows), Notes (SubNoteSkill effects) and Record Stats.
+// Emblem/Talent sources are per-character, so they're matched by suffix/substring.
+function eiSourceHiddenByDefault(srcKey) {
+    if (typeof srcKey !== 'string') return false;
+    return srcKey === 'Affinity' || srcKey.endsWith(' Emblems')
+        || srcKey.includes('Talents') || srcKey === 'Discs'
+        || srcKey === 'Notes' || srcKey === 'Record Stats';
+}
+// User override for default-hidden sources: a chip click on one of them
+// records it here so it stays visible even though the default says hidden.
+const eiShownSources = new Set();
+// Effective hidden check: an explicit chip-hide always hides; a default-hidden
+// source is shown only when the user explicitly re-enabled it.
+function eiIsSourceHidden(srcKey) {
+    if (eiShownSources.has(srcKey)) return false;
+    return eiHiddenSources.has(srcKey) || eiSourceHiddenByDefault(srcKey);
+}
 // Free-text search query used to filter the effect-impact rows by effect
 // name — SHARED with the Dmg Calc sidebar search (fcSearchQuery in
 // filterCore.js; the same #eiSearchInput drives both domains).
@@ -581,7 +601,7 @@ function eiRenderTable() {
         const srcKey = row.ef.source ?? 'Unknown';
 
         // Skip entire source group if filtered out
-        if (eiHiddenSources.has(srcKey)) {
+        if (eiIsSourceHidden(srcKey)) {
             i++;
             while (i < rows.length && (rows[i].ef.source ?? 'Unknown') === srcKey) i++;
             continue;
@@ -695,13 +715,21 @@ function eiRenderTable() {
 }
 
 window.eiToggleSourceFilter = function(srcKey) {
-    if (eiHiddenSources.has(srcKey)) eiHiddenSources.delete(srcKey);
-    else eiHiddenSources.add(srcKey);
+    if (eiIsSourceHidden(srcKey)) {
+        // Show: drop any explicit hide and remember the override when the
+        // source is hidden by default.
+        eiHiddenSources.delete(srcKey);
+        if (eiSourceHiddenByDefault(srcKey)) eiShownSources.add(srcKey);
+    } else {
+        eiHiddenSources.add(srcKey);
+        eiShownSources.delete(srcKey);
+    }
     eiRenderTable();
 };
 
 window.eiShowAllSources = function() {
     eiHiddenSources.clear();
+    eiShownSources.clear();
     eiRenderTable();
 };
 
@@ -733,7 +761,7 @@ function eiCollectSourceKeys(efs) {
 function eiSourceChipsHtml(sourceKeys) {
     let html = '';
     for (const { srcKey, source } of sourceKeys) {
-        const active = !eiHiddenSources.has(srcKey);
+        const active = !eiIsSourceHidden(srcKey);
         html += `<button class="ei-src-chip ei-chip-src ${active ? 'ei-chip-active' : ''}" data-ei-src="${esc(srcKey)}">${esc(source)}</button>`;
     }
     return html + `<button class="ei-chip-all" onclick="eiShowAllSources()">All</button>`;

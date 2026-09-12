@@ -310,6 +310,35 @@ function fcFullPass(domainKey) {
     return out;
 }
 
+// ─── Incremental fold (streaming) ────────────────────────────────────────────
+// Fold ONE event into the domain's option sets and apply the current filters
+// in the same order, and with the same option-set narrowing, as fcFullPass —
+// so the streaming path can append to `filtered` without an O(n) full pass.
+// Returns true when the event passes the domain's filters (caller appends it).
+//   - Option sets only ever GROW here: a new event can't invalidate an
+//     existing filter value, so no canonicalization is needed on this path
+//     (the full pass still owns it).
+//   - Skills fold from events passing type+char, damage types from events
+//     passing type+char+skill, mirroring fcFullPass's narrowing order.
+function fcFoldEvent(ev, domainKey = 'log') {
+    const D = fcDomains[domainKey];
+    const O = D.opts;
+    if (D.folds(ev)) {
+        for (const c of D.charsOf(ev)) O.chars.add(c);
+        for (const d of D.defendersOf(ev))
+            O.defenderWeights.set(d, (O.defenderWeights.get(d) || 0) + D.defenderWeight(ev, d));
+    }
+    if (!D.matchesTypeChar(ev)) return false;
+    const n = D.skillOf(ev);
+    if (n) O.skills.add(n);
+    if (!D.matchesSkill(ev)) return false;
+    const dt = D.dmgTypeOf(ev);
+    if (dt != null) O.dmgTypes.add(dt);
+    if (!D.matchesDmgType(ev)) return false;
+    if (!D.matchesDefender(ev)) return false;
+    return true;
+}
+
 // Full refilter for a domain: canonicalize pre-pass (char/defender), then the
 // cascade pass (skill + damage type canonicalization included).
 function fcRefilterDomain(domainKey) {
@@ -367,6 +396,7 @@ function fcResetFilters() {
     ['charFilter', 'skillFilter', 'damageTypeFilter', 'defenderFilter', 'eiSearchInput'].forEach(id => fcSyncSelect(id, ''));
     // Effect Impact state belongs to the opened log too.
     if (typeof eiHiddenSources !== 'undefined') eiHiddenSources.clear();
+    if (typeof eiShownSources !== 'undefined') eiShownSources.clear();
     if (typeof eiHideZeroGain !== 'undefined') eiHideZeroGain = true;
     const zb = document.getElementById('eiZeroGainBtn');
     if (zb) zb.classList.remove('ei-chip-active');

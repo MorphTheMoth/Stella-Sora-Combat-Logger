@@ -1278,9 +1278,22 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides) {
                 const attrId = er.attrType;
                 if (attrId == null || er.value == null) continue;
                 const count = countMap.get(e.configId) || 1;
-                const lvlOv = dcGetLevelOverride(er, side, dcEffectsDisabled, attackerCharId);
-                const disVal = lvlOv ? lvlOv.newValue : er.value;
-                dcApplyEffectValue(statMap, er, er.value * count, -1, ev.HitConfig.elementType, disVal * count);
+                // Remove the row's LOGGED contribution (er.value at the logged
+                // valueConfigId) — never a level-override value. The raw stats
+                // always contain the effect at the level the game logged
+                // (e.g. potential-scaled entries carry the EFFECTIVE ladder id:
+                // record "pots":[[516009,6,9]] → valueConfigId 16009091), and a
+                // disabled row contributes nothing in every hypothetical, so
+                // the removal must not follow the disabled set's level state.
+                // Feeding dcGetLevelOverride's value here made a disabled
+                // potential's removal shrink whenever a counterfactual set
+                // lowered its level — e.g. an emblem pot row toggled in the
+                // Effect Impact both-directions recompute while the potential
+                // row is disabled too: the level 6→9 value stayed in the
+                // stats, so the emblem appeared to LOWER damage (a phantom
+                // negative Gain%). Same artifact for user ± changes on
+                // disabled rows and for skill/note-scaled disabled rows.
+                dcApplyEffectValue(statMap, er, er.value * count, -1, ev.HitConfig.elementType);
             }
         }
 
