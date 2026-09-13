@@ -235,24 +235,52 @@ function eiComputeEffect(ef, baseline) {
         return { totalWith, totalWithout, hitCount, affectedHits, maxStacks: 1, isAdded };
     }
 
-    // ── Inherited snapshot effects: recompute full aggregation instead of patching ──
-    // Per-effect deltas don't work because inherited effects interact
-    // non-linearly through the aggregation formula. Hits that don't carry the
-    // row's configId are unchanged by the toggle (the key matches nothing) —
-    // only those hits are recomputed now; the rest reuse withDmg.
+    // ── Inherited snapshot effects: closed-form group-delta toggle ──────────
+    // The disable machinery removes inherited rows through the per-(list,
+    // attrType, B, P) group delta -(B*s_pct + s_base*(1+P-s_pct)), with the
+    // sums over the DISABLED occurrences — the marginal contribution of one
+    // row depends on the rest of the disabled set (the s_base*s_pct cross
+    // term), so a constant per-row op would be wrong. The intel's snapByKey
+    // mirror stores each group's occurrences (with their build-time disabled
+    // flags) in machinery accumulation order, so the toggled delta recomputes
+    // exactly: one base op (delta_new − delta_old) per touched group. Hits
+    // not carrying the row's key are unchanged (the key matches no
+    // occurrence) and reuse withDmg.
     if (ef.fromOwnerSnapshot) {
         for (let i = 0; i < baseline.length; i++) {
             const b = baseline[i];
             totalWith += b.withDmg;
             if (b.zeroed) continue;
             affectedHits++;
-            if (!b.deltaIdx.has(ef.side + ':' + ef.configId)) { totalWithout += b.withDmg; continue; }
-            const tempDisabled = new Set(dcEffectsDisabled);
-            if (isAdded) tempDisabled.delete(ef.key);
-            else          tempDisabled.add(ef.key);
-            const altOverrides = dcApplyEffectOverrides(b.ev, tempDisabled, dcEffectLevelOverrides);
-            const altFields = calcHitFields(b.ev, altOverrides);
-            totalWithout += calcDamage(altFields, dcBonus, dcDisabled);
+            const groups = b.intel.snapByKey && b.intel.snapByKey.get(ef.key);
+            if (!groups) { totalWithout += b.withDmg; continue; }
+            const dlist = [];
+            for (let gi = 0; gi < groups.length; gi++) {
+                const g = groups[gi];
+                let oldB = 0, oldP = 0, newB = 0, newP = 0;
+                let anyOld = false, anyNew = false;
+                for (let oi = 0; oi < g.occs.length; oi++) {
+                    const occ = g.occs[oi];
+                    const hit = occ.key === ef.key;
+                    if (occ.dis) {
+                        anyOld = true;
+                        if (occ.st === 1) oldB += occ.v; else if (occ.st === 2) oldP += occ.v;
+                    }
+                    if (hit ? !occ.dis : occ.dis) {
+                        anyNew = true;
+                        if (occ.st === 1) newB += occ.v; else if (occ.st === 2) newP += occ.v;
+                    }
+                }
+                // the machinery only creates a group when ≥1 occurrence is
+                // disabled, so its baseline delta is 0 for empty groups;
+                // the delta expressions mirror dcApplyEffectOverrides exactly
+                const dOld = anyOld ? -(g.B * oldP + oldB * (1 + g.P - oldP)) : 0;
+                const dNew = anyNew ? -(g.B * newP + newB * (1 + g.P - newP)) : 0;
+                const amt = dNew - dOld;
+                if (amt !== 0) dlist.push([g.side, g.attrId, 1, amt]);
+            }
+            if (!dlist.length) { totalWithout += b.withDmg; continue; }
+            totalWithout += ecAnalyticDamage(b.view, dlist, null);
         }
         return { totalWith, totalWithout, hitCount, affectedHits, maxStacks: 1, isAdded };
     }

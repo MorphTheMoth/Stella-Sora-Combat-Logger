@@ -555,15 +555,19 @@ function ecPreanalyzeHit(b, extDisabled) {
     pre.noteAffFam = noteAffFam;
     pre.skillAff = skillAff;
 
-    // ── inherited-snapshot aggregation index (the disable block's first
-    // phase, mirrored exactly): per occurrence its group contribution, and
-    // per (attrId, B, P) group the sums over the DISABLED occurrences. The
-    // Effect Impact's snapshot rows toggle one row's key → the group sums
-    // shift → one base op per touched group.
+    // ── inherited-snapshot index (the disable block's exact mirror): per
+    // (side, list) the (attrId, B, P) groups with their occurrences in list
+    // order, each tagged with its build-time disabled state. The machinery
+    // builds these groups PER LIST, accumulates each group's sums over its
+    // disabled occurrences in exactly this order, then applies
+    // -(B*s_pct + s_base*(1+P-s_pct)) to stat.base. snapByKey maps a row's
+    // toggle key to its groups in machinery application order (list order,
+    // then group insertion), so the Effect Impact's snapshot rows recompute
+    // the group delta for the toggled membership in closed form: one base op
+    // (delta_new − delta_old) per touched group.
     // Also indexes EVERY effect row's resolved delta (the eiResolveEffectDelta
     // mirror) so the per-(effect, hit) delta lookup is O(1).
-    const snapGroups = new Map();   // groupKey → { side, attrId, B, P, s_base, s_pct }
-    const snapRowsAll = new Map();  // rowKey → [occurrence contributions]
+    const snapByKey = new Map();    // rowKey → [groups]
     const deltaIdx = new Map();     // 'side:configId' / 'side:dict:...' → delta | null
     for (const blk of [
         { sideStr: 'attacker', sideNum: 0, lists: [ev.AttackerEffects?.effects, ev.AttackerRecord?.effects] },
@@ -598,28 +602,27 @@ function ecPreanalyzeHit(b, extDisabled) {
             }
             deltaIdx.set(blk.sideStr + ':' + cid, { attrType, subType, amount, stacks: count });
         }
-        // ── inherited-snapshot aggregation (the disable block's first phase) ──
+        // ── inherited-snapshot aggregation (the disable block's first phase,
+        // mirrored per list — the machinery builds its groups inside the
+        // per-list loop) ──
         for (const list of blk.lists) {
-            if (!list?.length) continue;
-            for (const e of list) {
-                if (!allowedEffectTypes.includes(e.effectType)) continue;
-                if (!e.fromOwnerSnapshot || e.baseStatOnSnapshot == null) continue;
-                const key = blk.sideStr + ':' + e.configId + ':' + (e.valueConfigId ?? '');
-                const attrId = e.attrType;
-                if (attrId == null || e.value == null) continue;
-                const B = e.baseStatOnSnapshot, P = e.pctStatOnSnapshot || 0;
-                const groupKey = attrId + ':' + B + ':' + P;
-                let occs = snapRowsAll.get(key);
-                if (!occs) { occs = []; snapRowsAll.set(key, occs); }
-                const occ = { side: blk.sideNum, groupKey, attrId, B, P, e_base: 0, e_pct: 0 };
-                if (e.subType === 1) occ.e_base = e.value;
-                else if (e.subType === 2) occ.e_pct = e.value;
-                occs.push(occ);
-                if ((typeof dcEffectsDisabled !== 'undefined') && dcEffectsDisabled.has(key)) {
-                    let g = snapGroups.get(groupKey);
-                    if (!g) { g = { side: blk.sideNum, attrId, B, P, s_base: 0, s_pct: 0 }; snapGroups.set(groupKey, g); }
-                    if (e.subType === 1) g.s_base += e.value;
-                    else if (e.subType === 2) g.s_pct += e.value;
+            const groups = new Map();
+            if (list?.length) {
+                for (const e of list) {
+                    if (!allowedEffectTypes.includes(e.effectType)) continue;
+                    if (!e.fromOwnerSnapshot || e.baseStatOnSnapshot == null) continue;
+                    const key = blk.sideStr + ':' + e.configId + ':' + (e.valueConfigId ?? '');
+                    const attrId = e.attrType;
+                    if (attrId == null || e.value == null) continue;
+                    const B = e.baseStatOnSnapshot, P = e.pctStatOnSnapshot || 0;
+                    // the machinery's group key: attrId : baseStatOnSnapshot : pctStatOnSnapshot ?? 0
+                    const groupKey = attrId + ':' + B + ':' + (e.pctStatOnSnapshot ?? 0);
+                    let g = groups.get(groupKey);
+                    if (!g) { g = { side: blk.sideNum, attrId, B, P, occs: [] }; groups.set(groupKey, g); }
+                    g.occs.push({ key, st: e.subType, v: e.value, dis: extDisabled.has(key) });
+                    const arr = snapByKey.get(key);
+                    if (arr) { if (arr[arr.length - 1] !== g) arr.push(g); }
+                    else snapByKey.set(key, [g]);
                 }
             }
         }
@@ -647,8 +650,7 @@ function ecPreanalyzeHit(b, extDisabled) {
             deltaIdx.set(key, { attrType, subType, amount, stacks });
         }
     }
-    pre.snapGroups = snapGroups;
-    pre.snapRowsAll = snapRowsAll;
+    pre.snapByKey = snapByKey;
     pre.deltaIdx = deltaIdx;
 
     // ── level-scaled entries + baseline override deltas ──
@@ -809,8 +811,7 @@ function ecBuildIntel(b, pre, ecDis, extDisabled) {
         zeroed: pre.zeroed,
         skillAff: pre.skillAff,
         lv: pre.lv,
-        snapGroups: pre.snapGroups,
-        snapRowsAll: pre.snapRowsAll,
+        snapByKey: pre.snapByKey,
         deltaIdx: pre.deltaIdx,
     };
 

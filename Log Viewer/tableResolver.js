@@ -585,8 +585,8 @@ function enrichHit(ev) {
         const attackerId = parseInt((ev.Attacker || '').split(':')[1], 10);
         // Team members may be numbers or strings depending on the DLL build.
         const team = originRecord.team;
-        const onTeam = team.includes(attackerId) || team.includes(String(attackerId));
-        if (attackerId > 0 && onTeam) {
+        const onTeam = (id) => id > 0 && (team.includes(id) || team.includes(String(id)));
+        if (onTeam(attackerId)) {
             // effects: discs + the attacker's OWN build stats and emblems
             // (calc path — per-hit correct; toggles only touch the attacker's
             // own contributions).
@@ -596,6 +596,29 @@ function enrichHit(ev) {
                 ...buildRecordBuildEffects(originRecord),
                 ...buildRecordEmblemEffects(originRecord, String(attackerId)),
             ] };
+        } else {
+            // Snapshot-inheriting units (minions etc., SummonAttrType 1/2):
+            // their stat snapshot was taken from the owning player, and the
+            // owner's emblems / discs / build stat changes are ALWAYS part of
+            // that snapshot — baked into the collapsed attrs, never logged as
+            // rows. Attach the OWNER's record rows so the dmg calc's toggles
+            // (and the Effect Impact / Emblems Comparison pipelines) cover
+            // these hits too. Enabled rows are no-ops (the contributions are
+            // already inside the snapshot), so this only adds toggleability
+            // — never a double count; the removal writes to stat.base, which
+            // the product formula (origin+base)·(1+pct)+abs honors even
+            // though the snapshot collapsed everything into origin.
+            const ownerStr = (ev.AttackerEffects?.effects || [])
+                .find(e => e.fromOwnerSnapshot && e.owner)?.owner;
+            const ownerId = ownerStr ? parseInt(ownerStr.split(':')[1], 10) : NaN;
+            if (onTeam(ownerId)) {
+                ev.AttackerRecord = { effects: [
+                    ...buildRecordDiscEffects(originRecord),
+                    ...buildRecordDiscNoteEffects(originRecord),
+                    ...buildRecordBuildEffects(originRecord),
+                    ...buildRecordEmblemEffects(originRecord, String(ownerId)),
+                ] };
+            }
         }
     }
 
