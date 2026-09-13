@@ -821,6 +821,85 @@
         .ei-cov-bar-fill { height: 100%; background: #4a7a5a; border-radius: 2px; }
         .ei-empty-row { text-align: center; color: #555; padding: 20px; font-style: italic; }
 
+        /* ── Emblems Comparison panel ── */
+        #ecPanel {
+            display: none; flex: 1; flex-direction: column; overflow: hidden;
+            background: #1a1a1a;
+        }
+        #ecPanel.visible { display: flex; }
+        .ec-note { font-size: 11px; color: #555; font-style: italic; }
+        .ec-scope-sel {
+            margin-left: auto; background: #262626; color: #bbb;
+            border: 1px solid #3a3a3a; border-radius: 4px;
+            font-size: 10px; padding: 2px 4px; outline: none; cursor: pointer;
+        }
+        .ec-scope-sel:hover { border-color: #555; }
+        /* Emblems tab: gray theme for the header chips (no blue) */
+        #ecPanel .ei-src-chip.ei-chip-src {
+            background: #242424; color: #999; border-color: #3a3a3a;
+            opacity: 0.65;
+        }
+        #ecPanel .ei-src-chip.ei-chip-src.ei-chip-active {
+            background: #2e2e2e; color: #ccc; border-color: #5a5a5a;
+            opacity: 1;
+        }
+        #ecPanel .ei-src-chip:hover { opacity: 1; }
+        .ec-scope-btn {
+            margin-left: auto; background: #262626; color: #bbb;
+            border: 1px solid #3a3a3a; border-radius: 4px;
+            font-size: 10px; padding: 2px 8px; outline: none; cursor: pointer;
+            white-space: nowrap;
+        }
+        .ec-scope-btn:hover { border-color: #5a5a5a; color: #ddd; }
+        .ec-rarity-sel {
+            background: #262626; color: #bbb; border: 1px solid #3a3a3a;
+            border-radius: 4px; font-size: 11px; padding: 3px 6px;
+            outline: none; cursor: pointer;
+        }
+        .ec-rarity-sel:hover { border-color: #555; }
+        .ec-cols-wrap { position: relative; margin-left: auto; }
+        .ec-cols-menu {
+            position: absolute; right: 0; top: 100%; z-index: 50;
+            background: #262626; border: 1px solid #3a3a3a; border-radius: 4px;
+            padding: 6px 10px; display: none; min-width: 90px;
+            box-shadow: 0 4px 14px rgba(0,0,0,.5);
+        }
+        .ec-cols-menu label {
+            display: flex; align-items: center; gap: 6px;
+            font-size: 11px; color: #bbb; padding: 3px 0; cursor: pointer; white-space: nowrap;
+        }
+        .ec-tables {
+            display: flex; gap: 8px; align-items: flex-start;
+            padding: 6px 8px 14px;
+        }
+        .ec-table-col {
+            flex: 1 1 0; min-width: 300px;
+            display: flex; flex-direction: column;
+            background: #1d1d1d; border: 1px solid #2a2a2a; border-radius: 6px;
+            overflow: hidden;
+        }
+        .ec-char-title {
+            display: flex; align-items: baseline; gap: 8px;
+            padding: 9px 10px; background: #222;
+            border-bottom: 1px solid #2c2c2c;
+        }
+        .ec-char-name { font-size: 13px; font-weight: 700; color: #ddd; letter-spacing: 0.02em; }
+        .ec-char-sub { font-size: 10px; color: #555; margin-left: auto; white-space: nowrap; }
+        .ec-table-col .ei-table { font-size: 11px; min-width: 0; table-layout: auto; }
+        .ec-table-col .ei-td { padding: 5px 6px; overflow-wrap: break-word; }
+        .ec-table-col .ei-th { padding: 6px; text-align: center; }
+        .ec-table-col .ei-th-name, .ec-table-col .ei-th-num { text-align: center; }
+        .ec-table-col .ei-th-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .ec-table-col .ei-td-name { white-space: normal; }   /* long effect names wrap */
+        .ec-table-col .ei-th-name { width: 100%; }
+        .ec-table-col .ei-th-num { white-space: nowrap; }
+        .ec-table-col .ei-td-num { text-align: center; font-variant-numeric: tabular-nums; white-space: nowrap; }
+        /* subtle bg tint by the line's lowest emblem tier (90 closest to base) */
+        .ec-table-col tr.ec-tier-80 { background: #202727; }
+        .ec-table-col tr.ec-tier-90 { background: #252525; }
+        .ec-table-col tr.ec-tier-80:hover, .ec-table-col tr.ec-tier-90:hover { background: #262626; }
+        .ec-table-col .ei-td-stat { text-align: center; }
+
         /* ── Crit Distribution card ── */
         .cd-summary {
             display: flex; gap: 20px; padding: 8px 4px 10px;
@@ -952,6 +1031,7 @@
                 <button class="tab-btn" id="tabAnalytics" onclick="switchTab('analytics')">Analytics</button>
                 <button class="tab-btn" id="tabDmgCalc" onclick="switchTab('dmgcalc')">Dmg Calc</button>
                 <button class="tab-btn" id="tabEffectImpact" onclick="switchTab('effectimpact')">Effect Impact</button>
+                <button class="tab-btn" id="tabEmblemsComp" onclick="switchTab('emblemscomp')">Emblems</button>
                 <button class="tab-btn" id="tabRecord" onclick="switchTab('record')">Record</button>
             </div>
             <div class="stats" id="stats"></div>
@@ -1155,6 +1235,10 @@
             <!-- rendered by effectImpact.js -->
         </div>
 
+        <div id="ecPanel">
+            <!-- rendered by emblemsComparison.js -->
+        </div>
+
         <div id="recordPanel">
             <!-- rendered by record.js -->
         </div>
@@ -1195,6 +1279,7 @@
     <script src="dmgCalc.calc.js"></script>
     <script src="dmgCalc.ui.js"></script>
     <script src="effectImpact.js"></script>
+    <script src="emblemsComparison.js"></script>
     <script src="record.js"></script>
 </div>
 <div id="quickSwap">

@@ -1270,6 +1270,8 @@ function dcRefreshEI() {
     if (el && el.classList.contains('visible') && typeof eiRender === 'function') {
         eiRender();
     }
+    // Emblems Comparison tab shares the same calc state — refresh it too.
+    if (typeof ecRefreshIfVisible === 'function') ecRefreshIfVisible();
 }
 
 // ── Shared processed hits for Analytics ────────────────────────────────────────
@@ -1665,7 +1667,7 @@ window.dcRefreshIfVisible = function() {
 
         document.getElementById('stats').textContent = `${dcFiltered.length} hits`;
         dcVL.render();
-    } else if (typeof activeTab !== 'undefined' && (activeTab === 'analytics' || activeTab === 'effectimpact')) {
+    } else if (typeof activeTab !== 'undefined' && (activeTab === 'analytics' || activeTab === 'effectimpact' || activeTab === 'emblemscomp')) {
         // Keep the shared right sidebar (totals, char list, effects panel) and
         // the effect-source chips fresh while the Dmg Calc panel itself is hidden.
         dcFiltered = dcApplyFilters();

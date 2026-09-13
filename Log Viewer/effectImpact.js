@@ -790,8 +790,10 @@ window.eiOnSearchInput = function() {
     fcSearchQuery = v;
     const dcVisible = document.getElementById('dmgCalcPanel').classList.contains('visible');
     const eiVisible = document.getElementById('eiPanel').classList.contains('visible');
+    const ecVisible = document.getElementById('ecPanel')?.classList.contains('visible');
     if (dcVisible) dcRefilterAndRender(true);
     if (eiVisible) eiRenderTable();
+    if (ecVisible && typeof ecRenderTable === 'function') ecRenderTable();
     if (typeof activeTab !== 'undefined' && activeTab === 'analytics' && typeof Analytics !== 'undefined') Analytics.refresh();
 };
 

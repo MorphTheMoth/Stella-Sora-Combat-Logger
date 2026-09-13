@@ -584,7 +584,7 @@ window.switchTab = function(tab) {
     }
     // Merged sidebar: one filter section, with per-domain rows shown/hidden.
     const isLogDomain = tab === 'log' || tab === 'record';
-    const isHitsDomain = tab === 'dmgcalc' || tab === 'effectimpact' || tab === 'analytics';
+    const isHitsDomain = tab === 'dmgcalc' || tab === 'effectimpact' || tab === 'emblemscomp' || tab === 'analytics';
     const sbFilters = document.getElementById('sidebarFilters');
     if (sbFilters) sbFilters.classList.toggle('hidden', tab === 'record');
     const logTypeRow = document.getElementById('logTypeRow');

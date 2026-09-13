@@ -254,6 +254,7 @@ window.resetRecordState = function () {
     originRecord = null;
     if (typeof dcResetSimState === 'function') dcResetSimState();
     if (typeof eiInvalidateCache === 'function') eiInvalidateCache();
+    if (typeof ecResetState === 'function') ecResetState();
     const panel = document.getElementById('recordPanel');
     if (panel && panel.classList.contains('visible') && window.Record) window.Record.render();
 };
@@ -1639,6 +1640,11 @@ async function initTables() {
                 first:    v.AttrTypeFirstSubtype != null ? parseInt(v.AttrTypeFirstSubtype, 10) : null,
                 second:   v.AttrTypeSecondSubtype != null ? parseInt(v.AttrTypeSecondSubtype, 10) : null,
                 value:    v.Value != null && v.Value !== '' ? parseFloat(v.Value) : null,
+                // kept for the emblems comparison tab: the emblem tier (70/80/90)
+                // the line belongs to + the roll tier (+1/+2/+3/+4)
+                typeId:   v.TypeId != null ? parseInt(v.TypeId, 10) : null,
+                level:    v.Level != null ? parseInt(v.Level, 10) : null,
+                rarity:   v.Rarity != null ? 5 - parseInt(v.Rarity, 10) : null,   // Rarity 1 = rainbow (best, L4) … 4 = green → stored as rank 1 green / 2 blue / 3 gold / 4 rainbow
             });
         }
     }
