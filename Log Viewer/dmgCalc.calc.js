@@ -1181,8 +1181,13 @@ function dcApplyEffectValue(statMap, eff, value, sign, hitElementType, overrideV
 // ─── Effect overrides ─────────────────────────────────────────────────────────
 // Apply disabled effects to a cloned copy of the stat arrays.
 // dcEffectLevelOverrides: Map<key, {newValueConfigId,newValue,newAttrType,newSubType}>
+// skipLevelOverrides: when true, the level-override block is skipped entirely —
+// the caller gets ONLY the disable-block result (raw stats minus every row
+// whose key is in the disabled set, snapshot aggregation included). The
+// Emblems Comparison's analytic engine uses this to get the "disable-only"
+// baseline state it patches candidate level deltas onto.
 // Returns { aStats, dStats } (clones with modifications applied).
-function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides) {
+function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides, skipLevelOverrides) {
     const origA = ev.AttackerStats?.attrs || [];
     const origD = ev.DefenderStats?.attrs || [];
     // ── Disabled character ──────────────────────────────────────────────
@@ -1317,7 +1322,7 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides) {
     // ── Level overrides ──────────────────────────────────────────────
     // For effects with a level override (and not disabled), remove old
     // contribution and add the new level's contribution.
-    if ((dcEffectLevelOverrides && dcEffectLevelOverrides.size > 0) || dcPotLevels.size > 0 || dcSkillLevels.size > 0 || dcNoteLevels.size > 0) {
+    if (!skipLevelOverrides && ((dcEffectLevelOverrides && dcEffectLevelOverrides.size > 0) || dcPotLevels.size > 0 || dcSkillLevels.size > 0 || dcNoteLevels.size > 0)) {
         for (const { side, list, attrDict, statMap } of sides) {
             // effects
             if (list?.length) {

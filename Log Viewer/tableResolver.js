@@ -1519,7 +1519,76 @@ function buildSkillTable(jChar, jSkill, jSkillLang) {
 
 // ─── Public init ─────────────────────────────────────────────────────────────
 
+// ─── Built-table cache (IndexedDB) ───────────────────────────────────────
+// All module-level Maps initTables populates. Values are plain objects /
+// strings / Sets — structured-clone-safe, and no map references another.
+// (potEffectIds holds Sets; structured clone preserves them.)
+const EC_DATA_VERSION = '1';
+const EC_DATA_IDB = 'stella-table-cache';
+const EC_DATA_TABLES = [
+    actorNameMap, hitTable, effectTable, effectValueTable, onceAttrValueTable,
+    effectLevelMetaFallback, effectMainOrSupport, hitLadderFallback, skillTable,
+    discLangNames, discBonusNotesById, subNoteNamesById, subNoteEffectIdByNote,
+    gemAttrValueById, potentialById, potentialEffectFamily, effectIdPot,
+    potEffectIds, potentialNameById, skillRoleOwner,
+];
+
+function ecIdbOpen() {
+    return new Promise((resolve, reject) => {
+        const req = indexedDB.open(EC_DATA_IDB, 1);
+        req.onupgradeneeded = () => { if (!req.result.objectStoreNames.contains('kv')) req.result.createObjectStore('kv'); };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+    });
+}
+
+async function ecRestoreTables() {
+    const db = await ecIdbOpen();
+    const data = await new Promise((resolve, reject) => {
+        const tx = db.transaction('kv', 'readonly');
+        const req = tx.objectStore('kv').get('tables-v' + EC_DATA_VERSION);
+        req.onsuccess = () => resolve(req.result ?? null);
+        req.onerror = () => reject(req.error);
+    });
+    db.close();
+    if (!data || !Array.isArray(data.tables) || data.tables.length !== EC_DATA_TABLES.length) return false;
+    for (let i = 0; i < EC_DATA_TABLES.length; i++) {
+        const map = EC_DATA_TABLES[i];
+        map.clear();
+        for (const [k, v] of data.tables[i]) map.set(k, v);
+    }
+    console.log('[tableResolver] built tables restored from cache (v' + EC_DATA_VERSION + ', ' +
+        data.tables.reduce((s, m) => s + m.length, 0) + ' entries) — datamine fetch skipped');
+    return true;
+}
+
+async function ecSaveTables() {
+    const data = { tables: EC_DATA_TABLES.map(m => Array.from(m.entries())) };
+    const db = await ecIdbOpen();
+    await new Promise((resolve, reject) => {
+        const tx = db.transaction('kv', 'readwrite');
+        tx.objectStore('kv').put(data, 'tables-v' + EC_DATA_VERSION);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+}
+
+// ─── Public init ─────────────────────────────────────────────────────────
 async function initTables() {
+    // ── Built-table cache (IndexedDB) ──
+    // initTables rebuilds every table from ~22 MB of datamine JSON on every
+    // page load (~2.8 s in the build code alone). The built tables are pure
+    // derivatives of the datamine, so they are snapshotted into IndexedDB
+    // (structured clone keeps Maps and Sets intact) and restored on the next
+    // load. Bump EC_DATA_VERSION when the datamine changes — the next load
+    // refetches + rebuilds once and re-snapshots.
+    if (typeof indexedDB !== 'undefined' && indexedDB) {
+        try {
+            if (await ecRestoreTables()) return;
+        } catch (e) { /* cache unavailable → fetch + build as before */ }
+    }
+
     // NOTE: the data root is fixed to the DLL server's API prefix (_dataRoot);
     // callers pass no argument (the old dataRoot parameter was never used).
     const bin  = `${_dataRoot}EN/bin/`;
@@ -1691,4 +1760,9 @@ async function initTables() {
 
     buildSkillTable(jChar, jSkill, jSkillLang);
 
+    // Snapshot the built tables for the next page load (best effort — on any
+    // failure the next load just rebuilds from the datamine).
+    if (typeof indexedDB !== 'undefined' && indexedDB) {
+        try { ecSaveTables(); } catch (e) { /* ignore */ }
+    }
 }

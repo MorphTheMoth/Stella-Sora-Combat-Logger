@@ -138,18 +138,50 @@ function eiInvalidateCache() {
     _eiBaselineCache = null;
 }
 
+// The intel baseline is only valid while the calc state it was built from is
+// unchanged: the disabled-effect set (eiInvalidateCache runs on every render,
+// but direct eiComputeEffect callers bypass it) and the calc version (field
+// toggles / bonuses bump dcStateVersion). Checked on every eiGetBaseline.
+function eiBaselineSig() {
+    return dcStateVersion + '#' + [...dcEffectsDisabled].sort().join('|');
+}
+
 function eiGetBaseline() {
-    if (_eiBaselineCache) return _eiBaselineCache;
+    const sig = eiBaselineSig();
+    if (_eiBaselineCache && _eiBaselineCache.sig === sig) return _eiBaselineCache.cache;
+
+    // Per-hit intel (the Emblems Comparison's engine, built for THIS tab's
+    // disabled set): the disable-only stat state, every level-scaled entry
+    // with its ladder + baseline override, the affected sets, the resolved
+    // per-configId deltas and the inherited-snapshot aggregation. The
+    // 'potentials:*' group keys are stripped for the machinery pass so
+    // zeroed Potentials hits still get a full intel (their enabled-state
+    // damage = intel.baseDmg) — the group keys are not effect keys, so the
+    // disable removals and the level resolution are identical either way.
+    const setMinusPot = new Set();
+    for (const k of dcEffectsDisabled) if (!k.startsWith('potentials:')) setMinusPot.add(k);
 
     const cache = new Array(dcFiltered.length);
     for (let i = 0; i < dcFiltered.length; i++) {
         const ev = dcFiltered[i];
-        const withOverrides = dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides);
-        const withFields    = calcHitFields(ev, withOverrides, null, dcEffectLevelOverrides);
-        const withDmg       = calcDamage(withFields, dcBonus, dcDisabled);
-        cache[i] = { ev, withOverrides, withDmg };
+        const b = { ev, disOnly: null, dead: false, charId: dcEventCharId(ev), intel: null, dmg: 0, fields: null, statIntel: null };
+        b.disOnly = dcApplyEffectOverrides(ev, setMinusPot, dcEffectLevelOverrides, true);
+        const pre = ecPreanalyzeHit(b, setMinusPot);
+        b.intel = ecBuildIntel(b, pre, dcDisabled, setMinusPot);
+        cache[i] = {
+            ev,
+            // the naive withDmg: zeroed Potentials hits contribute 0
+            withDmg: b.intel.zeroed ? 0 : b.dmg,
+            // the baseline-state view (factors + stat arrays) for the
+            // closed-form evaluations
+            view: b.statIntel,
+            intel: b.intel,
+            zeroed: !!b.intel.zeroed,
+            potGroup: b.intel.potGroup ?? null,
+            deltaIdx: b.intel.deltaIdx,
+        };
     }
-    _eiBaselineCache = cache;
+    _eiBaselineCache = { sig, cache };
     return cache;
 }
 
@@ -160,216 +192,194 @@ function eiGetBaseline() {
 // All effect entries a hit carries — attacker + defender + attacker record.
 // Composite rows match against this whole family (potential effects can sit on
 // either side, e.g. Annihilation Echo lowers the boss's resistance).
+// Memoized on the event: the three source lists are attached once at enrich
+// time and never mutated afterwards, so the concat result is stable. The
+// Emblems Comparison's preanalysis walks this per hit — without the cache it
+// re-allocates the merged array for every hit of every pass (×58k concats in
+// one compute on the profile log).
 function eiEffectFamily(ev) {
-    return (ev.AttackerEffects?.effects || [])
+    let fam = ev._eiEffectFamily;
+    if (fam) return fam;
+    fam = (ev.AttackerEffects?.effects || [])
         .concat(ev.DefenderEffects?.effects || [])
         .concat(ev.AttackerRecord?.effects || []);
+    ev._eiEffectFamily = fam;
+    return fam;
 }
 
 function eiComputeEffect(ef, baseline) {
-    let totalWith    = 0;
+    let totalWith = 0;
     let totalWithout = 0;
-    let hitCount     = baseline.length;
+    const hitCount = baseline.length;
     let affectedHits = 0;
-    let maxStacks    = 1;
+    let maxStacks = 1;
 
     const isAdded = dcEffectsDisabled.has(ef.key);
 
     // ── Potentials hit-group: zero matching hits rather than patching a stat ──
+    // The zeroed direction contributes 0; the enabled direction is the
+    // machinery state (disable-only + level-override ops) = intel.baseDmg,
+    // precomputed per hit — no recompute needed.
     if (ef.isPotentialsGroup) {
         for (let i = 0; i < baseline.length; i++) {
-            const { ev, withOverrides, withDmg } = baseline[i];
-            totalWith += withDmg;
-            const evSkill = ev.HitConfig?.skillTitle ?? 'Unknown';
-            if (dcIsPotentialsSource(ev.source ?? ev.HitConfig?.source) && evSkill === ef.skillTitle) {
+            const b = baseline[i];
+            totalWith += b.withDmg;
+            if (b.potGroup === ef.skillTitle) {
                 affectedHits++;
-                if (isAdded) {
-                    // Group is currently disabled — baseline already has these hits
-                    // zeroed. Recompute with this group's key temporarily removed from
-                    // dcEffectsDisabled so all other disabled effects are still applied.
-                    const tempDisabled = new Set(dcEffectsDisabled);
-                    tempDisabled.delete(ef.key);
-                    const activeOverrides = dcApplyEffectOverrides(ev, tempDisabled, dcEffectLevelOverrides);
-                    const fullFields = calcHitFields(ev, activeOverrides, tempDisabled, dcEffectLevelOverrides);
-                    totalWithout += calcDamage(fullFields, dcBonus, dcDisabled);
-                }
+                if (isAdded) totalWithout += b.intel.baseDmg;
                 // else: group is active — "without" means exclude → contribute 0
             } else {
-                totalWithout += withDmg;
+                totalWithout += b.withDmg;
             }
         }
         return { totalWith, totalWithout, hitCount, affectedHits, maxStacks: 1, isAdded };
     }
 
     // ── Inherited snapshot effects: recompute full aggregation instead of patching ──
-    // Per-effect deltas don't work because inherited effects interact non-linearly
-    // through the aggregation formula: -(B*e_pct + e_base*(1+P-e_pct)).
+    // Per-effect deltas don't work because inherited effects interact
+    // non-linearly through the aggregation formula. Hits that don't carry the
+    // row's configId are unchanged by the toggle (the key matches nothing) —
+    // only those hits are recomputed now; the rest reuse withDmg.
     if (ef.fromOwnerSnapshot) {
         for (let i = 0; i < baseline.length; i++) {
-            const { ev, withOverrides, withDmg } = baseline[i];
-            totalWith += withDmg;
-            if (withOverrides._potentialsDisabled) continue;
+            const b = baseline[i];
+            totalWith += b.withDmg;
+            if (b.zeroed) continue;
             affectedHits++;
+            if (!b.deltaIdx.has(ef.side + ':' + ef.configId)) { totalWithout += b.withDmg; continue; }
             const tempDisabled = new Set(dcEffectsDisabled);
             if (isAdded) tempDisabled.delete(ef.key);
             else          tempDisabled.add(ef.key);
-            const altOverrides = dcApplyEffectOverrides(ev, tempDisabled, dcEffectLevelOverrides);
-            const altFields    = calcHitFields(ev, altOverrides);
+            const altOverrides = dcApplyEffectOverrides(b.ev, tempDisabled, dcEffectLevelOverrides);
+            const altFields = calcHitFields(b.ev, altOverrides);
             totalWithout += calcDamage(altFields, dcBonus, dcDisabled);
         }
         return { totalWith, totalWithout, hitCount, affectedHits, maxStacks: 1, isAdded };
     }
 
-    // ── Emblem pot rows: composite impact ─────────────────────────────────
+    // ── Emblem pot rows: composite impact (both directions) ────────────────
     // A pot row has no stat of its own — disabling it lowers EVERY effect
-    // entry from that potential. Compute BOTH directions explicitly (pot
-    // forced off vs forced on) so the delta cannot be masked by ambient
-    // disabled-set state:
-    //   row disabled  → totalWith = pot-off,  totalWithout = pot-on
-    //   row enabled   → totalWith = pot-on,   totalWithout = pot-off
-    // Both directions are computed with a temp disabled set: off = the row's
-    // key added to the disabled set, on = the key removed.
-    // dcGetLevelOverride threads the set through.
-    const bothDirections = (ev) => {
-        const offSet = new Set(dcEffectsDisabled); offSet.add(ef.key);
-        const onSet  = new Set(dcEffectsDisabled); onSet.delete(ef.key);
-        const offDmg = calcDamage(calcHitFields(ev,
-            dcApplyEffectOverrides(ev, offSet, dcEffectLevelOverrides),
-            offSet, dcEffectLevelOverrides), dcBonus, dcDisabled);
-        const onDmg  = calcDamage(calcHitFields(ev,
-            dcApplyEffectOverrides(ev, onSet,  dcEffectLevelOverrides),
-            onSet,  dcEffectLevelOverrides), dcBonus, dcDisabled);
-        return isAdded ? [offDmg, onDmg] : [onDmg, offDmg];
-    };
+    // entry from that potential. One direction is the hit's current state
+    // (= withDmg); the other is a level move of the potential's level table,
+    // evaluated in closed form (ecLevelNetDamage) like the Emblems
+    // Comparison's candidate rows.
     if (ef.isPotRow && ef.linkPotential) {
-        // Potential effects may sit on either side (e.g. Annihilation Echo
-        // lowers the BOSS's resistance → entries in DefenderEffects). Entries
-        // match by EXACT effect id (two potentials can share an id bucket).
         const potId = ef.linkPotential.potId;
-        const hasFamily = (ev) =>
-            eiEffectFamily(ev).some(e => e.configId != null && dcEffectPot.get(e.configId) === potId);
+        const st = dcPotLevels.get(potId);
+        const rec = st ? st.recordLv : 0;
+        const bonus = st ? st.bonus : 0;
+        const change = st ? (st.change || 0) : 0;
         for (let i = 0; i < baseline.length; i++) {
-            const { ev, withDmg } = baseline[i];
-            if (!hasFamily(ev)) { totalWith += withDmg; totalWithout += withDmg; continue; }
+            const b = baseline[i];
+            // hasFamily mirror: the EI pot-row test scans eiEffectFamily only
+            if (!b.intel.potAffFam.has(potId)) { totalWith += b.withDmg; totalWithout += b.withDmg; continue; }
             affectedHits++;
-            const [withD, withoutD] = bothDirections(ev);
-            totalWith += withD;
-            totalWithout += withoutD;
+            // zeroed Potentials hits: bothDirections recomputes under a set
+            // that still carries the group key → both directions are 0
+            if (b.zeroed) continue;
+            totalWith += b.withDmg;
+            // the row's level table toggled: on = the bonus active, off = dropped
+            const Lother = isAdded
+                ? Math.min(Math.max(rec + bonus + change, 0), 9)
+                : Math.min(Math.max(rec + change, 0), 9);
+            totalWithout += ecLevelNetDamage(b.view, 'pot', potId, Lother);
         }
         return { totalWith, totalWithout, hitCount, affectedHits, maxStacks: 1, isAdded };
     }
 
     // ── Emblem skill rows: composite impact ─────────────────────────────────
-    // A skill-affix shortcut row (buildRecordEmblemEffects configId 950000000
-    // + teamIdx*100000 + gemIdx*100 + gemSlot, display-only, no stat of its
-    // own) removes the emblem's +lv from the skill-level table when disabled
-    // (dcSkillRowBonus → dcSkillEffectiveLevel). That rescales every hit and
-    // skill-scaled effect entry resolving through that char+slot, so like the
-    // pot rows the impact is computed as an explicit both-directions recompute
-    // (off = key added to the disabled set, on = key removed).
+    // A skill-affix shortcut row (configId 950000000 + teamIdx*100000 +
+    // gemIdx*100 + gemSlot) removes the emblem's +lv from the skill-level
+    // table when disabled. The toggle is a level move of the char+slot's
+    // skill table → closed form.
     if (ef.displayOnly && ef.configId >= 950000000 && ef.configId < 960000000) {
         const charId = ef._charId != null ? Number(ef._charId) : null;
         const gemSlot = (ef.configId - 950000000) % 100;
-        // gem affix slot 1..4 → skillSlotType / ActionKey (5=Normal, 2=Skill,
-        // 3=Assist, 4=Ult) — same mapping the level table builds with.
         const slot = (typeof GEM_SLOT_TO_ACTION !== 'undefined' ? GEM_SLOT_TO_ACTION[gemSlot]
             : ({ 1: 5, 2: 2, 3: 3, 4: 4 })[gemSlot]) ?? gemSlot;
-        const slotOf = (rawSlot, owner) =>
-            dcSkillSlotFor(rawSlot, null, dcAttackerRoleSlot(owner)) === slot;
-        // A hit is affected when its own level scaling goes through the
-        // char+slot (levelTypeData 3 hits) OR it carries a skill-scaled
-        // effect/once-attr entry owned by the char whose slot resolves here —
-        // the same resolution dcGetLevelOverride applies.
-        const hasFamily = (ev) => {
-            const evChar = dcEventCharId(ev);
-            const hc = ev.HitConfig || {};
-            if (hc.levelTypeData === 3 && evChar === charId
-                && dcSkillSlotFor(hc.levelData, hc.mainOrSupport) === slot) return true;
-            for (const e of eiEffectFamily(ev)) {
-                if (!allowedEffectTypes.includes(e.effectType)) continue;
-                const rawSlot = (e.levelTypeData === 3) ? e.levelData : dcSkillScaled.get(e.configId);
-                if (rawSlot == null) continue;
-                const owner = dcEffectOwnerCharId(e.configId) ?? evChar;
-                if (owner === charId && slotOf(rawSlot, owner)) return true;
-            }
-            for (const dict of [ev.AttackerAttrDict, ev.DefenderAttrDict]) {
-                if (!Array.isArray(dict)) continue;
-                for (const e of dict) {
-                    const rawSlot = (e.levelTypeData === 3) ? e.levelData : dcSkillScaled.get(e.configId);
-                    if (rawSlot == null) continue;
-                    // once-attr rows resolve per the hit's attacker (dcGetLevelOverride)
-                    if (evChar === charId && slotOf(rawSlot, evChar)) return true;
-                }
-            }
-            return false;
-        };
+        const groupKey = charId + ':' + slot;
+        const st = dcSkillLevels.get(groupKey);
+        // the row's bonusByRow lv, and the other rows' bonus excluding the row
+        let rowLv = 0, rowBonusRef = 0;
+        if (st) for (const [rk, lv] of (st.bonusByRow || [])) {
+            if (rk === ef.key) { rowLv = lv; continue; }
+            if (rk != null && dcEffectsDisabled.has(rk)) continue;
+            rowBonusRef += lv;
+        }
+        const maxLv = st && st.maxLv > 0 ? st.maxLv : 99;
+        const rec = st ? st.recordLv : 0;
+        const change = st ? (st.change || 0) : 0;
         for (let i = 0; i < baseline.length; i++) {
-            const { ev, withDmg } = baseline[i];
-            if (!hasFamily(ev)) { totalWith += withDmg; totalWithout += withDmg; continue; }
+            const b = baseline[i];
+            // hasFamily mirror: the hit's own slot scaling + family + attrDict
+            if (!b.intel.skillAff.has(groupKey)) { totalWith += b.withDmg; totalWithout += b.withDmg; continue; }
             affectedHits++;
-            const [withD, withoutD] = bothDirections(ev);
-            totalWith += withD;
-            totalWithout += withoutD;
+            if (b.zeroed) continue;
+            totalWith += b.withDmg;
+            const Lother = isAdded
+                ? Math.min(Math.max(rec + rowBonusRef + rowLv + change, 0), Math.max(maxLv + rowBonusRef + rowLv, 13))
+                : Math.min(Math.max(rec + rowBonusRef + change, 0), Math.max(maxLv + rowBonusRef, 13));
+            totalWithout += ecLevelNetDamage(b.view, 'skill', groupKey, Lother);
         }
         return { totalWith, totalWithout, hitCount, affectedHits, maxStacks: 1, isAdded };
     }
 
-    // ── Disc bonus-note rows: composite impact ─────────────────────
-    // A disc-note shortcut row (buildRecordDiscNoteEffects configId 960000000
-    // + discStatsIdx*1000 + noteIdx, display-only, no stat of its own) removes
-    // the disc's granted notes from the note level table when disabled
-    // (dcNoteRowBonus → dcNoteEffectiveLevel). That rescales every effect
-    // entry of that note (Effect.json levelTypeData 5, LevelData = noteId), so
-    // like the emblem skill rows the impact is computed as an explicit
-    // both-directions recompute (off = key added to the disabled set, on = key
-    // removed).
+    // ── Disc bonus-note rows: composite impact ──────────────────────────────
+    // A disc-note shortcut row (configId 960000000 + discStatsIdx*1000 +
+    // noteIdx) removes the disc's granted notes from the note level table
+    // when disabled → a level move of the note's level table → closed form.
     if (ef.displayOnly && ef.configId >= 960000000 && ef.configId < 961000000 && ef._noteId != null) {
         const noteId = Number(ef._noteId);
-        // Effect configId → note id (levelMap lt-5 entries: LevelData = noteId)
-        const noteLevelDataOf = (cid) => {
-            const lm = resolveLevelMap(cid);
-            return lm.levelTypeData === 5 ? lm.levelData : null;
-        };
-        const hasFamily = (ev) => eiEffectFamily(ev).some(e =>
-            e.configId != null && noteLevelDataOf(e.configId) === noteId);
+        const st = dcNoteLevels.get(noteId);
+        let grant = 0, rowBonusRef = 0;
+        if (st) for (const [rk, lv] of (st.bonusByRow || [])) {
+            if (rk === ef.key) { grant = lv; continue; }
+            if (rk != null && dcEffectsDisabled.has(rk)) continue;
+            rowBonusRef += lv;
+        }
+        const rec = st ? st.recordLv : 0;
+        const change = st ? (st.change || 0) : 0;
         for (let i = 0; i < baseline.length; i++) {
-            const { ev, withDmg } = baseline[i];
-            if (!hasFamily(ev)) { totalWith += withDmg; totalWithout += withDmg; continue; }
+            const b = baseline[i];
+            // hasFamily mirror: the EI note-row test scans eiEffectFamily only
+            if (!b.intel.noteAffFam.has(noteId)) { totalWith += b.withDmg; totalWithout += b.withDmg; continue; }
             affectedHits++;
-            const [withD, withoutD] = bothDirections(ev);
-            totalWith += withD;
-            totalWithout += withoutD;
+            if (b.zeroed) continue;
+            totalWith += b.withDmg;
+            const Lother = isAdded
+                ? Math.min(Math.max(rec + rowBonusRef + grant + change, 0), 99)
+                : Math.min(Math.max(rec + rowBonusRef + change, 0), 99);
+            totalWithout += ecLevelNetDamage(b.view, 'note', noteId, Lother);
         }
         return { totalWith, totalWithout, hitCount, affectedHits, maxStacks: 1, isAdded };
     }
 
-    // coeff: subtract the effect (-1) when it's normally present; add it (+1) when it's disabled
+    // ── Normal stat effects: one closed-form ± patch per affected hit ───────
+    // The delta comes from the per-hit index (the eiResolveEffectDelta
+    // mirror); the patch slot mirrors eiPatchStats' dcApplyEffectValue
+    // metadata, so element-mismatched rows resolve to a no-op exactly like
+    // the stat-clone path does.
+    const sideNum = ef.side === 'attacker' ? 0 : 1;
+    const deltaKey = ef.fromAttrDict
+        ? ef.side + ':dict:' + ef.configId + ':' + (ef.valueConfigId ?? '') + ':' + (ef.slotNum ?? 0)
+        : ef.side + ':' + ef.configId;
     const coeff = isAdded ? 1 : -1;
-
     for (let i = 0; i < baseline.length; i++) {
-        const { ev, withOverrides, withDmg } = baseline[i];
-
-        totalWith += withDmg;
-
-        // Hit is from a disabled Potentials group — already 0 in totalWith,
-        // must also contribute 0 to totalWithout so it doesn't skew the delta.
-        if (withOverrides._potentialsDisabled) {
-            continue;
-        }
-
-        const delta = eiResolveEffectDelta(ev, ef);
-        if (!delta) {
-            totalWithout += withDmg;
-            continue;
-        }
-
+        const b = baseline[i];
+        totalWith += b.withDmg;
+        if (b.zeroed) continue;
+        const delta = b.deltaIdx.get(deltaKey);
+        if (!delta) { totalWithout += b.withDmg; continue; }
         if (delta.stacks > maxStacks) maxStacks = delta.stacks;
-
         affectedHits++;
-        const altOverrides = eiPatchStats(withOverrides, ef, ev, delta, coeff);
-        const altFields    = calcHitFields(ev, altOverrides);
-        const altDmg       = calcDamage(altFields, dcBonus, dcDisabled);
-        totalWithout += altDmg;
+        const meta = {
+            attrType: delta.attrType, subType: delta.subType,
+            effectType: ef.effectType, isRecord: ef.isRecordEffect, bySubType: !!ef.fromAttrDict,
+        };
+        const slot = ecOpSlot(meta, b.view.el);
+        if (!slot) { totalWithout += b.withDmg; continue; }
+        const dmg = ecAnalyticDamage(b.view, [[sideNum, slot[0], slot[1], coeff * delta.amount]], null);
+        totalWithout += dmg;
     }
 
     return { totalWith, totalWithout, hitCount, affectedHits, maxStacks, isAdded };
@@ -780,7 +790,11 @@ document.addEventListener('click', e => {
 function eiRenderSidebarChips() {
     const chipsEl = document.getElementById('eiFilterChips');
     if (!chipsEl) return;
-    const effects = dcCollectAttrFixEffects(dcFiltered);
+    // Cached collector: this runs on every switch to the Dmg Calc / Effect
+    // Impact / Emblems Comparison tabs — the uncached call cost ~145 ms per
+    // switch on the profile log (the cached variant reuses the result while
+    // dcFiltered is the same array, exactly like renderEffectsPanel).
+    const effects = dcCollectAttrFixEffectsCached();
     chipsEl.innerHTML = eiSourceChipsHtml(eiCollectSourceKeys(effects));
 }
 
