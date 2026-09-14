@@ -1543,11 +1543,15 @@ function buildSkillTable(jChar, jSkill, jSkillLang) {
     for (const [skey, sval] of Object.entries(jSkill)) {
         const skillId = parseInt(skey, 10);
         if (skillTable.has(skillId)) continue;
-        const fcPath    = sval.FCPath ?? '';
-        let   briefDesc = resolveLocKey(sval, 'BriefDesc', jSkillLang);
-        if (briefDesc === '?') briefDesc = '';
+        const fcPath = sval.FCPath ?? '';
+        let name = resolveLocKey(sval, 'Title', jSkillLang);
+        if (name === '?') name = '';
+        if (!name && fcPath) {
+            name = (fcPath.split('.').pop() || '').replace(/_/g, ' ').trim();
+            name = name.replace(/^SkillScript /, '');
+        }
         const ownerId = parseInt(skillId.toString().slice(0,3));
-        skillTable.set(skillId, { ownerName: actorNameMap.get(ownerId) ?? String(ownerId), skillType: '', skillName: briefDesc, fcPath });
+        skillTable.set(skillId, { ownerName: actorNameMap.get(ownerId) ?? String(ownerId), skillType: '', skillName: name, fcPath });
     }
 }
 
@@ -1557,7 +1561,7 @@ function buildSkillTable(jChar, jSkill, jSkillLang) {
 // All module-level Maps initTables populates. Values are plain objects /
 // strings / Sets — structured-clone-safe, and no map references another.
 // (potEffectIds holds Sets; structured clone preserves them.)
-const EC_DATA_VERSION = '1';
+const EC_DATA_VERSION = '3';
 const EC_DATA_IDB = 'stella-table-cache';
 const EC_DATA_TABLES = [
     actorNameMap, hitTable, effectTable, effectValueTable, onceAttrValueTable,

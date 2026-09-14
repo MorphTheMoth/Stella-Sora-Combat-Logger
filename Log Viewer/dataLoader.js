@@ -162,7 +162,10 @@ async function loadSavedLogsList() {
     try {
         const res = await fetch('/savedlogslist');
         const data = await res.json();
-        const logs = data.logs.sort() || [];
+        // Case-insensitive sort so names don't split into upper/lower-case groups.
+        const logs = (data.logs || []).sort((a, b) =>
+            String(a).localeCompare(String(b), undefined, { sensitivity: 'base' })
+        );
         const sel = document.getElementById('savedLogFilter');
         while (sel.options.length > 1) sel.remove(1);
         logs.forEach(name => {

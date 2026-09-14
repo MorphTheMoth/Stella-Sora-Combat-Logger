@@ -95,6 +95,38 @@ static void ServerLog(const char* fmt, ...) {
 // =============================================================================
 
 static std::set<std::string> g_static_files;
+
+// ─── HTTP caching helpers ─────────────────────────────────────────────────────
+// FNV-1a 64-bit content hash → ETag. Deterministic across runs, so the same
+// file revalidates as unchanged even after the server restarts.
+static std::string ComputeETag(const std::string& body) {
+    uint64_t h = 1469598103934665603ULL;
+    for (unsigned char ch : body) { h ^= ch; h *= 1099511628211ULL; }
+    char buf[24];
+    snprintf(buf, sizeof(buf), "\"%016llx\"", (unsigned long long) h);
+    return buf;
+}
+
+// Serve a fully-read file body with proper revalidation caching:
+// 'Cache-Control: no-cache' lets the browser cache the response but forces a
+// revalidation request on every use; the ETag lets the server answer
+// 304 Not Modified when the file is unchanged, so a reload costs one tiny
+// request, and an edited file is picked up automatically — no manual ?v=
+// cache-busting needed. Returns the status code sent (200 or 304).
+static int ServeBodyWithETag(struct mg_connection* c, struct mg_http_message* hm,
+                             const std::string& body, const std::string& contentType) {
+    std::string etag = ComputeETag(body);
+    struct mg_str* inm = mg_http_get_header(hm, "If-None-Match");
+    if (inm != NULL && mg_strcasecmp(*inm, mg_str(etag.c_str())) == 0) {
+        mg_http_reply(c, 304, "Cache-Control: no-cache\r\n", "");
+        return 304;
+    }
+    std::string hdr = "Content-Type: " + contentType +
+        "\r\nCache-Control: no-cache\r\nETag: " + etag + "\r\n";
+    mg_http_reply(c, 200, hdr.c_str(), "%s", body.c_str());
+    return 200;
+}
+
 // Populate the set by scanning a directory once at startup.
 void ScanStaticFolder(const std::string& folder) {
     namespace fs = std::filesystem;
@@ -1307,10 +1339,8 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                 std::stringstream buffer;
                 buffer << file.rdbuf();
                 std::string body = buffer.str();
-                std::string ct_header = "Content-Type: " +
-                    GetContentType(filename) + "\r\n";
-                mg_http_reply(c, 200, ct_header.c_str(), "%s", body.c_str());
-                HttpLog(200, method, uri, query, remote);
+                int status = ServeBodyWithETag(c, hm, body, GetContentType(filename));
+                HttpLog(status, method, uri, query, remote);
             } else if (!g_local_mode) {
                 // Remote mode – fetch from GitHub and cache into mogsData.
                 ServerLog("Not cached, fetching %s", filename.c_str());
@@ -1319,10 +1349,8 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                 std::string body = FetchRemoteFile(url);
                 if (!body.empty()) {
                     CacheToMogsData(filepath, body);
-                    std::string ct_header = "Content-Type: " +
-                        GetContentType(filename) + "\r\n";
-                    mg_http_reply(c, 200, ct_header.c_str(), "%s", body.c_str());
-                    HttpLog(200, method, uri, query, remote);
+                    int status = ServeBodyWithETag(c, hm, body, GetContentType(filename));
+                    HttpLog(status, method, uri, query, remote);
                 } else {
                     mg_http_reply(c, 502, "Content-Type: text/plain\r\n", "Failed to fetch remote file");
                     HttpLog(502, method, uri, query, remote);
@@ -1349,7 +1377,9 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                 std::ifstream file(filepath, std::ios::binary);
                 if (file.good()) {
                     ServerLog("Serve asset from disk (%s)", filepath.c_str());
-                    mg_http_serve_file(c, hm, filepath.c_str(), NULL);
+                    mg_http_serve_opts opts = {};
+                    opts.extra_headers = "Cache-Control: no-cache\r\n";
+                    mg_http_serve_file(c, hm, filepath.c_str(), &opts);
                     HttpLog(200, method, uri, query, remote);
                 } else if (g_ssassets_dir.empty()) {
                     // Lazy fetch from GitHub, cached into mogsData/ssassets.
@@ -1357,7 +1387,9 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                     std::string body = FetchRemoteFile(std::string(SSASSETS_REMOTE_BASE) + relative);
                     if (!body.empty()) {
                         CacheToMogsData(filepath, body);
-                        mg_http_serve_file(c, hm, filepath.c_str(), NULL);
+                        mg_http_serve_opts opts = {};
+                        opts.extra_headers = "Cache-Control: no-cache\r\n";
+                        mg_http_serve_file(c, hm, filepath.c_str(), &opts);
                         HttpLog(200, method, uri, query, remote);
                     } else {
                         mg_http_reply(c, 502, "Content-Type: text/plain\r\n", "Failed to fetch asset");
@@ -1384,10 +1416,8 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                     std::stringstream buffer;
                     buffer << file.rdbuf();
                     std::string body = buffer.str();
-                    std::string ct_header = "Content-Type: " + GetContentType(relative) +
-                        "\r\nCache-Control: no-cache\r\n";
-                    mg_http_reply(c, 200, ct_header.c_str(), "%s", body.c_str());
-                    HttpLog(200, method, uri, query, remote);
+                    int status = ServeBodyWithETag(c, hm, body, GetContentType(relative));
+                    HttpLog(status, method, uri, query, remote);
                 } else if (g_stella_data_dir.empty()) {
                     // Fallback: fetch from GitHub and cache into mogsData/data.
                     ServerLog("Data not cached, fetching %s", relative.c_str());
@@ -1397,10 +1427,8 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                         HttpLog(502, method, uri, query, remote);
                     } else {
                         CacheToMogsData(filepath, body);
-                        std::string ct_header = "Content-Type: " + GetContentType(relative) +
-                            "\r\nCache-Control: no-cache\r\n";
-                        mg_http_reply(c, 200, ct_header.c_str(), "%s", body.c_str());
-                        HttpLog(200, method, uri, query, remote);
+                        int status = ServeBodyWithETag(c, hm, body, GetContentType(relative));
+                        HttpLog(status, method, uri, query, remote);
                     }
                 } else {
                     mg_http_reply(c, 404, "Content-Type: text/plain\r\n", "Data file not found");
@@ -1676,15 +1704,15 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
             std::ifstream file(fp);
             if (file.good()) {
                 std::stringstream buf; buf << file.rdbuf();
-                mg_http_reply(c, 200, "Content-Type: text/html\r\n", "%s", buf.str().c_str());
-                HttpLog(200, method, uri, query, remote);
+                int status = ServeBodyWithETag(c, hm, buf.str(), "text/html");
+                HttpLog(status, method, uri, query, remote);
             } else if (!g_local_mode) {
                 std::string url = std::string(REMOTE_BASE) + "/Emblem%20Tracker/gem_viewer.html";
                 std::string body = FetchRemoteFile(url);
                 if (!body.empty()) {
                     CacheToMogsData(fp, body);
-                    mg_http_reply(c, 200, "Content-Type: text/html\r\n", "%s", body.c_str());
-                    HttpLog(200, method, uri, query, remote);
+                    int status = ServeBodyWithETag(c, hm, body, "text/html");
+                    HttpLog(status, method, uri, query, remote);
                 } else {
                     mg_http_reply(c, 502, "Content-Type: text/plain\r\n", "Failed to fetch remote file");
                     HttpLog(502, method, uri, query, remote);
@@ -1751,17 +1779,15 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                     std::ifstream file(fp);
                     if (file.good()) {
                         std::stringstream buf; buf << file.rdbuf();
-                        std::string ct = "Content-Type: " + GetContentType(rest) + "\r\n";
-                        mg_http_reply(c, 200, ct.c_str(), "%s", buf.str().c_str());
-                        HttpLog(200, method, uri, query, remote);
+                        int status = ServeBodyWithETag(c, hm, buf.str(), GetContentType(rest));
+                        HttpLog(status, method, uri, query, remote);
                     } else if (!g_local_mode) {
                         std::string url = std::string(REMOTE_BASE) + "/Emblem%20Tracker/" + rest;
                         std::string body = FetchRemoteFile(url);
                         if (!body.empty()) {
                             CacheToMogsData(fp, body);
-                            std::string ct = "Content-Type: " + GetContentType(rest) + "\r\n";
-                            mg_http_reply(c, 200, ct.c_str(), "%s", body.c_str());
-                            HttpLog(200, method, uri, query, remote);
+                            int status = ServeBodyWithETag(c, hm, body, GetContentType(rest));
+                            HttpLog(status, method, uri, query, remote);
                         } else {
                             mg_http_reply(c, 502, "Content-Type: text/plain\r\n", "Failed to fetch remote file");
                             HttpLog(502, method, uri, query, remote);
@@ -1779,15 +1805,15 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
             std::ifstream file(fp);
             if (file.good()) {
                 std::stringstream buf; buf << file.rdbuf();
-                mg_http_reply(c, 200, "Content-Type: text/html\r\n", "%s", buf.str().c_str());
-                HttpLog(200, method, uri, query, remote);
+                int status = ServeBodyWithETag(c, hm, buf.str(), "text/html");
+                HttpLog(status, method, uri, query, remote);
             } else if (!g_local_mode) {
                 std::string url = std::string(REMOTE_BASE) + "/Star%20Tower%20Tracker/index.html";
                 std::string body = FetchRemoteFile(url);
                 if (!body.empty()) {
                     CacheToMogsData(fp, body);
-                    mg_http_reply(c, 200, "Content-Type: text/html\r\n", "%s", body.c_str());
-                    HttpLog(200, method, uri, query, remote);
+                    int status = ServeBodyWithETag(c, hm, body, "text/html");
+                    HttpLog(status, method, uri, query, remote);
                 } else {
                     mg_http_reply(c, 502, "Content-Type: text/plain\r\n", "Failed to fetch remote file");
                     HttpLog(502, method, uri, query, remote);
@@ -1854,17 +1880,15 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                     std::ifstream file(fp);
                     if (file.good()) {
                         std::stringstream buf; buf << file.rdbuf();
-                        std::string ct = "Content-Type: " + GetContentType(rest) + "\r\n";
-                        mg_http_reply(c, 200, ct.c_str(), "%s", buf.str().c_str());
-                        HttpLog(200, method, uri, query, remote);
+                        int status = ServeBodyWithETag(c, hm, buf.str(), GetContentType(rest));
+                        HttpLog(status, method, uri, query, remote);
                     } else if (!g_local_mode) {
                         std::string url = std::string(REMOTE_BASE) + "/Star%20Tower%20Tracker/" + rest;
                         std::string body = FetchRemoteFile(url);
                         if (!body.empty()) {
                             CacheToMogsData(fp, body);
-                            std::string ct = "Content-Type: " + GetContentType(rest) + "\r\n";
-                            mg_http_reply(c, 200, ct.c_str(), "%s", body.c_str());
-                            HttpLog(200, method, uri, query, remote);
+                            int status = ServeBodyWithETag(c, hm, body, GetContentType(rest));
+                            HttpLog(status, method, uri, query, remote);
                         } else {
                             mg_http_reply(c, 502, "Content-Type: text/plain\r\n", "Failed to fetch remote file");
                             HttpLog(502, method, uri, query, remote);
@@ -1884,18 +1908,16 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                 std::stringstream buffer;
                 buffer << file.rdbuf();
                 std::string body = buffer.str();
-                std::string ct_header = "Content-Type: " + GetContentType(uri) + "\r\n";
-                mg_http_reply(c, 200, ct_header.c_str(), "%s", body.c_str());
-                HttpLog(200, method, uri, query, remote);
+                int status = ServeBodyWithETag(c, hm, body, GetContentType(uri));
+                HttpLog(status, method, uri, query, remote);
             } else {
                 ServerLog("Not cached, fetching %s", uri.c_str());
                 std::string url = std::string(REMOTE_BASE) + uri;
                 std::string body = FetchRemoteFile(url);
                 if (!body.empty()) {
                     CacheToMogsData(filepath, body);
-                    std::string ct_header = "Content-Type: " + GetContentType(uri) + "\r\n";
-                    mg_http_reply(c, 200, ct_header.c_str(), "%s", body.c_str());
-                    HttpLog(200, method, uri, query, remote);
+                    int status = ServeBodyWithETag(c, hm, body, GetContentType(uri));
+                    HttpLog(status, method, uri, query, remote);
                 } else {
                     mg_http_reply(c, 404, "", "Not Found");
                     HttpLog(404, method, uri, query, remote);
