@@ -588,12 +588,16 @@ function ecPreanalyzeHit(b, extDisabled) {
         for (const [cid, count] of counts) {
             const first = firsts.get(cid);
             if (first.attrType == null || first.value == null) { deltaIdx.set(blk.sideStr + ':' + cid, null); continue; }
-            // the 2-arg call: the level resolution reads the GLOBAL
-            // dcEffectsDisabled (dcResolveEffectDelta's exact behavior)
-            const override = dcGetLevelOverride(first, blk.sideStr);
-            const attrType = override?.newAttrType ?? first.attrType;
-            let subType = override?.newSubType ?? first.subType;
-            let amount = override ? override.newValue * count : first.value * count;
+            // Level resolution mirrors dcApplyEffectOverrides' level block
+            // (legacy resolve + the real dcGetLevelOverride) so sidebar level
+            // moves on pot/skill/note-scaled rows land in the delta:
+            // overridden → the override value replaces the logged
+            // contribution in the baseline state.
+            const erL = dcResolveLegacyEffectRow(first, b.charId, false) || first;
+            const override = dcGetLevelOverride(erL, blk.sideStr, extDisabled, b.charId);
+            const attrType = override?.newAttrType ?? erL.attrType;
+            let subType = override?.newSubType ?? erL.subType;
+            let amount = override ? override.newValue * count : erL.value * count;
             if (first.fromOwnerSnapshot && first.baseStatOnSnapshot != null) {
                 const B = first.baseStatOnSnapshot, P = first.pctStatOnSnapshot || 0, v = first.value;
                 if (first.subType === 1) amount = v * (1 + P) * count;
@@ -641,8 +645,10 @@ function ecPreanalyzeHit(b, extDisabled) {
             if (seen.has(key)) continue;
             seen.add(key);
             if (e.attrType == null || e.subType == null || e.value == null) { deltaIdx.set(key, null); continue; }
-            const ovKey = blk.sideStr + ':' + cid + ':' + (e.valueConfigId ?? '');
-            const override = dcEffectLevelOverrides.get(ovKey);
+            // Mirror the machinery's attrDict level block: dcGetLevelOverride
+            // also consults the pot/skill/note level tables (a
+            // dcEffectLevelOverrides-only lookup ignores sidebar level moves).
+            const override = dcGetLevelOverride(e, blk.sideStr, extDisabled, b.charId, true);
             const attrType = override?.newAttrType ?? e.attrType;
             const subType = override?.newSubType ?? e.subType;
             const stacks = e.stacks || 1;
