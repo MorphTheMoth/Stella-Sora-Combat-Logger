@@ -101,6 +101,7 @@ function dcRebuildPotLevels() {
     for (const [potId, old] of prev) {
         if (!dcPotLevels.has(potId)) dcPotLevels.set(potId, old);
     }
+    dcBumpLevelState();
 }
 
 // Effective level of a potential: record + bonus + user change, clamped 0..9.
@@ -132,6 +133,7 @@ function dcEnsurePotLevel(potId, loggedL, charId) {
     if (!st && loggedL > 0) {
         st = { potId, charId: charId ?? null, recordLv: loggedL, bonus: 0, change: 0 };
         dcPotLevels.set(potId, st);
+        dcBumpLevelState();
     }
     return st ?? null;
 }
@@ -150,6 +152,7 @@ function dcEnsureSkillLevel(charId, slot, loggedL) {
             change: 0,
         };
         dcSkillLevels.set(key, st);
+        dcBumpLevelState();
     }
     return st ?? null;
 }
@@ -166,6 +169,7 @@ window.dcResetSimState = function () {
     if (typeof dcEffectLevelOverrides !== 'undefined') dcEffectLevelOverrides.clear();
     dcInferredRoles.clear();          // role evidence belongs to the opened log
     dcRoleScanIndex = 0;
+    dcBumpLevelState();
     // Drop cached per-hit calc results (defined in dmgCalc.ui.js).
     if (typeof dcBumpCalcVersion === 'function') dcBumpCalcVersion();
 };
@@ -234,7 +238,42 @@ window.dcSyntheticRecord = function () {
 //      the entry's valueConfigId, the effective level from the potential's
 //      level table.
 // Returns null when the effective level coincides with the logged one.
+// Level-table state version: bumped whenever the pot/skill/note level tables
+// mutate (record rebuilds, lazy reconstruction, ± changes, pots quick
+// toggles, simulations). Memo caches key on it.
+let dcLevelStateVersion = 1;
+function dcBumpLevelState() { dcLevelStateVersion++; }
+
+// Memo for dcGetLevelOverride: on a typical log 152k calls per engine build
+// resolve to ~320 unique keys. Result depends on (row identity fields, side,
+// charId, fromAttrDict, the disabled-set CONTENTS, and the level-table
+// state), so the cache is keyed per disabled-set object (WeakMap — transient
+// what-if merged sets drop with their Set) and carries dcLevelStateVersion in
+// the key.
+const _dcGloMemo = new WeakMap();   // disabledSet -> Map<resultKey, override|null>
 function dcGetLevelOverride(e, side, disabledSet, charId, fromAttrDict) {
+    // Memoize only when the disabled-set argument is a usable WeakMap key;
+    // undefined/null falls back to dcEffectsDisabled inside the impl, so the
+    // no-arg callers resolve through the dcEffectsDisabled-keyed memo.
+    const memoSet = (disabledSet && typeof disabledSet === 'object') ? disabledSet : dcEffectsDisabled;
+    let m = _dcGloMemo.get(memoSet);
+    if (!m) { m = new Map(); _dcGloMemo.set(disabledSet, m); }
+    // Key on BOTH state counters: dcStateVersion covers in-place mutations of
+    // a persistent disabled set (dcEffectsDisabled is mutated in place and
+    // every mutation site bumps it), dcLevelStateVersion covers the level
+    // tables (including transient simulation mutations).
+    const mk = dcStateVersion + ':' + dcLevelStateVersion + '|' + side + ':' + (e.configId ?? '') + ':' + (e.valueConfigId ?? '')
+        + ':' + (e.slotNum ?? 0) + ':' + (e.levelTypeData ?? '') + ':' + (e.levelData ?? '')
+        + ':' + (e.levelSource ?? '') + ':' + (charId ?? '') + ':' + (e._charId ?? '')
+        + ':' + (fromAttrDict ? 1 : (e.fromAttrDict ? 2 : 0))
+        + ':' + (e.attrType ?? '') + ':' + (e.subType ?? '');
+    if (m.has(mk)) return m.get(mk);
+    const r = dcGetLevelOverrideImpl(e, side, disabledSet, charId, fromAttrDict);
+    m.set(mk, r);
+    return r;
+}
+
+function dcGetLevelOverrideImpl(e, side, disabledSet, charId, fromAttrDict) {
     const key = `${side}:${e.configId}:${e.valueConfigId ?? ''}`;
     const user = dcEffectLevelOverrides.get(key);
     if (user) return user;
@@ -465,6 +504,7 @@ function dcRebuildSkillLevels() {
     for (const [key, old] of prev) {
         if (!dcSkillLevels.has(key)) dcSkillLevels.set(key, old);
     }
+    dcBumpLevelState();
 }
 
 // Sum of the emblem/talent bonus rows not disabled in the sidebar.
@@ -571,6 +611,7 @@ function dcRebuildNoteLevels() {
     for (const [noteId, old] of prev) {
         if (!dcNoteLevels.has(noteId)) dcNoteLevels.set(noteId, old);
     }
+    dcBumpLevelState();
 }
 
 // Lazy reconstruction (logs without a record log): the first note row parsed
@@ -588,6 +629,7 @@ function dcEnsureNoteLevel(noteId, loggedL) {
         for (const [, lv] of bonusByRow) total += lv;
         st = { noteId, recordLv: Math.max((loggedL || 0) - total, 0), bonusByRow, change: 0 };
         dcNoteLevels.set(noteId, st);
+        dcBumpLevelState();
     }
     return st;
 }

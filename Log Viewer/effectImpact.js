@@ -134,42 +134,26 @@ function eiPatchStats(withOverrides, ef, ev, delta, coeff) {
 // Structure: Array of { withDmg, withOverrides, ev }
 let _eiBaselineCache = null;
 
-function eiInvalidateCache() {
-    _eiBaselineCache = null;
-}
+// No-op: the per-hit engine baseline lives in the shared cache
+// (ecGetSharedBaseline, emblemsComparison.js) keyed on the full state sig —
+// invalidation is handled by its signature check, so renders must NOT nuke it
+// (the Dmg Calc what-if sims reuse the same build).
+function eiInvalidateCache() {}
 
-// The intel baseline is only valid while the calc state it was built from is
-// unchanged: the disabled-effect set (eiInvalidateCache runs on every render,
-// but direct eiComputeEffect callers bypass it) and the calc version (field
-// toggles / bonuses bump dcStateVersion). Checked on every eiGetBaseline.
-function eiBaselineSig() {
-    return dcStateVersion + '#' + [...dcEffectsDisabled].sort().join('|');
-}
-
-function eiGetBaseline() {
-    const sig = eiBaselineSig();
+function eiGetBaseline(prof) {
+    const sig = ecSharedBaselineSig();
     if (_eiBaselineCache && _eiBaselineCache.sig === sig) return _eiBaselineCache.cache;
-
     // Per-hit intel (the Emblems Comparison's engine, built for THIS tab's
     // disabled set): the disable-only stat state, every level-scaled entry
     // with its ladder + baseline override, the affected sets, the resolved
-    // per-configId deltas and the inherited-snapshot aggregation. The
-    // 'potentials:*' group keys are stripped for the machinery pass so
-    // zeroed Potentials hits still get a full intel (their enabled-state
-    // damage = intel.baseDmg) — the group keys are not effect keys, so the
-    // disable removals and the level resolution are identical either way.
-    const setMinusPot = new Set();
-    for (const k of dcEffectsDisabled) if (!k.startsWith('potentials:')) setMinusPot.add(k);
-
+    // per-configId deltas and the inherited-snapshot aggregation. Shared with
+    // the Dmg Calc what-if sims — same sig, one build per state version.
+    const hits = ecGetSharedBaseline(prof);
     const cache = new Array(dcFiltered.length);
     for (let i = 0; i < dcFiltered.length; i++) {
-        const ev = dcFiltered[i];
-        const b = { ev, disOnly: null, dead: false, charId: dcEventCharId(ev), intel: null, dmg: 0, fields: null, statIntel: null };
-        b.disOnly = dcApplyEffectOverrides(ev, setMinusPot, dcEffectLevelOverrides, true);
-        const pre = ecPreanalyzeHit(b, setMinusPot);
-        b.intel = ecBuildIntel(b, pre, dcDisabled, setMinusPot);
+        const b = hits[i];
         cache[i] = {
-            ev,
+            ev: b.ev,
             // the naive withDmg: zeroed Potentials hits contribute 0
             withDmg: b.intel.zeroed ? 0 : b.dmg,
             // the baseline-state view (factors + stat arrays) for the
@@ -181,7 +165,7 @@ function eiGetBaseline() {
             deltaIdx: b.intel.deltaIdx,
         };
     }
-    _eiBaselineCache = { sig, cache };
+    _eiBaselineCache = { sig: ecSharedBaselineSig(), cache };
     return cache;
 }
 
@@ -205,6 +189,19 @@ function eiEffectFamily(ev) {
         .concat(ev.AttackerRecord?.effects || []);
     ev._eiEffectFamily = fam;
     return fam;
+}
+
+// Per-(row, hit) contribution cache: keyed on the hit's intel OBJECT (stable
+// for unaffected hits — the shared baseline reuses them across toggles) and a
+// content-addressed key covering every row parameter the eval reads. WeakMap
+// entries drop with rebuilt intels; content keys can't go stale.
+const _eiContribCache = new WeakMap();
+function eiCachedContrib(b, key, compute) {
+    let m = _eiContribCache.get(b.intel);
+    if (!m) { m = new Map(); _eiContribCache.set(b.intel, m); }
+    let v = m.get(key);
+    if (v === undefined) { v = compute(); m.set(key, v); }
+    return v;
 }
 
 function eiComputeEffect(ef, baseline) {
@@ -254,33 +251,34 @@ function eiComputeEffect(ef, baseline) {
             affectedHits++;
             const groups = b.intel.snapByKey && b.intel.snapByKey.get(ef.key);
             if (!groups) { totalWithout += b.withDmg; continue; }
-            const dlist = [];
-            for (let gi = 0; gi < groups.length; gi++) {
-                const g = groups[gi];
-                let oldB = 0, oldP = 0, newB = 0, newP = 0;
-                let anyOld = false, anyNew = false;
-                for (let oi = 0; oi < g.occs.length; oi++) {
-                    const occ = g.occs[oi];
-                    const hit = occ.key === ef.key;
-                    if (occ.dis) {
-                        anyOld = true;
-                        if (occ.st === 1) oldB += occ.v; else if (occ.st === 2) oldP += occ.v;
+            totalWithout += eiCachedContrib(b, 'snap:' + ef.key, () => {
+                const dlist = [];
+                for (let gi = 0; gi < groups.length; gi++) {
+                    const g = groups[gi];
+                    let oldB = 0, oldP = 0, newB = 0, newP = 0;
+                    let anyOld = false, anyNew = false;
+                    for (let oi = 0; oi < g.occs.length; oi++) {
+                        const occ = g.occs[oi];
+                        const hit = occ.key === ef.key;
+                        if (occ.dis) {
+                            anyOld = true;
+                            if (occ.st === 1) oldB += occ.v; else if (occ.st === 2) oldP += occ.v;
+                        }
+                        if (hit ? !occ.dis : occ.dis) {
+                            anyNew = true;
+                            if (occ.st === 1) newB += occ.v; else if (occ.st === 2) newP += occ.v;
+                        }
                     }
-                    if (hit ? !occ.dis : occ.dis) {
-                        anyNew = true;
-                        if (occ.st === 1) newB += occ.v; else if (occ.st === 2) newP += occ.v;
-                    }
+                    // the machinery only creates a group when ≥1 occurrence is
+                    // disabled, so its baseline delta is 0 for empty groups;
+                    // the delta expressions mirror dcApplyEffectOverrides exactly
+                    const dOld = anyOld ? -(g.B * oldP + oldB * (1 + g.P - oldP)) : 0;
+                    const dNew = anyNew ? -(g.B * newP + newB * (1 + g.P - newP)) : 0;
+                    const amt = dNew - dOld;
+                    if (amt !== 0) dlist.push([g.side, g.attrId, 1, amt]);
                 }
-                // the machinery only creates a group when ≥1 occurrence is
-                // disabled, so its baseline delta is 0 for empty groups;
-                // the delta expressions mirror dcApplyEffectOverrides exactly
-                const dOld = anyOld ? -(g.B * oldP + oldB * (1 + g.P - oldP)) : 0;
-                const dNew = anyNew ? -(g.B * newP + newB * (1 + g.P - newP)) : 0;
-                const amt = dNew - dOld;
-                if (amt !== 0) dlist.push([g.side, g.attrId, 1, amt]);
-            }
-            if (!dlist.length) { totalWithout += b.withDmg; continue; }
-            totalWithout += ecAnalyticDamage(b.view, dlist, null);
+                return dlist.length ? ecAnalyticDamage(b.view, dlist, null) : b.withDmg;
+            });
         }
         return { totalWith, totalWithout, hitCount, affectedHits, maxStacks: 1, isAdded };
     }
@@ -310,7 +308,8 @@ function eiComputeEffect(ef, baseline) {
             const Lother = isAdded
                 ? Math.min(Math.max(rec + bonus + change, 0), 9)
                 : Math.min(Math.max(rec + change, 0), 9);
-            totalWithout += ecLevelNetDamage(b.view, 'pot', potId, Lother);
+            totalWithout += eiCachedContrib(b, 'pot:' + potId + ':' + Lother,
+                () => ecLevelNetDamage(b.view, 'pot', potId, Lother));
         }
         return { totalWith, totalWithout, hitCount, affectedHits, maxStacks: 1, isAdded };
     }
@@ -347,7 +346,8 @@ function eiComputeEffect(ef, baseline) {
             const Lother = isAdded
                 ? Math.min(Math.max(rec + rowBonusRef + rowLv + change, 0), Math.max(maxLv + rowBonusRef + rowLv, 13))
                 : Math.min(Math.max(rec + rowBonusRef + change, 0), Math.max(maxLv + rowBonusRef, 13));
-            totalWithout += ecLevelNetDamage(b.view, 'skill', groupKey, Lother);
+            totalWithout += eiCachedContrib(b, 'skill:' + groupKey + ':' + Lother,
+                () => ecLevelNetDamage(b.view, 'skill', groupKey, Lother));
         }
         return { totalWith, totalWithout, hitCount, affectedHits, maxStacks: 1, isAdded };
     }
@@ -377,7 +377,8 @@ function eiComputeEffect(ef, baseline) {
             const Lother = isAdded
                 ? Math.min(Math.max(rec + rowBonusRef + grant + change, 0), 99)
                 : Math.min(Math.max(rec + rowBonusRef + change, 0), 99);
-            totalWithout += ecLevelNetDamage(b.view, 'note', noteId, Lother);
+            totalWithout += eiCachedContrib(b, 'note:' + noteId + ':' + Lother,
+                () => ecLevelNetDamage(b.view, 'note', noteId, Lother));
         }
         return { totalWith, totalWithout, hitCount, affectedHits, maxStacks: 1, isAdded };
     }
@@ -406,7 +407,10 @@ function eiComputeEffect(ef, baseline) {
         };
         const slot = ecOpSlot(meta, b.view.el);
         if (!slot) { totalWithout += b.withDmg; continue; }
-        const dmg = ecAnalyticDamage(b.view, [[sideNum, slot[0], slot[1], coeff * delta.amount]], null);
+        // the op tuple fully determines the call given b.view — short key
+        const dmg = eiCachedContrib(b,
+            sideNum + ':' + slot[0] + ':' + slot[1] + ':' + (coeff * delta.amount),
+            () => ecAnalyticDamage(b.view, [[sideNum, slot[0], slot[1], coeff * delta.amount]], null));
         totalWithout += dmg;
     }
 
@@ -415,11 +419,16 @@ function eiComputeEffect(ef, baseline) {
 
 // Build rows for all effects.
 // Baseline is computed once and shared across all eiComputeEffect calls.
-function eiComputeAll() {
+function eiComputeAll(prof) {
+    let t = performance.now();
     const effects = dcCollectAttrFixEffects(dcFiltered);
-    const baseline = eiGetBaseline();
+    if (prof) t = prof(`collect effects (${effects.length} rows)`, t);
+    const baseline = eiGetBaseline(prof);
 
+    let tRows = 0;
+    const top = [];   // [dt, label] — slowest-row report
     const rows = effects.map(ef => {
+        const s = prof ? performance.now() : 0;
         const { totalWith, totalWithout, hitCount, affectedHits, maxStacks, isAdded } = eiComputeEffect(ef, baseline);
         const baseVal  = isAdded ? totalWith    : totalWithout;
         const addedVal = isAdded ? totalWithout : totalWith;
@@ -428,16 +437,33 @@ function eiComputeAll() {
             ? ((addedVal / baseVal) - 1) * 100
             : (dmgDelta > 0 ? Infinity : 0);
         const hitCoverage = hitCount > 0 ? (affectedHits / hitCount) * 100 : 0;
+        if (prof) {
+            const dt = performance.now() - s;
+            tRows += dt;
+            if (dt > 5) top.push([dt, ef.name || ef.key]);
+        }
         return { ef, totalWith, totalWithout, dmgDelta, pctImpact, hitCoverage, affectedHits, hitCount, maxStacks, isAdded };
     });
 
-
+    if (prof) {
+        t = prof.dur(`row evals (${effects.length} rows)`, tRows);
+        top.sort((a, b) => b[0] - a[0]);
+        for (const [dt, name] of top.slice(0, 3)) prof.dur(`  slow row: ${name}`, dt);
+    }
     return rows;
 }
 
 // ─── Render ───────────────────────────────────────────────────────────────────
 // Guard against recursion: dcRefilterAndRender → dcRefreshEI → eiRender.
 let _eiAutoLoading = false;
+
+// Hook for data loading (dataLoader.js): refresh the table when the log state
+// changes — saved-log swap (shows the empty panel) and initial-backlog
+// completion (recomputes with the new log).
+window.eiRefreshIfVisible = function() {
+    const el = document.getElementById('eiPanel');
+    if (el && el.classList.contains('visible') && typeof eiRender === 'function') eiRender();
+};
 
 function eiRender() {
     const panel = document.getElementById('eiPanel');
@@ -448,22 +474,43 @@ function eiRender() {
         // Dmg Calc filter list first (same as opening the Dmg Calc tab).
         if (!_eiAutoLoading && allEvents.some(e => e.Type === 'Hit')) {
             _eiAutoLoading = true;
-            try { dcRefilterAndRender(false, false); } finally { _eiAutoLoading = false; }
-            return; // dcRefilterAndRender → dcRefreshEI → eiRender with hits loaded
+            try {
+                const _pf = _perfStart('EI');
+                dcRefilterAndRender(false, false);
+                _pf('auto-load filter');
+            } finally { _eiAutoLoading = false; }
+            // The dcRefilterAndRender chain doesn't re-invoke eiRender when the
+            // Dmg Calc panel is hidden (tabs are exclusive), so the old `return`
+            // stranded the empty panel — fall through and compute instead.
+            if (!dcFiltered.length) {
+                panel.innerHTML = `<div class="ei-empty">No hit events loaded yet — wait for combat data.</div>`;
+                return;
+            }
+        } else {
+            panel.innerHTML = `<div class="ei-empty">No hit events loaded yet — wait for combat data.</div>`;
+            return;
         }
-        panel.innerHTML = `<div class="ei-empty">No hit events loaded yet — wait for combat data.</div>`;
-        return;
     }
 
     panel.innerHTML = `<div class="ei-loading">Computing effect impact…</div>`;
 
-    // Invalidate the cache whenever we do a fresh render so that changes to
-    // dcFiltered / dcBonus / dcDisabled / dcEffectsDisabled are always picked up.
+    // No-op since the shared baseline cache moved to a full state-signature
+    // check (dcStateVersion covers dcDisabled/dcBonus/the disabled sets;
+    // dcFiltered.length covers refilters) — kept so renders don't nuke the
+    // cache the Dmg Calc what-if sims reuse.
     eiInvalidateCache();
 
     setTimeout(() => {
-        eiLastData = eiComputeAll();
+        const _pf = _perfStart('EI');
+        eiLastData = eiComputeAll(_pf);
+        const t0 = performance.now();
         eiRenderTable();
+        _pf.dur('render table (dom)', performance.now() - t0);
+        // innerHTML parse is synchronous; style/layout/paint land after, and
+        // anything else queued before the frame (e.g. the deferred char
+        // deltas) lands inside this window too — read it as an upper bound.
+        requestAnimationFrame(() => requestAnimationFrame(() =>
+            _pf.dur('render + queued tasks (through first paint)', performance.now() - t0)));
     }, 0);
 }
 
@@ -614,7 +661,6 @@ function eiRenderTable() {
     let html = `
     <div class="ei-header-bar">
         <span class="ei-subtitle">${hitCountSample} hits · ${rows.length} unique effects</span>
-        <button class="ei-refresh-btn" onclick="eiRender()">↻ Refresh</button>
     </div>
     <div class="ei-scroll-wrap">
     <table class="ei-table">

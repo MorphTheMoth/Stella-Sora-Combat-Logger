@@ -579,6 +579,7 @@ static void RebuildIndex(std::ifstream& file) {
     while (true) {
         std::streampos pos = file.tellg();
         if (!std::getline(file, line)) break;
+        if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.empty() || line[0] == '=') continue;
         g_index.offsets.push_back(pos);
     }
@@ -607,6 +608,7 @@ static void ExtendIndex(std::ifstream& file) {
     while (true) {
         std::streampos pos = file.tellg();
         if (!std::getline(file, line)) break;
+        if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.empty() || line[0] == '=') continue;
         g_index.offsets.push_back(pos);
     }
@@ -670,6 +672,13 @@ std::string ReadRawLines(size_t after, size_t maxLines,
             size_t read = 0;
             while (read < maxLines && std::getline(file, line)) {
                 if (!line.empty() && line.back() == '\r') line.pop_back();
+                // Skip non-logical lines (headers/blank) here too: the line
+                // index only counts logical lines, so counting them in `read`
+                // would desync `after` from the index (and from the client's
+                // own line count) — e.g. a log with a mid-file
+                // "=== JSON log started ===" line (written at every logger
+                // init) would hang the client's backlog detection forever.
+                if (line.empty() || line[0] == '=') continue;
                 out += line;
                 out += '\n';
                 ++read;
@@ -715,6 +724,7 @@ static const SavedLogIndex* GetSavedLogIndex(const std::string& path,
         while (true) {
             std::streampos pos = file.tellg();
             if (!std::getline(file, line)) break;
+            if (!line.empty() && line.back() == '\r') line.pop_back();
             if (line.empty() || line[0] == '=') continue;
             idx.offsets.push_back(pos);
         }
@@ -751,6 +761,9 @@ std::string ReadRawLinesFrom(const std::string& path, size_t after,
             size_t read = 0;
             while (read < maxLines && std::getline(file, line)) {
                 if (!line.empty() && line.back() == '\r') line.pop_back();
+                // Same non-logical skip as ReadRawLines — keep `after` in
+                // lockstep with the saved-log line index.
+                if (line.empty() || line[0] == '=') continue;
                 out += line;
                 out += '\n';
                 ++read;
@@ -1085,6 +1098,25 @@ static std::string BuildLogFrame(const std::string& rawLines) {
     return frame;
 }
 
+// Splits newline-joined raw log lines into whole `event: log` SSE frames of
+// kSseFrameLines lines each, so the client parses and renders each batch while
+// the next is still in flight.
+static void SplitLogFrames(const std::string& raw, std::vector<std::string>* out) {
+    size_t lineStart = 0;
+    size_t lineCount = 0;
+    for (size_t pos = 0; pos <= raw.size(); pos++) {
+        if (pos == raw.size() || raw[pos] == '\n') {
+            if (++lineCount >= kSseFrameLines) {
+                out->push_back(BuildLogFrame(raw.substr(lineStart, pos - lineStart + 1)));
+                lineStart = pos + 1;
+                lineCount = 0;
+            }
+        }
+    }
+    if (lineStart < raw.size())
+        out->push_back(BuildLogFrame(raw.substr(lineStart)));
+}
+
 // A response queued for streaming to a connection. `frames` holds whole SSE
 // messages (or a single body) that the pump hands to the socket in bounded
 // chunks as it drains, keeping the mongoose send buffer small.
@@ -1127,9 +1159,41 @@ static void PumpPendingBody(struct mg_connection* c) {
     PendingBody& pb = it->second;
 
     if (pb.frameIdx >= pb.frames.size()) {
-        if (pb.clearIsRespOnDone) c->is_resp = 0;
-        g_pending_body.erase(it);
-        return;
+        if (pb.clearIsRespOnDone) {
+            c->is_resp = 0;
+            g_pending_body.erase(it);
+            return;
+        }
+        // SSE stream queue drained. For a main-log client still inside its
+        // initial backlog, read the next batch from disk and keep the pipe
+        // full at socket-drain pace instead of idling until the next
+        // sse_timer_cb tick (500 ms) — the backlog then streams continuously
+        // and the client parses each frame as it arrives.
+        SseClient* sc = nullptr;
+        for (auto& cl : g_sse_clients)
+            if (cl.conn == c) { sc = &cl; break; }
+        if (sc && sc->type == SSE_MAIN) {
+            size_t total = 0, nextAfter = sc->lastOffset;
+            std::string raw = sc->savedLogPath.empty()
+                ? ReadRawLines(sc->lastOffset, kMaxEventsPerSseBatch, &total, &nextAfter)
+                : ReadRawLinesFrom(sc->savedLogPath, sc->lastOffset, kMaxEventsPerSseBatch, &total, &nextAfter);
+            if (nextAfter > sc->lastOffset) {
+                sc->lastOffset = nextAfter;
+                std::vector<std::string> frames;
+                frames.push_back(BuildMetaFrame(total));
+                SplitLogFrames(raw, &frames);
+                pb.frames = std::move(frames);
+                pb.frameIdx = 0;
+                pb.framePos = 0;
+                // fall through to the fill loop below
+            } else {
+                g_pending_body.erase(it);   // backlog fully delivered — timer takes over
+                return;
+            }
+        } else {
+            g_pending_body.erase(it);
+            return;
+        }
     }
     if (c->send.size < kStreamChunkBytes) mg_iobuf_resize(&c->send, kStreamChunkBytes);
     size_t space = std::min(c->send.size - c->send.len, kStreamChunkBytes);
@@ -1192,9 +1256,14 @@ static void sse_timer_cb(void* arg) {
             std::string meta = BuildMetaFrame(total);
             mg_send(client.conn, meta.c_str(), meta.size());
             if (nextAfter > client.lastOffset) {
-                std::string frame = BuildLogFrame(raw);
-                mg_send(client.conn, frame.c_str(), frame.size());
+                // Split the batch into per-1000-line SSE frames and stream
+                // through the pump like the initial backlog: a 10k-line batch
+                // is multi-MB, and one giant mg_send of it stalls the socket
+                // (and the event loop) for the whole write.
                 client.lastOffset = nextAfter;
+                std::vector<std::string> frames;
+                SplitLogFrames(raw, &frames);
+                StreamFramesToClient(client.conn, std::move(frames), /*clearIsRespOnDone=*/false);
             } else {
                 sendSseHeartbeat(client.conn);
             }
@@ -1585,19 +1654,7 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                 // is_resp stays set.
                 std::vector<std::string> frames;
                 frames.push_back(BuildMetaFrame(total));
-                size_t lineStart = 0;
-                size_t lineCount = 0;
-                for (size_t pos = 0; pos <= raw.size(); pos++) {
-                    if (pos == raw.size() || raw[pos] == '\n') {
-                        if (++lineCount >= kSseFrameLines) {
-                            frames.push_back(BuildLogFrame(raw.substr(lineStart, pos - lineStart + 1)));
-                            lineStart = pos + 1;
-                            lineCount = 0;
-                        }
-                    }
-                }
-                if (lineStart < raw.size())
-                    frames.push_back(BuildLogFrame(raw.substr(lineStart)));
+                SplitLogFrames(raw, &frames);
                 StreamFramesToClient(c, std::move(frames), /*clearIsRespOnDone=*/false);
             } else {
                 std::string meta = BuildMetaFrame(total);

@@ -129,7 +129,9 @@ function flushLogRefresh() {
     if (fcFollowAutoDefender('log')) filteredDirty = true;
     if (filteredDirty) {
         filteredDirty = false;
+        const _pf = resetOpen ? _perfStart('LOG') : null;
         refilterAndRender(resetOpen, resetOpen);
+        if (_pf) _pf('filter + log render');
     } else {
         foldIncremental();
         if (activeTab === 'analytics' && typeof Analytics !== 'undefined') Analytics.refresh();

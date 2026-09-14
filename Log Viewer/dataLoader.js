@@ -81,6 +81,48 @@ let backlogDone = false;    // true once the initial backlog has been fully rece
 // Entry kinds: effect entries (id → {lt, ld, vc:[{l,v}]} level ladder) and hit
 // entries ("t":"hit", id = hitDamageId → {lt, ld, sp/sa/tp/ta/ap/pi} per-level
 // value arrays written by the DLL's WriteHitDamageLevelMapEntry).
+// ─── Section timing logs ───────────────────────────────────────────────
+// Lightweight profiler for the load/compute pipelines. `_perfStart(tag)`
+// starts a timing block and returns a logger:
+//   const _pf = _perfStart('EI');       // → "[EI] compute start"
+//   ...section 1...
+//   let t = _pf('baseline');            // → "[EI] baseline: 669.2 ms (t=+0.70 s)"
+//   ...section 2...
+//   t = _pf('row evals', t);            // duration measured since t
+// Durations accumulated inside a loop are reported explicitly:
+//   _pf.dur('baseline · ecBuildIntel', tIntel);
+// Everything is console-only and a no-op unless a block is started.
+function _perfStart(tag) {
+    const base = performance.now();
+    console.log(`[${tag}] compute start`);
+    const fmt = (ms) => `${ms < 100 ? ms.toFixed(1) : Math.round(ms)} ms`;
+    const pf = (label, since) => {
+        const t = performance.now();
+        console.log(`[${tag}] ${label}: ${fmt(t - (since ?? base))} (t=+${((t - base) / 1000).toFixed(2)} s)`);
+        return t;
+    };
+    pf.dur = (label, ms) => {
+        console.log(`[${tag}] ${label}: ${fmt(ms)} (t=+${((performance.now() - base) / 1000).toFixed(2)} s)`);
+        return performance.now();
+    };
+    return pf;
+}
+
+// Initial-backlog timing (fetch / parse / enrich), reset per initial load.
+let _loadT0 = 0, _parseMs = 0, _enrichMs = 0, _loadCount = 0;
+let _loadFrames = 0, _loadBytes = 0, _loadLogged = false;
+
+function _resetLoadTiming() {
+    _loadT0 = 0; _parseMs = 0; _enrichMs = 0; _loadCount = 0;
+    _loadFrames = 0; _loadBytes = 0; _loadLogged = false;
+}
+
+function _logLoadDone() {
+    if (_loadLogged || !_loadT0 || !_loadCount) return;
+    _loadLogged = true;
+    console.log(`[LOG] initial backlog done: ${_loadCount} events, ${_loadFrames} frames, ${Math.round(_loadBytes / 1024)} KB — fetch+stream ${Math.round(performance.now() - _loadT0)} ms wall, parse ${Math.round(_parseMs)} ms, enrich ${Math.round(_enrichMs)} ms`);
+}
+
 async function fetchLevelMap(savedLogName) {
     try {
         let url = '/api/levelmap';
@@ -109,6 +151,7 @@ async function fetchLevelMap(savedLogName) {
                 vc: (entry.vc || []).map(v => ({ l: v.l, v: v.v }))
             });
         }
+        if (typeof __resetResolveLevelMapCache === 'function') __resetResolveLevelMapCache();
     } catch (e) {
         console.error('Failed to fetch level map', e);
     }
@@ -146,8 +189,13 @@ function resetClientState() {
     // Dmg Calc sidebar simulation toggles (char/disc/quick toggles, field
     // bonuses) also belong to the opened log.
     if (typeof dcResetUiState === 'function') dcResetUiState();
+    // The hits-domain filtered list belongs to the opened log — drop it so
+    // the hit-based tabs don't carry the previous log's hits into their next
+    // render (each recomputes it on activation / next refresh).
+    if (typeof dcFiltered !== 'undefined') dcFiltered = [];
     // Shared filter state + selects + search + EI toggles (filterCore.js).
     if (typeof fcResetFilters === 'function') fcResetFilters();
+    _resetLoadTiming();
     allEvents = [];
     filtered = [];
     if (window.logVL) {
@@ -158,6 +206,9 @@ function resetClientState() {
     lastFetchCount = 0;
     backlogDone = false;
     closeSearch();
+    // If the Effect Impact tab is open, drop its table immediately instead of
+    // showing the previous log's rows until the new backlog completes.
+    if (typeof eiRefreshIfVisible === 'function') eiRefreshIfVisible();
 }
 
 window.onSavedLogChange = async function() {
@@ -299,6 +350,7 @@ function startLiveUpdates() {
     // (after>0) just continue incrementally.
     backlogDone = lastFetchCount > 0;
     serverTotal = Infinity;
+    if (lastFetchCount === 0 && !_loadT0) { _resetLoadTiming(); _loadT0 = performance.now(); }
 
     const params = ['after=' + lastFetchCount];
     if (currentSavedLog) params.push('savedlog=' + encodeURIComponent(currentSavedLog));
@@ -350,12 +402,14 @@ function startLiveUpdates() {
 
 function appendEvents(events) {
     const startIdx = allEvents.length;
+    const s = _loadT0 ? performance.now() : 0;
     for (let i = 0; i < events.length; i++) {
         const ev = events[i];
         ev._origIndex = startIdx + i;
         enrichEvent(ev);
         allEvents.push(ev);
     }
+    if (_loadT0) _enrichMs += performance.now() - s;
 }
 
 // Splits a raw NDJSON batch (newline-joined lines, as sent by the server) into
@@ -367,6 +421,9 @@ function parseRawBatch(text) {
     const events = [];
     let count = 0;
     if (!text) return { events, count };
+    // First frame of an initial backlog starts the load timing block.
+    if (lastFetchCount === 0 && !_loadT0) { _resetLoadTiming(); _loadT0 = performance.now(); }
+    const s = _loadT0 ? performance.now() : 0;
     const lines = text.split('\n');
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
@@ -374,6 +431,15 @@ function parseRawBatch(text) {
         count++;
         try { events.push(JSON.parse(line)); }
         catch (e) { /* skip malformed line; still counted for offsets */ }
+    }
+    if (_loadT0) {
+        _parseMs += performance.now() - s;
+        _loadCount += count;
+        _loadFrames++;
+        _loadBytes += text.length;
+        // Per-frame pacing during the initial backlog (the streaming part).
+        if (!backlogDone && count > 0)
+            console.log(`[LOG] frame ${_loadFrames}: ${count} events, ${Math.round(text.length / 1024)} KB (t=+${((performance.now() - _loadT0) / 1000).toFixed(2)} s)`);
     }
     return { events, count };
 }
@@ -385,6 +451,7 @@ function handleMeta(data) {
     if (!backlogDone && t === lastFetchCount) {
         backlogDone = true;
         if (typeof updateStats === 'function') updateStats();
+        if (typeof eiRefreshIfVisible === 'function') eiRefreshIfVisible();
     }
     if (t < lastFetchCount) {
         // The server log was truncated/cleared externally — resync from scratch.
@@ -426,8 +493,11 @@ function handleRawBatch(events, count) {
         scheduleLogRefresh();
     }
     lastFetchCount = nextAfter;
-    if (!backlogDone && serverTotal !== Infinity && lastFetchCount >= serverTotal)
+    if (!backlogDone && serverTotal !== Infinity && lastFetchCount >= serverTotal) {
         backlogDone = true;
+        _logLoadDone();
+        if (typeof eiRefreshIfVisible === 'function') eiRefreshIfVisible();
+    }
     if (window.dcRefreshIfVisible) window.dcRefreshIfVisible();
 }
 
@@ -447,6 +517,8 @@ async function fetchLog(incremental = false) {
 
         url += '?' + params.join('&');
 
+        if (!incremental && lastFetchCount === 0 && !_loadT0) { _resetLoadTiming(); _loadT0 = performance.now(); }
+
         const t = allEvents.length;
         const res = await fetch(url, { cache: 'no-cache' });
         const text = await res.text();
@@ -457,7 +529,7 @@ async function fetchLog(incremental = false) {
         // (handleRawBatch keys off lastFetchCount, which is 0 until the
         // first batch is consumed — matching fetchLog's old split).
         handleRawBatch(events, count);
-        if (!incremental) backlogDone = true;
+        if (!incremental) { backlogDone = true; _logLoadDone(); }
     } catch (err) {
         console.error('fetch error', err);
     } finally {

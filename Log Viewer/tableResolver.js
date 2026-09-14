@@ -80,18 +80,29 @@ const effectLevelMetaFallback = new Map();
 // level row when the owner's deployment role is unknown (no record log).
 const effectMainOrSupport = new Map();
 
+// Memoized per configId: resolveLevelMap is called ~330x per hit during the
+// engine's preanalysis (127 unique ids on a typical log). Pure table lookup,
+// no state dependencies; clear on levelMap rebuilds (fetchLevelMap).
+const _rlmCache = new Map();
+function __resetResolveLevelMapCache() { _rlmCache.clear(); }
+
 function resolveLevelMap(configId) {
+    let r = _rlmCache.get(configId);
+    if (r !== undefined) return r;
     const entry = levelMap.get(configId);
     if (entry && entry.t !== 'hit') {
-        return {
+        r = {
             levelTypeData: entry.lt,
             levelData: entry.ld,
             allValueConfigIds: (entry.vc || []).map(v => ({ level: v.l, valueConfigId: v.v }))
         };
+    } else {
+        const fb = effectLevelMetaFallback.get(configId);
+        r = fb ? { levelTypeData: fb.lt, levelData: fb.ld, allValueConfigIds: [] }
+            : { levelTypeData: 0, levelData: 0, allValueConfigIds: [] };
     }
-    const fb = effectLevelMetaFallback.get(configId);
-    if (fb) return { levelTypeData: fb.lt, levelData: fb.ld, allValueConfigIds: [] };
-    return { levelTypeData: 0, levelData: 0, allValueConfigIds: [] };
+    _rlmCache.set(configId, r);
+    return r;
 }
 
 // Datamine hit ladder fallback — hitDamageId -> levelMap-style "hit" entry

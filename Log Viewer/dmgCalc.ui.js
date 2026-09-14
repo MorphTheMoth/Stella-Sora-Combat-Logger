@@ -110,13 +110,15 @@ function dcBumpCalcVersion() { dcStateVersion++; }
 
 // ev -> { version, f, d } : calcHitFields + calcDamage for the current state
 const _dcHitCalcCache = new WeakMap();
+let dcSimDepth = 0;   // >0 while a what-if simulation mutates the level tables
+
 function dcCachedHitCalc(ev) {
     let c = _dcHitCalcCache.get(ev);
     if (c && c.version === dcStateVersion) return c;
     const f = calcHitFields(ev, null, dcEffectsDisabled, dcEffectLevelOverrides);
     const d = calcDamage(f, dcBonus, dcDisabled);
     c = { version: dcStateVersion, f, d };
-    _dcHitCalcCache.set(ev, c);
+    if (!dcSimDepth) _dcHitCalcCache.set(ev, c);   // never cache inside a simulation
     return c;
 }
 
@@ -526,6 +528,7 @@ function dcPotsApply(state, onlyAboveMax) {
         if (!state.prev.has(potId)) state.prev.set(potId, st.change || 0);
         st.change = POT_LEVEL - st.recordLv - st.bonus;
     }
+    dcBumpLevelState();
 }
 
 function dcPotsRevert(state) {
@@ -534,6 +537,7 @@ function dcPotsRevert(state) {
         if (st) st.change = prev;
     }
     state.prev.clear();
+    dcBumpLevelState();
 }
 
 // Re-sync quick toggles as new effects appear (poll/refilter):
@@ -557,10 +561,14 @@ function dcSyncQuickToggles() {
 
 // Re-render every Dmg Calc surface after a state change (effects panel,
 // formula bar + totals, hit list, effect-impact panel, analytics).
-function dcApplyAndRender() {
+function dcApplyAndRender(changedKeys) {
     // The handlers that call this just mutated calc-affecting state — bump
     // the version so the per-hit calc / char-delta caches rebuild below.
+    // changedKeys (optional): the disabled keys that changed, for the shared
+    // engine baseline's incremental per-hit rebuild.
     dcBumpCalcVersion();
+    dcBumpLevelState();
+    if (typeof ecNoteSharedChange === 'function') ecNoteSharedChange(changedKeys || null);
     renderEffectsPanel();
     renderFormulaBar();
     dcVL.render();
@@ -568,21 +576,32 @@ function dcApplyAndRender() {
     dcNotifyAnalytics();
 }
 
+// Fixture helper for tests/scripts: replace the whole disabled set and bump
+// the state versions the machinery's caches key on (the app always mutates
+// through dcApplyAndRender, which bumps both).
+window.dcSetDisabledState = function(keys) {
+    dcEffectsDisabled.clear();
+    for (const k of keys) dcEffectsDisabled.add(k);
+    dcBumpCalcVersion();
+    dcBumpLevelState();
+};
+
 window.dcToggleGroupDisable = function(groupKey) {
+    let keys;
     if (!dcGroupEffectKeys.has(groupKey)) {
         const matcher = dcGroupSourceMatcher(groupKey);
-        const keys = new Set();
+        keys = new Set();
         for (const ef of dcCollectAttrFixEffectsCached()) {
             if (matcher(ef.source, ef.name)) keys.add(ef.key);
         }
         dcGroupEffectKeys.set(groupKey, keys);
         keys.forEach(k => dcEffectsDisabled.add(k));
     } else {
-        const keys = dcGroupEffectKeys.get(groupKey);
+        keys = dcGroupEffectKeys.get(groupKey);
         if (keys) keys.forEach(k => dcEffectsDisabled.delete(k));
         dcGroupEffectKeys.delete(groupKey);
     }
-    dcApplyAndRender();
+    dcApplyAndRender(new Set(keys || []));
 };
 
 window.dcTogglePotsMaxLvl6 = function() {
@@ -727,102 +746,218 @@ let _dcCharDeltaCache = null; // { version, baseTotal, deltas, quick } | null
 // zeroed (dcCharsDisabled check in dcApplyEffectOverrides) and its owned
 // effect keys are added to the disabled set, which also affects other
 // characters' hits.
-function dcComputeCharDeltas(list) {
+function dcComputeCharDeltas(list, prof) {
     const deltas = {};
     const quick = {};
     let baseTotal = 0;
     list.forEach(n => { deltas[n] = 0; });
     if (dcFiltered.length && list.length) {
-        // Base pass: current Total Calc + per-attacker contribution under the
-        // current state (per-hit results shared with the totals cache).
-        const sums = new Map();
-        for (const ev of dcFiltered) {
-            const c = dcCachedHitCalc(ev);
-            baseTotal += c.d;
-            const att = ev.AttackerDisplay || ev.Attacker || '';
-            sums.set(att, (sums.get(att) || 0) + c.d);
-        }
-
-        // Keys whose disabling changes hit *level scaling* globally — when a
-        // char owns one of these, its what-if pass must visit every hit.
-        const coupling = dcLevelCouplingKeys();
-
-        for (const name of list) {
-            // Zeroing the char's own hits:
-            let totalIf = baseTotal - (sums.get(name) || 0);
-            // Its owned effects also get disabled (may affect other hits):
-            const owned = dcCharOwnedEffectKeys(name);
-            if (owned.size) {
-                const merged = new Set(dcEffectsDisabled);
-                for (const k of owned) merged.add(k);
-                if (merged.size !== dcEffectsDisabled.size) {
-                    // Fast path: when none of the owned keys is a
-                    // level-coupling key, only hits that actually carry one of
-                    // the owned keys (in their own effect lists / potentials
-                    // group) can change — everything else reuses the base
-                    // damage computed above.
-                    let needsFull = false;
-                    for (const k of owned) { if (coupling.has(k)) { needsFull = true; break; } }
-                    let t = 0;
-                    for (const ev of dcFiltered) {
-                        const att = ev.AttackerDisplay || ev.Attacker || '';
-                        if (att === name) continue;
-                        if (!needsFull) {
-                            const cand = dcHitCandidateKeys(ev);
-                            let affected = false;
-                            for (const k of owned) { if (cand.has(k)) { affected = true; break; } }
-                            if (!affected) { t += dcCachedHitCalc(ev).d; continue; }
-                        }
-                        const f = calcHitFields(ev, null, merged, dcEffectLevelOverrides);
-                        t += calcDamage(f, dcBonus, dcDisabled);
-                    }
-                    totalIf = t;
-                }
-            }
-            deltas[name] = baseTotal - totalIf;
-        }
-
-        // ── Quick-toggle deltas ──
-        // What the Total Calc would be with each quick toggle applied (or,
-        // when already active, turned off) — same convention as the char
-        // rows. Pots toggles are simulated by temporarily applying the level
-        // changes with DIRECT calc calls (the per-hit cache must not see the
-        // mutated level tables, so no dcCachedHitCalc here and no version
-        // bump — the changes are restored in `finally`). Group toggles are
-        // simulated with an add/remove disabled-set pass, also direct.
-        for (const t of dcQuickToggleList()) {
-            if (t.divider) continue;   // separator marker — not a toggle
-            let totalIf;
-            if (t.potsState) {
-                const st = t.potsState();
-                totalIf = st.active
-                    ? dcSimulatePotsRevert(st)
-                    : dcSimulatePotsApply(st, t.potsOnlyAboveMax);
-            } else {
-                totalIf = dcSimulateGroupToggle(t.groupKey, dcGroupEffectKeys.has(t.groupKey), baseTotal);
-            }
-            quick[t.label] = baseTotal - totalIf;
-        }
+        // The what-if engine's per-hit intel (one preanalysis per hit under
+        // the live state) — every what-if below evaluates in closed form on
+        // top of it; hits carrying nothing a what-if touches reuse the
+        // per-hit damage cache.
+        const tIntel0 = prof ? performance.now() : 0;
+        const wi = (typeof ecGetWhatIfIntel === 'function') ? ecGetWhatIfIntel() : null;
+        if (prof) prof.dur(`char deltas · intel build (${dcFiltered.length} hits)`, performance.now() - tIntel0);
+        const res = dcComputeCharDeltasPhases(list, prof, wi, deltas, quick);
+        if (res === null) return null;
+        baseTotal = res.baseTotal;
     }
     return { baseTotal, deltas, quick };
 }
 
+// The three phases of the char-deltas recompute (base pass, per-char
+// what-ifs, quick toggles) as an async pipeline with yields between them so
+// a background rebuild never blocks a frame. `isAborted` runs after every
+// yield; on abort the result is discarded (the caller restarts).
+function _dcCharDeltaYield() {
+    return new Promise(r => (typeof requestAnimationFrame === 'function')
+        ? requestAnimationFrame(() => r()) : setTimeout(r, 0));
+}
+
+async function dcComputeCharDeltasChunked(list, prof, isAborted) {
+    const deltas = {};
+    const quick = {};
+    let baseTotal = 0;
+    list.forEach(n => { deltas[n] = 0; });
+    if (dcFiltered.length && list.length) {
+        const tIntel0 = prof ? performance.now() : 0;
+        const wi = (typeof ecGetSharedBaselineChunked === 'function')
+            ? await ecGetSharedBaselineChunked(prof, isAborted)
+            : (typeof ecGetWhatIfIntel === 'function' ? ecGetWhatIfIntel() : null);
+        if (prof) prof.dur(`char deltas · intel build (${dcFiltered.length} hits)`, performance.now() - tIntel0);
+        const res = await dcComputeCharDeltasPhases(list, prof, wi, deltas, quick, isAborted);
+        if (res === null) return null;
+        baseTotal = res.baseTotal;
+    }
+    return { baseTotal, deltas, quick };
+}
+
+// Phases shared by the sync and chunked pipelines. Returns
+// { baseTotal } or null on abort.
+async function dcComputeCharDeltasPhases(list, prof, wi, deltas, quick, isAborted) {
+    let baseTotal = 0;
+    const chunked = !!isAborted;   // truthy isAborted ⇒ chunked mode (yields on)
+    // Base pass: current Total Calc + per-attacker contribution under the
+    // current state (per-hit results shared with the totals cache).
+    let t = prof ? performance.now() : 0;
+    const sums = new Map();
+    for (const ev of dcFiltered) {
+        const c = dcCachedHitCalc(ev);
+        baseTotal += c.d;
+        const att = ev.AttackerDisplay || ev.Attacker || '';
+        sums.set(att, (sums.get(att) || 0) + c.d);
+    }
+    if (prof) t = prof.dur(`char deltas · base pass (${dcFiltered.length} hits)`, performance.now() - t);
+    if (chunked) {
+        await _dcCharDeltaYield();
+        if (isAborted()) return null;
+    }
+
+    // Keys whose disabling changes hit *level scaling* globally — when a
+    // char owns one of these, its what-if pass must visit every hit.
+    const coupling = dcLevelCouplingKeys();
+
+    let tChars = prof ? performance.now() : 0, directCalcs = 0;
+    for (const name of list) {
+        // Zeroing the char's own hits:
+        let totalIf = baseTotal - (sums.get(name) || 0);
+        // Its owned effects also get disabled (may affect other hits):
+        const owned = dcCharOwnedEffectKeys(name);
+        if (owned.size) {
+            const merged = new Set(dcEffectsDisabled);
+            for (const k of owned) merged.add(k);
+            if (merged.size !== dcEffectsDisabled.size) {
+                if (wi) {
+                    // Engine path: the what-if = the char's owned keys
+                    // disabled (+ the level-table changes that follow).
+                    // Hits carrying none of it reuse the cached damage.
+                    const dis = new Set(owned);
+                    const lvlLc = ecWhatIfLevelChanges(merged);
+                    let t2 = 0;
+                    for (let i = 0; i < dcFiltered.length; i++) {
+                        const ev = dcFiltered[i];
+                        const att = ev.AttackerDisplay || ev.Attacker || '';
+                        if (att === name) continue;
+                        const b = wi[i];
+                        const cand = dcHitCandidateKeys(ev);
+                        let aff = false;
+                        for (const k of dis) { if (cand.has(k)) { aff = true; break; } }
+                        if (!aff && lvlLc.size) {
+                            for (const src of lvlLc.keys()) { if (ecWhatIfSrcAffects(b, src)) { aff = true; break; } }
+                        }
+                        if (!aff) { t2 += dcCachedHitCalc(ev).d; continue; }
+                        if (prof) directCalcs++;
+                        const dmg = b.dead ? 0 : ecWhatIfHitDamage(b, dis, EC_EMPTY_SET, lvlLc);
+                        t2 += dmg !== null ? dmg : dcCachedHitCalc(ev).d;
+                    }
+                    totalIf = t2;
+                } else {
+                // Fast path: when none of the owned keys is a
+                // level-coupling key, only hits that actually carry one of
+                // the owned keys (in their own effect lists / potentials
+                // group) can change — everything else reuses the base
+                // damage computed above.
+                let needsFull = false;
+                for (const k of owned) { if (coupling.has(k)) { needsFull = true; break; } }
+                let t2 = 0;
+                for (const ev of dcFiltered) {
+                    const att = ev.AttackerDisplay || ev.Attacker || '';
+                    if (att === name) continue;
+                    if (!needsFull) {
+                        const cand = dcHitCandidateKeys(ev);
+                        let affected = false;
+                        for (const k of owned) { if (cand.has(k)) { affected = true; break; } }
+                        if (!affected) { t2 += dcCachedHitCalc(ev).d; continue; }
+                    }
+                    if (prof) directCalcs++;
+                    const f = calcHitFields(ev, null, merged, dcEffectLevelOverrides);
+                    t2 += calcDamage(f, dcBonus, dcDisabled);
+                }
+                totalIf = t2;
+                }
+            }
+        }
+        deltas[name] = baseTotal - totalIf;
+        if (chunked) {
+            await _dcCharDeltaYield();
+            if (isAborted()) return null;
+        }
+    }
+    if (prof) prof.dur(`char deltas · per-char what-ifs (${list.length} chars, ${directCalcs} engine/direct evals)`, performance.now() - tChars);
+
+    // ── Quick-toggle deltas ──
+    // What the Total Calc would be with each quick toggle applied (or,
+    // when already active, turned off) — same convention as the char
+    // rows. Pots toggles are simulated by temporarily applying the level
+    // changes with DIRECT calc calls (the per-hit cache must not see the
+    // mutated level tables, so no dcCachedHitCalc here and no version
+    // bump — the changes are restored in `finally`). Group toggles are
+    // simulated with an add/remove disabled-set pass, also direct.
+    let tQuick = prof ? performance.now() : 0, quickCount = 0, quickNoop = 0;
+    for (const tg of dcQuickToggleList()) {
+        if (tg.divider) continue;   // separator marker — not a toggle
+        let totalIf;
+        if (tg.potsState) {
+            const st = tg.potsState();
+            totalIf = st.active
+                ? dcSimulatePotsRevert(st, wi)
+                : dcSimulatePotsApply(st, tg.potsOnlyAboveMax, wi);
+        } else {
+            totalIf = dcSimulateGroupToggle(tg.groupKey, dcGroupEffectKeys.has(tg.groupKey), baseTotal, wi);
+        }
+        if (totalIf === baseTotal) quickNoop++;
+        else quickCount++;
+        quick[tg.label] = baseTotal - totalIf;
+        if (chunked) {
+            await _dcCharDeltaYield();
+            if (isAborted()) return null;
+        }
+    }
+    if (prof) prof.dur(`char deltas · quick toggles (${quickCount + quickNoop} toggles, ${quickNoop} no-op)`, performance.now() - tQuick);
+    return { baseTotal };
+}
 // Simulate applying a pots quick toggle: set the same `change` values
-// dcPotsApply would write, total, then restore in `finally`.
-function dcSimulatePotsApply(state, onlyAboveMax) {
+// dcPotsApply would write, total, then restore in `finally`. With the
+// what-if intel the pass evaluates in closed form (the level-ops replay for
+// the changed pots) and only hits referencing a changed pot (their rows or
+// their hit scaling) are recomputed — everything else reuses the per-hit
+// damage cache, which is safe: an unaffected hit's result is independent of
+// the mutated tables.
+function dcSimulatePotsApply(state, onlyAboveMax, wi) {
     const saved = new Map();
     for (const [id, s] of dcPotLevels) saved.set(id, s.change || 0);
+    dcBumpLevelState();
+    dcSimDepth++;
     try {
         const activePots = new Set();
         for (const ef of dcCollectAttrFixEffectsCached()) {
             if (ef.levelSource != null) activePots.add(ef.levelSource);
         }
+        const changedPots = new Set();
         for (const potId of activePots) {
             const s = dcPotLevels.get(potId);
             if (!s) continue;
             if (dcPotEffectiveLevel(s) === POT_LEVEL) continue;
             if (onlyAboveMax && dcPotEffectiveLevel(s) <= POT_LEVEL) continue;
             s.change = POT_LEVEL - s.recordLv - s.bonus;
+            changedPots.add(potId);
+        }
+        if (wi && changedPots.size) {
+            const lvlLc = new Map();
+            for (const potId of changedPots) {
+                lvlLc.set('pot:' + potId, dcPotEffectiveLevel(dcPotLevels.get(potId)));
+            }
+            let t = 0;
+            for (const b of wi) {
+                if (b.dead) { t += dcCachedHitCalc(b.ev).d; continue; }
+                let aff = false;
+                for (const potId of changedPots) { if (b.intel.potAff.has(potId)) { aff = true; break; } }
+                if (!aff) { t += dcCachedHitCalc(b.ev).d; continue; }
+                const dmg = ecWhatIfHitDamage(b, EC_EMPTY_SET, EC_EMPTY_SET, lvlLc);
+                t += dmg !== null ? dmg : dcCachedHitCalc(b.ev).d;
+            }
+            return t;
         }
         let t = 0;
         for (const ev of dcFiltered) {
@@ -832,18 +967,43 @@ function dcSimulatePotsApply(state, onlyAboveMax) {
         return t;
     } finally {
         for (const [id, s] of dcPotLevels) if (saved.has(id)) s.change = saved.get(id);
+        dcBumpLevelState();
+        dcSimDepth--;
     }
 }
 
 // Simulate turning an active pots toggle off: restore the `prev` changes it
-// saved when it was applied, total, then restore in `finally`.
-function dcSimulatePotsRevert(state) {
+// saved when it was applied, total, then restore in `finally`. Engine path
+// like dcSimulatePotsApply.
+function dcSimulatePotsRevert(state, wi) {
     const saved = new Map();
     for (const [id, s] of dcPotLevels) saved.set(id, s.change || 0);
+    dcBumpLevelState();
+    dcSimDepth++;
     try {
+        const changedPots = new Set();
         for (const [potId, prev] of state.prev) {
             const s = dcPotLevels.get(potId);
-            if (s) s.change = prev;
+            if (s && (s.change || 0) !== prev) {
+                s.change = prev;
+                changedPots.add(potId);
+            }
+        }
+        if (wi && changedPots.size) {
+            const lvlLc = new Map();
+            for (const potId of changedPots) {
+                lvlLc.set('pot:' + potId, dcPotEffectiveLevel(dcPotLevels.get(potId)));
+            }
+            let t = 0;
+            for (const b of wi) {
+                if (b.dead) { t += dcCachedHitCalc(b.ev).d; continue; }
+                let aff = false;
+                for (const potId of changedPots) { if (b.intel.potAff.has(potId)) { aff = true; break; } }
+                if (!aff) { t += dcCachedHitCalc(b.ev).d; continue; }
+                const dmg = ecWhatIfHitDamage(b, EC_EMPTY_SET, EC_EMPTY_SET, lvlLc);
+                t += dmg !== null ? dmg : dcCachedHitCalc(b.ev).d;
+            }
+            return t;
         }
         let t = 0;
         for (const ev of dcFiltered) {
@@ -853,13 +1013,15 @@ function dcSimulatePotsRevert(state) {
         return t;
     } finally {
         for (const [id, s] of dcPotLevels) if (saved.has(id)) s.change = saved.get(id);
+        dcBumpLevelState();
+        dcSimDepth--;
     }
 }
 
 // Simulate a group quick toggle (Boss Blitz / Talents): not active → add the
 // group's effect keys to the disabled set; already active → remove them
 // again. Returns the simulated Total Calc.
-function dcSimulateGroupToggle(groupKey, active, baseTotal) {
+function dcSimulateGroupToggle(groupKey, active, baseTotal, wi) {
     const matcher = dcGroupSourceMatcher(groupKey);
     let keys;
     if (active) {
@@ -876,6 +1038,31 @@ function dcSimulateGroupToggle(groupKey, active, baseTotal) {
         else merged.add(k);
     }
     if (merged.size === dcEffectsDisabled.size) return baseTotal;   // toggle changes nothing
+    if (wi) {
+        // Engine path: the what-if = the group's keys disabled/enabled plus
+        // the level-table changes any coupling key implies (the REAL
+        // effective-level functions under the merged set). Only hits carrying
+        // a toggled key or referencing a moved source are evaluated.
+        const dis = new Set(), en = new Set();
+        if (active) for (const k of keys) en.add(k);
+        else for (const k of keys) dis.add(k);
+        const lvlLc = ecWhatIfLevelChanges(merged);
+        let t = 0;
+        for (const b of wi) {
+            if (b.dead) { t += dcCachedHitCalc(b.ev).d; continue; }
+            const cand = dcHitCandidateKeys(b.ev);
+            let aff = false;
+            for (const k of dis) { if (cand.has(k)) { aff = true; break; } }
+            if (!aff) for (const k of en) { if (cand.has(k)) { aff = true; break; } }
+            if (!aff && lvlLc.size) {
+                for (const src of lvlLc.keys()) { if (ecWhatIfSrcAffects(b, src)) { aff = true; break; } }
+            }
+            if (!aff) { t += dcCachedHitCalc(b.ev).d; continue; }
+            const dmg = ecWhatIfHitDamage(b, dis, en, lvlLc);
+            t += dmg !== null ? dmg : dcCachedHitCalc(b.ev).d;
+        }
+        return t;
+    }
     // A toggle key that drives a level table (potential / skill-slot bonus
     // row) changes hit scaling globally — its what-if pass must visit every
     // hit, the fast path below may not skip any.
@@ -899,11 +1086,35 @@ function dcSimulateGroupToggle(groupKey, active, baseTotal) {
 }
 
 // Recompute the cached deltas (only when they are enabled and stale).
+let _dcCharDeltaPending = false;
+let _dcCharDeltaRun = 0;   // bumped per schedule; an in-flight run aborts on mismatch
 function dcRefreshCharDeltas() {
     if (!dcShowCharDeltas) return;
     if (_dcCharDeltaCache && _dcCharDeltaCache.version === dcStateVersion) return;
-    const list = dcPlayerCharNames();
-    _dcCharDeltaCache = { version: dcStateVersion, ...dcComputeCharDeltas(list) };
+    if (_dcCharDeltaPending) return;
+    // Deferred off the interaction critical path AND chunked: the tab paints
+    // first; the compute yields between phases and slices the intel build so
+    // the background work never blocks a frame for long. A state change
+    // (dcBumpCalcVersion) or dcHideCharDeltas aborts the run; the next
+    // refresh (from dcRenderCharList or the Calculate button) restarts it.
+    _dcCharDeltaPending = true;
+    const run = ++_dcCharDeltaRun;
+    // State signature (falls back to the version+length pair when the engine
+    // file isn't loaded, e.g. in the smoketest sandbox).
+    const stateSig = () => (typeof ecSharedBaselineSig === 'function')
+        ? ecSharedBaselineSig() : dcStateVersion + '|' + (dcFiltered ? dcFiltered.length : 0);
+    const sig0 = stateSig();
+    const isAborted = () => run !== _dcCharDeltaRun || !dcShowCharDeltas || stateSig() !== sig0;
+    const _pf = _perfStart('DC');
+    setTimeout(async () => {
+        _dcCharDeltaPending = false;
+        if (isAborted()) return;
+        const list = dcPlayerCharNames();
+        const res = await dcComputeCharDeltasChunked(list, _pf, isAborted);
+        if (res === null || isAborted()) return;   // superseded / hidden mid-run
+        _dcCharDeltaCache = { version: dcStateVersion, ...res };
+        dcRenderCharList();
+    }, 0);
 }
 
 // Button: recompute the per-char deltas for the current state.
@@ -1056,7 +1267,7 @@ window.dcToggleEffect = function(key) {
     if (dcEffectsDisabled.has(key)) dcEffectsDisabled.delete(key);
     else dcEffectsDisabled.add(key);
     dcHideCharDeltas();
-    dcApplyAndRender();
+    dcApplyAndRender(new Set([key]));
 };
 
 // Reset a potential's user change to 0 (record page click).
@@ -1595,9 +1806,13 @@ function dcApplyFilters() {
 // auto-follow lives inside dcApplyFilters (fcFollowAutoDefender re-runs the
 // pass when the glued defender changes).
 function dcRefilterAndRender(resetScroll = false) {
+    const _pf = _perfStart('DC');
+    let t = performance.now();
     dcFiltered = dcApplyFilters();
+    t = _pf(`filter pass (${dcFiltered.length} hits)`, t);
     fcDirtyHits = false;   // the hits domain just recomputed
     fcRenderSelects('hits', true);   // shared selects: rebuild with hits-domain options
+    t = _pf('selects', t);
     if (resetScroll) {
         dcVL.reset();
         dcContainer.scrollTop = 0;
@@ -1606,13 +1821,17 @@ function dcRefilterAndRender(resetScroll = false) {
     dcVL.build();
     dcSyncCharEffectKeys();
     dcSyncQuickToggles();
+    t = _pf('sync toggles/keys', t);
     // The syncs may have mutated the disabled sets, and new filters mean new
     // what-if results — invalidate the per-hit calc + char-delta caches.
     dcBumpCalcVersion();
     renderFormulaBar();
+    t = _pf('formula bar', t);
     renderEffectsPanel();
+    t = _pf('effects panel', t);
     document.getElementById('stats').textContent = `${dcFiltered.length} hits`;
     dcVL.render();
+    _pf('virtlist render', t);
     dcRefreshEI();
 }
 
@@ -1629,9 +1848,13 @@ window.switchTab = function(tab) {
         // character deltas (same as the "Calculate All" button), so the
         // sidebar percentages are fresh instead of stale or hidden after a
         // recent non-toggle interaction.
+        const _pf = _perfStart('DC');
+        let t = performance.now();
         dcShowCharDeltas = true;
         dcRefreshCharDeltas();
+        t = _pf('char deltas', t);
         dcRenderCharList();
+        _pf('char list', t);
     }
     _origSwitchTab(tab);
 };
