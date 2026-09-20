@@ -976,7 +976,7 @@ ST.buildPerRunNotes = function(events, floorFilter, minFloor) {
         var chars = (run.start && run.start.data && run.start.data.chars) || [];
         var charHtml = '';
         chars.forEach(function(c) {
-            if (c && c.id) charHtml += '<img src="' + ST.charPortrait(c.id) + '" class="portrait-sm" title="' + ST.charName(c.id) + '" onerror="this.style.display=\'none\'">';
+            if (c && c.id) charHtml += '<img loading="lazy" src="' + ST.charPortrait(c.id) + '" class="portrait-sm" title="' + ST.charName(c.id) + '" onerror="this.style.display=\'none\'">';
         });
         if (!charHtml) charHtml = '<span style="color:#555">—</span>';
         rows += '<tr><td>' + (run.start && run.start.data.towerId || '—') + '</td>' +

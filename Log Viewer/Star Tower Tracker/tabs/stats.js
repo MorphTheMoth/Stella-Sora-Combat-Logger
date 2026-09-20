@@ -161,7 +161,7 @@ ST.renderStats = function() {
             var portraits = '';
             if (te.ordered && te.ordered.length > 0) {
                 portraits = te.ordered.map(function(c) {
-                    return '<img src="' + ST.charPortrait(c.id) + '" class="portrait-sm" title="' + ST.charName(c.id) + '" onerror="this.style.display=\'none\'" style="margin-right:3px">';
+                    return '<img loading="lazy" src="' + ST.charPortrait(c.id) + '" class="portrait-sm" title="' + ST.charName(c.id) + '" onerror="this.style.display=\'none\'" style="margin-right:3px">';
                 }).join('');
             }
             var dot = '<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:' + color + ';margin-right:6px;vertical-align:middle"></span>';

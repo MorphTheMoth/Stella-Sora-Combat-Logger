@@ -21,7 +21,7 @@ ST.renderRuns = function() {
             var charHtml = '';
             chars.forEach(function(c) {
                 if (c && c.id) {
-                    charHtml += '<img src="' + ST.charPortrait(c.id) + '" class="portrait-sm" title="' + ST.charName(c.id) + '" onerror="this.style.display=\'none\'">';
+                    charHtml += '<img loading="lazy" src="' + ST.charPortrait(c.id) + '" class="portrait-sm" title="' + ST.charName(c.id) + '" onerror="this.style.display=\'none\'">';
                 }
             });
             if (!charHtml) charHtml = '<span style="color:#555">—</span>';

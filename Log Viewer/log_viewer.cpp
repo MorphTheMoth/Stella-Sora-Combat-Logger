@@ -1014,8 +1014,17 @@ public:
 
         r.totalSize = static_cast<size_t>(file.tellg());
         if (r.totalSize < after) {
-            r.nextOffset = 0;
-            r.totalSize = 0;
+            // Client offset is past EOF. That is usually a small overshoot
+            // (e.g. encoding drift), not a truncated log: rewinding to 0
+            // would re-stream — and the tracker would duplicate — the whole
+            // file. Only rewind on a large shortfall (real truncation);
+            // otherwise clamp to EOF and wait for genuinely new bytes.
+            if (after - r.totalSize > 1024 * 1024) {
+                r.nextOffset = 0;
+                r.totalSize = 0;
+                return r;
+            }
+            r.nextOffset = r.totalSize;
             return r;
         }
 
@@ -1833,9 +1842,13 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                     ServerLog("GET /ascension/log — trying to read: %s", ASCENSION_LOG_PATH.c_str());
                     std::ifstream file(ASCENSION_LOG_PATH);
                     if (file.good()) {
-                        std::stringstream buf; buf << file.rdbuf();
-                        mg_http_reply(c, 200, "Content-Type: text/plain; charset=utf-8\r\nCache-Control: no-cache\r\n",
-                            "%s", buf.str().c_str());
+                        // Stream the file (mg_http_serve_file) instead of one
+                        // giant mg_http_reply: buffering a 20MB+ body makes
+                        // mongoose shift its whole send queue per partial
+                        // write (O(n^2)) — measured 19s on localhost.
+                        mg_http_serve_opts opts = {};
+                        opts.extra_headers = "Cache-Control: no-cache\r\n";
+                        mg_http_serve_file(c, hm, ASCENSION_LOG_PATH.c_str(), &opts);
                         HttpLog(200, method, uri, query, remote);
                     } else {
                         ServerLog("GET /ascension/log — file NOT FOUND at path: %s", ASCENSION_LOG_PATH.c_str());

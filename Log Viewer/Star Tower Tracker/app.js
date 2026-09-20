@@ -184,43 +184,60 @@ ST.parseLog = function(text) {
 
 // ── State tracking ──
 
-ST.processRuns = function(events) {
+ST._resetState = function() {
     ST.runs = [];
     ST.allPotentialEvents = [];
     ST.allNoteEvents = [];
     ST.allEventRng = [];
     ST.allShopOffers = [];
-ST.allShopItems = [];
-ST.allRoomVisits = [];
-ST._initialLoadDone = false;
- 
-     var currentRun = null;
-    var runIdx = 0;
+    ST.allShopItems = [];
+    ST.allRoomVisits = [];
+    ST._openRun = null;
+    ST._runIdx = 0;
+    ST._sseCarry = '';
+};
 
+// Full (re)build from a complete event list — used for the initial load.
+ST.processRuns = function(events) {
+    ST._resetState();
+    ST._routeEvents(events);
+};
+
+// Feed events into the persistent state. Used both by the initial load and,
+// incrementally, by live updates — so a live tick only processes new lines
+// instead of re-parsing the whole log.
+ST._routeEvents = function(events) {
     for (var i = 0; i < events.length; i++) {
         var ev = events[i];
 
         if (ev.type === 'RUN') {
-            currentRun = { id: runIdx++, start: ev, events: [], end: null, _noteRolls: [] };
-            ST.runs.push(currentRun);
+            ST._openRun = { id: ST._runIdx++, start: ev, events: [], end: null, _noteRolls: [] };
+            ST.runs.push(ST._openRun);
+            ST._beginRun(ST._openRun);
         } else if (ev.type === 'END') {
-            if (currentRun) currentRun.end = ev;
-        } else if (currentRun) {
-            currentRun.events.push(ev);
+            if (ST._openRun) {
+                ST._openRun.end = ev;
+                ST._closeRun(ST._openRun);
+                ST._openRun = null;
+            }
+        } else if (ST._openRun) {
+            ST._openRun.events.push(ev);
+            ST._processEvent(ST._openRun, ev, ST._openRun._state, ST._openRun._pend);
+            ST._refreshOpenSummary(ST._openRun);
             // settle sub-message means the run ended (won tower) — no GiveUpResp follows
             if (ev.type === 'RECV' && ev.data && ev.data.action === 'settle') {
-                currentRun.end = ev;
-                currentRun = null;
+                ST._openRun.end = ev;
+                ST._closeRun(ST._openRun);
+                ST._openRun = null;
             }
         }
     }
-
-    for (var r = 0; r < ST.runs.length; r++) {
-        ST._processRun(ST.runs[r], r);
-    }
 };
 
-ST._processRun = function(run, runIdx) {
+// One-time setup when a RUN arrives: state init, bag init, start-of-run note
+// gains and initial room cases. The run stays open and later events are fed
+// via _processEvent so live updates don't need a full reprocess.
+ST._beginRun = function(run) {
     var start = run.start.data;
 
     // Compute disc note need counts from first 3 disc IDs
@@ -332,18 +349,31 @@ ST._processRun = function(run, runIdx) {
     }
 
     // Process initial room cases from RUN
-    var pendingNpcEvents = {};
+    run._pend = {};
     var initCases = (start.info && start.info.room && start.info.room.cases) ? start.info.room.cases : [];
     if (initCases.length > 0) {
-        ST._processCases(run, state, pendingNpcEvents, initCases);
+        ST._processCases(run, state, run._pend, initCases);
     }
     ST.allRoomVisits.push({ runId: run.id, floor: state.floor, roomType: state.roomType });
-    // Walk through timeline
-    for (var i = 0; i < run.events.length; i++) {
-        ST._processEvent(run, run.events[i], state, pendingNpcEvents);
-    }
+    run._state = state;
+    ST._refreshOpenSummary(run);
+};
 
-    // Summary from END (must run AFTER events loop so state is fully built)
+// Live summary for the still-open run (no END yet): current floor and
+// potentials collected so far. Time is unknown while running.
+ST._refreshOpenSummary = function(run) {
+    var state = run._state;
+    run.floorReached = state.floor;
+    run.potentialCnt = Object.keys(state.bag.potentials).reduce(function(sum, tid) { return sum + state.bag.potentials[tid]; }, 0);
+    run.totalTime = 0;
+    run.npcInteraction = 0;
+};
+
+// Final summary once the run closed (END / settle) + flush of never-answered
+// NPC events. Skip resolved ones — they were already pushed when answered;
+// pushing again would double-count them (with any selectedIdx corruption).
+ST._closeRun = function(run) {
+    var state = run._state;
     if (run.end) {
         if (run.end.data.action === 'settle' && run.end.data.settle) {
             var s = run.end.data.settle;
@@ -355,21 +385,15 @@ ST._processRun = function(run, runIdx) {
         } else {
             run.floorReached = run.end.data.floor || state.floor;
             run.potentialCnt = run.end.data.potentialCnt || 0;
-            run.totalTime = run.end.data.totalTime || 0;
+            run.totalTime = (run.end.data.totalTime != null) ? run.end.data.totalTime : null;
             run.npcInteraction = run.end.data.npcInteraction || 0;
         }
     } else {
-        run.floorReached = state.floor;
-        run.potentialCnt = Object.keys(state.bag.potentials).reduce(function(sum, tid) { return sum + state.bag.potentials[tid]; }, 0);
-        run.totalTime = 0;
-        run.npcInteraction = 0;
+        ST._refreshOpenSummary(run);
     }
 
-    // Flush unresolved (never answered) NPC events.
-    // Skip resolved ones — they were already pushed when answered; pushing again
-    // would double-count them (with any selectedIdx corruption).
-    for (var caseId in pendingNpcEvents) {
-        var pend2 = pendingNpcEvents[caseId];
+    for (var caseId in run._pend) {
+        var pend2 = run._pend[caseId];
         if (!pend2.resolved) ST.allEventRng.push(pend2);
     }
 };
@@ -674,6 +698,9 @@ ST.fetchLog = function() {
         })
         .then(function(text) {
             ST._sseAcc = text;
+            // Exact file size in bytes for ?after= (live chunks only add
+            // message bytes via appendLiveChunk, so this stays exact).
+            ST._sseBytes = new TextEncoder().encode(text).length;
             var events = ST.parseLog(text);
             ST.processRuns(events);
             ST._initialLoadDone = true;
@@ -688,9 +715,37 @@ ST.fetchLog = function() {
 
 // ── Live reload ──
 
+// Feed one SSE message into the persistent state. Only the new lines are
+// parsed — the whole log is NOT reprocessed (that froze the page on every
+// tick with a big log). A message can start/end mid-line (server cuts at byte
+// offsets), so a trailing partial line is carried into the next chunk.
+ST.appendLiveChunk = function(chunk) {
+    // Count message bytes only — no joiners: this must stay the exact file
+    // offset for ?after= on reconnect. (TextEncoder is universal in any
+    // browser that supports EventSource/fetch; no string-length fallback —
+    // UTF-16 units would undercount multibyte content and desync the offset.)
+    ST._sseBytes = (ST._sseBytes || 0) + new TextEncoder().encode(chunk).length;
+    var text = (ST._sseCarry || '') + chunk;
+    ST._sseCarry = '';
+    if (text.length === 0) return;
+    var lines = text.split('\n');
+    if (text[text.length - 1] !== '\n') {
+        ST._sseCarry = lines.pop();
+    }
+    if (lines.length === 0) return;
+    ST._routeEvents(ST.parseLog(lines.join('\n')));
+};
+
 ST.startLiveReload = function() {
     if (location.protocol === 'file:') return;
-    var es = new EventSource('events');
+    // Tell the server our exact byte offset so it only sends unseen bytes.
+    // (Blindly appending re-sent backlog used to duplicate every run in the
+    // list and leave truncated 0m 0s ghost rows on top during catch-up.)
+    // NOTE: ST._sseBytes is maintained exactly by fetchLog/appendLiveChunk —
+    // never derive it from string lengths (UTF-16 units undercount multibyte
+    // content and an overshoot used to make the server re-stream the log).
+    var after = ST._sseBytes || 0;
+    var es = new EventSource('events?after=' + after);
     var dot = document.getElementById('liveDot');
     var errTimer = null;
 
@@ -698,14 +753,9 @@ ST.startLiveReload = function() {
         if (dot) { dot.style.background = '#4a8a4a'; dot.title = 'live'; }
         if (errTimer) { clearTimeout(errTimer); errTimer = null; }
     };
-    var sseMsgCount = 0;
     es.onmessage = function(e) {
         if (!e.data || !ST._initialLoadDone) return;
-        sseMsgCount++;
-        if (sseMsgCount === 1) return;  // skip the full-dump re-send
-        ST._sseAcc += '\n' + e.data;
-        var events = ST.parseLog(ST._sseAcc);
-        ST.processRuns(events);
+        ST.appendLiveChunk(e.data);
         var stats = document.getElementById('runStats');
         stats.textContent = ST.runs.length + ' runs';
         ST.switchTab(ST.activeTab);
@@ -726,9 +776,13 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     });
 
+    // NOTE: fetchLog's promise MUST be returned so the live stream connects
+    // only after the full log is loaded and ST._sseBytes is exact. Connecting
+    // earlier sends after=0 and the server re-streams the whole backlog tick
+    // by tick, duplicating every run (worse the slower the initial load is).
     Promise.all([ST.fetchCharNames(), ST.fetchNoteNames(), ST.fetchDiscData()]).then(function() {
-        if (ST.runs.length === 0) ST.fetchLog();
-    }).finally(function() {
+        if (ST.runs.length === 0) return ST.fetchLog();
+    }).then(function() {
         ST.startLiveReload();
     });
 });
