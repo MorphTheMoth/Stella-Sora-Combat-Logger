@@ -73,26 +73,38 @@ ST.renderShop = function() {
     });
     floorTable += '</table>';
 
-    // Price distribution — use final price
+    // Price distribution — use final price. Notes come in two bundle sizes,
+    // distinguishable by base price: base 90 = 5 notes, base 400 = 15 notes.
     var pricesPotential = {};
-    var pricesNote = {};
+    var pricesNote5 = {};
+    var pricesNote15 = {};
     allItems.forEach(function(item) {
         var fp = ST.itemFinalPrice(item);
         if (item.type === 'potential') {
             pricesPotential[fp] = (pricesPotential[fp] || 0) + 1;
+        } else if (item.price === 400) {
+            pricesNote15[fp] = (pricesNote15[fp] || 0) + 1;
         } else {
-            pricesNote[fp] = (pricesNote[fp] || 0) + 1;
+            pricesNote5[fp] = (pricesNote5[fp] || 0) + 1;
         }
     });
 
-    var priceHtml = '<table class="data-table"><tr><th colspan="3">Potential Prices (final)</th></tr>';
-    var pKeys = Object.keys(pricesPotential).sort(function(a,b){return parseInt(a)-parseInt(b);});
-    if (pKeys.length === 0) priceHtml += '<tr><td style="color:#555">—</td></tr>';
-    else pKeys.forEach(function(k) { priceHtml += '<tr><td>' + k + '</td><td class="num">' + pricesPotential[k] + '</td></tr>'; });
-    priceHtml += '</table><br><table class="data-table"><tr><th colspan="3">Note Prices (final)</th></tr>';
-    var nKeys = Object.keys(pricesNote).sort(function(a,b){return parseInt(a)-parseInt(b);});
-    if (nKeys.length === 0) priceHtml += '<tr><td style="color:#555">—</td></tr>';
-    else nKeys.forEach(function(k) { priceHtml += '<tr><td>' + k + '</td><td class="num">' + pricesNote[k] + '</td></tr>'; });
+    function priceRows(counts) {
+        var total = Object.keys(counts).reduce(function(s, k) { return s + counts[k]; }, 0);
+        var html = '';
+        Object.keys(counts).sort(function(a,b){return parseInt(a)-parseInt(b);}).forEach(function(k) {
+            var pct = total > 0 ? (counts[k] / total * 100).toFixed(1) : '0.0';
+            html += '<tr><td>' + k + '</td><td class="pct">' + pct + '%</td><td class="num">' + counts[k] + '</td></tr>';
+        });
+        return html || '<tr><td style="color:#555">—</td></tr>';
+    }
+
+    var priceHtml = '<table class="data-table price-table"><tr><th colspan="3">Potential Prices</th></tr>';
+    priceHtml += priceRows(pricesPotential);
+    priceHtml += '</table><br><table class="data-table price-table"><tr><th colspan="3">Note Prices — 5 Notes</th></tr>';
+    priceHtml += priceRows(pricesNote5);
+    priceHtml += '</table><br><table class="data-table price-table"><tr><th colspan="3">Note Prices — 15 Notes</th></tr>';
+    priceHtml += priceRows(pricesNote15);
     priceHtml += '</table>';
 
     // Discount distribution
@@ -127,5 +139,5 @@ ST.renderShop = function() {
     content.innerHTML = stats +
         discountHtml + compareHtml +
         '<div class="chart-card"><h3>Type Distribution Per Floor</h3>' + floorTable + '</div>' +
-        '<div class="chart-card"><h3>Price Distribution (final price)</h3>' + priceHtml + '</div>';
+        '<div class="chart-card"><h3>Price Distribution</h3>' + priceHtml + '</div>';
 };

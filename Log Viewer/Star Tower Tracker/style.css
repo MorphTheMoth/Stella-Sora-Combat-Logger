@@ -54,6 +54,9 @@ body { font-family: sans-serif; background: #161616; color: #ddd; height: 100vh;
 .data-table tr:hover td { background: #202020; }
 .data-table .num { text-align: center; font-variant-numeric: tabular-nums; }
 .data-table .pct { text-align: center; color: #555; font-variant-numeric: tabular-nums; }
+.data-table.price-table { table-layout: fixed; width: 340px; }
+.data-table.price-table th, .data-table.price-table td { text-align: center; }
+.data-table.price-table td:nth-child(2), .data-table.price-table td:nth-child(3) { width: 90px; }
 .eco-table th.num { text-align: right; }
 
 .portrait-sm { width: 20px; height: 20px; border-radius: 2px; background: #2a2a2a; vertical-align: middle; }
