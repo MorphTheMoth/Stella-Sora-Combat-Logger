@@ -33,13 +33,40 @@ function effType(ev) {
     return ev._effType;
 }
 
+// ─── Ally detection (Source Type Player) ────────────────────────────────────
+// The character dropdown lists allies only: Hit attackers whose HitConfig
+// sourceType is Player (1), Buff owners/sources whose raw actor key is a
+// player ("p:<id>"). Enemy hits (sourceType Monster / "e:<skinId>" keys,
+// display names like "... (skinId=...)") never enter the char option set,
+// so "All Characters" can be narrowed to an ally. Old-format logs without a
+// prefix/sourceType fall back to "keep" so nothing vanishes.
+function fcHitIsAlly(ev) {
+    const st = (ev.HitConfig || {}).sourceType;
+    if (st != null) return st === 1;
+    const a = ev.Attacker || '';
+    if (a.startsWith('e:')) return false;
+    if (a.startsWith('p:')) return true;
+    return !(ev.AttackerDisplay || '').includes('(skinId=');
+}
+
+function fcActorKeyIsAlly(raw, display) {
+    if (raw) {
+        if (raw.startsWith('p:')) return true;
+        if (raw.startsWith('e:')) return false;
+    }
+    if (display && String(display).includes('(skinId=')) return false;
+    return true;
+}
+
 function getChars(ev) {
     if (ev._chars !== undefined) return ev._chars;
     const s = [];
-    if (ev.Type === 'Hit') { if (ev.AttackerDisplay) s.push(ev.AttackerDisplay); }
+    if (ev.Type === 'Hit') {
+        if (ev.AttackerDisplay && fcHitIsAlly(ev)) s.push(ev.AttackerDisplay);
+    }
     else if (ev.Type === 'Buff') {
-        if (ev.OwnerDisplay || ev.Owner) s.push(cleanOwner(ev.OwnerDisplay || ev.Owner));
-        if (ev.SourceDisplay || ev.Source) s.push(cleanOwner(ev.SourceDisplay || ev.Source));
+        if ((ev.OwnerDisplay || ev.Owner) && fcActorKeyIsAlly(ev.Owner, ev.OwnerDisplay)) s.push(cleanOwner(ev.OwnerDisplay || ev.Owner));
+        if ((ev.SourceDisplay || ev.Source) && fcActorKeyIsAlly(ev.Source, ev.SourceDisplay)) s.push(cleanOwner(ev.SourceDisplay || ev.Source));
     } else if (ev.Type === 'Skill Cast') { if (ev.Owner) s.push(ev.Owner); }
     ev._chars = s;
     return s;
@@ -134,6 +161,10 @@ const fcDomains = {
         opts: fcMakeOpts(),
         folds: ev => ev.Type === 'Hit',
         charsOf: ev => {
+            // Allies only (Source Type Player) — enemy attackers never enter
+            // the char option set. Matching still works: an ally filter
+            // excludes enemy hits, an empty filter passes everything.
+            if (!fcHitIsAlly(ev)) return [];
             const n = ev.AttackerDisplay || ev.Attacker;
             return n ? [n] : [];
         },
