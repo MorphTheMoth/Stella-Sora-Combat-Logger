@@ -1072,6 +1072,9 @@ function buildHitTable(jHit, jSkill, jLang, jChar, jPotential, jItemRoot) {
         [125100062, 'Freesia', 'Power of Reason', 6, 'Skills'],
         [125100084, 'Freesia', 'Power of Reason', 9, 'Skills'],
         [125200001, 'Freesia', 'Dash', 1, 'Skills'],
+        // Nazuna: support "Bingo Crush" mixed-raffle sweep (Param4 x6) —
+        // penguin-majority shots use 001, same ladder as heart shots (007)
+        [156320001, 'Nazuna', 'Bingo Crush', 3, 'Skills'],
     ];
     for (const [hitId, charName, skillTitle, hitNum, src] of hardcoded)
         hitTable.set(hitId, { charName, skillTitle, hitNum, source: `${charName} ${src}` });
