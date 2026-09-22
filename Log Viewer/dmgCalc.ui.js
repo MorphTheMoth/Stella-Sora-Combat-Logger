@@ -1149,8 +1149,7 @@ function dcRenderCharList() {
     const el = document.getElementById('dcCharsList');
     if (!el) return;
     // Only attackers that actually deal Source Type = 'Player' hits
-    // (see isPlayerHit in dataLoader.js). This hides enemy/monster actors
-    // like "..._Actor (skinId=...)".
+    // (see isPlayerHit in dataLoader.js). This hides enemy/monster actors.
     const list = dcPlayerCharNames();
     if (list.length === 0) {
         el.innerHTML = '<div class="dc-effects-empty">No characters loaded.</div>';

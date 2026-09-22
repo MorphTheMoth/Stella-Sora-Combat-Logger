@@ -36,8 +36,8 @@ function effType(ev) {
 // ─── Ally detection (Source Type Player) ────────────────────────────────────
 // The character dropdown lists allies only: Hit attackers whose HitConfig
 // sourceType is Player (1), Buff owners/sources whose raw actor key is a
-// player ("p:<id>"). Enemy hits (sourceType Monster / "e:<skinId>" keys,
-// display names like "... (skinId=...)") never enter the char option set,
+// player ("p:<id>"). Enemy hits (sourceType Monster / "e:<skinId>" keys)
+// never enter the char option set,
 // so "All Characters" can be narrowed to an ally. Old-format logs without a
 // prefix/sourceType fall back to "keep" so nothing vanishes.
 function fcHitIsAlly(ev) {

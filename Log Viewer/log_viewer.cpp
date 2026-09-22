@@ -401,6 +401,8 @@ static const char* const kStellaDataFiles[] = {
     "EN/bin/ScoreBossAbility.json",
     "EN/bin/Potential.json",
     "EN/bin/MonsterSkin.json",
+    "EN/bin/MonsterManual.json",
+    "EN/language/en_US/MonsterManual.json",
     "EN/bin/Disc.json",
     "EN/bin/SecondarySkill.json",
     "EN/bin/CharGemAttrValue.json",

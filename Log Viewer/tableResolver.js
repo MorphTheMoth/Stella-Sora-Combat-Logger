@@ -171,10 +171,7 @@ function resolveActorKey(key) {
     const colon = key.indexOf(':');
     if (colon === -1) return key;          // old format fallback
     const id = parseInt(key.slice(colon + 1), 10);
-    const isPlayer = key[0] === 'p';
-    const name = actorNameMap.get(id) ?? String(id);
-    if (isPlayer) return name;
-    return `${name} (skinId=${id})`;       // enemies keep id visible for debugging
+    return actorNameMap.get(id) ?? String(id);
 }
 
 // ─── Name helpers ─────────────────────────────────────────────────────────────
@@ -893,7 +890,7 @@ function insertEffect(configId, charName, label, ldt, overwriteUnresolved = fals
 
 // ─── buildActorNameMap ────────────────────────────────────────────────────────
 
-function buildActorNameMap(jChar, jMonsterSkin) {
+function buildActorNameMap(jChar, jMonsterSkin, jMonsterManual, jMonsterManualLang) {
     actorNameMap.clear();
     // Players: dataId -> name
     for (const [ckey, cval] of Object.entries(jChar)) {
@@ -901,13 +898,28 @@ function buildActorNameMap(jChar, jMonsterSkin) {
         const id = parseInt(ckey, 10);
         if (!isNaN(id)) actorNameMap.set(id, cval.name);
     }
-    // Enemies: skinId -> model basename
+    // Enemies: skinId -> MonsterManual lang name
+    // (MonsterSkin.MonsterManual -> MonsterManual.Name lang key, e.g.
+    // skin 5025111 -> manual 5025156 -> "Flashstrike Hunter"). Boss Blitz
+    // bosses resolve through the same chain: Monster.FAId (= logged skinId)
+    // -> MonsterSkin -> MonsterManual, whose lang name matches blitz.json
+    // (skin 1651001 -> "Lithe Beauty"). Falls back to the model basename
+    // for skins without a manual entry (boss adds, empty placeholders).
     if (jMonsterSkin) {
         for (const [, sval] of Object.entries(jMonsterSkin)) {
-            if (!sval.Id || !sval.Model) continue;
+            if (!sval.Id) continue;
             const skinId = sval.Id;
-            const slash  = sval.Model.lastIndexOf('/');
-            actorNameMap.set(skinId, slash !== -1 ? sval.Model.slice(slash + 1) : sval.Model);
+            let name = null;
+            const manualId = sval.MonsterManual != null ? String(sval.MonsterManual) : null;
+            const manual = manualId && jMonsterManual ? jMonsterManual[manualId] : null;
+            const langKey = manual?.Name;
+            if (langKey && jMonsterManualLang && typeof jMonsterManualLang[langKey] === 'string')
+                name = jMonsterManualLang[langKey];
+            if (!name && sval.Model) {
+                const slash = sval.Model.lastIndexOf('/');
+                name = slash !== -1 ? sval.Model.slice(slash + 1) : sval.Model;
+            }
+            if (name) actorNameMap.set(skinId, name);
         }
     }
 }
@@ -1744,6 +1756,8 @@ async function initTables() {
         [`${bin}CharGemAttrValue.json`,              'gemAttrValue'],
         [`${bin}Disc.json`,                          'disc'],
         [`${bin}SubNoteSkillPromoteGroup.json`,      'subNotePromote'],
+        [`${bin}MonsterManual.json`,                 'monsterManual'],
+        [`${lang}MonsterManual.json`,                'monsterManualLang'],
     ];
 
     const codeHash = ecCodeHash();
@@ -1775,7 +1789,7 @@ async function initTables() {
         jBuff, jBuffValue, jWord, jWordLang, jTalent, jTalentLang,
         jOnceAttr, jOnceAttrValue, jScoreBoss, jScoreBossLang,
         jPotential, jMonsterSkin, jSecSkillLang, jBlitz, jDiscIP,
-        jGemAttrValue, jDisc, jSubNotePromote,
+        jGemAttrValue, jDisc, jSubNotePromote, jMonsterManual, jMonsterManualLang,
     ] = await Promise.all(responses.map((res, i) => parseJsonResponse(res, URLS[i][0], URLS[i][1])));
 
     // lang/Item.json doubles as the item-language map used by disc/potential decoding
@@ -1883,7 +1897,7 @@ async function initTables() {
     buildEffectValueTable(jEffectValue);
     buildOnceAttrValueTable(jOnceAttrValue);
 
-    buildActorNameMap(jChar, jMonsterSkin);
+    buildActorNameMap(jChar, jMonsterSkin, jMonsterManual, jMonsterManualLang);
 
     if (jHit) {
         buildHitTable(jHit, jSkill, jSkillLang, jChar, jPotential, jItemRoot);
