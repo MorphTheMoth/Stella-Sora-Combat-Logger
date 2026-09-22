@@ -1032,6 +1032,20 @@ function buildHitTable(jHit, jSkill, jLang, jChar, jPotential, jItemRoot) {
         [160530002, 'Suntide Willow', 'Prismatic Bubbles (red)', 2, 'Potentials'],
         // Eleanor: extra jump-slam explosion from exclusive perk 513721 "Chain Detonation" (Item.json 513721, Potential.json 513721 - no HitDamage Param, only 13721011 OnceAdditionalAttributeValue)
         [137300012, 'Eleanor', 'Chain Detonation', 1, 'Potentials'],
+        // Canace: Most Admired Potential
+        [120501001, 'Canace', 'Most Admired', 1, 'Potentials'],
+        // Canace: normal attack "Gush Shots" (Skill 12010000) — Skill.json only
+        // references the endpoints (Param1=120100001, Param2=120100005)
+        [120100002, 'Canace', 'Gush Shots', 2, 'Skills'],
+        [120100003, 'Canace', 'Gush Shots', 3, 'Skills'],
+        [120100004, 'Canace', 'Gush Shots', 4, 'Skills'],
+        [120100005, 'Canace', 'Gush Shots', 5, 'Skills'],
+        // p04 Positive Score replaces the hits
+        [120100011, 'Canace', 'Positive Score', 1, 'Potentials'],
+        [120100012, 'Canace', 'Positive Score', 2, 'Potentials'],
+        [120100013, 'Canace', 'Positive Score', 3, 'Potentials'],
+        [120100014, 'Canace', 'Positive Score', 4, 'Potentials'],
+        [120100015, 'Canace', 'Positive Score', 5, 'Potentials'],
     ];
     for (const [hitId, charName, skillTitle, hitNum, src] of hardcoded)
         hitTable.set(hitId, { charName, skillTitle, hitNum, source: `${charName} ${src}` });
@@ -1561,7 +1575,7 @@ function buildSkillTable(jChar, jSkill, jSkillLang) {
 // All module-level Maps initTables populates. Values are plain objects /
 // strings / Sets — structured-clone-safe, and no map references another.
 // (potEffectIds holds Sets; structured clone preserves them.)
-const EC_DATA_VERSION = '3';
+const EC_DATA_VERSION = '4';
 const EC_DATA_IDB = 'stella-table-cache';
 const EC_DATA_TABLES = [
     actorNameMap, hitTable, effectTable, effectValueTable, onceAttrValueTable,
