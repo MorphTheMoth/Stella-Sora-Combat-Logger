@@ -1049,9 +1049,13 @@ function buildHitTable(jHit, jSkill, jLang, jChar, jPotential, jItemRoot) {
         [120100014, 'Canace', 'Positive Score', 4, 'Potentials'],
         [120100015, 'Canace', 'Positive Score', 5, 'Potentials'],
         // Snowish Laru: Special Ammo changes every hit id for the range/sfx change
-        [158322001, 'Snowish Laru', 'Courtesy Before Aggression', 1, 'Skill'],
-        [158322002, 'Snowish Laru', 'Courtesy Before Aggression', 2, 'Skill'],
+        [158322001, 'Snowish Laru', 'Courtesy Before Aggression', 1, 'Skills'],
+        [158322002, 'Snowish Laru', 'Courtesy Before Aggression', 2, 'Skills'],
         [158322003, 'Snowish Laru', 'Fire Downpour', 1, 'Potentials'],
+        // Snowish Laru: Ultra "Sweet Dream Waltz" Dame Laru assist variants
+        // (isAssist attack tags, _Support prefabs share the Main ladders)
+        [158400004, 'Snowish Laru', 'Sweet Dream Waltz', 2, 'Skills'],
+        [158400005, 'Snowish Laru', 'Sweet Dream Waltz', 3, 'Skills'],
         // Chistose : P2 "Mirror Image" (perk 514402)
         [144310201, 'Chitose', 'Mirror Blade - Aeroflow', 1, 'Potentials'],
         [144310202, 'Chitose', 'Mirror Blade - Aeroflow', 2, 'Potentials'],
@@ -1064,6 +1068,10 @@ function buildHitTable(jHit, jSkill, jLang, jChar, jPotential, jItemRoot) {
         [144310209, 'Chitose', 'Mirror Blade - Aeroflow', 9, 'Potentials'],
         [144310101, 'Chitose', 'Mirror Blade - Serpent\'s Glide', 1, 'Potentials'],
         [144310102, 'Chitose', 'Mirror Blade - Serpent\'s Glide', 2, 'Potentials'],
+        // Freesia: Berserk normal attack "Power of Reason", same hits have different ids
+        [125100062, 'Freesia', 'Power of Reason', 6, 'Skills'],
+        [125100084, 'Freesia', 'Power of Reason', 9, 'Skills'],
+        [125200001, 'Freesia', 'Dash', 1, 'Skills'],
     ];
     for (const [hitId, charName, skillTitle, hitNum, src] of hardcoded)
         hitTable.set(hitId, { charName, skillTitle, hitNum, source: `${charName} ${src}` });
