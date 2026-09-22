@@ -806,16 +806,19 @@ function enrichAttrDictList(attrDictList) {
 
 let _dataRoot = '/api/stella-data/';
 
-async function loadJson(path, tag) {
+async function parseJsonResponse(res, path, tag) {
+    if (!res) {
+        console.warn(`[${tag}] ${path} fetch failed`);
+        return null;
+    }
+    if (!res.ok) {
+        console.warn(`[${tag}] ${path} HTTP ${res.status}`);
+        return null;
+    }
     try {
-        const res = await fetch(path);
-        if (!res.ok) {
-            console.warn(`[${tag}] ${path} HTTP ${res.status}`);
-            return null;
-        }
         return await res.json();
     } catch (e) {
-        console.warn(`[${tag}] failed to load ${path}:`, e);
+        console.warn(`[${tag}] failed to parse ${path}:`, e);
         return null;
     }
 }
@@ -1046,6 +1049,10 @@ function buildHitTable(jHit, jSkill, jLang, jChar, jPotential, jItemRoot) {
         [120100013, 'Canace', 'Positive Score', 3, 'Potentials'],
         [120100014, 'Canace', 'Positive Score', 4, 'Potentials'],
         [120100015, 'Canace', 'Positive Score', 5, 'Potentials'],
+        // Snowish Laru: Special Ammo changes every hit id for the range/sfx change
+        [158322001, 'Snowish Laru', 'Courtesy Before Aggression', 1, 'Skill'],
+        [158322002, 'Snowish Laru', 'Courtesy Before Aggression', 2, 'Skill'],
+        [158322003, 'Snowish Laru', 'Fire Downpour', 1, 'Potentials'],
     ];
     for (const [hitId, charName, skillTitle, hitNum, src] of hardcoded)
         hitTable.set(hitId, { charName, skillTitle, hitNum, source: `${charName} ${src}` });
@@ -1575,7 +1582,16 @@ function buildSkillTable(jChar, jSkill, jSkillLang) {
 // All module-level Maps initTables populates. Values are plain objects /
 // strings / Sets — structured-clone-safe, and no map references another.
 // (potEffectIds holds Sets; structured clone preserves them.)
-const EC_DATA_VERSION = '4';
+// The snapshot is keyed on BOTH inputs the tables derive from, so it can
+// never go stale — no manual version to bump:
+//   - datamine side: the per-file ETags the server sends (content hashes —
+//     log_viewer.cpp ComputeETag). initTables revalidates every file on every
+//     load, but `Cache-Control: no-cache` makes unchanged files answer 304
+//     with no body, so the check is cheap; bodies are only parsed when
+//     something actually changed.
+//   - code side: a hash over the table-building functions' source — any edit
+//     to the build logic or the hardcoded entries changes the key and forces
+//     one rebuild + re-snapshot.
 const EC_DATA_IDB = 'stella-table-cache';
 const EC_DATA_TABLES = [
     actorNameMap, hitTable, effectTable, effectValueTable, onceAttrValueTable,
@@ -1584,6 +1600,22 @@ const EC_DATA_TABLES = [
     gemAttrValueById, potentialById, potentialEffectFamily, effectIdPot,
     potEffectIds, potentialNameById, skillRoleOwner,
 ];
+
+function ecHashStr(s) {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < s.length; i++) {
+        h ^= s.charCodeAt(i);
+        h = Math.imul(h, 0x01000193);
+    }
+    return (h >>> 0).toString(16);
+}
+
+function ecCodeHash() {
+    return ecHashStr([
+        buildEffectValueTable, buildOnceAttrValueTable, buildActorNameMap,
+        buildHitTable, buildEffectTable, buildSkillTable, initTables,
+    ].map(f => f.toString()).join('\n'));
+}
 
 function ecIdbOpen() {
     return new Promise((resolve, reject) => {
@@ -1594,32 +1626,55 @@ function ecIdbOpen() {
     });
 }
 
-async function ecRestoreTables() {
+async function ecSnapshotGet() {
     const db = await ecIdbOpen();
     const data = await new Promise((resolve, reject) => {
         const tx = db.transaction('kv', 'readonly');
-        const req = tx.objectStore('kv').get('tables-v' + EC_DATA_VERSION);
+        const req = tx.objectStore('kv').get('snapshot');
         req.onsuccess = () => resolve(req.result ?? null);
         req.onerror = () => reject(req.error);
     });
     db.close();
-    if (!data || !Array.isArray(data.tables) || data.tables.length !== EC_DATA_TABLES.length) return false;
+    return data;
+}
+
+function ecSnapshotValid(snap, codeHash, etags) {
+    if (!snap || snap.codeHash !== codeHash) return false;
+    if (!Array.isArray(snap.tables) || snap.tables.length !== EC_DATA_TABLES.length) return false;
+    if (!Array.isArray(snap.etags) || snap.etags.length !== etags.length) return false;
+    return snap.etags.every((e, i) => e != null && e === etags[i]);
+}
+
+function ecSnapshotRestore(snap) {
     for (let i = 0; i < EC_DATA_TABLES.length; i++) {
         const map = EC_DATA_TABLES[i];
         map.clear();
-        for (const [k, v] of data.tables[i]) map.set(k, v);
+        for (const [k, v] of snap.tables[i]) map.set(k, v);
     }
-    console.log('[tableResolver] built tables restored from cache (v' + EC_DATA_VERSION + ', ' +
-        data.tables.reduce((s, m) => s + m.length, 0) + ' entries) — datamine fetch skipped');
-    return true;
+    console.log('[tableResolver] built tables restored from cache (' +
+        snap.tables.reduce((s, m) => s + m.length, 0) + ' entries) — datamine unchanged (ETags match)');
 }
 
-async function ecSaveTables() {
-    const data = { tables: EC_DATA_TABLES.map(m => Array.from(m.entries())) };
+async function ecSnapshotPut(codeHash, etags) {
+    const data = {
+        codeHash,
+        etags,
+        tables: EC_DATA_TABLES.map(m => Array.from(m.entries())),
+    };
     const db = await ecIdbOpen();
     await new Promise((resolve, reject) => {
         const tx = db.transaction('kv', 'readwrite');
-        tx.objectStore('kv').put(data, 'tables-v' + EC_DATA_VERSION);
+        const store = tx.objectStore('kv');
+        store.put(data, 'snapshot');
+        // Purge snapshots written by the old manual-version scheme.
+        try {
+            const keyReq = store.getAllKeys();
+            keyReq.onsuccess = () => {
+                for (const k of (keyReq.result || [])) {
+                    if (typeof k === 'string' && k.indexOf('tables-v') === 0) store.delete(k);
+                }
+            };
+        } catch (e) { /* getAllKeys unsupported → skip purge */ }
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);
     });
@@ -1628,23 +1683,67 @@ async function ecSaveTables() {
 
 // ─── Public init ─────────────────────────────────────────────────────────
 async function initTables() {
-    // ── Built-table cache (IndexedDB) ──
-    // initTables rebuilds every table from ~22 MB of datamine JSON on every
-    // page load (~2.8 s in the build code alone). The built tables are pure
-    // derivatives of the datamine, so they are snapshotted into IndexedDB
-    // (structured clone keeps Maps and Sets intact) and restored on the next
-    // load. Bump EC_DATA_VERSION when the datamine changes — the next load
-    // refetches + rebuilds once and re-snapshots.
-    if (typeof indexedDB !== 'undefined' && indexedDB) {
-        try {
-            if (await ecRestoreTables()) return;
-        } catch (e) { /* cache unavailable → fetch + build as before */ }
-    }
-
     // NOTE: the data root is fixed to the DLL server's API prefix (_dataRoot);
     // callers pass no argument (the old dataRoot parameter was never used).
     const bin  = `${_dataRoot}EN/bin/`;
     const lang = `${_dataRoot}EN/language/en_US/`;
+
+    // [url, tag] pairs, in the fixed order the destructuring below expects.
+    const URLS = [
+        [`${_dataRoot}character.json`,               'char'],
+        [`${bin}HitDamage.json`,                     'hit'],
+        [`${bin}Skill.json`,                         'skill'],
+        [`${lang}Skill.json`,                        'skillLang'],
+        [`${_dataRoot}item.json`,                    'itemRoot'],
+        [`${bin}Effect.json`,                        'effect'],
+        [`${bin}Item.json`,                          'item'],
+        [`${lang}Item.json`,                         'itemLang'],
+        [`${bin}SubNoteSkill.json`,                  'subNote'],
+        [`${lang}SubNoteSkill.json`,                 'subNoteLang'],
+        [`${bin}AffinityLevel.json`,                 'affinity'],
+        [`${bin}EffectValue.json`,                   'effectValue'],
+        [`${bin}TravelerDuelChallengeAffix.json`,    'affix'],
+        [`${lang}TravelerDuelChallengeAffix.json`,   'affixLang'],
+        [`${bin}Buff.json`,                          'buff'],
+        [`${bin}BuffValue.json`,                     'buffValue'],
+        [`${bin}Word.json`,                          'word'],
+        [`${lang}Word.json`,                         'wordLang'],
+        [`${bin}Talent.json`,                        'talent'],
+        [`${lang}Talent.json`,                       'talentLang'],
+        [`${bin}OnceAdditionalAttribute.json`,       'onceAttr'],
+        [`${bin}OnceAdditionalAttributeValue.json`,  'onceAttrValue'],
+        [`${bin}ScoreBossAbility.json`,              'scoreBoss'],
+        [`${lang}ScoreBossAbility.json`,             'scoreBossLang'],
+        [`${bin}Potential.json`,                     'potential'],
+        [`${bin}MonsterSkin.json`,                   'monsterSkin'],
+        [`${lang}SecondarySkill.json`,               'secSkillLang'],
+        [`${_dataRoot}blitz.json`,                   'blitz'],
+        [`${lang}DiscIP.json`,                       'discIP'],
+        [`${bin}CharGemAttrValue.json`,              'gemAttrValue'],
+        [`${bin}Disc.json`,                          'disc'],
+        [`${bin}SubNoteSkillPromoteGroup.json`,      'subNotePromote'],
+    ];
+
+    const codeHash = ecCodeHash();
+    let snapshot = null;
+    if (typeof indexedDB !== 'undefined' && indexedDB) {
+        try { snapshot = await ecSnapshotGet(); }
+        catch (e) { /* cache unavailable → fetch + build as before */ }
+    }
+
+    // Fetch all files in parallel. Unchanged files answer 304 with no body
+    // (server ETags + `Cache-Control: no-cache`), so this is cheap — bodies
+    // are only parsed below when the snapshot can't be reused.
+    const responses = await Promise.all(URLS.map(([url]) => fetch(url).catch(() => null)));
+    const etags = responses.map(r => {
+        try { return r ? r.headers.get('ETag') : null; }
+        catch (e) { return null; }
+    });
+
+    if (ecSnapshotValid(snapshot, codeHash, etags)) {
+        ecSnapshotRestore(snapshot);
+        return;
+    }
 
     // Load all files in parallel
     const [
@@ -1655,40 +1754,7 @@ async function initTables() {
         jOnceAttr, jOnceAttrValue, jScoreBoss, jScoreBossLang,
         jPotential, jMonsterSkin, jSecSkillLang, jBlitz, jDiscIP,
         jGemAttrValue, jDisc, jSubNotePromote,
-    ] = await Promise.all([
-        loadJson(`${_dataRoot}character.json`,               'char'),
-        loadJson(`${bin}HitDamage.json`,                     'hit'),
-        loadJson(`${bin}Skill.json`,                         'skill'),
-        loadJson(`${lang}Skill.json`,                        'skillLang'),
-        loadJson(`${_dataRoot}item.json`,                    'itemRoot'),
-        loadJson(`${bin}Effect.json`,                        'effect'),
-        loadJson(`${bin}Item.json`,                          'item'),
-        loadJson(`${lang}Item.json`,                         'itemLang'),
-        loadJson(`${bin}SubNoteSkill.json`,                  'subNote'),
-        loadJson(`${lang}SubNoteSkill.json`,                 'subNoteLang'),
-        loadJson(`${bin}AffinityLevel.json`,                 'affinity'),
-        loadJson(`${bin}EffectValue.json`,                   'effectValue'),
-        loadJson(`${bin}TravelerDuelChallengeAffix.json`,    'affix'),
-        loadJson(`${lang}TravelerDuelChallengeAffix.json`,   'affixLang'),
-        loadJson(`${bin}Buff.json`,                          'buff'),
-        loadJson(`${bin}BuffValue.json`,                     'buffValue'),
-        loadJson(`${bin}Word.json`,                          'word'),
-        loadJson(`${lang}Word.json`,                         'wordLang'),
-        loadJson(`${bin}Talent.json`,                        'talent'),
-        loadJson(`${lang}Talent.json`,                       'talentLang'),
-        loadJson(`${bin}OnceAdditionalAttribute.json`,       'onceAttr'),
-        loadJson(`${bin}OnceAdditionalAttributeValue.json`,  'onceAttrValue'),
-        loadJson(`${bin}ScoreBossAbility.json`,              'scoreBoss'),
-        loadJson(`${lang}ScoreBossAbility.json`,             'scoreBossLang'),
-        loadJson(`${bin}Potential.json`,                     'potential'),
-        loadJson(`${bin}MonsterSkin.json`,                   'monsterSkin'),
-        loadJson(`${lang}SecondarySkill.json`,               'secSkillLang'),
-        loadJson(`${_dataRoot}blitz.json`,                   'blitz'),
-        loadJson(`${lang}DiscIP.json`,                       'discIP'),
-        loadJson(`${bin}CharGemAttrValue.json`,              'gemAttrValue'),
-        loadJson(`${bin}Disc.json`,                          'disc'),
-        loadJson(`${bin}SubNoteSkillPromoteGroup.json`,      'subNotePromote'),
-    ]);
+    ] = await Promise.all(responses.map((res, i) => parseJsonResponse(res, URLS[i][0], URLS[i][1])));
 
     // lang/Item.json doubles as the item-language map used by disc/potential decoding
     const jItemLangRoot = jItemLang;
@@ -1813,8 +1879,10 @@ async function initTables() {
     buildSkillTable(jChar, jSkill, jSkillLang);
 
     // Snapshot the built tables for the next page load (best effort — on any
-    // failure the next load just rebuilds from the datamine).
+    // failure the next load just rebuilds from the datamine). Fire-and-forget
+    // so it never delays table-ready; the .catch keeps the floating promise
+    // rejection-safe.
     if (typeof indexedDB !== 'undefined' && indexedDB) {
-        try { ecSaveTables(); } catch (e) { /* ignore */ }
+        ecSnapshotPut(codeHash, etags).catch(() => {});
     }
 }
