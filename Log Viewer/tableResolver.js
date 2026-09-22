@@ -1037,13 +1037,12 @@ function buildHitTable(jHit, jSkill, jLang, jChar, jPotential, jItemRoot) {
         [137300012, 'Eleanor', 'Chain Detonation', 1, 'Potentials'],
         // Canace: Most Admired Potential
         [120501001, 'Canace', 'Most Admired', 1, 'Potentials'],
-        // Canace: normal attack "Gush Shots" (Skill 12010000) — Skill.json only
-        // references the endpoints (Param1=120100001, Param2=120100005)
+                // hits not mentioned
         [120100002, 'Canace', 'Gush Shots', 2, 'Skills'],
         [120100003, 'Canace', 'Gush Shots', 3, 'Skills'],
         [120100004, 'Canace', 'Gush Shots', 4, 'Skills'],
         [120100005, 'Canace', 'Gush Shots', 5, 'Skills'],
-        // p04 Positive Score replaces the hits
+                // p04 Positive Score replaces the hits
         [120100011, 'Canace', 'Positive Score', 1, 'Potentials'],
         [120100012, 'Canace', 'Positive Score', 2, 'Potentials'],
         [120100013, 'Canace', 'Positive Score', 3, 'Potentials'],
@@ -1053,6 +1052,18 @@ function buildHitTable(jHit, jSkill, jLang, jChar, jPotential, jItemRoot) {
         [158322001, 'Snowish Laru', 'Courtesy Before Aggression', 1, 'Skill'],
         [158322002, 'Snowish Laru', 'Courtesy Before Aggression', 2, 'Skill'],
         [158322003, 'Snowish Laru', 'Fire Downpour', 1, 'Potentials'],
+        // Chistose : P2 "Mirror Image" (perk 514402)
+        [144310201, 'Chitose', 'Mirror Blade - Aeroflow', 1, 'Potentials'],
+        [144310202, 'Chitose', 'Mirror Blade - Aeroflow', 2, 'Potentials'],
+        [144310203, 'Chitose', 'Mirror Blade - Aeroflow', 3, 'Potentials'],
+        [144310204, 'Chitose', 'Mirror Blade - Aeroflow', 4, 'Potentials'],
+        [144310205, 'Chitose', 'Mirror Blade - Aeroflow', 5, 'Potentials'],
+        [144310206, 'Chitose', 'Mirror Blade - Aeroflow', 6, 'Potentials'],
+        [144310207, 'Chitose', 'Mirror Blade - Aeroflow', 7, 'Potentials'],
+        [144310208, 'Chitose', 'Mirror Blade - Aeroflow', 8, 'Potentials'],
+        [144310209, 'Chitose', 'Mirror Blade - Aeroflow', 9, 'Potentials'],
+        [144310101, 'Chitose', 'Mirror Blade - Serpent\'s Glide', 1, 'Potentials'],
+        [144310102, 'Chitose', 'Mirror Blade - Serpent\'s Glide', 2, 'Potentials'],
     ];
     for (const [hitId, charName, skillTitle, hitNum, src] of hardcoded)
         hitTable.set(hitId, { charName, skillTitle, hitNum, source: `${charName} ${src}` });

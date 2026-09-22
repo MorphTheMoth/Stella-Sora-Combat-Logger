@@ -719,7 +719,19 @@ function eiRenderTable() {
                     })()
                     : `<span class="ei-attr"></span><span class="ei-val">+${ef._skillAddLv || 0} lv</span>`)
                 : ef.isPotentialsGroup
-                ? `<span class="ei-attr">Hit Damage</span><span class="ei-val">${ef.value.map(num => `${num}%`).join(', ')}</span>`
+                ? (() => {
+                    // One entry per unique logged amend; multi-hit groups
+                    // (e.g. Chitose's 9 Mirror Image strikes) would render a
+                    // very long comma list — sort it and collapse to a range
+                    // with the full list kept in the tooltip.
+                    const nums = [...ef.value].sort((a, b) => a - b);
+                    const fmt = n => `${n}%`;
+                    const full = nums.map(fmt).join(', ');
+                    const body = nums.length <= 5
+                        ? full
+                        : `<span title="${full}">${fmt(nums[0])} – ${fmt(nums[nums.length - 1])} (${nums.length} hits)</span>`;
+                    return `<span class="ei-attr">Hit Damage</span><span class="ei-val">${body}</span>`;
+                })()
                 : (() => {
                     const override = dcGetLevelOverride(ef, ef.side);
                     // For ATTR_FIX effects subType is 1/2/3 (base/pct/abs); for
