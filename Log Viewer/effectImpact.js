@@ -705,7 +705,7 @@ function eiRenderTable() {
 
             const statCellContent = ef.isPotRow
                 // the actual change the emblem grants (record gems "pots": [[potIdx, +levels]])
-                ? `<span class="ei-attr"></span><span class="ei-val">+${ef.linkPotential.addLv} lv</span>`
+                ? `<span class="ei-attr"></span><span class="ei-val">${ef.linkPotential.addLv < 0 ? '' : '+'}${ef.linkPotential.addLv} lv</span>`
                 : ef.displayOnly
                 ? (ef._noteAdd != null
                     // disc bonus-note row: the note effect's stat × grant, in the
@@ -713,11 +713,11 @@ function eiRenderTable() {
                     // notes kept as a suffix ("Ult Dmg  +3.22% | +7 notes")
                     ? (() => {
                         const st = (typeof discNoteStatOf === 'function') ? discNoteStatOf(ef) : null;
-                        const notes = `+${ef._noteAdd} note${ef._noteAdd !== 1 ? 's' : ''}`;
-                        const valPart = st ? `+${st.val} | ${notes}` : notes;
+                        const notes = `${ef._noteAdd < 0 ? '' : '+'}${ef._noteAdd} note${ef._noteAdd !== 1 && ef._noteAdd !== -1 ? 's' : ''}`;
+                        const valPart = st ? `${String(st.val).startsWith('-') ? '' : '+'}${st.val} | ${notes}` : notes;
                         return `<span class="ei-attr">${esc(st?.attr ?? '')}</span><span class="ei-val">${valPart}</span>`;
                     })()
-                    : `<span class="ei-attr"></span><span class="ei-val">+${ef._skillAddLv || 0} lv</span>`)
+                    : `<span class="ei-attr"></span><span class="ei-val">${(ef._skillAddLv || 0) < 0 ? '' : '+'}${ef._skillAddLv || 0} lv</span>`)
                 : ef.isPotentialsGroup
                 ? (() => {
                     // One entry per unique logged amend; multi-hit groups
@@ -758,9 +758,10 @@ function eiRenderTable() {
                     const displayAttrLabel = overrideAttrType != null ? attrName(overrideAttrType) : attrName(ef.attrType);
                     const isSmall = raw != null && Math.abs(raw) < 15;
                     const valStr = raw != null ? (isSmall ? (raw * 100).toFixed(2) + '%' : String(raw)) : '?';
+                    const sign = raw != null && raw < 0 ? '' : '+';
                     const maxStacksStr = maxStacks > 1 ? ` <span class="ei-stacks" title="Max stacks observed">×${maxStacks}</span>` : '';
                     const overrideMarker = override ? ' *' : '';
-                    return `<span class="ei-attr">${esc(displayAttrLabel)}</span><span class="ei-val">+${valStr} [${displaySubLabel}]${maxStacksStr}${overrideMarker}</span>`;
+                    return `<span class="ei-attr">${esc(displayAttrLabel)}</span><span class="ei-val">${sign}${valStr} [${displaySubLabel}]${maxStacksStr}${overrideMarker}</span>`;
                 })();
 
             const pctStr  = isFinite(pctImpact) ? (pctImpact >= 0 ? '+' : '') + pctImpact.toFixed(2) + '%' : '+∞%';
