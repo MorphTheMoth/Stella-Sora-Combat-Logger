@@ -135,6 +135,8 @@ function dcCollectAttrFixEffectsCached() {
 }
 
 // Player attacker names, cached per allEvents snapshot (new polls grow it).
+// Also includes Potentials owners that never attack directly (their hits can
+// all be dealt by a summon — without this they would have no toggle row).
 let _dcPlayerCharsCache = { src: null, len: -1, list: null };
 function dcPlayerCharNames() {
     if (_dcPlayerCharsCache.src === allEvents && _dcPlayerCharsCache.len === allEvents.length && _dcPlayerCharsCache.list) {
@@ -144,6 +146,10 @@ function dcPlayerCharNames() {
     allEvents.filter(isPlayerHit).forEach(e => {
         const n = e.AttackerDisplay || e.Attacker;
         if (n) chars.add(n);
+        if (typeof dcPotOwnerName === 'function') {
+            const owner = dcPotOwnerName(e);
+            if (owner) chars.add(owner);
+        }
     });
     _dcPlayerCharsCache = { src: allEvents, len: allEvents.length, list: [...chars].sort() };
     return _dcPlayerCharsCache.list;
@@ -462,9 +468,15 @@ function dcRenderSkillLevels() {
 }
 
 // ─── Per-character disable toggles ────────────────────────────────────────────
-// When a character is toggled off, all effects whose source belongs to that
-// character (e.g. "Tilia Skills", "Tilia Potentials") are added to
-// dcEffectsDisabled, regardless of which character's hits they appear on.
+// When a character is toggled off:
+//   - its own hits are zeroed (attacker match),
+//   - the Potentials hits it owns are zeroed too, even when a different unit
+//     dealt them (dcPotOwnerName in dmgCalc.calc.js — e.g. summon hits from
+//     "<char> Potentials"),
+//   - all effects whose source belongs to that character (e.g. "Tilia Skills",
+//     "Tilia Potentials", including the `potentials:<skill>` hit-group rows)
+//     are added to dcEffectsDisabled, regardless of which character's hits
+//     they appear on.
 const dcCharEffectKeys = new Map(); // charName -> Set<effectKey> added by this char
 
 function dcCharOwnsSource(charName, source) {
@@ -716,13 +728,26 @@ function dcQuickToggleList() {
 
 // Effect keys dcToggleChar would disable for this char: the memoized set if
 // the char was toggled before, otherwise computed the same way (source owned
-// by the char via dcCharOwnsSource).
+// by the char via dcCharOwnsSource, plus Potentials hit-groups the char owns
+// even when their source carries no owner — matched via dcPotOwnerName on the
+// filtered hits).
+function dcPotSkillTitlesOf(name) {
+    const titles = new Set();
+    if (typeof dcPotOwnerName !== 'function' || typeof dcFiltered === 'undefined') return titles;
+    for (const ev of dcFiltered) {
+        if (dcPotOwnerName(ev) !== name) continue;
+        const st = ev.HitConfig?.skillTitle ?? 'Unknown';
+        titles.add(`potentials:${st}`);
+    }
+    return titles;
+}
 function dcCharOwnedEffectKeys(name) {
     if (dcCharEffectKeys.has(name)) return dcCharEffectKeys.get(name);
     const keys = new Set();
     for (const ef of dcCollectAttrFixEffectsCached()) {
         if (dcCharOwnsSource(name, ef.source)) keys.add(ef.key);
     }
+    for (const k of dcPotSkillTitlesOf(name)) keys.add(k);
     return keys;
 }
 
@@ -742,7 +767,8 @@ let dcShowCharDeltas = true;
 let _dcCharDeltaCache = null; // { version, baseTotal, deltas, quick } | null
 
 // Compute (Total Calc) − (Total Calc with that character disabled) for every
-// character, faithfully simulating dcToggleChar: the char's own hits are
+// character, faithfully simulating dcToggleChar: the char's own hits plus its
+// owned Potentials hits (dcPotOwnerName, even when dealt by another unit) are
 // zeroed (dcCharsDisabled check in dcApplyEffectOverrides) and its owned
 // effect keys are added to the disabled set, which also affects other
 // characters' hits.
@@ -800,13 +826,20 @@ async function dcComputeCharDeltasPhases(list, prof, wi, deltas, quick, isAborte
     const chunked = !!isAborted;   // truthy isAborted ⇒ chunked mode (yields on)
     // Base pass: current Total Calc + per-attacker contribution under the
     // current state (per-hit results shared with the totals cache).
+    // potSums covers the Potentials hits a char owns but a different unit
+    // dealt (see dcPotOwnerName) — those are zeroed by the char toggle too.
     let t = prof ? performance.now() : 0;
     const sums = new Map();
+    const potSums = new Map();
     for (const ev of dcFiltered) {
         const c = dcCachedHitCalc(ev);
         baseTotal += c.d;
         const att = ev.AttackerDisplay || ev.Attacker || '';
         sums.set(att, (sums.get(att) || 0) + c.d);
+        const potOwner = (typeof dcPotOwnerName === 'function') ? dcPotOwnerName(ev) : null;
+        if (potOwner && potOwner !== att) {
+            potSums.set(potOwner, (potSums.get(potOwner) || 0) + c.d);
+        }
     }
     if (prof) t = prof.dur(`char deltas · base pass (${dcFiltered.length} hits)`, performance.now() - t);
     if (chunked) {
@@ -820,8 +853,9 @@ async function dcComputeCharDeltasPhases(list, prof, wi, deltas, quick, isAborte
 
     let tChars = prof ? performance.now() : 0, directCalcs = 0;
     for (const name of list) {
-        // Zeroing the char's own hits:
-        let totalIf = baseTotal - (sums.get(name) || 0);
+        // Zeroing the char's own hits + the Potentials hits it owns but a
+        // different unit dealt (dcPotOwnerName):
+        let totalIf = baseTotal - (sums.get(name) || 0) - (potSums.get(name) || 0);
         // Its owned effects also get disabled (may affect other hits):
         const owned = dcCharOwnedEffectKeys(name);
         if (owned.size) {
@@ -839,6 +873,7 @@ async function dcComputeCharDeltasPhases(list, prof, wi, deltas, quick, isAborte
                         const ev = dcFiltered[i];
                         const att = ev.AttackerDisplay || ev.Attacker || '';
                         if (att === name) continue;
+                        if (typeof dcPotOwnerName === 'function' && dcPotOwnerName(ev) === name) continue;
                         const b = wi[i];
                         const cand = dcHitCandidateKeys(ev);
                         let aff = false;
@@ -864,6 +899,7 @@ async function dcComputeCharDeltasPhases(list, prof, wi, deltas, quick, isAborte
                 for (const ev of dcFiltered) {
                     const att = ev.AttackerDisplay || ev.Attacker || '';
                     if (att === name) continue;
+                    if (typeof dcPotOwnerName === 'function' && dcPotOwnerName(ev) === name) continue;
                     if (!needsFull) {
                         const cand = dcHitCandidateKeys(ev);
                         let affected = false;
@@ -1137,6 +1173,7 @@ function dcSyncCharEffectKeys() {
         for (const ef of dcCollectAttrFixEffectsCached()) {
             if (dcCharOwnsSource(charName, ef.source)) newKeys.add(ef.key);
         }
+        for (const k of dcPotSkillTitlesOf(charName)) newKeys.add(k);
         for (const k of newKeys) dcEffectsDisabled.add(k);
         for (const k of keys) {
             if (!newKeys.has(k)) dcEffectsDisabled.delete(k);
@@ -1170,7 +1207,7 @@ function dcRenderCharList() {
         // current Total Calc is than the Total Calc with this char disabled.
         const pct = dcD && (dcD.baseTotal - delta) > 0 ? ((dcD.baseTotal / (dcD.baseTotal - delta)) - 1) * 100 : null;
         const deltaStr = pct != null
-            ? `<span class="dc-char-delta" title="Total Calc minus Total Calc with this character disabled (its hits zeroed + its owned effects disabled): ${delta >= 0 ? '+' : ''}${Math.round(delta).toLocaleString()}">${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%</span>`
+            ? `<span class="dc-char-delta" title="Total Calc minus Total Calc with this character disabled (its hits + its owned Potentials hits zeroed + its owned effects disabled): ${delta >= 0 ? '+' : ''}${Math.round(delta).toLocaleString()}">${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%</span>`
             : '';
         return `<div class="dc-char-row${off ? ' disabled' : ''}">
             <span class="dc-char-name" title="${esc(name)}">${esc(name)}</span>
@@ -1227,6 +1264,7 @@ window.dcToggleChar = function(name) {
         for (const ef of dcCollectAttrFixEffectsCached()) {
             if (dcCharOwnsSource(name, ef.source)) keys.add(ef.key);
         }
+        for (const k of dcPotSkillTitlesOf(name)) keys.add(k);
         dcCharEffectKeys.set(name, keys);
         keys.forEach(k => dcEffectsDisabled.add(k));
     } else {

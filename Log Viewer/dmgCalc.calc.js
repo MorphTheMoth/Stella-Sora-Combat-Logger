@@ -51,6 +51,37 @@ const ATTR_FAMILY_TYPES = new Set([ATTR_FIX, HITTED_ADDITIONAL_ATTR_FIX, PLAYER_
 function dcIsPotentialsSource(src) {
     return typeof src === 'string' && src.includes('Potentials');
 }
+
+// Owner character of a Potentials hit: the "<char>" in "<char> Potentials",
+// falling back to the hit-table charName when the source carries no owner
+// (generic "Potentials"). Returns null for non-Potentials hits.
+// A Potentials hit can be dealt by a different unit than its owner (summon /
+// derivative actor), so the character toggle must consult this — not just the
+// attacker — to zero the owner's potential hits.
+function dcPotOwnerName(ev) {
+    const evSrc = ev.source ?? ev.HitConfig?.source ?? '';
+    if (!dcIsPotentialsSource(evSrc)) return null;
+    const suf = ' Potentials';
+    if (evSrc.length > suf.length && evSrc.endsWith(suf)) {
+        const owner = evSrc.slice(0, -suf.length);
+        if (owner && owner !== '?' && owner !== 'Potentials') return owner;
+    }
+    const cn = ev.HitConfig?.charName;
+    if (cn && cn !== '?') return cn;
+    return null;
+}
+
+// True when a hit is zeroed by the per-character disable toggles: its
+// attacker is toggled off, or it is a Potentials hit whose owner is toggled
+// off (even when a different unit dealt the hit).
+function dcIsCharDisabledHit(ev) {
+    if (typeof dcCharsDisabled === 'undefined' || !dcCharsDisabled.size) return false;
+    const att = ev.AttackerDisplay || ev.Attacker || '';
+    if (att && dcCharsDisabled.has(att)) return true;
+    const owner = dcPotOwnerName(ev);
+    if (owner && dcCharsDisabled.has(owner)) return true;
+    return false;
+}
 // ── Emblem-pot-driven level overrides ────────────────────────────────────────
 // ─── Potential level table ────────────────────────────────────────────────────
 // Single source of truth for every potential-related level:
@@ -1233,9 +1264,10 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides, s
     const origA = ev.AttackerStats?.attrs || [];
     const origD = ev.DefenderStats?.attrs || [];
     // ── Disabled character ──────────────────────────────────────────────
-    // Zero the whole hit (damage + effects) when its attacker is toggled off.
-    const charName = ev.AttackerDisplay || ev.Attacker || '';
-    if (charName && typeof dcCharsDisabled !== 'undefined' && dcCharsDisabled.has(charName)) {
+    // Zero the whole hit (damage + effects) when its attacker is toggled off,
+    // or when it is a Potentials hit whose owner is toggled off (the hit can
+    // be dealt by a different unit, e.g. a summon — see dcPotOwnerName).
+    if (dcIsCharDisabledHit(ev)) {
         return { aStats: origA, dStats: origD, _potentialsDisabled: true };
     }
     if (dcEffectsDisabled.size === 0 && !(dcEffectLevelOverrides?.size) && dcPotLevels.size === 0 && dcSkillLevels.size === 0 && dcNoteLevels.size === 0) return { aStats: origA, dStats: origD };

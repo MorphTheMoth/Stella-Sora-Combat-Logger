@@ -1528,8 +1528,10 @@ function ecBuildSharedHit(ev, setMinusPot, prof, acc) {
     if (prof && acc) s = performance.now();
     b.intel = ecBuildIntel(b, pre, dcDisabled, setMinusPot);
     if (prof && acc) acc.tIntel += performance.now() - s;
-    const charName = ev.AttackerDisplay || ev.Attacker || '';
-    b.dead = (charName && typeof dcCharsDisabled !== 'undefined' && dcCharsDisabled.has(charName))
+    // Mirrors the machinery's early return (attacker toggled off, or a
+    // Potentials hit whose owner is toggled off — see dcIsCharDisabledHit).
+    b.dead = (typeof dcIsCharDisabledHit === 'function' && dcIsCharDisabledHit(ev))
+        || !!b.disOnly._potentialsDisabled
         || !!b.intel.zeroed;
     return b;
 }
