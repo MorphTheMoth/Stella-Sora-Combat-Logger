@@ -175,10 +175,19 @@ function dcRebuildPotLevels() {
 // When the potential's emblem pot row is disabled (its key in `disabledSet`)
 // the emblem bonus is subtracted from the formula; the change field is not
 // touched.
+//
+// A disabled set may carry `potCeil` — the Emblems Comparison stamps its
+// baseline set with the reference cap (6) so it evaluates every emblem line
+// from a build where each potential is at most 6: a +3 pot affix then reaches
+// the level-9 cap instead of being swallowed by an already-maxed potential.
+// The live/dmg-calc sets never carry it, so this is scoped to that tab.
 function dcPotEffectiveLevel(st, disabledSet) {
     const dis = disabledSet ?? dcEffectsDisabled;
     const bonus = (st.potKey && dis.has(st.potKey)) ? 0 : st.bonus;
-    return Math.min(Math.max(st.recordLv + bonus + (st.change || 0), 0), 9);
+    let lvl = Math.min(Math.max(st.recordLv + bonus + (st.change || 0), 0), 9);
+    const ceil = dis && dis.potCeil;
+    if (ceil > 0 && lvl > ceil) lvl = ceil;
+    return lvl;
 }
 
 // Bridge for record.js (separate scope): per-potential level breakdown.
@@ -330,7 +339,7 @@ function dcGetLevelOverride(e, side, disabledSet, charId, fromAttrDict) {
     // a persistent disabled set (dcEffectsDisabled is mutated in place and
     // every mutation site bumps it), dcLevelStateVersion covers the level
     // tables (including transient simulation mutations).
-    const mk = dcStateVersion + ':' + dcLevelStateVersion + '|' + side + ':' + (e.configId ?? '') + ':' + (e.valueConfigId ?? '')
+    const mk = dcStateVersion + ':' + dcLevelStateVersion + ':' + ((disabledSet && disabledSet.potCeil) || 0) + '|' + side + ':' + (e.configId ?? '') + ':' + (e.valueConfigId ?? '')
         + ':' + (e.slotNum ?? 0) + ':' + (e.levelTypeData ?? '') + ':' + (e.levelData ?? '')
         + ':' + (e.levelSource ?? '') + ':' + (charId ?? '') + ':' + (e._charId ?? '')
         + ':' + (fromAttrDict ? 1 : (e.fromAttrDict ? 2 : 0))

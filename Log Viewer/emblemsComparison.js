@@ -61,6 +61,10 @@ let ecColsOpen = false;
 // Show the 0%-gain rows (Def/MaxHp, off-element lines…) — hidden by default.
 let ecShowZero = false;
 let ecShowColors = false;   // tier background colors — off by default
+// Potential-level reference cap for this tab: every potential is evaluated as
+// if its level were at most 6, so a +3 pot-affix line has room to reach the
+// level-9 cap (a potential already at 9 would otherwise show a 0 gain).
+const EC_POT_REF_CAP = 6;
 // Damage scope per character table: 'team' (gains vs the whole deployed
 // team's damage, default) or 'personal' (gains vs that char's damage).
 let ecScopeByChar = {};
@@ -431,8 +435,11 @@ function ecEntryOvValue(entry, L) {
 // dcPotEffectiveLevel / dcSkillEffectiveLevel under a candidate's +3 bonus.
 // The base levels come from the real functions (called with extDisabled);
 // the candidate level replicates them with the synthetic ec row added.
+// Potentials: the reference level is the same capped baseline the table uses
+// (dcPotEffectiveLevel with EC_POT_REF_CAP), +3.
 function ecPotLcand(st) {
-    return Math.min(Math.max(st.recordLv + 3 + (st.change || 0), 0), 9);
+    const ref = Math.min(Math.max(st.recordLv + (st.change || 0), 0), EC_POT_REF_CAP);
+    return Math.min(Math.max(ref + 3, 0), 9);
 }
 function ecSkillLcand(st) {
     let rowBonus = 0;
@@ -808,6 +815,34 @@ function ecPreanalyzeHit(b, extDisabled) {
     collectEff(ev.AttackerRecord?.effects, 0);
     collectEff(ev.DefenderEffects?.effects, 1);
     collectDict(ev.DefenderAttrDict, 1);
+
+    // ── Wide Blade Arc: fold Auto Attack DMG baseline moves into Mark ──
+    // The baseline ops are replayed by calcHitFields, which does NOT re-run
+    // the machinery's conversion fixup, so a level override that lowers Auto
+    // Attack DMG (e.g. Pending Chore dropping to its record level) would move
+    // attr 56 without moving the converted Mark (attr 64). Add the missing
+    // shift conv(AA_baseline, cap_base) − conv(AA_zero, cap_base) on top of
+    // the WBA entry's own cap move (pushed in collectEff).
+    {
+        const wba = lv.find(e => e.configId === WBA_EFFECT_ID && e.side === 0);
+        if (wba && !wba.rowDis) {
+            const s = (b.disOnly && b.disOnly.aStats) ? b.disOnly.aStats[WBA_SRC_ATTR] : null;
+            let q = null;
+            for (const op of pre.baseOps) {
+                if (op[0] !== 0 || op[1] !== WBA_SRC_ATTR) continue;
+                if (!q) q = [s?.origin || 0, s?.base || 0, s?.pct || 0, s?.abs || 0];
+                q[op[2]] += op[3];
+            }
+            if (q) {
+                const lpW = dcWideBladeParams(wba.valueConfigId);
+                const capB = wba.baseOvVc ? (dcWideBladeParams(wba.baseOvVc).cap ?? lpW.cap) : lpW.cap;
+                const cop = ecWbaAACouplingOp(q, dcWideBladeAA(b.disOnly.aStats),
+                    { ratio: lpW.ratio, step: lpW.step, threshold: lpW.threshold, cap: capB });
+                if (cop) pre.baseOps.push(cop);
+            }
+        }
+    }
+
     pre.lv = lv;
     return pre;
 }
@@ -1447,6 +1482,62 @@ function ecLevelNetDamage(an, kind, key, Lc) {
     return dmg !== null ? dmg : an.baseDmg;
 }
 
+// Wide Blade Arc conversion for one level-scaled WBA entry under a candidate
+// level Lc (undefined = this entry did not move in the evaluated state).
+// The reference arrays (`an.aStats`) hold the LOGGED placement, so the Mark
+// delta is measured from the LOGGED cap. `target` describes the cap of the
+// STATE BEING BUILT (baseline when Lc is undefined, the candidate cap when
+// moved, the logged cap when the candidate coincides with the logged level,
+// null when the conversion is off) — callers use it to convert Auto Attack
+// DMG moves from OTHER level sources.
+//
+// The `Lc === entry.curL` case matters: it means the candidate level equals
+// the level baked into the reference arrays, i.e. "no override" — the target
+// is then the LOGGED placement, NOT the baseline (falling back to the
+// baseline there made an already-equipped emblem show a 0 gain).
+function ecWbaLevelMove(an, entry, Lc) {
+    const aaRef = dcWideBladeAA(an.aStats);
+    const lpB = dcWideBladeParams(entry.valueConfigId);
+    const capBase = entry.baseOvVc ? (dcWideBladeParams(entry.baseOvVc).cap ?? lpB.cap) : lpB.cap;
+    const baseC = dcWideBladeConv(aaRef, lpB.ratio, lpB.step, capBase, lpB.threshold);
+    const oldC = dcWideBladeConv(aaRef, lpB.ratio, lpB.step, lpB.cap, lpB.threshold);
+    let newC = baseC, cap = capBase, threshold = lpB.threshold;
+    if (Lc !== undefined) {
+        if (Lc === entry.curL) {
+            newC = oldC; cap = lpB.cap;            // candidate == logged → no override
+        } else if (Lc <= 0) {
+            newC = 0; cap = null;                  // pot semantics: level 0 zeroes it
+        } else {
+            const vcC = entry.lo + entry.P * 100 + Lc * 10 + entry.V;
+            const svC = effectValueTable.get(vcC);
+            if (svC && svC.cap != null) {
+                cap = svC.cap;
+                threshold = (svC.threshold != null ? svC.threshold : lpB.threshold);
+                newC = dcWideBladeConv(aaRef, lpB.ratio, lpB.step, cap, threshold);
+            } else {
+                newC = oldC; cap = lpB.cap;        // ladder row missing → keep logged
+            }
+        }
+    }
+    return {
+        delta: newC - oldC,
+        changed: (Lc !== undefined && newC !== baseC),
+        target: (cap == null) ? null : { ratio: lpB.ratio, step: lpB.step, threshold, cap },
+    };
+}
+
+// The Mark-DMG op that turns an Auto Attack DMG (attr 56) move into its
+// converted value: conv(AA_after, cap) − conv(AA_before, cap) for one target
+// cap. aaQuad is the reference AA quadruple with every accumulated op applied
+// (or null when no AA op touched the hit). Returns an op list entry or null.
+function ecWbaAACouplingOp(aaQuad, aaRef, target) {
+    if (!aaQuad || !target) return null;
+    const aaAfter = (aaQuad[0] + aaQuad[1]) * (1 + aaQuad[2]) + aaQuad[3];
+    const d = dcWideBladeConv(aaAfter, target.ratio, target.step, target.cap, target.threshold)
+        - dcWideBladeConv(aaRef, target.ratio, target.step, target.cap, target.threshold);
+    return d !== 0 ? [0, WBA_DST_ATTR, 1, d] : null;
+}
+
 // Generalization of the single-source eval above: evaluate the hit under a
 // SET of level-source moves at once (the Dmg Calc's pots quick toggles move
 // every non-cap potential). `changes` maps '<kind>:<cand>' → candidate level
@@ -1457,6 +1548,12 @@ function ecLevelNetDamage(an, kind, key, Lc) {
 function ecLevelMovesNetDamage(an, changes) {
     const dlist = [];
     let changed = false;
+    // Active Wide Blade Arc conversion for this hit + the accumulated Auto
+    // Attack DMG (attr 56) ops, so AA writes from OTHER level sources (e.g.
+    // Pending Chore) fold into Mark exactly like the machinery's post-level
+    // conversion fixup.
+    let wbaTarget = null;
+    let aaQuad = null;
     for (const entry of an.lv) {
         // Disabled rows contribute no level ops in the intel's baseline state
         // (they were absent from lv before the what-if engine needed them;
@@ -1466,26 +1563,14 @@ function ecLevelMovesNetDamage(an, changes) {
         // Mirrors the flat replay (remove-logged + add-effective) with
         // conversion values: the removal side always uses the LOGGED cap
         // (the reference arrays hold the logged placement), the add side
-        // the baseline cap, or the candidate cap when this source moved.
+        // the candidate cap when this source moved, else the baseline/logged
+        // cap (see ecWbaLevelMove).
         if (entry.configId === WBA_EFFECT_ID && entry.side === 0) {
             const Lc = changes.get(entry.kind + ':' + entry.cand);
-            const aaRef = dcWideBladeAA(an.aStats);
-            const lpB = dcWideBladeParams(entry.valueConfigId);
-            const capBase = entry.baseOvVc ? (dcWideBladeParams(entry.baseOvVc).cap ?? lpB.cap) : lpB.cap;
-            const baseC = dcWideBladeConv(aaRef, lpB.ratio, lpB.step, capBase, lpB.threshold);
-            let newC = baseC;
-            if (Lc !== undefined && Lc !== entry.curL) {
-                if (Lc <= 0) newC = 0;   // pot semantics: level 0 zeroes the contribution
-                else {
-                    const vcC = entry.lo + entry.P * 100 + Lc * 10 + entry.V;
-                    const svC = effectValueTable.get(vcC);
-                    // ladder row missing → keep baseline (mirrors the flat path)
-                    if (svC && svC.cap != null) newC = dcWideBladeConv(aaRef, lpB.ratio, lpB.step, svC.cap, (svC.threshold != null ? svC.threshold : lpB.threshold));
-                }
-                if (newC !== baseC) changed = true;
-            }
-            const oldC = dcWideBladeConv(aaRef, lpB.ratio, lpB.step, lpB.cap, lpB.threshold);
-            if (newC !== oldC) dlist.push([0, WBA_DST_ATTR, 1, newC - oldC]);
+            const r = ecWbaLevelMove(an, entry, Lc);
+            if (r.changed) changed = true;
+            if (r.delta !== 0) dlist.push([0, WBA_DST_ATTR, 1, r.delta]);
+            wbaTarget = r.target;
             continue;
         }
         const Lc = changes.get(entry.kind + ':' + entry.cand);
@@ -1493,7 +1578,25 @@ function ecLevelMovesNetDamage(an, changes) {
         const ovV = relevant ? ecEntryOvValue(entry, Lc) : entry.baseOvV;
         if (relevant && ovV !== entry.baseOvV) changed = true;
         const ops = ecEntryOps(entry, ovV);
-        if (ops) for (const op of ops) dlist.push(op);
+        if (ops) for (const op of ops) {
+            dlist.push(op);
+            if (op[0] === 0 && op[1] === WBA_SRC_ATTR) {
+                if (!aaQuad) {
+                    const s = an.aStats[WBA_SRC_ATTR];
+                    aaQuad = [s?.origin || 0, s?.base || 0, s?.pct || 0, s?.abs || 0];
+                }
+                aaQuad[op[2]] += op[3];
+            }
+        }
+    }
+    // Fold the accumulated AA moves into Mark at the target state's cap. The
+    // WBA entry pushed conv(AA_ref, cap_target) − conv(AA_ref, cap_logged), so
+    // this adds the AA-dependent shift only; conv depends on the TOTAL AA, so
+    // a single op is exact regardless of the entry order. (`changed` already
+    // covers the move: an AA op only exists when its source moved.)
+    if (wbaTarget && aaQuad) {
+        const cop = ecWbaAACouplingOp(aaQuad, dcWideBladeAA(an.aStats), wbaTarget);
+        if (cop) dlist.push(cop);
     }
     let multRaw = null;
     if (an.skillPerk != null && changes.has('skill:' + an.skillPerk)) {
@@ -1898,38 +2001,46 @@ function ecWhatIfHitDamage(b, dis, en, lvlLc) {
     const rowOps = ecWhatIfRowOps(b, dis, en);
     const dlist = rowOps ? rowOps.slice() : [];
     let changed = rowOps != null;
+    // Active WBA conversion target + accumulated Auto Attack DMG ops from the
+    // level moves (row-phase AA writes already carry their own coupling).
+    let wbaTarget = null;
+    let aaQuad = null;
     for (const entry of intel.lv) {
         if (entry.rowDis) continue;              // still/re-enabled rows: the row phase covers them
         if (dis.has(entry.disKey)) continue;     // newly disabled: the row phase's −logged replaces the ops
         // ── Wide Blade Arc: conversion replay ──
         // Reference arrays are the zero state (conversion at the LOGGED
         // cap), so the removal side uses capLogged; the add side the
-        // baseline cap, or the candidate cap when this source moved.
+        // candidate cap when this source moved, else the baseline/logged cap
+        // (see ecWbaLevelMove).
         if (entry.configId === WBA_EFFECT_ID && entry.side === 0) {
             const Lc = lvlLc ? lvlLc.get(entry.kind + ':' + entry.cand) : undefined;
-            const aaRef = dcWideBladeAA(intel.aStats);
-            const lpB = dcWideBladeParams(entry.valueConfigId);
-            const capBase = entry.baseOvVc ? (dcWideBladeParams(entry.baseOvVc).cap ?? lpB.cap) : lpB.cap;
-            const baseC = dcWideBladeConv(aaRef, lpB.ratio, lpB.step, capBase, lpB.threshold);
-            let newC = baseC;
-            if (Lc !== undefined && Lc !== entry.curL) {
-                if (Lc <= 0) newC = 0;
-                else {
-                    const vcC = entry.lo + entry.P * 100 + Lc * 10 + entry.V;
-                    const svC = effectValueTable.get(vcC);
-                    if (svC && svC.cap != null) newC = dcWideBladeConv(aaRef, lpB.ratio, lpB.step, svC.cap, (svC.threshold != null ? svC.threshold : lpB.threshold));
-                }
-                if (newC !== baseC) changed = true;
-            }
-            const oldC = dcWideBladeConv(aaRef, lpB.ratio, lpB.step, lpB.cap, lpB.threshold);
-            if (newC !== oldC) dlist.push([0, WBA_DST_ATTR, 1, newC - oldC]);
+            const r = ecWbaLevelMove(intel, entry, Lc);
+            if (r.changed) changed = true;
+            if (r.delta !== 0) dlist.push([0, WBA_DST_ATTR, 1, r.delta]);
+            wbaTarget = r.target;
             continue;
         }
         const Lc = lvlLc ? lvlLc.get(entry.kind + ':' + entry.cand) : undefined;
         const ovV = Lc !== undefined ? ecEntryOvValue(entry, Lc) : entry.baseOvV;
         if (ovV !== entry.baseOvV) changed = true;
         const ops = ecEntryOps(entry, ovV);
-        if (ops) for (const op of ops) dlist.push(op);
+        if (ops) for (const op of ops) {
+            dlist.push(op);
+            if (op[0] === 0 && op[1] === WBA_SRC_ATTR) {
+                if (!aaQuad) {
+                    const s = intel.aStats[WBA_SRC_ATTR];
+                    aaQuad = [s?.origin || 0, s?.base || 0, s?.pct || 0, s?.abs || 0];
+                }
+                aaQuad[op[2]] += op[3];
+            }
+        }
+    }
+    // Fold the level-driven AA moves into Mark at the target cap (same as the
+    // Emblems Comparison's level replay).
+    if (wbaTarget && aaQuad) {
+        const cop = ecWbaAACouplingOp(aaQuad, dcWideBladeAA(intel.aStats), wbaTarget);
+        if (cop) dlist.push(cop);
     }
     // hit's own level scaling (pot/skill perk) under the what-if tables
     let multRaw = null;
@@ -2016,6 +2127,10 @@ function ecComputeBase(prof) {
     }
     const extDisabled = new Set(dcEffectsDisabled);
     for (const k of emblemKeys) extDisabled.add(k);
+    // Reference cap (see dcPotEffectiveLevel): the blank baseline every row is
+    // measured against keeps potentials at most level 6, so a +3 pot affix can
+    // show its full value even when the build has the potential at 9.
+    extDisabled.potCeil = EC_POT_REF_CAP;
     extDisabledRef = extDisabled;   // ecSkillLcand reads it
 
     const ecDis = ecCalcDisabled();   // constant for the whole compute
@@ -2235,6 +2350,7 @@ function ecRenderTable() {
             <div class="ec-cols-menu" id="ecColsMenu" style="display:${ecColsOpen ? 'block' : 'none'}">
                 ${[1, 2, 3].map(k => `<label><input type="checkbox" ${ecColsSel[k] ? 'checked' : ''} onchange="ecSetCol(${k}, this.checked)"> ×${k}</label>`).join('')}
             </div>
+            <span class="ec-note" title="Potentials are evaluated as if their level were at most ${EC_POT_REF_CAP}, so a +3 pot affix line shows its full ${EC_POT_REF_CAP}→${EC_POT_REF_CAP + 3} value even when the build has the potential maxed at 9">pot ref ≤ lv${EC_POT_REF_CAP}</span>
         </span>
     </div>
     <div class="ei-scroll-wrap"><div class="ec-tables">`;
