@@ -1913,6 +1913,17 @@ function dcCreateEventDiv(ev, fi) {
 }
 
 // ─── Filter helpers ───────────────────────────────────────────────────────────
+// Build a haystack for a hit matching the header title shown in the list,
+// e.g. "Flora - Flutter Flare (#1) [209.00%]". No escFn: this is plain text,
+// not HTML.
+function dcHitSearchText(ev) {
+    const hc = ev.HitConfig || {};
+    const dp = ev.DamageParams || {};
+    const attName = ev.AttackerDisplay || ev.Attacker || '?';
+    const baseMult = dp.skillPercentAmend != null ? ` [${(dp.skillPercentAmend / 10000).toFixed(2)}%]` : '';
+    return `${attName}${hitSkillStr(hc)}${baseMult}`.toLowerCase();
+}
+
 // The dropdowns and the filter state are shared with the Log tab
 // (filterCore.js). dcApplyFilters runs the 'hits' domain full pass: option
 // sets (char/defender included — the old dcBuildCharFilter/dcBuildDefender

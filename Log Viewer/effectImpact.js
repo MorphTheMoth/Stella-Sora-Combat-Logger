@@ -913,9 +913,19 @@ window.eiOnSearchInput = function() {
     const el = document.getElementById('eiSearchInput');
     const v = el ? el.value : '';
     fcSearchQuery = v;
+    // The query is shared by every domain; mark the ones we do not re-render
+    // below as dirty so they re-apply it on their next render (tab entry).
+    fcDirtyLog = true;
+    fcDirtyHits = true;
+    const logVisible = !!document.getElementById('logPanel')
+        && !document.getElementById('logPanel').classList.contains('hidden');
     const dcVisible = document.getElementById('dmgCalcPanel').classList.contains('visible');
     const eiVisible = document.getElementById('eiPanel').classList.contains('visible');
     const ecVisible = document.getElementById('ecPanel')?.classList.contains('visible');
+    if (logVisible && typeof refilterAndRender === 'function') {
+        fcDirtyLog = false;   // the log domain just recomputed
+        refilterAndRender(true, false);
+    }
     if (dcVisible) dcRefilterAndRender(true);
     if (eiVisible) eiRenderTable();
     if (ecVisible && typeof ecRenderTable === 'function') ecRenderTable();

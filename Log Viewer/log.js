@@ -18,9 +18,22 @@ let foldedCount = 0;
 
 // The shared filter engine (option sets, canonicalization, defender
 // auto-follow, select rendering) lives in filterCore.js; the Log tab uses the
-// 'log' domain of it.
+// 'log' domain of it. The shared sidebar search (fcSearchQuery) is applied on
+// top of the domain pass — exactly like dcApplyFilters does for the hits
+// domain — so the Filters search box narrows the Log list too.
 function computeFilteredFull() {
-    return fcRefilterDomain('log');
+    let evs = fcRefilterDomain('log');
+    if (fcSearchQuery.trim()) evs = evs.filter(logMatchesSearch);
+    return evs;
+}
+
+// Sidebar-filter search predicate for the Log tab. Same rich haystack as the
+// Ctrl+F bar (type / attacker / skill / damage / buff owner+name / …) so both
+// searches match the same text.
+function logMatchesSearch(ev) {
+    const q = fcSearchQuery.trim();
+    if (!q) return true;
+    return normalizeSearch(getEventSearchText(ev)).includes(normalizeSearch(q.toLowerCase()));
 }
 
 // ─── Search state ─────────────────
@@ -103,6 +116,8 @@ function foldIncremental() {
         // fcFoldEvent folds the event into the 'log' domain's option sets and
         // applies the current filters in the same order as fcFullPass.
         if (!fcFoldEvent(ev)) continue;
+        // Shared sidebar search also narrows the appended rows.
+        if (!logMatchesSearch(ev)) continue;
         filtered.push(ev);
         vl.appendHeight(vl.heightFor(ev._origIndex) + vl.extraHeight(ev._origIndex));
     }
@@ -592,7 +607,9 @@ window.switchTab = function(tab) {
     const logTypeRow = document.getElementById('logTypeRow');
     if (logTypeRow) logTypeRow.classList.toggle('hidden', !isLogDomain);
     const eiSearchBlock = document.getElementById('eiSearchBlock');
-    if (eiSearchBlock) eiSearchBlock.classList.toggle('hidden', !isHitsDomain);
+    // The shared search box applies to the Log domain as well as the hit-based
+    // ones (the Record tab hides the whole Filters section).
+    if (eiSearchBlock) eiSearchBlock.classList.toggle('hidden', !(isHitsDomain || tab === 'log'));
     const sbEiFilters = document.getElementById('sidebarEiFilters');
     if (sbEiFilters) sbEiFilters.classList.toggle('hidden', tab !== 'effectimpact');
     const eiZeroGainWrap = document.getElementById('eiZeroGainWrap');
