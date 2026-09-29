@@ -835,11 +835,23 @@ const ATTR_DICT_PREFIXES = [
 const HIT_DAMAGE_PREFIX = 'HitDamage,DamageNum,';
 
 function extractPrefixedId(param, prefix) {
-    if (!param.startsWith(prefix)) return 0;
+    if (typeof param !== 'string' || !param.startsWith(prefix)) return 0;
     const rest  = param.slice(prefix.length);
     const comma = rest.indexOf(',');
     const idStr = comma === -1 ? rest : rest.slice(0, comma);
     const id    = parseInt(idStr, 10);
+    return isNaN(id) ? 0 : id;
+}
+
+// Any-flavor HitDamage reference: 'HitDamage,<field>,<id>' — Skill.json uses
+// DamageNum, but potentials also use other flavors (Allie 513922 Repeat Sweep
+// references its hit via HiddenParam 'HitDamage,Skill,139522001'). Returns the
+// numeric id, or 0 when the param is not a HitDamage reference.
+function extractHitDamageId(param) {
+    if (typeof param !== 'string') return 0;
+    const m = /^HitDamage,[A-Za-z]+,(\d+)/.exec(param);
+    if (!m) return 0;
+    const id = parseInt(m[1], 10);
     return isNaN(id) ? 0 : id;
 }
 
@@ -926,7 +938,7 @@ function buildActorNameMap(jChar, jMonsterSkin, jMonsterManual, jMonsterManualLa
 
 // ─── buildHitTable ────────────────────────────────────────────────────────────
 
-function buildHitTable(jHit, jSkill, jLang, jChar, jPotential, jItemRoot) {
+function buildHitTable(jHit, jSkill, jLang, jChar, jPotential, jItemRoot, jWord, jWordLang) {
     hitTable.clear();
     hitLadderFallback.clear();
 
@@ -1004,19 +1016,114 @@ function buildHitTable(jHit, jSkill, jLang, jChar, jPotential, jItemRoot) {
                 ? charNameFromMap(charMap, potVal.CharId) : '?';
 
             forEachParam(potVal, param => {
-                const hitId = extractPrefixedId(param, HIT_DAMAGE_PREFIX);
+                const hitId = extractHitDamageId(param);
                 if (!hitId) return;
                 const existing = hitTable.get(hitId);
                 if (existing && existing.skillTitle !== '?') return;
 
                 let hitNum = 0, hitIdx = 0;
                 forEachParam(potVal, mv => {
-                    const mvId = extractPrefixedId(mv, HIT_DAMAGE_PREFIX);
+                    const mvId = extractHitDamageId(mv);
                     if (mvId) { ++hitIdx; if (mvId === hitId) hitNum = hitIdx; }
                 });
                 const src = charName && charName !== '?' ? `${charName} Potentials` : 'Potentials';
                 hitTable.set(hitId, { charName, skillTitle: itemName, hitNum, source: src });
             });
+        }
+    }
+
+    // Word.json pass — mark/ebb hits referenced from Words (Allie Tide 4053:
+    // Param3=139000002 Ebb AoE, Param4=139000001 Aqua Mark trigger; Karin Dark
+    // Burn 157000002 via Word 4051). The Word lang Title names the hit; char
+    // and source come from the hit id prefix, same convention as the main
+    // loop. Accepts any HitDamage flavor and skips hits already resolved
+    // above (so 139000001 keeps 'Aqua Mark', and '!NONEED!' words never leak).
+    if (jWord && jWordLang) {
+        for (const [, wval] of Object.entries(jWord)) {
+            const wordName = resolveLocKey(wval, 'Title', jWordLang);
+            if (!wordName || wordName === '?' || wordName.startsWith('!')) continue;
+            forEachParam(wval, param => {
+                const hitId = extractHitDamageId(param);
+                if (!hitId) return;
+                const existing = hitTable.get(hitId);
+                if (existing && existing.skillTitle !== '?') return;
+                const charId = Math.trunc(hitId / 1000000);
+                const cname = charNameFromMap(charMap, charId);
+                let hitNum = 0, hitIdx = 0;
+                forEachParam(wval, mv => {
+                    const mvId = extractHitDamageId(mv);
+                    if (mvId) { ++hitIdx; if (mvId === hitId) hitNum = hitIdx; }
+                });
+                const src = cname && cname !== '?' ? `${cname} Skills` : 'Skills';
+                hitTable.set(hitId, { charName: cname, skillTitle: wordName, hitNum, source: src });
+            });
+        }
+    }
+
+    // HitDamage.SkillId fallback — the row itself names its skill (Skill.json
+    // Title via the row's SkillId). Guarded by char-prefix match: HitDamage
+    // 139522001 wrongly carries SkillId 16032000, so mismatched rows fall
+    // through instead of mislabeling (the Potential pass above already names
+    // it Repeat Sweep via the HiddenParam). hitNum is inherited from the
+    // ladder-identical resolved sibling when titles agree (Allie 139100101 →
+    // Housework Slash #1), else ranked by id among same-SkillId siblings
+    // (Allie 139100009 → #9; Canace 120100002 → #2, matching the hardcoded
+    // rows below). Hits whose ladder matches a resolved hit with a DIFFERENT
+    // title stay '?': Allie Mirror Blade variants 139543102/302 share
+    // 139543002's ladder but carry SkillId 13940000, and labeling them Deep
+    // Sweep would be wrong. Hardcoded rows below still win (they run last).
+    if (jSkill && jLang) {
+        const ladderKey = (h) => JSON.stringify([(h && h.SkillPercentAmend) || [], (h && h.SkillAbsAmend) || []]);
+        const bySkill = new Map();
+        for (const [hid, h] of hitTable) {
+            if (h.skillTitle !== '?') continue;
+            const he = jHit[String(hid)];
+            const sid = he ? he.SkillId : 0;
+            if (!sid) continue;
+            if (Math.trunc(sid / 100000) !== Math.trunc(hid / 1000000)) continue;
+            const sk = jSkill[String(sid)];
+            if (!sk) continue;
+            const title = resolveLocKey(sk, 'Title', jLang);
+            if (!title || title === '?') continue;
+            if (!bySkill.has(sid)) bySkill.set(sid, []);
+            bySkill.get(sid).push(hid);
+        }
+        // Single ascending-id pass with an incrementally updated ladder map:
+        // resolving a unique-ladder hit unblocks ladder-inherit for its
+        // larger-id alias siblings later in the same pass (Allie 139100009 →
+        // #9 first, then 139100109/209 inherit #9).
+        const resolvedByLadder = new Map();
+        for (const [hid, h] of hitTable) {
+            if (h.skillTitle === '?') continue;
+            const k = ladderKey(jHit[String(hid)]);
+            if (!resolvedByLadder.has(k)) resolvedByLadder.set(k, { skillTitle: h.skillTitle, hitNum: h.hitNum });
+        }
+        const pending = [...bySkill].flatMap(([sid, hids]) => hids.map((hid) => [sid, hid]))
+            .sort((a, b) => a[1] - b[1]);
+        for (const [sid, hid] of pending) {
+            if (hitTable.get(hid).skillTitle !== '?') continue;
+            const title = resolveLocKey(jSkill[String(sid)], 'Title', jLang);
+            const sib = resolvedByLadder.get(ladderKey(jHit[String(hid)]));
+            if (sib && sib.skillTitle !== title) continue;   // different-title ladder match → stay '?'
+            let hitNum;
+            if (sib) {
+                hitNum = sib.hitNum;
+            } else {
+                const allSibs = Object.keys(jHit)
+                    .map(Number)
+                    .filter((id) => {
+                        const he = jHit[String(id)];
+                        return he && he.SkillId === sid && Math.trunc(id / 1000000) === Math.trunc(sid / 100000);
+                    })
+                    .sort((a, b) => a - b);
+                hitNum = allSibs.indexOf(hid) + 1;
+            }
+            const charId = Math.trunc(hid / 1000000);
+            const cname = charNameFromMap(charMap, charId);
+            const src = cname && cname !== '?' ? `${cname} Skills` : 'Skills';
+            hitTable.set(hid, { charName: cname, skillTitle: title, hitNum, source: src });
+            const k = ladderKey(jHit[String(hid)]);
+            if (!resolvedByLadder.has(k)) resolvedByLadder.set(k, { skillTitle: title, hitNum });
         }
     }
 
@@ -1087,6 +1194,21 @@ function buildHitTable(jHit, jSkill, jLang, jChar, jPotential, jItemRoot) {
         // Nazuna: support "Bingo Crush" mixed-raffle sweep (Param4 x6) —
         // penguin-majority shots use 001, same ladder as heart shots (007)
         [156320001, 'Nazuna', 'Bingo Crush', 3, 'Skills'],
+        // Allie: hits with no raw-table Param link (verified by grep over
+        // EN+CN bin/*.json — only HitDamage.json contains them).
+        // 139522001 Repeat Sweep (support potential 513922): the link lives
+        // only in the aggregated character.json desc (HiddenParam1:
+        // HitDamage,Skill,139522001) + Hotfix Config_Support comboTag
+        // 139_Skill_Sup_P22 (perkId_22=513922). HitDamage.SkillId 16032000 is
+        // a datamine misattribution, so the SkillId fallback skips it.
+        [139522001, 'Allie', 'Repeat Sweep', 1, 'Potentials'],
+        // 139543102/302 Mirror Blade variants (perk 513943): ladder-identical
+        // to 139543002 but carry SkillId 13940000, so the SkillId fallback
+        // leaves them '?' rather than mislabeling them Deep Sweep.
+        // 102 = Ult instance (base hitDamageIdMapping), 302 = Skill-DMG
+        // instance (hitDamageIdMapping_P5, Clothesline Stance 513905).
+        [139543102, 'Allie', 'Mirror Blade', 1, 'Potentials'],
+        [139543302, 'Allie', 'Mirror Blade', 1, 'Potentials'],
     ];
     for (const [hitId, charName, skillTitle, hitNum, src] of hardcoded)
         hitTable.set(hitId, { charName, skillTitle, hitNum, source: `${charName} ${src}` });
@@ -1900,7 +2022,7 @@ async function initTables() {
     buildActorNameMap(jChar, jMonsterSkin, jMonsterManual, jMonsterManualLang);
 
     if (jHit) {
-        buildHitTable(jHit, jSkill, jSkillLang, jChar, jPotential, jItemRoot);
+        buildHitTable(jHit, jSkill, jSkillLang, jChar, jPotential, jItemRoot, jWord, jWordLang);
     }
 
     buildEffectTable({
