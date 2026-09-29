@@ -268,6 +268,8 @@ if (dcEffectsPanelEl) dcEffectsPanelEl.addEventListener('click', e => {
 
 const dcCharsListEl = document.getElementById('dcCharsList');
 if (dcCharsListEl) dcCharsListEl.addEventListener('click', e => {
+    const wbaRow = e.target.closest('.dc-wba-row');
+    if (wbaRow) { dcWbaJumpToHit(); return; }
     const btn = e.target.closest('.dc-char-btn');
     if (!btn) return;
     if (btn.dataset.char) dcToggleChar(btn.dataset.char);
@@ -1182,6 +1184,75 @@ function dcSyncCharEffectKeys() {
     }
 }
 
+// Current Wide Blade Arc readout for the sidebar (Allie potential 513908) —
+// shown only when at least one hit carries the P8 conversion row.
+//   maxAA : highest operative TOTAL Auto Attack DMG (attr 56) across Allie's
+//           WBA hits — the exact value the engine feeds the conversion
+//           (kind 3, so emblem/disc Auto-Attack-DMG grants count).
+//   cap   : the P8 row's operative cap (0.5..2.3 by potential level).
+//   rawConv: the pre-cap conversion the AA produces — (totalAA - threshold)
+//            / step * ratio, i.e. the AA bonus / 1.3 for the logged params.
+//   conv  : the conversion that AA currently produces (min of pre-cap, cap).
+// Memoized per (calc state, level state, filtered set) — the scan is O(hits).
+let _dcWbaSummaryCache = { ver: -1, lver: -1, src: null, len: -1, result: null };
+function dcWideBladeSummary() {
+    if (typeof dcFiltered === 'undefined' || !dcFiltered.length) return null;
+    const lver = (typeof dcLevelStateVersion !== 'undefined') ? dcLevelStateVersion : 0;
+    const c = _dcWbaSummaryCache;
+    if (c.src === dcFiltered && c.len === dcFiltered.length && c.ver === dcStateVersion && c.lver === lver) {
+        return c.result;
+    }
+    let maxAA = null, cap = null, ratio = null, step = null, threshold = null;
+    let hits = 0, disabled = false, bestFi = null;
+    for (let i = 0; i < dcFiltered.length; i++) {
+        const ev = dcFiltered[i];
+        const st = dcWideBladeState(ev, dcEffectsDisabled, false);
+        if (!st) continue;
+        hits++;
+        if (dcEffectsDisabled.has(st.key)) disabled = true;
+        const f = dcCachedHitCalc(ev).f;
+        const aa = statValue(f._aStats || [], WBA_SRC_ATTR);
+        if (maxAA == null || aa > maxAA) {
+            maxAA = aa;
+            ratio = st.ratio; step = st.step; threshold = st.threshold;
+            cap = st.capEff;   // the cap operative on this (best) hit
+            bestFi = i;
+        }
+    }
+    let result = null;
+    if (maxAA != null && cap != null) {
+        // Raw (pre-cap) conversion the AA produces — the engine's
+        // (totalAA - threshold) / step * ratio, i.e. /1.3 for the logged
+        // Param4=0.013 / Param1=0.01. Shown uncapped so it reads directly
+        // against the cap.
+        const t = (threshold != null) ? threshold : 1;
+        const rawConv = (maxAA > t) ? (maxAA - t) / step * ratio : 0;
+        const conv = dcWideBladeConv(maxAA, ratio, step, cap, threshold);
+        result = { maxAA, cap, rawConv, conv, ratio, step, threshold, hits, disabled, bestFi, capped: rawConv >= cap - 1e-9 };
+    }
+    _dcWbaSummaryCache = { ver: dcStateVersion, lver, src: dcFiltered, len: dcFiltered.length, result };
+    return result;
+}
+window.dcWideBladeSummary = dcWideBladeSummary;
+
+// Bring the Dmg Calc list to the WBA hit the sidebar readout is reporting (the
+// highest-Auto-Attack-DMG WBA hit), and flash it so it's easy to spot.
+function dcWbaJumpToHit() {
+    const wba = (typeof dcWideBladeSummary === 'function') ? dcWideBladeSummary() : null;
+    if (!wba || wba.bestFi == null) return;
+    const fi = wba.bestFi;
+    if (fi < 0 || fi >= dcFiltered.length) return;
+    dcContainer.scrollTop = Math.max(0, dcVL.topOf(fi) - 6);
+    dcVL.render();
+    const oi = dcFiltered[fi] && dcFiltered[fi]._origIndex;
+    const el = (oi != null) ? dcContainer.querySelector(`.event[data-orig-index="${oi}"]`) : null;
+    if (el) {
+        el.classList.add('dc-wba-flash');
+        setTimeout(() => el.classList.remove('dc-wba-flash'), 1500);
+    }
+}
+window.dcWbaJumpToHit = dcWbaJumpToHit;
+
 function dcRenderCharList() {
     const el = document.getElementById('dcCharsList');
     if (!el) return;
@@ -1216,6 +1287,31 @@ function dcRenderCharList() {
             <button class="dc-char-btn${off ? ' on' : ''}" data-char="${esc(name)}">${off ? 'Enable' : 'Disable'}</button>
         </div>`;
     }).join('');
+
+    // ── Wide Blade Arc readout (Allie P8) ──
+    // Shows the AA value the conversion currently reads vs its cap, above the
+    // quick toggles. Only present when an Allie WBA hit exists.
+    {
+        const wba = (typeof dcWideBladeSummary === 'function') ? dcWideBladeSummary() : null;
+        if (wba) {
+            // First number is the Wide Blade Arc value the AA produces: the AA
+            // bonus (total minus the 100% baseline, Param5) divided by 1.3 —
+            // the engine's /step*ratio (Param4=0.013, Param1=0.01). Shown
+            // pre-cap so it reads straight against the cap.
+            const thr = (wba.threshold != null) ? wba.threshold : 1;
+            const aaStr = fmtVal(Math.max(0, wba.maxAA - thr), 'dmgTypePct');
+            const valStr = fmtVal(wba.rawConv, 'dmgTypePct');
+            const capStr = fmtVal(wba.cap, 'dmgTypePct');
+            const convStr = fmtVal(wba.conv, 'dmgTypePct');
+            const stateStr = wba.disabled ? ' [conversion off]' : (wba.capped ? ' [at cap]' : '');
+            const tip = `Wide Blade Arc (${wba.hits} hit${wba.hits !== 1 ? 's' : ''}): highest Auto Attack DMG bonus ${aaStr} \u00f7 1.3 = ${valStr}, `
+                + `cap ${capStr}, current conversion ${convStr}${stateStr} \u2014 click to jump to that hit`;
+            html += `<div class="dc-char-row dc-wba-row${wba.disabled ? ' disabled' : ''}" title="${esc(tip)}" role="button">
+                <span class="dc-char-name">Wide Blade Arc Value:</span>
+                <span class="dc-wba-val">${valStr} / ${capStr}</span>
+            </div>`;
+        }
+    }
 
     // ── Quick toggles (below the characters) ──
     // Per-disc toggles first, then a divider line, then the static

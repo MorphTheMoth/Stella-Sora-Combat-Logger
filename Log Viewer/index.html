@@ -130,6 +130,15 @@
         }
         .dc-char-row.disabled .dc-char-delta { color: #555; }
         .dc-char-spacer { flex: 1; }
+        .dc-wba-row { gap: 8px; cursor: pointer; }
+        .dc-wba-val {
+            margin-left: auto; flex-shrink: 0; white-space: nowrap;
+            font-size: 11px; font-variant-numeric: tabular-nums; color: #ddd;
+        }
+        .dc-wba-val strong { color: #e8e8e8; font-weight: 600; }
+        .dc-wba-cap { color: #d0a24c; }
+        .dc-wba-row.disabled .dc-wba-val strong { color: #777; }
+        .event.dc-wba-flash { outline: 1px solid #d0a24c; background: rgba(208,162,76,0.10); }
         .sidebar .dc-char-btn {
             flex-shrink: 0; width: auto; min-width: 60px;
             padding: 2px 8px; margin: 0;
