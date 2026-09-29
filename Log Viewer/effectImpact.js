@@ -388,7 +388,12 @@ function eiComputeEffect(ef, baseline) {
     // mirror); the patch slot mirrors eiPatchStats' dcApplyEffectValue
     // metadata, so element-mismatched rows resolve to a no-op exactly like
     // the stat-clone path does.
+    // Wide Blade Arc coupling: toggling P8 itself patches the full
+    // conversion (not the row's flat 1%), and toggling any row that writes
+    // attacker Auto Attack DMG (attr 56) on a P8-active hit appends the
+    // conversion shift as a second op — so AA% rows show their true impact.
     const sideNum = ef.side === 'attacker' ? 0 : 1;
+    const isWbaRow = sideNum === 0 && !ef.fromAttrDict && ef.configId === WBA_EFFECT_ID;
     const deltaKey = ef.fromAttrDict
         ? ef.side + ':dict:' + ef.configId + ':' + (ef.valueConfigId ?? '') + ':' + (ef.slotNum ?? 0)
         : ef.side + ':' + ef.configId;
@@ -398,19 +403,38 @@ function eiComputeEffect(ef, baseline) {
         totalWith += b.withDmg;
         if (b.zeroed) continue;
         const delta = b.deltaIdx.get(deltaKey);
-        if (!delta) { totalWithout += b.withDmg; continue; }
-        if (delta.stacks > maxStacks) maxStacks = delta.stacks;
+        if (!delta && !isWbaRow) { totalWithout += b.withDmg; continue; }
+        if (delta && delta.stacks > maxStacks) maxStacks = delta.stacks;
         affectedHits++;
+        // P8's own row: single conversion op from the baseline view's AA.
+        if (isWbaRow) {
+            const st = dcWideBladeState(b.ev, dcEffectsDisabled, false);
+            const aaView = dcWideBladeAA(b.view.aStats);
+            const amt = st ? dcWideBladeConv(aaView, st.ratio, st.step, st.capEff, st.threshold) : 0;
+            if (amt === 0) { totalWithout += b.withDmg; continue; }
+            const dmg = eiCachedContrib(b, 'wba:' + (coeff * amt),
+                () => ecAnalyticDamage(b.view, [[0, WBA_DST_ATTR, 1, coeff * amt]], null));
+            totalWithout += dmg;
+            continue;
+        }
         const meta = {
             attrType: delta.attrType, subType: delta.subType,
             effectType: ef.effectType, isRecord: ef.isRecordEffect, bySubType: !!ef.fromAttrDict,
         };
         const slot = ecOpSlot(meta, b.view.el);
         if (!slot) { totalWithout += b.withDmg; continue; }
+        // Coupled conversion when an AA-writing row moves under active P8.
+        let dlist = [[sideNum, slot[0], slot[1], coeff * delta.amount]];
+        let ck = sideNum + ':' + slot[0] + ':' + slot[1] + ':' + (coeff * delta.amount);
+        if (sideNum === 0 && slot[0] === WBA_SRC_ATTR) {
+            const st = dcWideBladeState(b.ev, dcEffectsDisabled, false);
+            if (st && !dcEffectsDisabled.has(st.key)) {
+                const cop = dcWideBladeCoupledOp(b.view.aStats, st, slot[1], coeff * delta.amount);
+                if (cop) { dlist = [dlist[0], cop]; ck += '|' + cop[3]; }
+            }
+        }
         // the op tuple fully determines the call given b.view — short key
-        const dmg = eiCachedContrib(b,
-            sideNum + ':' + slot[0] + ':' + slot[1] + ':' + (coeff * delta.amount),
-            () => ecAnalyticDamage(b.view, [[sideNum, slot[0], slot[1], coeff * delta.amount]], null));
+        const dmg = eiCachedContrib(b, ck, () => ecAnalyticDamage(b.view, dlist, null));
         totalWithout += dmg;
     }
 

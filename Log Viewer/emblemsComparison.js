@@ -629,6 +629,14 @@ function ecPreanalyzeHit(b, extDisabled) {
             let amount;
             if (u.snap) amount = u.snap.mode ? u.snap.v * (1 + u.snap.P) * count : u.snap.B * u.snap.v * count;
             else amount = u.ovV !== null ? u.ovV * count : u.erVal * count;
+            // Wide Blade Arc: the row's flat value is NOT its contribution —
+            // index the conversion recomputed from the logged AA stat (the
+            // dcApplyEffectOverrides fixup's untouched-state value), so every
+            // deltaIdx consumer starts from the true magnitude.
+            if (blk.sideStr === 'attacker' && cid === WBA_EFFECT_ID) {
+                const lp = dcWideBladeParams(first.valueConfigId);
+                amount = dcWideBladeConv(dcWideBladeAA(ev.AttackerStats?.attrs), lp.ratio, lp.step, lp.cap, lp.threshold);
+            }
             deltaIdx.set(blk.sideStr + ':' + cid, { attrType: u.attrType, subType: u.subType, amount, stacks: count,
                 effType: u.effType, isRec: u.isRec });
         }
@@ -723,6 +731,34 @@ function ecPreanalyzeHit(b, extDisabled) {
             if (e.fromOwnerSnapshot) continue;
             if (seenEff.has(e.configId)) continue;
             seenEff.add(e.configId);
+            // ── Wide Blade Arc: conversion-modeled, never flat ──
+            // The disOnly state (dcApplyEffectOverrides fixup) already holds
+            // the conversion for the operative AA stat at the LOGGED cap; the
+            // only baseline op a cap move needs is the cap delta at the
+            // disOnly AA stat. The delta is AA-dependent, so it is computed
+            // per hit here and never memoized. The lv entry is still
+            // registered (candidate evals resolve the caps from it).
+            if (side === 0 && e.configId === WBA_EFFECT_ID) {
+                const erW = dcResolveLegacyEffectRow(e, attackerCharId, false) || e;
+                const entryW = ecMakeEntry(e, erW, side, false, countMap.get(e.configId) || 1, attackerCharId, elem);
+                if (entryW) {
+                    const baseOvW = dcGetLevelOverride(erW, side, extDisabled, attackerCharId, false);
+                    entryW.baseOvV = baseOvW ? baseOvW.newValue : null;
+                    entryW.baseOvVc = (baseOvW && baseOvW.newValueConfigId) ? baseOvW.newValueConfigId : null;
+                    entryW.rowDis = extDisabled.has(sideStr(side) + ':' + e.configId + ':' + (erW.valueConfigId ?? ''));
+                    entryW.disKey = sideStr(side) + ':' + e.configId + ':' + (erW.valueConfigId ?? '');
+                    lv.push(entryW);
+                    if (!entryW.rowDis && entryW.baseOvVc && entryW.baseOvVc !== erW.valueConfigId) {
+                        const aaNow = dcWideBladeAA(b.disOnly.aStats);
+                        const lpW = dcWideBladeParams(erW.valueConfigId);
+                        const epW = dcWideBladeParams(entryW.baseOvVc);
+                        const d = dcWideBladeConv(aaNow, epW.ratio, epW.step, epW.cap, epW.threshold)
+                            - dcWideBladeConv(aaNow, lpW.ratio, lpW.step, lpW.cap, lpW.threshold);
+                        if (d !== 0) pre.baseOps.push([0, WBA_DST_ATTR, 1, d]);
+                    }
+                }
+                continue;
+            }
             const er = dcResolveLegacyEffectRow(e, attackerCharId, false) || e;
             const key = sideStr(side) + ':' + e.configId + ':' + (er.valueConfigId ?? '');
             const rowDis = extDisabled.has(key);
@@ -1165,7 +1201,7 @@ function ecCalcDisabled() {
 // damage type (ELEM_ATK_STAT / ELEM_PEN_STAT / dmgTypeAtkStat lookups);
 // crit rate fields are display-only unless the whole comparison runs in
 // expected-crit mode; Def / Max Hp never enter the damage formula.
-function ecAttrHitAffected(attrType, b, evEV) {
+function ecAttrHitAffected(attrType, b, evEV, wbaCpl) {
     if (b.dead) return false;
     const ev = b.ev;
     const hc = ev.HitConfig || {};
@@ -1174,8 +1210,13 @@ function ecAttrHitAffected(attrType, b, evEV) {
     if (attrType === 2 || attrType === 3) return false;           // Def / Max Hp
     if (attrType >= 17 && attrType <= 22) return ELEM_ATK_STAT[el] === attrType;
     if (attrType >= 23 && attrType <= 28) return ELEM_PEN_STAT[el] === attrType;
-    if ((attrType >= 56 && attrType <= 59) || attrType === 64 || attrType === 66)
-        return dmgTypeAtkStat(dt) === attrType;
+    if ((attrType >= 56 && attrType <= 59) || attrType === 64 || attrType === 66) {
+        if (dmgTypeAtkStat(dt) === attrType) return true;
+        // Wide Blade Arc: Auto Attack DMG feeds Mark hits through the
+        // conversion even though the formula never reads attr 56 directly.
+        if (attrType === 56 && dt === 5 && wbaCpl) return true;
+        return false;
+    }
     if (attrType === 6) return evEV;
     if (attrType >= 70 && attrType <= 76) return evEV && critRateExtraIdx(dt) === attrType;
     if (attrType === 8) return evEV ? true : !!ev.DamageParams?.isCrit;
@@ -1257,7 +1298,17 @@ function ecComputeCharTable(charId, c) {
         g.affected = [];
         let affectedBase = 0;
         for (let j = 0; j < baseline.length; j++) {
-            if (ecAttrHitAffected(g.attrType, baseline[j], true)) { g.affected.push(j); affectedBase += baseline[j].dmg; }
+            // Wide Blade Arc state for AA-stat groups (resolved once per hit
+            // — the operative cap rides along for the coupled evaluation).
+            let wbaOn = null;
+            if (g.attrType === WBA_SRC_ATTR) {
+                const st = dcWideBladeState(baseline[j].ev, extDisabled, false);
+                if (st && !extDisabled.has(st.key)) wbaOn = st;
+            }
+            if (ecAttrHitAffected(g.attrType, baseline[j], true, !!wbaOn)) {
+                g.affected.push(j); affectedBase += baseline[j].dmg;
+                if (wbaOn) { (g.wbaByJ || (g.wbaByJ = new Map())).set(j, wbaOn); }
+            }
         }
         g.affectedBase = affectedBase;
         for (const item of g.rows) {
@@ -1270,13 +1321,23 @@ function ecComputeCharTable(charId, c) {
         for (const j of g.affected) {
             const b = baseline[j];
             const an = b.statIntel;   // stat patches apply on the full baseline state (withOverrides)
+            const wbaSt = g.wbaByJ ? (g.wbaByJ.get(j) || null) : null;
             for (const item of g.rows) {
                 let prevDmg = b.dmg;   // row's cumulative starts at the blank baseline
                 const dlist = [[0, g.attrType, kind, 0]];
                 for (let k = 1; k <= item.tiers.length; k++) {
                     item._bases[k - 1] += prevDmg;   // affected-hit part of the total before copy k
                     dlist[0][3] = item.value * k;
-                    const dmg = ecAnalyticDamage(an, dlist, null);
+                    // Wide Blade Arc: an AA roll on a converted Mark hit moves
+                    // Mark through the conversion — append the shift, measured
+                    // against the baseline view's AA at the operative cap.
+                    let dmg;
+                    if (wbaSt && g.attrType === WBA_SRC_ATTR) {
+                        const cop = dcWideBladeCoupledOp(an.aStats, wbaSt, kind, item.value * k);
+                        dmg = ecAnalyticDamage(an, cop ? [dlist[0], cop] : [dlist[0]], null);
+                    } else {
+                        dmg = ecAnalyticDamage(an, dlist, null);
+                    }
                     item._gains[k - 1] += dmg - prevDmg;
                     prevDmg = dmg;
                 }
@@ -1427,6 +1488,32 @@ function ecLevelMovesNetDamage(an, changes) {
         // (they were absent from lv before the what-if engine needed them;
         // replaying their ops would corrupt the EI/EC evals)
         if (entry.rowDis) continue;
+        // ── Wide Blade Arc: replay the conversion, never the flat value ──
+        // Mirrors the flat replay (remove-logged + add-effective) with
+        // conversion values: the removal side always uses the LOGGED cap
+        // (the reference arrays hold the logged placement), the add side
+        // the baseline cap, or the candidate cap when this source moved.
+        if (entry.configId === WBA_EFFECT_ID && entry.side === 0) {
+            const Lc = changes.get(entry.kind + ':' + entry.cand);
+            const aaRef = dcWideBladeAA(an.aStats);
+            const lpB = dcWideBladeParams(entry.valueConfigId);
+            const capBase = entry.baseOvVc ? (dcWideBladeParams(entry.baseOvVc).cap ?? lpB.cap) : lpB.cap;
+            const baseC = dcWideBladeConv(aaRef, lpB.ratio, lpB.step, capBase, lpB.threshold);
+            let newC = baseC;
+            if (Lc !== undefined && Lc !== entry.curL) {
+                if (Lc <= 0) newC = 0;   // pot semantics: level 0 zeroes the contribution
+                else {
+                    const vcC = entry.lo + entry.P * 100 + Lc * 10 + entry.V;
+                    const svC = effectValueTable.get(vcC);
+                    // ladder row missing → keep baseline (mirrors the flat path)
+                    if (svC && svC.cap != null) newC = dcWideBladeConv(aaRef, lpB.ratio, lpB.step, svC.cap, (svC.threshold != null ? svC.threshold : lpB.threshold));
+                }
+                if (newC !== baseC) changed = true;
+            }
+            const oldC = dcWideBladeConv(aaRef, lpB.ratio, lpB.step, lpB.cap, lpB.threshold);
+            if (newC !== oldC) dlist.push([0, WBA_DST_ATTR, 1, newC - oldC]);
+            continue;
+        }
         const Lc = changes.get(entry.kind + ':' + entry.cand);
         const relevant = Lc !== undefined;
         const ovV = relevant ? ecEntryOvValue(entry, Lc) : entry.baseOvV;
@@ -1682,6 +1769,27 @@ function ecWhatIfRowOps(b, dis, en) {
         { sideNum: 0, list: b.ev.AttackerRecord?.effects, dict: null },
         { sideNum: 1, list: b.ev.DefenderEffects?.effects, dict: b.ev.DefenderAttrDict },
     ]) {
+        // ── Wide Blade Arc coupling for this block ──
+        // P8's conversion lives in the zero-state arrays at the LOGGED cap,
+        // so coupled ops resolve against a capLogged view of the row state.
+        // wbaOff = conversion stays off in the what-if state → no coupling.
+        let wbaStZero = null, wbaOff = false;
+        if (blk.sideNum === 0) {
+            const st = dcWideBladeState(b.ev, dcEffectsDisabled, false);
+            if (st) {
+                wbaStZero = Object.assign({}, st, { capEff: st.capLogged });
+                wbaOff = dis.has(st.key) || (dcEffectsDisabled.has(st.key) && !en.has(st.key));
+            }
+        }
+        // Push a stat op plus, for attacker Auto Attack DMG writes under
+        // active P8, the conversion shift as a second op.
+        const pushOp = (attr, kind, amt) => {
+            dlist.push([blk.sideNum, attr, kind, amt]);
+            if (blk.sideNum === 0 && attr === WBA_SRC_ATTR && wbaStZero && !wbaOff) {
+                const cop = dcWideBladeCoupledOp(intel.aStats, wbaStZero, kind, amt);
+                if (cop) dlist.push(cop);
+            }
+        };
         // ── snapshot groups of THIS list (first-appearance order) ──
         if (blk.list?.length) {
             const listGroups = [];
@@ -1714,7 +1822,7 @@ function ecWhatIfRowOps(b, dis, en) {
                 const dOld = anyOld ? -(g.B * oldP + oldB * (1 + g.P - oldP)) : 0;
                 const dNew = anyNew ? -(g.B * newP + newB * (1 + g.P - newP)) : 0;
                 const amt = dNew - dOld;
-                if (amt !== 0) dlist.push([g.side, g.attrId, 1, amt]);
+                if (amt !== 0) pushOp(g.attrId, 1, amt);
             }
         }
 
@@ -1731,20 +1839,29 @@ function ecWhatIfRowOps(b, dis, en) {
                 const key = sideStr(blk.sideNum) + ':' + e.configId + ':' + (er.valueConfigId ?? '');
                 const toDis = dis.has(key), toEn = en.has(key);
                 if (!toDis && !toEn) continue;
+                // P8's own toggle: conversion op at the LOGGED cap (the
+                // zero-state reference holds the logged-cap conversion;
+                // level moves compose through the lv loop).
+                if (blk.sideNum === 0 && e.configId === WBA_EFFECT_ID) {
+                    const lpW = dcWideBladeParams(er.valueConfigId);
+                    const amtW = dcWideBladeConv(dcWideBladeAA(intel.aStats), lpW.ratio, lpW.step, lpW.cap, lpW.threshold);
+                    if (amtW !== 0) dlist.push([blk.sideNum, WBA_DST_ATTR, 1, toDis ? -amtW : amtW]);
+                    continue;
+                }
                 if (toDis) {
                     const entry = lvByKey.get(sideStr(blk.sideNum) + ':' + e.configId);
                     if (entry) {
                         // level-scaled: the disable removes the logged value
                         // (the lv entry's remVal), never the override value
                         const slot = ecOpSlot(entry.rMeta, entry.elem);
-                        if (slot) dlist.push([blk.sideNum, slot[0], slot[1], -(entry.remVal * entry.n)]);
+                        if (slot) pushOp(slot[0], slot[1], -(entry.remVal * entry.n));
                     } else {
                         const delta = intel.deltaIdx.get(sideStr(blk.sideNum) + ':' + e.configId);
                         if (delta) {
                             const meta = { attrType: delta.attrType, subType: delta.subType,
                                 effectType: delta.effType, isRecord: delta.isRec };
                             const slot = ecOpSlot(meta, intel.el);
-                            if (slot) dlist.push([blk.sideNum, slot[0], slot[1], -delta.amount]);
+                            if (slot) pushOp(slot[0], slot[1], -delta.amount);
                         }
                     }
                 } else {
@@ -1754,7 +1871,7 @@ function ecWhatIfRowOps(b, dis, en) {
                         const meta = { attrType: delta.attrType, subType: delta.subType,
                             effectType: delta.effType, isRecord: delta.isRec };
                         const slot = ecOpSlot(meta, intel.el);
-                        if (slot) dlist.push([blk.sideNum, slot[0], slot[1], delta.amount]);
+                        if (slot) pushOp(slot[0], slot[1], delta.amount);
                     }
                 }
             }
@@ -1775,8 +1892,8 @@ function ecWhatIfRowOps(b, dis, en) {
                 const delta = intel.deltaIdx.get(key);
                 if (!delta) continue;
                 const stacks = e.stacks != null ? e.stacks : 1;
-                if (toDis) dlist.push([blk.sideNum, delta.attrType, delta.subType, -(e.value * stacks)]);
-                else       dlist.push([blk.sideNum, delta.attrType, delta.subType, delta.amount]);
+                if (toDis) pushOp(delta.attrType, delta.subType, -(e.value * stacks));
+                else       pushOp(delta.attrType, delta.subType, delta.amount);
             }
         }
     }
@@ -1810,6 +1927,30 @@ function ecWhatIfHitDamage(b, dis, en, lvlLc) {
     for (const entry of intel.lv) {
         if (entry.rowDis) continue;              // still/re-enabled rows: the row phase covers them
         if (dis.has(entry.disKey)) continue;     // newly disabled: the row phase's −logged replaces the ops
+        // ── Wide Blade Arc: conversion replay ──
+        // Reference arrays are the zero state (conversion at the LOGGED
+        // cap), so the removal side uses capLogged; the add side the
+        // baseline cap, or the candidate cap when this source moved.
+        if (entry.configId === WBA_EFFECT_ID && entry.side === 0) {
+            const Lc = lvlLc ? lvlLc.get(entry.kind + ':' + entry.cand) : undefined;
+            const aaRef = dcWideBladeAA(intel.aStats);
+            const lpB = dcWideBladeParams(entry.valueConfigId);
+            const capBase = entry.baseOvVc ? (dcWideBladeParams(entry.baseOvVc).cap ?? lpB.cap) : lpB.cap;
+            const baseC = dcWideBladeConv(aaRef, lpB.ratio, lpB.step, capBase, lpB.threshold);
+            let newC = baseC;
+            if (Lc !== undefined && Lc !== entry.curL) {
+                if (Lc <= 0) newC = 0;
+                else {
+                    const vcC = entry.lo + entry.P * 100 + Lc * 10 + entry.V;
+                    const svC = effectValueTable.get(vcC);
+                    if (svC && svC.cap != null) newC = dcWideBladeConv(aaRef, lpB.ratio, lpB.step, svC.cap, (svC.threshold != null ? svC.threshold : lpB.threshold));
+                }
+                if (newC !== baseC) changed = true;
+            }
+            const oldC = dcWideBladeConv(aaRef, lpB.ratio, lpB.step, lpB.cap, lpB.threshold);
+            if (newC !== oldC) dlist.push([0, WBA_DST_ATTR, 1, newC - oldC]);
+            continue;
+        }
         const Lc = lvlLc ? lvlLc.get(entry.kind + ':' + entry.cand) : undefined;
         const ovV = Lc !== undefined ? ecEntryOvValue(entry, Lc) : entry.baseOvV;
         if (ovV !== entry.baseOvV) changed = true;

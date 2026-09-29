@@ -561,6 +561,13 @@ function enrichEvent(ev) {
 }
 
 function enrichHit(ev) {
+    // Record scoping: remember which Record event was active when this hit was
+    // parsed. A log can span several battles, each with its own Record; the
+    // dmg-calc level tables are rebuilt from the LATEST record, so a hit from
+    // an earlier battle must keep its LOGGED levels instead of the newest
+    // record's (its build/level data belonged to a different fight) — see
+    // dcLevelRecordMismatch in dmgCalc.calc.js.
+    ev._recordRef = originRecord;
     // Actor display names
     if (ev.Attacker)       ev.AttackerDisplay = resolveActorKey(ev.Attacker);
     if (ev.Defender)       ev.DefenderDisplay = resolveActorKey(ev.Defender);
@@ -1650,6 +1657,14 @@ function buildEffectValueTable(jEffectValue) {
             entry.attrType = ev.EffectTypeFirstSubtype != null ? parseInt(ev.EffectTypeFirstSubtype, 10) : null;
             entry.subType  = ev.EffectTypeSecondSubtype != null ? parseInt(ev.EffectTypeSecondSubtype, 10) : null;
             entry.value    = ev.EffectTypeParam1 != null && ev.EffectTypeParam1 !== '' ? parseFloat(ev.EffectTypeParam1) : null;
+            // Conversion params (only present on conversion-type effects, e.g.
+            // Allie 513908 Wide Blade Arc 139080x1): Param4 = the source-attr
+            // step, Param5 = the value threshold subtracted before scaling,
+            // Param6 = the converted-stat cap. Plain numbers, null when
+            // absent — structured-clone-safe for the table cache.
+            entry.step     = ev.EffectTypeParam4 != null && ev.EffectTypeParam4 !== '' ? parseFloat(ev.EffectTypeParam4) : null;
+            entry.threshold = ev.EffectTypeParam5 != null && ev.EffectTypeParam5 !== '' ? parseFloat(ev.EffectTypeParam5) : null;
+            entry.cap      = ev.EffectTypeParam6 != null && ev.EffectTypeParam6 !== '' ? parseFloat(ev.EffectTypeParam6) : null;
         }
         effectValueTable.set(configId, entry);
     }

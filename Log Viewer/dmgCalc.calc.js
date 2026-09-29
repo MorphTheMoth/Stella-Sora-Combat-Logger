@@ -99,6 +99,41 @@ const dcEffectPot = new Map();   // effect configId -> potential id (exact level
 // resolves the slot for them.
 const dcSkillScaled = new Map();
 
+// ─── Per-hit record scoping ───────────────────────────────────────────────────
+// A log can contain several battles, each with its own Record event. The level
+// tables (pots / skills / notes) are rebuilt from the LATEST record on every
+// collection, so their levels describe the newest fight — correct for that
+// fight's hits, wrong for earlier battles whose build/level data differed.
+// Each hit is stamped at enrich time with the Record active when it was parsed
+// (ev._recordRef, set in tableResolver.enrichHit). When that record's level
+// data differs from the one the tables were built from, the hit keeps its
+// LOGGED levels (the logged stats are ground truth for that hit); the newest
+// record's rescale is only applied where it actually belongs.
+// The signature is compared instead of the object identity because a single
+// fight emits several Record snapshots with identical level data.
+let dcLevelTablesSig = null;
+const _dcRecordSigCache = new WeakMap();
+function dcRecordLevelSig(rec) {
+    if (!rec) return null;
+    let cached = _dcRecordSigCache.get(rec);
+    if (cached !== undefined) return cached;
+    const chars = (rec.chars || []).map(c => [
+        Number(c.charId) || 0,
+        c.pots || null,
+        c.skills || null,
+        c.gems || null,
+    ]).sort((a, b) => a[0] - b[0]);
+    cached = JSON.stringify([chars, rec.notes || null, rec.discStats || null, rec.secondarySkills || null]);
+    _dcRecordSigCache.set(rec, cached);
+    return cached;
+}
+function dcLevelRecordMismatch(ev) {
+    if (!ev) return false;
+    if (dcLevelTablesSig == null) return false;      // no record log → lazy reconstruction everywhere
+    if (ev._levelSig === undefined) ev._levelSig = dcRecordLevelSig(ev._recordRef || null);
+    return ev._levelSig !== dcLevelTablesSig;
+}
+
 // Rebuild the level table from the active record (Origin event). User changes
 // survive rebuilds; rows the record doesn't list are dropped (lazy-recreated
 // from logged entries when the ± buttons touch them).
@@ -132,6 +167,7 @@ function dcRebuildPotLevels() {
     for (const [potId, old] of prev) {
         if (!dcPotLevels.has(potId)) dcPotLevels.set(potId, old);
     }
+    dcLevelTablesSig = (typeof getOriginRecord === 'function') ? dcRecordLevelSig(getOriginRecord()) : null;
     dcBumpLevelState();
 }
 
@@ -196,6 +232,7 @@ window.dcResetSimState = function () {
     dcPotLevels.clear();
     dcSkillLevels.clear();
     dcNoteLevels.clear();
+    dcLevelTablesSig = null;
     if (typeof dcEffectsDisabled !== 'undefined') dcEffectsDisabled.clear();
     if (typeof dcEffectLevelOverrides !== 'undefined') dcEffectLevelOverrides.clear();
     dcInferredRoles.clear();          // role evidence belongs to the opened log
@@ -1212,6 +1249,167 @@ function dcCollectAttrFixEffects(dcFiltered) {
     return [...seen.values()];
 }
 
+// ─── Wide Blade Arc conversion (Allie potential 513908) ───────────────────
+// Effect 13908001 (ATTR_FIX, MarkDMG=64). Verified against the engine
+// (BaseAttriFix.Execute, decompiled.c:3637160):
+//   Param2 = 1            → source actor = the effect owner
+//   Param3 = "56;3"       → attr 56 (NORMALDMG), kind 3 =
+//                           AttributeList_GetAttributeValue = the TOTAL value
+//   Param4 = 0.013        → step
+//   Param5 = 1            → threshold subtracted from the attr value
+//   Param1 = 0.01         → ratio
+//   Param6 = 0.5..2.3     → cap by potential level
+// So: MarkDMG += min( max(0, totalAA - threshold) / step * ratio, cap ), which
+// is baked into the logged Mark stat (e.g. totalAA 2.19 → (2.19-1)/0.013*0.01
+// = 0.91538). The logged 1-stack / 1.00% row is only the ratio receipt, so the
+// viewer models this as a derived fixup (recomputed from the operative TOTAL AA
+// stat and the operative cap/threshold), never as the flat 1% the generic
+// ATTR_FIX path would apply.
+const WBA_EFFECT_ID = 13908001;
+const WBA_POT_ID = 513908;
+const WBA_SRC_ATTR = 56;      // NORMALDMG (Auto Attack DMG)
+const WBA_DST_ATTR = 64;      // MARKDMG
+const WBA_FALLBACK_RATIO = 0.01;
+const WBA_FALLBACK_STEP = 0.013;
+const WBA_FALLBACK_THRESHOLD = 1;
+
+// Attacker's P8 effect row on this hit, or null. Presence of the row means the
+// game itself applied the conversion (Allie + potential + all-Aqua already
+// validated engine-side). The effect id is char-namespaced (139 = Allie per
+// characterid.json; Potential 513908 has CharId 139), so no dataId check is
+// needed — and none is done, since actor dataId formats vary by deployment.
+function dcWideBladeRow(ev) {
+    const list = ev.AttackerEffects?.effects;
+    if (!list?.length) return null;
+    for (const e of list) {
+        if (e.configId === WBA_EFFECT_ID) return e;
+    }
+    return null;
+}
+
+// { ratio, step, cap, threshold } for an EffectValue id of the 139080x1 family.
+function dcWideBladeParams(vcId) {
+    const sv = vcId != null ? effectValueTable.get(vcId) : null;
+    return {
+        ratio: (sv && sv.value != null) ? sv.value : WBA_FALLBACK_RATIO,
+        step: (sv && sv.step != null && sv.step > 0) ? sv.step : WBA_FALLBACK_STEP,
+        cap: (sv && sv.cap != null) ? sv.cap : null,
+        threshold: (sv && sv.threshold != null) ? sv.threshold : WBA_FALLBACK_THRESHOLD,
+    };
+}
+
+// Converted Mark DMG for a given TOTAL Auto Attack DMG attribute value.
+// Engine: v = totalAA - threshold; if v <= 0 → 0; else min(v / step * ratio, cap).
+// No cap data → no conversion.
+function dcWideBladeConv(aaTotal, ratio, step, cap, threshold) {
+    if (cap == null) return 0;
+    const t = (threshold != null) ? threshold : WBA_FALLBACK_THRESHOLD;
+    if (!(aaTotal > t)) return 0;
+    const v = (aaTotal - t) / step * ratio;
+    return v > cap ? cap : v;
+}
+
+// TOTAL value of Auto Attack DMG (attr 56) held by a stat array (indexed by
+// attr id, entries {origin,base,pct,abs}) — the engine reads kind 3
+// (AttributeList_GetAttributeValue), i.e. the full resolved value.
+function dcWideBladeAA(statsArr) {
+    const s = statsArr ? statsArr[WBA_SRC_ATTR] : null;
+    if (!s) return 0;
+    return ((s.origin || 0) + (s.base || 0)) * (1 + (s.pct || 0)) + (s.abs || 0);
+}
+
+// Same, but for the Map-indexed stat maps dcApplyEffectOverrides mutates.
+function dcWideBladeAAFromMap(statMap) {
+    const s = statMap ? statMap.get(WBA_SRC_ATTR) : null;
+    if (!s) return 0;
+    return ((s.origin || 0) + (s.base || 0)) * (1 + (s.pct || 0)) + (s.abs || 0);
+}
+
+// Operative (level-override-aware) valueConfigId for the P8 row: skips level
+// resolution for disable-only states so they stay at the logged placement.
+function dcWideBladeEffVc(row, er, side, disabledSet, charId, skipLevel) {
+    if (skipLevel) return er.valueConfigId;
+    const ov = dcGetLevelOverride(er, side, disabledSet, charId);
+    return (ov && ov.newValueConfigId) ? ov.newValueConfigId : er.valueConfigId;
+}
+
+// Full operative state for the P8 row on this hit under a disabled set (or
+// null when the hit carries no P8 row). Bundles the logged + operative
+// (level-aware) conversion params with the row's disable key, so every
+// consumer — the override machinery, the analytic engine, Effect Impact —
+// resolves the same cap. skipLevel keeps disable-only states at the logged
+// placement. Null capLogged means the table data is missing: callers must
+// skip modeling entirely (the logged stats stay ground truth).
+function dcWideBladeState(ev, disabledSet, skipLevel) {
+    const row = dcWideBladeRow(ev);
+    if (!row) return null;
+    // Hits from an earlier battle keep their logged placement: the level
+    // tables describe the newest record (see dcLevelRecordMismatch).
+    if (dcLevelRecordMismatch(ev)) skipLevel = true;
+    const charId = dcEventCharId(ev);
+    const er = dcResolveLegacyEffectRow(row, charId, false) || row;
+    const lp = dcWideBladeParams(er.valueConfigId);
+    if (lp.cap == null) return null;
+    const vcEff = dcWideBladeEffVc(row, er, 'attacker', disabledSet, charId, skipLevel);
+    const ep = (vcEff === er.valueConfigId) ? lp : dcWideBladeParams(vcEff);
+    return {
+        row, er,
+        key: `attacker:${row.configId}:${er.valueConfigId ?? ''}`,
+        vcLogged: er.valueConfigId,
+        ratio: ep.ratio, step: ep.step, threshold: ep.threshold,
+        capLogged: lp.cap, capEff: (ep.cap != null) ? ep.cap : lp.cap,
+    };
+}
+
+// Coupled Mark op for a hypothetical AA-stat change on a P8-active hit.
+// statsArr: reference stat arrays (indexed by attr id); st: dcWideBladeState
+// under the reference state's disabled set; slotKind: 0/1/2/3
+// (origin/base/pct/abs) slot the AA delta lands in; aaDelta: signed change.
+// Returns [0, 64, 1, markDelta] or null when no coupling applies. The cap is
+// the reference state's operative cap, so level moves on P8 ride along.
+function dcWideBladeCoupledOp(statsArr, st, slotKind, aaDelta) {
+    if (!st || slotKind == null || slotKind < 0 || slotKind > 3) return null;
+    if (!(aaDelta > 0) && !(aaDelta < 0)) return null;
+    const s = statsArr ? statsArr[WBA_SRC_ATTR] : null;
+    if (!s) return null;
+    const q = [s.origin || 0, s.base || 0, s.pct || 0, s.abs || 0];
+    const sv = (qq) => (qq[0] + qq[1]) * (1 + qq[2]) + qq[3];
+    const pre = sv(q);
+    q[slotKind] += aaDelta;
+    const post = sv(q);
+    const d = dcWideBladeConv(post, st.ratio, st.step, st.capEff, st.threshold)
+        - dcWideBladeConv(pre, st.ratio, st.step, st.capEff, st.threshold);
+    return d !== 0 ? [0, WBA_DST_ATTR, 1, d] : null;
+}
+
+// Debug probe (console): dcWbaDebug(dcFiltered[i]) returns the resolution
+// trail for one hit, so a silent modeling skip can be told apart from a
+// data mismatch (missing row, missing cap, zero AA, ...).
+window.dcWbaDebug = function (ev) {
+    const out = { hasRow: false };
+    try {
+        const row = dcWideBladeRow(ev);
+        out.hasRow = !!row;
+        if (!row) { out.attacker = ev ? ev.Attacker : null; return out; }
+        const charId = dcEventCharId(ev);
+        const er = dcResolveLegacyEffectRow(row, charId, false) || row;
+        out.attacker = ev.Attacker;
+        out.vcLogged = er.valueConfigId;
+        const lp = dcWideBladeParams(er.valueConfigId);
+        out.ratio = lp.ratio; out.step = lp.step; out.capLogged = lp.cap; out.threshold = lp.threshold;
+        const st = (typeof dcEffectsDisabled !== 'undefined')
+            ? dcWideBladeState(ev, dcEffectsDisabled, false) : null;
+        out.key = st ? st.key : null;
+        out.capEff = st ? st.capEff : null;
+        out.p8disabled = (st && typeof dcEffectsDisabled !== 'undefined')
+            ? dcEffectsDisabled.has(st.key) : null;
+        out.aaLogged = dcWideBladeAA(ev.AttackerStats?.attrs);
+        out.convLogged = dcWideBladeConv(out.aaLogged, lp.ratio, lp.step, lp.cap, lp.threshold);
+        out.markBaseLogged = ev.AttackerStats?.attrs?.[WBA_DST_ATTR]?.base ?? null;
+    } catch (err) { out.error = String(err && err.stack || err); }
+    return out;
+};
+
 // ─── Effect value application (shared by all override paths) ────────────────
 // Apply one effect's value contribution to a stat map keyed by attr id
 // (sign: +1 adds the contribution, -1 removes it).
@@ -1337,6 +1535,8 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides, s
             for (const e of list) {
                 if (!allowedEffectTypes.includes(e.effectType)) continue;
                 if (e.fromOwnerSnapshot) continue;
+                // Wide Blade Arc is conversion-modeled by the fixup below, never flat.
+                if (e.configId === WBA_EFFECT_ID) continue;
                 const key = `${side}:${e.configId}:${e.valueConfigId ?? ''}`;
                 if (!dcEffectsDisabled.has(key)) continue;
                 countMap.set(e.configId, (countMap.get(e.configId) || 0) + 1);
@@ -1346,6 +1546,7 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides, s
             for (const e of list) {
                 if (!allowedEffectTypes.includes(e.effectType)) continue;
                 if (e.fromOwnerSnapshot) continue;
+                if (e.configId === WBA_EFFECT_ID) continue;
                 if (seenInHit.has(e.configId)) continue;
                 seenInHit.add(e.configId);
                 // Legacy rows: resolve valueConfigId/attr/value first so the
@@ -1395,20 +1596,26 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides, s
     }
     // ── Level overrides ──────────────────────────────────────────────
     // For effects with a level override (and not disabled), remove old
-    // contribution and add the new level's contribution.
-    if (!skipLevelOverrides && ((dcEffectLevelOverrides && dcEffectLevelOverrides.size > 0) || dcPotLevels.size > 0 || dcSkillLevels.size > 0 || dcNoteLevels.size > 0)) {
+    // contribution and add the new level's contribution. Skipped entirely for
+    // hits whose Record differs from the one the level tables were built from:
+    // the newest record's levels belong to a different fight, so those hits
+    // keep their logged values (see dcLevelRecordMismatch).
+    const recMismatch = dcLevelRecordMismatch(ev);
+    if (!skipLevelOverrides && !recMismatch && ((dcEffectLevelOverrides && dcEffectLevelOverrides.size > 0) || dcPotLevels.size > 0 || dcSkillLevels.size > 0 || dcNoteLevels.size > 0)) {
         for (const { side, list, attrDict, statMap } of sides) {
             // effects
             if (list?.length) {
                 const countMap = new Map();
                 for (const e of list) {
                     if (!allowedEffectTypes.includes(e.effectType)) continue;
+                    if (e.configId === WBA_EFFECT_ID) continue;
                     countMap.set(e.configId, (countMap.get(e.configId) || 0) + 1);
                 }
                 const seenInHit = new Set();
                 for (const e of list) {
                     if (!allowedEffectTypes.includes(e.effectType)) continue;
                     if (e.fromOwnerSnapshot) continue;
+                    if (e.configId === WBA_EFFECT_ID) continue;
                     if (seenInHit.has(e.configId)) continue;
                     seenInHit.add(e.configId);
                     const er = dcResolveLegacyEffectRow(e, attackerCharId, false) || e;
@@ -1459,6 +1666,31 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides, s
                         bySubType: true,
                     }, override.newValue * stacks, 1, ev.HitConfig.elementType);
                 }
+            }
+        }
+    }
+
+    // ── Wide Blade Arc conversion fixup ─────────────────────────────────
+    // The logged Mark stat already contains the engine's conversion for the
+    // LOGGED TOTAL AA stat and LOGGED cap; replace it with the conversion for
+    // the OPERATIVE total AA stat (aMap, after every disable/level op above)
+    // and the OPERATIVE cap (level-override-aware unless this is a disable-only
+    // state). Untouched states net to exactly zero, so ground truth is
+    // preserved bit-for-bit when nothing relevant changed.
+    {
+        const st = dcWideBladeState(ev, dcEffectsDisabled, skipLevelOverrides || recMismatch);
+        if (st) {
+            const aaBefore = dcWideBladeAA(origA);
+            const aaAfter = dcWideBladeAAFromMap(aMap);
+            const baked = dcWideBladeConv(aaBefore, st.ratio, st.step, st.capLogged, st.threshold);
+            const current = dcEffectsDisabled.has(st.key)
+                ? 0
+                : dcWideBladeConv(aaAfter, st.ratio, st.step, st.capEff, st.threshold);
+            const delta = current - baked;
+            if (delta !== 0) {
+                let mst = aMap.get(WBA_DST_ATTR);
+                if (!mst) { mst = { origin: 0, base: 0, pct: 0, abs: 0 }; aMap.set(WBA_DST_ATTR, mst); }
+                mst.base = (mst.base || 0) + delta;
             }
         }
     }
@@ -1522,7 +1754,10 @@ function calcHitFields(ev, statOverrides, dcEffectsDisabled, dcEffectLevelOverri
         } else if (loggedL > 0 && hc.levelTypeData === 1 && hc.levelData != null) {
             dcEnsurePotLevel(hc.levelData, loggedL, charId);
         }
-        const L = dcHitScalingLevel(hc, charId, dcEffectsDisabled);
+        // Hits whose Record differs from the level tables' source keep their
+        // logged scaling (see dcLevelRecordMismatch) — the newest record's
+        // skill/perk levels describe a different fight.
+        const L = dcLevelRecordMismatch(ev) ? null : dcHitScalingLevel(hc, charId, dcEffectsDisabled);
         if (L != null && loggedL != null && L !== loggedL) {
             if (L <= 0) {
                 // level 0 = source disabled (perk/skill turned off) → no hit
