@@ -30,13 +30,13 @@
 // logged GEM_REFRESH slot ids (slot 1 rolls typeIds 1-34, slot 2 rolls
 // 35-38 + 60-93, slot 3 rolls 39-59 + 94-112).
 //
-// Existence filter: some (line, tier) entries in CharGemAttrValue are never
-// rolled by the game (e.g. per-type crit rate 15%). The set of ids that DO
-// appear is parsed from the emblem roll log (GEM_REFRESH RESP ids — the same
-// file the Emblem Tracker reads, served at /emblems/log). Unobserved entries
-// are dropped, EXCEPT the four categories the record builder's emblem model
-// treats as always-rollable (rare, not absent): potential levelups (99),
-// Charge Eff (37), plain Crit Rate (attr 6) and elemental Pen (attr 23-28).
+// Existence filter: some (line, tier) entries in CharGemAttrValue can never be
+// rolled — the flat Lvl-4 "cap" of Max Hp / Atk / Def / Def% / Crit Damage on
+// each emblem slot, and the per-type crit rate 15% entries (attr 70-76). That
+// set is a STATIC denylist (EC_UNROLLABLE_IDS below, generated once from the
+// emblem roll log) — not fetched at runtime, so every client shows the same
+// rows. It is a DENYLIST rather than an allowlist of observed ids, so a line
+// that can roll but simply hasn't appeared in a given log is never hidden.
 //
 // Gain columns ×1/×2/×3: one column PER COPY — lines that exist on several
 // emblem tiers (e.g. 15% crit rate on both Emblem 70 and Emblem 80) show the
@@ -68,11 +68,22 @@ let ecScopeByChar = {};
 // (CharGemAttrValue.Rarity — rank 1 = green weakest … 4 = rainbow best).
 // A line is shown when any of its emblem-tier entries reaches the rarity.
 let ecRarityMin = 4;   // rainbow by default
-// Emblem-roll existence data: CharGemAttrValue ids seen in the emblem roll
-// log (http_log.txt GEM_REFRESH responses, served at /emblems/log — the same
-// source the Emblem Tracker reads). null = unavailable (no filtering).
-let ecObservedIds = null;
-let ecObservedTried = false;
+// Emblem-roll existence data: the CharGemAttrValue ids the game CANNOT roll.
+// STATIC — the only entries never offered in the emblem roll log:
+//   * the flat Lvl-4 "cap" of Max Hp / Atk / Def / Def% / Crit Damage on each
+//     slot (104/204/304/604/704, 6004/6104/6204/6504/6604,
+//     9404/9504/9604/9904/10004),
+//   * the per-type crit rate 15% Lvl-4 entries (2904..3404, 8804..9304).
+// Everything else is treated as rollable. Generated once from http_log.txt;
+// regenerate if the game changes its roll tables. Kept as a denylist so a
+// rollable line that simply hasn't been seen in a given log is never hidden.
+const EC_UNROLLABLE_IDS = new Set([
+    104, 204, 304, 604, 704,
+    2904, 3004, 3104, 3204, 3304, 3404,
+    6004, 6104, 6204, 6504, 6604,
+    8804, 8904, 9004, 9104, 9204, 9304,
+    9404, 9504, 9604, 9904, 10004
+]);
 
 function ecResetState() {
     ecLastData = null;
@@ -102,46 +113,6 @@ function ecFormatStatValue(v) {
     return (Math.round(v * 1000) / 1000).toLocaleString();
 }
 
-// ─── Existence filter (emblem roll log) ───────────────────────────────────────
-// Lines a stat category is exempt from the filter for: the record builder's
-// emblem model treats these as always-rollable and they are rare rather than
-// absent — potential levelups (attr 99), Charge Eff (attr 37), plain Crit
-// Rate (attr 6) and elemental Pen (attr 23-28). Everything else that never
-// appears in the roll log is treated as not obtainable in game (e.g. per-type
-// crit rate 15% — rolled by nothing).
-function ecRollExempt(gv) {
-    if (gv.attrType === 99 || gv.attrType === 37) return true;
-    if (gv.attrType === 12) {
-        if (gv.first === 6) return true;               // Crit Rate
-        if (gv.first >= 23 && gv.first <= 28) return true;   // elemental Pen
-    }
-    return false;
-}
-
-// Fetch + parse the emblem roll log once per session (best effort — on
-// failure the existence filter is skipped entirely).
-function ecEnsureObserved(done) {
-    if (ecObservedTried) return done();
-    ecObservedTried = true;
-    fetch('/emblems/log').then(r => {
-        if (!r.ok) throw new Error(String(r.status));
-        return r.text();
-    }).then(text => {
-        const ids = new Set();
-        for (const m of text.matchAll(/RESP \[([0-9, ]*)\]/g)) {
-            for (const tok of m[1].split(',')) {
-                const t = tok.trim();
-                if (!t) continue;
-                const n = parseInt(t, 10);
-                if (n > 0) ids.add(n);
-            }
-        }
-        ecObservedIds = ids;
-    }).catch(() => {
-        ecObservedIds = null;   // no roll data → don't filter
-    }).finally(() => done());
-}
-
 // ─── Candidate list ───────────────────────────────────────────────────────────
 // Built from CharGemAttrValue (gemAttrValueById), existence-filtered:
 //   stat/charge rows are character-agnostic; skill/potential affix rows are
@@ -162,7 +133,7 @@ function ecBuildCandidates() {
         if (gv.value == null) continue;
         if (gv.attrType !== 12 && gv.attrType !== 37) continue;
         const id = parseInt(idStr, 10);
-        const exists = (ecObservedIds == null) || ecRollExempt(gv) || ecObservedIds.has(id);
+        const exists = !EC_UNROLLABLE_IDS.has(id);
         if (!exists) continue;
         if (gv.attrType === 12 && gv.first == null) continue;
         const attrType = gv.attrType === 12 ? gv.first : null;
@@ -2179,7 +2150,7 @@ function ecRender() {
     const seq = ++_ecRenderSeq;
     ecLastData = null;
 
-    ecEnsureObserved(async () => {
+    (async () => {
         if (seq !== _ecRenderSeq) return;   // a newer render superseded this one
         // Chunked compute: the shared baseline + preanalysis runs first, then
         // one character table per task with a yield between each — every table
@@ -2204,7 +2175,7 @@ function ecRender() {
             requestAnimationFrame(() => requestAnimationFrame(() =>
                 _pf(`render table ${t.charName} (through first paint)`, t0)));
         }
-    });
+    })();
 }
 
 // Sort rows by the ×1 column (gain % of the blank baseline, best first);
