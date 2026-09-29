@@ -1875,10 +1875,13 @@ function calcDamage(fields, bonuses, disabled) {
 
         if (key === 'critDmg') {
             if (disabled.has('critRate')) {
-                // Use expected-value multiplier: 1 + critRate*(critDmg-1)
+                // Use expected-value multiplier: 1 + critRate*(critDmg-1).
+                // Crit rate is a probability — clamp to [0, 1] so >100%
+                // always crits and <0% never crits instead of scaling past.
                 const cr = (fields.critRate + (bonuses['critRate'] || 0));
                 const cd = (fields.critDmg + (bonuses['critDmg'] || 0));
-                v *= 1 + cr * (cd - 1);
+                const crClamped = Math.min(Math.max(cr, 0), 1);
+                v *= 1 + crClamped * (cd - 1);
                 continue;
             }
             if (!fields.isCrit) continue;

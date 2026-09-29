@@ -1155,7 +1155,10 @@ function ecAnalyticDamage(an, dlist, multRaw) {
     if (!dis.has('dmgTypeTakenPct')) v *= dmgTypeTakenPct + fb.dmgTypeTakenPct;
     if (!dis.has('critDmg')) {
         if (an.expected) {
-            v *= 1 + (critRate + fb.critRate) * ((critDmg + fb.critDmg) - 1);
+            // Crit rate is a probability — clamp to [0, 1] so >100%
+            // always crits and <0% never crits instead of scaling past.
+            const crExp = Math.min(Math.max(critRate + fb.critRate, 0), 1);
+            v *= 1 + crExp * ((critDmg + fb.critDmg) - 1);
         } else if (an.isCrit) {
             v *= (critDmg + fb.critDmg);
         }
