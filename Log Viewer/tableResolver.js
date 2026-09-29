@@ -1630,6 +1630,7 @@ function buildEffectTable(dataFiles) {
         [990050012, 'Enemy', 'Defense Broken'],
         [13295011,  'Minova', 'Astral Hex'],
         [15503011,  'Shia', 'Moongaze Stacks'],
+        [13900003,  'Allie', 'Quick Sweep'],
     ];
     for (const [id, cname, label] of hardcoded)
         effectTable.set(id, { charName: cname, label, levelTypeData: -1, source: 'Unknown' });
