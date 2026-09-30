@@ -27,6 +27,15 @@ const effectValueTable = new Map();
 // int valueConfigId -> [{ attrType, subType, value }, ...]  (from OnceAdditionalAttributeValue.json)
 const onceAttrValueTable = new Map();
 
+// int buffId -> primary attrType the buff modifies (BuffValue.json Effects →
+// EffectValue.json, first entry whose effect type carries an attr). Surfaced by
+// the Analytics "Buff / Effect Presence" pick list as the [stat] tag
+// (atk / skill dmg / …). Best-effort: buffs whose stat is only reachable through
+// an EffectType-6 ADDBUFF chain have no direct attr effect and stay absent — the
+// pick list then shows no tag. The id space is BuffEntity.buffConfig.id
+// (logging.cpp BuildBuffListJson), i.e. the Buff.json / BuffValue.json keys.
+const buffAttrTypeTable = new Map();
+
 // ─── EffectType enum ──────────────────────────────────────────────────────────
 const EFFECT_TYPE_NAMES = {
     1:'STATE_CHANGE', 2:'CURRENTCD', 3:'CD', 6:'ADDBUFF', 7:'ADD_SKILL_LV',
@@ -1641,6 +1650,22 @@ function buildEffectTable(dataFiles) {
     ];
     for (const [id, cname, label] of hardcoded)
         effectTable.set(id, { charName: cname, label, levelTypeData: -1, source: 'Unknown' });
+
+    // Buff → primary stat: BuffValue.json lists the effect configIds a buff
+    // applies; take the first one whose EffectValue entry carries an attr
+    // (effectTypeHasAttr). Runs after buildEffectValueTable (initTables), so the
+    // value table is already populated. Used by the Analytics pick list only.
+    buffAttrTypeTable.clear();
+    if (jBuffValue) {
+        for (const [bvKey, bvVal] of Object.entries(jBuffValue)) {
+            const bvId = parseInt(bvKey, 10);
+            if (!bvId || !bvVal) continue;
+            for (const effId of (bvVal.Effects || [])) {
+                const ev = effectValueTable.get(Number(effId));
+                if (ev && ev.attrType != null) { buffAttrTypeTable.set(bvId, ev.attrType); break; }
+            }
+        }
+    }
 }
 
 // ─── buildEffectValueTable ────────────────────────────────────────────────────
@@ -1767,6 +1792,7 @@ function buildSkillTable(jChar, jSkill, jSkillLang) {
 const EC_DATA_IDB = 'stella-table-cache';
 const EC_DATA_TABLES = [
     actorNameMap, hitTable, effectTable, effectValueTable, onceAttrValueTable,
+    buffAttrTypeTable,
     effectLevelMetaFallback, effectMainOrSupport, hitLadderFallback, skillTable,
     discLangNames, discBonusNotesById, subNoteNamesById, subNoteEffectIdByNote,
     gemAttrValueById, potentialById, potentialEffectFamily, effectIdPot,

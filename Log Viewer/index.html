@@ -367,6 +367,45 @@
             background: #2a2a2a; color: #ccc; font-size: 12px; cursor: pointer;
             max-width: 220px; overflow: hidden; text-overflow: ellipsis;
         }
+
+        /* Buff / Effect pick: searchable combobox */
+        .bp-pick { position: relative; }
+        .bp-pick-btn {
+            display: flex; align-items: center; gap: 8px;
+            width: 300px; max-width: 60vw;
+            padding: 4px 10px; border: 1px solid #444; border-radius: 4px;
+            background: #2a2a2a; color: #ccc; font-size: 12px; cursor: pointer;
+            text-align: left;
+        }
+        .bp-pick-btn:hover { border-color: #555; }
+        .bp-pick-btn.open { border-color: #5a7fa8; }
+        .bp-pick-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .bp-pick-label.bp-pick-placeholder { color: #777; }
+        .bp-pick-caret { color: #777; font-size: 10px; }
+        .bp-pick-panel {
+            display: none; position: absolute; z-index: 50; top: calc(100% + 4px); left: 0;
+            width: 380px; max-width: 85vw;
+            background: #232323; border: 1px solid #444; border-radius: 6px;
+            box-shadow: 0 8px 24px rgba(0,0,0,.55); padding: 6px;
+        }
+        .bp-pick-search {
+            width: 100%; box-sizing: border-box; margin-bottom: 6px;
+            padding: 5px 8px; border: 1px solid #444; border-radius: 4px;
+            background: #1a1a1a; color: #ddd; font-size: 12px; outline: none;
+        }
+        .bp-pick-search:focus { border-color: #5a7fa8; }
+        .bp-pick-list { max-height: 300px; overflow-y: auto; }
+        .bp-pick-item {
+            display: flex; align-items: center; gap: 6px;
+            padding: 4px 8px; border-radius: 4px; cursor: pointer;
+            font-size: 12px; color: #ccc;
+        }
+        .bp-pick-item:hover { background: #2e2e2e; }
+        .bp-pick-item-sel { background: #263445; }
+        .bp-pick-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .bp-pick-tag { color: #8fb8dd; font-size: 11px; white-space: nowrap; }
+        .bp-pick-count { color: #888; font-size: 11px; white-space: nowrap; }
+        .bp-pick-empty { padding: 8px; color: #666; font-style: italic; font-size: 12px; }
         .chart-canvas-wrap { position: relative; height: 260px; }
         .chart-empty {
             display: flex; align-items: center; justify-content: center;
@@ -1177,9 +1216,17 @@
                         </select>
 
                         <label style="margin-left:8px">Pick:</label>
-                        <select id="bpPick" onchange="Analytics.refreshBuffChart()">
-                            <option value="">—</option>
-                        </select>
+                        <div class="bp-pick" id="bpPick">
+                            <button type="button" class="bp-pick-btn" id="bpPickBtn" onclick="Analytics.onBpPickToggle(event)">
+                                <span class="bp-pick-label bp-pick-placeholder" id="bpPickLabel">— pick one —</span>
+                                <span class="bp-pick-caret">▾</span>
+                            </button>
+                            <div class="bp-pick-panel" id="bpPickPanel">
+                                <input type="text" class="bp-pick-search" id="bpPickSearch" placeholder="Search…"
+                                       autocomplete="off" oninput="Analytics.onBpPickSearch()" onkeydown="Analytics.onBpPickKey(event)">
+                                <div class="bp-pick-list" id="bpPickList"></div>
+                            </div>
+                        </div>
 
                         <label style="margin-left:8px">Show:</label>
                         <button id="bpToggleAB" class="bp-src-btn" data-src="attackerBuffs" onclick="Analytics.onBpSrcToggle(this)" style="padding:4px 10px;border:1px solid #444;border-radius:4px;background:#2a2a2a;color:#6a9fd8;font-size:12px;cursor:pointer;opacity:0.45;transition:opacity .15s">Att. Buffs</button>

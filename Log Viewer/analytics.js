@@ -561,27 +561,38 @@ const Analytics = (() => {
         const container = ev[field];
         if (!container) return [];
         if (src.endsWith('Buffs')) {
-            return (container.buffs || []).map(b => ({
-                id: String(b.id ?? b.configId ?? b.name),
-                name: b.name,
-                stacks: Number(b.stack ?? b.stacks ?? b.count ?? 1),
-            }));
+            return (container.buffs || []).map(b => {
+                const cfgId = Number(b.configId ?? b.id);
+                return {
+                    id: String(b.id ?? b.configId ?? b.name),
+                    name: b.name,
+                    stacks: Number(b.stack ?? b.stacks ?? b.count ?? 1),
+                    // Buff.json carries no stat; resolve it from the datamine map
+                    // (BuffValue.Effects → EffectValue). Undefined when unknown.
+                    attrType: (typeof buffAttrTypeTable !== 'undefined' && Number.isFinite(cfgId))
+                        ? buffAttrTypeTable.get(cfgId) : undefined,
+                };
+            });
         }
         const m = new Map();
         if (src.endsWith('Effects')) {
             (container.effects || []).forEach(e => {
                 const id = String(e.configId ?? e.id ?? e.name);
-                if (!m.has(id)) m.set(id, { name: e.name, stacks: 0 });
-                m.get(id).stacks++;
+                if (!m.has(id)) m.set(id, { name: e.name, stacks: 0, attrType: e.attrType ?? null });
+                const it = m.get(id);
+                it.stacks++;
+                if (it.attrType == null && e.attrType != null) it.attrType = e.attrType;
             });
         } else if (src.endsWith('AttrDict')) {
             container.forEach(a => {
                 const id = String(a.attrId) + ':' + (a.slotNum ?? 0);
-                if (!m.has(id)) m.set(id, { name: a.name || id, stacks: 0 });
-                m.get(id).stacks += a.stacks ?? 1;
+                if (!m.has(id)) m.set(id, { name: a.name || id, stacks: 0, attrType: a.attrType ?? null });
+                const it = m.get(id);
+                it.stacks += a.stacks ?? 1;
+                if (it.attrType == null && a.attrType != null) it.attrType = a.attrType;
             });
         }
-        return [...m.entries()].map(([id, v]) => ({ id, name: v.name, stacks: v.stacks }));
+        return [...m.entries()].map(([id, v]) => ({ id, name: v.name, stacks: v.stacks, attrType: v.attrType }));
     }
 
     const srcPfx    = { attackerBuffs: '[AB]', attackerEffects: '[AE]', defenderBuffs: '[DB]', defenderEffects: '[DE]', attackerAttrDict: '[AA]', defenderAttrDict: '[DA]' };
@@ -614,6 +625,111 @@ const Analytics = (() => {
         }
     }
 
+    // ── Pick combobox (searchable, replaces the old <select id="bpPick">) ──
+    // bpPickItems: [{ value, name, tag, sourceLabel, count }] built from the
+    // filtered hits. value is the key refreshBuffChart parses: a buffKey
+    // ("[AE]|123") in buff/effect mode, a getSkillLabel in skill mode.
+    let bpPickValue = '';
+    let bpPickItems = [];
+
+    // [stat] tag for an item: the attrName of the stat it modifies. Effects and
+    // attr-dict rows carry attrType directly; buffs get it from the datamine
+    // buffAttrTypeTable (tableResolver.js). Skills carry no stat — see the
+    // caller, which tags them with their damage-type category instead.
+    function bpStatTag(attrType) {
+        if (attrType == null || typeof attrName !== 'function') return '';
+        const n = attrName(attrType);
+        return (n && n !== '?') ? n : '';
+    }
+
+    function bpPickItemFor(value) {
+        return bpPickItems.find(it => it.value === value) || null;
+    }
+
+    function updateBpPickButton() {
+        const lbl = document.getElementById('bpPickLabel');
+        if (!lbl) return;
+        const it = bpPickItemFor(bpPickValue);
+        if (it) {
+            const tag = it.tag ? `[${it.tag}] ` : '';
+            lbl.textContent = `${it.name} ${tag}(${it.count})`;
+            lbl.title = `${it.sourceLabel ? it.sourceLabel + ' · ' : ''}${it.name}${it.tag ? ' [' + it.tag + ']' : ''} (${it.count} hits)`;
+            lbl.classList.remove('bp-pick-placeholder');
+        } else {
+            lbl.textContent = '— pick one —';
+            lbl.title = '';
+            lbl.classList.add('bp-pick-placeholder');
+        }
+    }
+
+    function renderBpPickList() {
+        const listEl = document.getElementById('bpPickList');
+        if (!listEl) return;
+        const q = (document.getElementById('bpPickSearch')?.value || '').trim().toLowerCase();
+        const items = q
+            ? bpPickItems.filter(it => `${it.name} ${it.tag || ''} ${it.sourceLabel || ''}`.toLowerCase().includes(q))
+            : bpPickItems;
+        if (!items.length) {
+            listEl.innerHTML = '<div class="bp-pick-empty">No matches</div>';
+            return;
+        }
+        listEl.innerHTML = items.map(it => {
+            const selCls = it.value === bpPickValue ? ' bp-pick-item-sel' : '';
+            const tag = it.tag ? `<span class="bp-pick-tag">[${esc(it.tag)}]</span>` : '';
+            const title = `${it.sourceLabel ? it.sourceLabel + ' · ' : ''}${it.name}${it.tag ? ' [' + it.tag + ']' : ''} (${it.count} hits)`;
+            return `<div class="bp-pick-item${selCls}" data-bp-pick="${esc(it.value)}" title="${esc(title)}">` +
+                `<span class="bp-pick-name">${esc(it.name)}</span>${tag}` +
+                `<span class="bp-pick-count">(${it.count})</span></div>`;
+        }).join('');
+    }
+
+    function bpPickIsOpen() {
+        const panel = document.getElementById('bpPickPanel');
+        return !!panel && panel.style.display === 'block';
+    }
+
+    function openBpPick() {
+        const panel = document.getElementById('bpPickPanel');
+        const btn   = document.getElementById('bpPickBtn');
+        if (!panel) return;
+        panel.style.display = 'block';
+        if (btn) btn.classList.add('open');
+        const search = document.getElementById('bpPickSearch');
+        if (search) search.value = '';
+        renderBpPickList();
+        if (search) search.focus();
+    }
+
+    function closeBpPick() {
+        const panel = document.getElementById('bpPickPanel');
+        const btn   = document.getElementById('bpPickBtn');
+        if (panel) panel.style.display = 'none';
+        if (btn) btn.classList.remove('open');
+    }
+
+    function selectBpPick(value) {
+        bpPickValue = value || '';
+        updateBpPickButton();
+        closeBpPick();
+        refreshBuffChart();
+    }
+
+    function onBpPickToggle(e) {
+        if (e) e.stopPropagation();
+        if (bpPickIsOpen()) closeBpPick(); else openBpPick();
+    }
+
+    function onBpPickSearch() { renderBpPickList(); }
+
+    function onBpPickKey(e) {
+        if (e.key === 'Escape') { e.preventDefault(); closeBpPick(); }
+        else if (e.key === 'Enter') {
+            e.preventDefault();
+            const first = document.querySelector('#bpPickList .bp-pick-item');
+            if (first) selectBpPick(first.dataset.bpPick);
+        }
+    }
+
     function updateBuffPickDropdown() {
         const viewBy = document.getElementById('bpViewBy').value;
         const activeSrcs = getActiveSrcs();
@@ -636,42 +752,43 @@ const Analytics = (() => {
             .filter(ev => !charSel.value || getCharName(ev) === charSel.value)
             .filter(ev => !defFilterVal || getDefenderName(ev) === defFilterVal);
 
-        const sel = document.getElementById('bpPick');
-        const cur = sel.value;
-
-        const counts = {};
-        const displayName = {};
+        const map = new Map();   // value -> { value, name, tag, sourceLabel, count, _tags }
+        const bump = (key, name, tag, sourceLabel) => {
+            let it = map.get(key);
+            if (!it) { it = { value: key, name, tag: '', sourceLabel, count: 0, _tags: new Map() }; map.set(key, it); }
+            it.count++;
+            if (tag) it._tags.set(tag, (it._tags.get(tag) || 0) + 1);
+        };
 
         hits.forEach(ev => {
             if (viewBy === 'skill') {
-                const k = getSkillLabel(ev);
-                counts[k] = (counts[k] || 0) + 1;
-                displayName[k] = k;
+                // No stat to tag — use the hit's damage-type category
+                // (Auto Attack / Skill / Ultimate / Mark / Minion).
+                const sl = getSkillLabel(ev);
+                bump(sl, sl, getDmgTypeName(ev), '');
             } else {
                 activeSrcs.forEach(src => {
                     const seen = new Map();
                     getBuffItems(ev, src).forEach(item => { seen.set(item.id, item); });
-                    seen.forEach((item, id) => {
-                        const k = buffKey(src, id);
-                        counts[k] = (counts[k] || 0) + 1;
-                        displayName[k] = `${srcPfx[src]} ${item.name}`;
-                    });
+                    seen.forEach((item, id) => bump(buffKey(src, id), item.name, bpStatTag(item.attrType), srcLabel[src]));
                 });
             }
         });
 
-        sel.innerHTML = '<option value="">— pick one —</option>';
-        Object.entries(counts).sort((a, b) => (displayName[a[0]] || a[0]).localeCompare(displayName[b[0]] || b[0])).forEach(([k, c]) => {
-            const o = document.createElement('option');
-            o.value = k;
-            const dn = displayName[k] || k;
-            const MAX = 38;
-            const display = dn.length > MAX ? dn.slice(0, MAX) + '…' : dn;
-            o.textContent = `${display} (${c})`;
-            o.title = `${dn} (${c} hits)`;
-            sel.appendChild(o);
-        });
-        if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
+        bpPickItems = [...map.values()].map(it => {
+            // Dominant tag when a key resolves differently across hits
+            // (e.g. a buff whose stat map is partial); ties keep insertion order.
+            let best = '', bestN = 0;
+            it._tags.forEach((n, t) => { if (n > bestN) { best = t; bestN = n; } });
+            it.tag = best;
+            delete it._tags;
+            return it;
+        }).sort((a, b) => (a.name || a.value).localeCompare(b.name || b.value) || b.count - a.count);
+
+        // Keep the current pick if it still exists; otherwise clear it.
+        if (bpPickValue && !bpPickItemFor(bpPickValue)) bpPickValue = '';
+        updateBpPickButton();
+        renderBpPickList();
     }
 
     function buildMaxStacksMap(hits) {
@@ -692,7 +809,7 @@ const Analytics = (() => {
         if (chartBuff) { chartBuff.destroy(); chartBuff = null; }
 
         const viewBy        = document.getElementById('bpViewBy').value;
-        const pick          = document.getElementById('bpPick').value;
+        const pick          = bpPickValue;
         const charFilterVal = document.getElementById('bpFilterChar').value;
         const defFilterVal  = document.getElementById('bpFilterDefender').value;
         const activeSrcs    = getActiveSrcs();
@@ -827,8 +944,8 @@ const Analytics = (() => {
             if (version !== buffChartVersion) return;
 
             const barColors = sorted.map(([, d]) => charColor(d.char || '?'));
-            const pickOpt = [...document.getElementById('bpPick').options].find(o => o.value === pick);
-            const pickName = pickOpt ? pickOpt.title.replace(/ \(\d+ hits\)$/, '') : pick;
+            const pickItem = bpPickItemFor(pick);
+            const pickName = pickItem ? pickItem.name : pick;
 
             if (isStacking) {
                 chartMode = 'stacks';
@@ -1213,6 +1330,20 @@ const Analytics = (() => {
         if (table) table.addEventListener('click', onMetricsTableHeaderClick);
     })();
 
+    // Pick combobox: item clicks + click-outside-to-close
+    (function initBpPick() {
+        const listEl = document.getElementById('bpPickList');
+        if (listEl) listEl.addEventListener('click', e => {
+            const el = e.target.closest('[data-bp-pick]');
+            if (el) selectBpPick(el.dataset.bpPick);
+        });
+        document.addEventListener('click', e => {
+            if (!bpPickIsOpen()) return;
+            const wrap = document.getElementById('bpPick');
+            if (wrap && !wrap.contains(e.target)) closeBpPick();
+        });
+    })();
+
     return {
         refresh,
         refreshDmgShareChart,
@@ -1221,6 +1352,9 @@ const Analytics = (() => {
         refreshMetricsTable,
         onBpViewByChange,
         onBpSrcToggle,
+        onBpPickToggle,
+        onBpPickSearch,
+        onBpPickKey,
     };
 })();
 
