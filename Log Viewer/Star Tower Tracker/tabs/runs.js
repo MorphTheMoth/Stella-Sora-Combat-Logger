@@ -35,7 +35,7 @@ ST.renderRuns = function() {
 
             html += '<tr>' +
                 '<td class="expand-btn" onclick="ST.toggleRun(' + i + ',this)">&#9654;</td>' +
-                '<td>' + (s.towerId || '—') + '</td>' +
+                '<td>' + (ST.runTowerId(run) || '—') + '</td>' +
                 '<td><div class="char-cell">' + charHtml + '</div></td>' +
                 '<td>' + run.floorReached + '</td>' +
                 '<td>' + run.potentialCnt + '</td>' +
@@ -66,7 +66,7 @@ ST.toggleRun = function(idx, btn) {
         // Start event
         var startEv = run.start;
         html += '<div class="tl-event"><span class="tl-type">START</span><span class="tl-detail">' +
-            'Tower ' + (startEv.data.towerId || '?') + ', Coins: ' + (startEv.data.coinQty || 0) +
+            'Tower ' + (ST.runTowerId(run) || '?') + ', Coins: ' + (startEv.data.coinQty || 0) +
             ', Floor ' + (startEv.data.floor || 1) +
             '</span></div>';
 

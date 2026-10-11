@@ -1,6 +1,6 @@
 // tabs/notes.js — Weighted RNG model analysis for note drops
 
-ST.noteFilters = { note: 0, sources: { battle: true, elite: true, boss: true }, stack: 'all', runFloor: 0, runMinFloor: 0, k: 10, pow: 0.5, powK: 0.1, model: 'hn0_5' };
+ST.noteFilters = { note: 0, sources: { battle: true, elite: true, boss: true }, stack: 'all', runFloor: 0, runMinFloor: 0, odn: 0, tower: 0, k: 10, pow: 0.5, powK: 0.1, model: 'hn0_5' };
 ST._bestOdnK = null;
 ST._seedDParams = [0.05,0.1,0.2,0.3,0.4,0.5,0.6,0.75,0.9,1,1.1,1.25,1.4,1.5,1.6,1.75,1.9,2,2.25,2.5,3,4,5,6,8,10,15,20,30,50,100];
 ST._elemDParams = [2,3,4,5,6,8,10,12,15,20,25,30,40,50,75,100,150,200,300,500];
@@ -31,6 +31,173 @@ ST._seedBonus = function(ctx, prefix, count, tid) {
 
 ST._enc = function(v) { return String(v).replace('.', '_'); };
 
+// ── Per-run TDN size (distinct notes needed by equipped discs) ──
+// isDiscNote / harmoniesNotes / discsNotes share the same key set per
+// run (see app.js _beginRun); the size = amount of different notes needed.
+ST.odnSize = function(odnObj) {
+    if (!odnObj) return 0;
+    // Collapse element damage notes (90019-90023) into Element (90018) so
+    // runs built before the app.js fix (raw keys) count the same as new runs.
+    var seen = {};
+    for (var k in odnObj) {
+        if (!odnObj[k]) continue;
+        var eff = (typeof ST._ele === 'function') ? ST._ele(parseInt(k, 10)) : k;
+        seen[eff] = true;
+    }
+    var n = 0;
+    for (var s in seen) n++;
+    return n;
+};
+
+ST.runOdnSize = function(run) {
+    if (!run) return 0;
+    if (run._isDiscNote) return ST.odnSize(run._isDiscNote);
+    if (run._harmoniesNotes) return ST.odnSize(run._harmoniesNotes);
+    return 0;
+};
+
+// How many RNG rolls one recorded event represents. The server aggregates
+// each gain per note type ({tid, qty}). For floor income (3-copy base
+// bundles, see below) the fit uses ST.fitWeight instead; this stays as the
+// fallback for event bundles (each unit a separate draw), shop and start.
+ST.eventRolls = function(e) {
+    if (!e || e.isStack) return 1;
+    return Math.max(1, e.qty || 1);
+};
+
+ST.eventRollTotal = function(events) {
+    var n = 0;
+    (events || []).forEach(function(e) { n += ST.eventRolls(e); });
+    return n;
+};
+
+// Floor-income grammar: base bundles of 3 copies of one rolled type, each
+// base independently stackable to 9 (+6 copies, no new type draw). Validated
+// against the log: every battle-action floor packet total fits these tables
+// (floor total -> base count B; stacks S = (T - 3B) / 6), and per-tid
+// quantities resolve uniquely via q = 3b + 6s under the floor (B, S).
+// Boss single-base packets (T=3/9) occur ~120x in Star Tower data, so boss
+// allows B=1 (the Monolith doc's boss minimum of 2 does not hold here).
+ST.FLOOR_BASES = {
+    battle: { 3: 1, 6: 2, 9: 1, 12: 2, 18: 2 },
+    elite:  { 3: 1, 6: 2, 9: 1, 12: 2, 18: 2 },
+    boss:   { 3: 1, 6: 2, 9: 1, 12: 2, 15: 5, 18: 2, 21: 5, 27: 5, 33: 5, 39: 5 },
+};
+
+// (bases, stacks) options for one tid holding q copies: q = 3b + 6s, s <= b.
+// Ambiguous alone (e.g. 9 = stacked base OR 3 plain bases); the floor packet
+// constraints pick the unique reading.
+ST.decompOptions = function(q) {
+    var opts = [];
+    if (q <= 0 || q % 3 !== 0) return opts;
+    for (var b = 0; b <= q / 3; b++) {
+        var rem = q - 3 * b;
+        if (rem % 6 !== 0) continue;
+        var s = rem / 6;
+        if (s <= b) opts.push({ b: b, s: s });
+    }
+    return opts;
+};
+
+// Unique per-entry (b, s) assignment for one floor packet, or null when the
+// total is off-grammar or the reading is ambiguous.
+ST.solveFloorDecomp = function(qtys, B, S) {
+    var opts = qtys.map(ST.decompOptions);
+    for (var i = 0; i < opts.length; i++) { if (opts[i].length === 0) return null; }
+    var solutions = [];
+    var assign = [];
+    (function dfs(i, bSum, sSum) {
+        if (solutions.length > 1) return;
+        if (i === opts.length) {
+            if (bSum === B && sSum === S) solutions.push(assign.slice());
+            return;
+        }
+        for (var k = 0; k < opts[i].length; k++) {
+            var o = opts[i][k];
+            if (bSum + o.b > B || sSum + o.s > S) continue;
+            assign.push(o);
+            dfs(i + 1, bSum + o.b, sSum + o.s);
+            assign.pop();
+            if (solutions.length > 1) return;
+        }
+    })(0, 0, 0);
+    return solutions.length === 1 ? solutions[0] : null;
+};
+
+// Split floor-income entries into base type-draws (fit input) and stack
+// grants (excluded from the fit: a stack adds copies, no new type draw).
+// Sets e._b (base draws this entry contributes), e._s (stack grants on it),
+// or e._quarantined (off-grammar/ambiguous packet, excluded from the fit).
+// MUST run on UNFILTERED entries: source/note filters can split a floor's
+// packet and would fake quarantines.
+ST.decomposeNoteEntries = function(events) {
+    var stats = { floors: 0, draws: 0, stacks: 0, quarantinedEntries: 0, quarantinedFloors: 0 };
+    var groups = {};
+    (events || []).forEach(function(e) {
+        delete e._b; delete e._s; delete e._quarantined;
+        var isFloorIncome = (e.source === 'battle' || e.source === 'elite' || e.source === 'boss') &&
+            e.action !== 'select' && e.action !== 'run';
+        if (!isFloorIncome || !(e.context && e.context.noteCounts)) return;
+        var k = e.runId + '|' + e.floor;
+        (groups[k] = groups[k] || []).push(e);
+    });
+    function quarantine(g) {
+        g.forEach(function(e) { e._quarantined = true; });
+        stats.quarantinedEntries += g.length;
+        stats.quarantinedFloors++;
+    }
+    Object.keys(groups).forEach(function(k) {
+        var g = groups[k];
+        var table = ST.FLOOR_BASES[g[0].source] || ST.FLOOR_BASES.battle;
+        var T = 0;
+        g.forEach(function(e) { T += Math.max(0, e.qty || 0); });
+        var B = table[T];
+        stats.floors++;
+        if (B == null) { quarantine(g); return; }
+        var S = (T - 3 * B) / 6;
+        if (S !== Math.floor(S) || S < 0) { quarantine(g); return; }
+        var sol = ST.solveFloorDecomp(g.map(function(e) { return e.qty; }), B, S);
+        if (!sol) { quarantine(g); return; }
+        g.forEach(function(e, i) {
+            e._b = sol[i].b; e._s = sol[i].s;
+            stats.draws += sol[i].b; stats.stacks += sol[i].s;
+        });
+    });
+    return stats;
+};
+
+// Fit weight of one entry: decomposed base draws for floor income; qty
+// expansion for event bundles/shop/start; quarantined packets contribute 0.
+ST.fitWeight = function(e) {
+    if (!e) return 0;
+    if (e._quarantined) return 0;
+    if (e._b != null) return e._b;
+    return ST.eventRolls(e);
+};
+
+ST.fitTotal = function(events) {
+    var n = 0;
+    (events || []).forEach(function(e) { n += ST.fitWeight(e); });
+    return n;
+};
+
+// Stack grants on these entries (decomposed count, else legacy flag).
+ST.stackWeight = function(e) {
+    if (!e) return 0;
+    if (e._s != null) return e._s;
+    return e.isStack ? 1 : 0;
+};
+
+ST.stackGrants = function(events) {
+    var n = 0;
+    (events || []).forEach(function(e) { n += ST.stackWeight(e); });
+    return n;
+};
+
+// K grid for the TDN families: all below 0.5, concentrated at the very
+// small end around 0.02/0.03.
+ST._tdnKParams = [0.005,0.008,0.01,0.012,0.015,0.017,0.02,0.022,0.025,0.027,0.03,0.033,0.036,0.04,0.045,0.05,0.06,0.07,0.08,0.09,0.1,0.12,0.14,0.16,0.2,0.25,0.3,0.35,0.4,0.45];
+
 ST.modelGroups = [
     { key: 'hn',   name: 'harmoniesNotes + K', param: 'K',
         params: [0.1,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75,3,3.25,3.5,3.75,4,4.5,5,5.5,6,7,8,10,15],
@@ -46,207 +213,240 @@ ST.modelGroups = [
         makeDesc: function(v) { return 'weight = discsNotes[tid] + ' + v; },
         weight: function(nc, ctx, tid, v) { return ((ctx.discsNotes && ctx.discsNotes[tid]) || 0) + v; }
     },
-    { key: 'odn',  name: 'overallDiscNotes + K', param: 'K',
-        params: [0.01,0.05,0.1,0.15,0.2,0.25,0.3,0.35,0.4,0.45,0.5,0.55,0.6,0.65,0.7,0.8,0.9,1,1.25,1.5,2,3,4,5,7.5],
+    { key: 'odn',  name: 'isDiscNote + K', param: 'K',
+        params: [0.01,0.02,0.03,0.04,0.05,0.06,0.07,0.08,0.09,0.1,0.11,0.12,0.13,0.14,0.15,0.16,0.17,0.18,0.19,0.2,0.21,0.22,0.23,0.24,0.25,0.26,0.27,0.28,0.29,0.3,0.35,0.4,0.45,0.5,0.55,0.6,0.65,0.7,0.8,0.9,1,1.25,1.5,2,3,4,5,7.5],
         makeKey: function(v) { return 'odn' + ST._enc(v); },
-        makeName: function(v) { return 'overallDiscNotes + ' + v; },
-        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + ' + v; },
-        weight: function(nc, ctx, tid, v) { return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + v; }
+        makeName: function(v) { return 'isDiscNote + ' + v; },
+        makeDesc: function(v) { return 'weight = isDiscNote[tid] + ' + v; },
+        weight: function(nc, ctx, tid, v) { return ((ctx.isDiscNote && ctx.isDiscNote[tid]) || 0) + v; }
     },
-    { key: 'odnsoft', name: 'overallDiscNotes + ? with softcap at D', param: 'D',
+    { key: 'odntdn', name: 'isDiscNote/TDN + K', param: 'K',
+        params: ST._tdnKParams,
+        makeKey: function(v) { return 'odntdn' + ST._enc(v); },
+        makeName: function(v) { return 'isDiscNote/TDN + ' + v; },
+        makeDesc: function(v) { return 'weight = isDiscNote[tid]/TDN + ' + v + ' (isDiscNote = 1 when the note is needed by any equipped disc; TDN = run total disc notes needed)'; },
+        weight: function(nc, ctx, tid, v) {
+            var tdn = ST.odnSize(ctx.isDiscNote);
+            var need = ((ctx.isDiscNote && ctx.isDiscNote[tid]) || 0) ? 1 : 0;
+            return (tdn > 0 ? need / tdn : 0) + v;
+        }
+    },
+    { key: 'odntdn2', name: 'isDiscNote/TDN/TDN + K', param: 'K',
+        params: ST._tdnKParams,
+        makeKey: function(v) { return 'odntdn2' + ST._enc(v); },
+        makeName: function(v) { return 'isDiscNote/TDN/TDN + ' + v; },
+        makeDesc: function(v) { return 'weight = isDiscNote[tid]/TDN/TDN + ' + v + ' (need bonus diluted twice by TDN)'; },
+        weight: function(nc, ctx, tid, v) {
+            var tdn = ST.odnSize(ctx.isDiscNote);
+            var need = ((ctx.isDiscNote && ctx.isDiscNote[tid]) || 0) ? 1 : 0;
+            return (tdn > 0 ? need / (tdn * tdn) : 0) + v;
+        }
+    },
+    { key: 'odntdnkt', name: 'isDiscNote/TDN + K*TDN', param: 'K',
+        params: ST._tdnKParams,
+        makeKey: function(v) { return 'odntdnkt' + ST._enc(v); },
+        makeName: function(v) { return 'isDiscNote/TDN + ' + v + '*TDN'; },
+        makeDesc: function(v) { return 'weight = isDiscNote[tid]/TDN + ' + v + '*TDN (baseline scales up with TDN)'; },
+        weight: function(nc, ctx, tid, v) {
+            var tdn = ST.odnSize(ctx.isDiscNote);
+            var need = ((ctx.isDiscNote && ctx.isDiscNote[tid]) || 0) ? 1 : 0;
+            return (tdn > 0 ? need / tdn : 0) + v * tdn;
+        }
+    },
+    { key: 'odnsoft', name: 'isDiscNote + ? with softcap at D', param: 'D',
         params: [20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100],
         makeKey: function(v) { return 'odnsoft' + ST._enc(v); },
-        makeName: function(v) { return 'overallDiscNotes + ? with softcap at ' + v; },
-        makeDesc: function(v) { return 'weight = (overallDiscNotes[tid] + bestOdnK) / (1 + max(0, count[tid] - ' + v + ') / ' + v + ')'; },
+        makeName: function(v) { return 'isDiscNote + ? with softcap at ' + v; },
+        makeDesc: function(v) { return 'weight = (isDiscNote[tid] + bestOdnK) / (1 + max(0, count[tid] - ' + v + ') / ' + v + ')'; },
         weight: function(nc, ctx, tid, v) {
-            var odn = ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + (ST._bestOdnK || 0);
+            var odn = ((ctx.isDiscNote && ctx.isDiscNote[tid]) || 0) + (ST._bestOdnK || 0);
             var count = nc[tid] || 0;
             return odn / (1 + Math.max(0, count - v) / v);
         }
     },
 
     // — Composite models (odn + other terms) —
-    { key: 'odnc', name: 'overallDiscNotes + count + K', param: 'K',
+    { key: 'odnc', name: 'isDiscNote + count + K', param: 'K',
         params: [0.01,0.05,0.1,0.15,0.2,0.25,0.3,0.35,0.4,0.45,0.5,0.55,0.6,0.65,0.7,0.8,0.9,1,1.25,1.5,2,3,4,5,7.5],
         makeKey: function(v) { return 'odnc' + ST._enc(v); },
-        makeName: function(v) { return 'overallDiscNotes + count + ' + v; },
-        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + count[tid] + ' + v; },
+        makeName: function(v) { return 'isDiscNote + count + ' + v; },
+        makeDesc: function(v) { return 'weight = isDiscNote[tid] + count[tid] + ' + v; },
         weight: function(nc, ctx, tid, v) {
-            return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + (nc[tid] || 0) + v;
+            return ((ctx.isDiscNote && ctx.isDiscNote[tid]) || 0) + (nc[tid] || 0) + v;
         }
     },
-    { key: 'odnsc', name: 'overallDiscNotes + \u221acount + K', param: 'K',
+    { key: 'odnsc', name: 'isDiscNote + \u221acount + K', param: 'K',
         params: [0.01,0.05,0.1,0.15,0.2,0.25,0.3,0.35,0.4,0.45,0.5,0.55,0.6,0.65,0.7,0.8,0.9,1,1.25,1.5,2,3,4,5,7.5],
         makeKey: function(v) { return 'odnsc' + ST._enc(v); },
-        makeName: function(v) { return 'overallDiscNotes + \u221acount + ' + v; },
-        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + sqrt(count[tid]) + ' + v; },
+        makeName: function(v) { return 'isDiscNote + \u221acount + ' + v; },
+        makeDesc: function(v) { return 'weight = isDiscNote[tid] + sqrt(count[tid]) + ' + v; },
         weight: function(nc, ctx, tid, v) {
-            return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + Math.sqrt(nc[tid] || 0) + v;
+            return ((ctx.isDiscNote && ctx.isDiscNote[tid]) || 0) + Math.sqrt(nc[tid] || 0) + v;
         }
     },
-    { key: 'odnsb', name: 'overallDiscNotes + \u221asuppNotes + K', param: 'K',
+    { key: 'odnsb', name: 'isDiscNote + \u221asuppNotes + K', param: 'K',
         params: [0.01,0.05,0.1,0.15,0.2,0.25,0.3,0.35,0.4,0.45,0.5,0.55,0.6,0.65,0.7,0.8,0.9,1,1.25,1.5,2,3,4,5,7.5],
         makeKey: function(v) { return 'odnsb' + ST._enc(v); },
-        makeName: function(v) { return 'overallDiscNotes + \u221asuppNotes + ' + v; },
-        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + sqrt(startCountsBefore[tid]) + ' + v; },
+        makeName: function(v) { return 'isDiscNote + \u221asuppNotes + ' + v; },
+        makeDesc: function(v) { return 'weight = isDiscNote[tid] + sqrt(startCountsBefore[tid]) + ' + v; },
         weight: function(nc, ctx, tid, v) {
-            return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0)
+            return ((ctx.isDiscNote && ctx.isDiscNote[tid]) || 0)
                  + Math.sqrt((ctx.startCountsBefore && ctx.startCountsBefore[tid]) || 0) + v;
         }
     },
-    { key: 'odncsc', name: 'overallDiscNotes + count + \u221acount + K', param: 'K',
+    { key: 'odncsc', name: 'isDiscNote + count + \u221acount + K', param: 'K',
         params: [0.01,0.05,0.1,0.15,0.2,0.25,0.3,0.35,0.4,0.45,0.5,0.55,0.6,0.65,0.7,0.8,0.9,1,1.25,1.5,2,3,4,5,7.5],
         makeKey: function(v) { return 'odncsc' + ST._enc(v); },
-        makeName: function(v) { return 'overallDiscNotes + count + \u221acount + ' + v; },
-        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + count[tid] + sqrt(count[tid]) + ' + v; },
+        makeName: function(v) { return 'isDiscNote + count + \u221acount + ' + v; },
+        makeDesc: function(v) { return 'weight = isDiscNote[tid] + count[tid] + sqrt(count[tid]) + ' + v; },
         weight: function(nc, ctx, tid, v) {
-            return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + (nc[tid] || 0) + Math.sqrt(nc[tid] || 0) + v;
+            return ((ctx.isDiscNote && ctx.isDiscNote[tid]) || 0) + (nc[tid] || 0) + Math.sqrt(nc[tid] || 0) + v;
         }
     },
-    { key: 'odncd', name: 'overallDiscNotes + ? + count / D', param: 'D',
+    { key: 'odncd', name: 'isDiscNote + ? + count / D', param: 'D',
         params: [1,10,25,50,100,150,200,225,250,275,300,325,350,375,400,425,450,475,500,600,750],
         makeKey: function(v) { return 'odncd' + ST._enc(v); },
-        makeName: function(v) { return 'overallDiscNotes + ? + count / ' + v; },
-        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + bestOdnK + count[tid] / ' + v + ' \u2014 odn best-K baseline with count/D'; },
+        makeName: function(v) { return 'isDiscNote + ? + count / ' + v; },
+        makeDesc: function(v) { return 'weight = isDiscNote[tid] + bestOdnK + count[tid] / ' + v + ' \u2014 odn best-K baseline with count/D'; },
         weight: function(nc, ctx, tid, v) {
-            return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + (nc[tid] || 0) / v + (ST._bestOdnK || 0);
+            return ((ctx.isDiscNote && ctx.isDiscNote[tid]) || 0) + (nc[tid] || 0) / v + (ST._bestOdnK || 0);
         }
     },
-    { key: 'odncsbd', name: 'overallDiscNotes + ? + (count - suppNotes) / D', param: 'D',
+    { key: 'odncsbd', name: 'isDiscNote + ? + (count - suppNotes) / D', param: 'D',
         params: [1,10,25,50,75,85,90,95,100,105,110,115,125,150,200,300,500],
         makeKey: function(v) { return 'odncsbd' + ST._enc(v); },
-        makeName: function(v) { return 'overallDiscNotes + ? + (count - suppNotes) / ' + v; },
-        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + bestOdnK + (count[tid] - startCountsBefore[tid]) / ' + v + ' - odn best-K baseline with count minus suppNotes/D'; },
+        makeName: function(v) { return 'isDiscNote + ? + (count - suppNotes) / ' + v; },
+        makeDesc: function(v) { return 'weight = isDiscNote[tid] + bestOdnK + (count[tid] - startCountsBefore[tid]) / ' + v + ' - odn best-K baseline with count minus suppNotes/D'; },
         weight: function(nc, ctx, tid, v) {
             var suppNotes = (ctx.startCountsBefore && ctx.startCountsBefore[tid]) || 0;
-            return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + ((nc[tid] || 0) - suppNotes) / v + (ST._bestOdnK || 0);
+            return ((ctx.isDiscNote && ctx.isDiscNote[tid]) || 0) + ((nc[tid] || 0) - suppNotes) / v + (ST._bestOdnK || 0);
         }
     },
-    { key: 'odned', name: 'overallDiscNotes + ? + elemNote / D', param: 'D',
+    { key: 'odned', name: 'isDiscNote + ? + elemNote / D', param: 'D',
         params: ST._elemDParams,
         makeKey: function(v) { return 'odned' + ST._enc(v); },
-        makeName: function(v) { return 'overallDiscNotes + ? + elemNote / ' + v; },
-        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + bestOdnK + elemNote[tid] / ' + v; },
+        makeName: function(v) { return 'isDiscNote + ? + elemNote / ' + v; },
+        makeDesc: function(v) { return 'weight = isDiscNote[tid] + bestOdnK + elemNote[tid] / ' + v; },
         weight: function(nc, ctx, tid, v) {
-            return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + (tid === ST.ELEMENT_ID ? 1 / v : 0) + (ST._bestOdnK || 0);
+            return ((ctx.isDiscNote && ctx.isDiscNote[tid]) || 0) + (tid === ST.ELEMENT_ID ? 1 / v : 0) + (ST._bestOdnK || 0);
         }
     },
-    { key: 'seed12', name: 'overallDiscNotes + ? + (seed1 + seed2) / D', param: 'D',
+    { key: 'seed12', name: 'isDiscNote + ? + (seed1 + seed2) / D', param: 'D',
         params: ST._seedDParams,
         makeKey: function(v) { return 'seed12' + ST._enc(v); },
-        makeName: function(v) { return 'overallDiscNotes + ? + (seed1 + seed2) / ' + v; },
-        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + bestOdnK + 1/D for matching seed1 and seed2'; },
+        makeName: function(v) { return 'isDiscNote + ? + (seed1 + seed2) / ' + v; },
+        makeDesc: function(v) { return 'weight = isDiscNote[tid] + bestOdnK + 1/D for matching seed1 and seed2'; },
         weight: function(nc, ctx, tid, v) {
-            return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + (ST._bestOdnK || 0) + ST._seedBonus(ctx, 'seed', 2, tid) / v;
+            return ((ctx.isDiscNote && ctx.isDiscNote[tid]) || 0) + (ST._bestOdnK || 0) + ST._seedBonus(ctx, 'seed', 2, tid) / v;
         }
     },
-    { key: 'seed123', name: 'overallDiscNotes + ? + (seed1 + seed2 + seed3) / D', param: 'D',
+    { key: 'seed123', name: 'isDiscNote + ? + (seed1 + seed2 + seed3) / D', param: 'D',
         params: ST._seedDParams,
         makeKey: function(v) { return 'seed123' + ST._enc(v); },
-        makeName: function(v) { return 'overallDiscNotes + ? + (seed1 + seed2 + seed3) / ' + v; },
-        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + bestOdnK + 1/D for matching seed1, seed2, and seed3'; },
+        makeName: function(v) { return 'isDiscNote + ? + (seed1 + seed2 + seed3) / ' + v; },
+        makeDesc: function(v) { return 'weight = isDiscNote[tid] + bestOdnK + 1/D for matching seed1, seed2, and seed3'; },
         weight: function(nc, ctx, tid, v) {
-            return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + (ST._bestOdnK || 0) + ST._seedBonus(ctx, 'seed', 3, tid) / v;
+            return ((ctx.isDiscNote && ctx.isDiscNote[tid]) || 0) + (ST._bestOdnK || 0) + ST._seedBonus(ctx, 'seed', 3, tid) / v;
         }
     },
-    { key: 'seed1234', name: 'overallDiscNotes + ? + (seed1 + seed2 + seed3 + seed4) / D', param: 'D',
+    { key: 'seed1234', name: 'isDiscNote + ? + (seed1 + seed2 + seed3 + seed4) / D', param: 'D',
         params: ST._seedDParams,
         makeKey: function(v) { return 'seed1234' + ST._enc(v); },
-        makeName: function(v) { return 'overallDiscNotes + ? + (seed1 + seed2 + seed3 + seed4) / ' + v; },
-        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + bestOdnK + 1/D for matching seed1 through seed4'; },
+        makeName: function(v) { return 'isDiscNote + ? + (seed1 + seed2 + seed3 + seed4) / ' + v; },
+        makeDesc: function(v) { return 'weight = isDiscNote[tid] + bestOdnK + 1/D for matching seed1 through seed4'; },
         weight: function(nc, ctx, tid, v) {
-            return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + (ST._bestOdnK || 0) + ST._seedBonus(ctx, 'seed', 4, tid) / v;
+            return ((ctx.isDiscNote && ctx.isDiscNote[tid]) || 0) + (ST._bestOdnK || 0) + ST._seedBonus(ctx, 'seed', 4, tid) / v;
         }
     },
-    { key: 'seed12345', name: 'overallDiscNotes + ? + (seed1 + seed2 + seed3 + seed4 + seed5) / D', param: 'D',
+    { key: 'seed12345', name: 'isDiscNote + ? + (seed1 + seed2 + seed3 + seed4 + seed5) / D', param: 'D',
         params: ST._seedDParams,
         makeKey: function(v) { return 'seed12345' + ST._enc(v); },
-        makeName: function(v) { return 'overallDiscNotes + ? + (seed1 + seed2 + seed3 + seed4 + seed5) / ' + v; },
-        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + bestOdnK + 1/D for matching seed1 through seed5'; },
+        makeName: function(v) { return 'isDiscNote + ? + (seed1 + seed2 + seed3 + seed4 + seed5) / ' + v; },
+        makeDesc: function(v) { return 'weight = isDiscNote[tid] + bestOdnK + 1/D for matching seed1 through seed5'; },
         weight: function(nc, ctx, tid, v) {
-            return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + (ST._bestOdnK || 0) + ST._seedBonus(ctx, 'seed', 5, tid) / v;
+            return ((ctx.isDiscNote && ctx.isDiscNote[tid]) || 0) + (ST._bestOdnK || 0) + ST._seedBonus(ctx, 'seed', 5, tid) / v;
         }
     },
-    { key: 'seed123456', name: 'overallDiscNotes + ? + (seed1 + ... + seed6) / D', param: 'D',
+    { key: 'seed123456', name: 'isDiscNote + ? + (seed1 + ... + seed6) / D', param: 'D',
         params: ST._seedDParams,
         makeKey: function(v) { return 'seed123456' + ST._enc(v); },
-        makeName: function(v) { return 'overallDiscNotes + ? + (seed1 + ... + seed6) / ' + v; },
-        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + bestOdnK + 1/D for matching seed1 through seed6'; },
+        makeName: function(v) { return 'isDiscNote + ? + (seed1 + ... + seed6) / ' + v; },
+        makeDesc: function(v) { return 'weight = isDiscNote[tid] + bestOdnK + 1/D for matching seed1 through seed6'; },
         weight: function(nc, ctx, tid, v) {
-            return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + (ST._bestOdnK || 0) + ST._seedBonus(ctx, 'seed', 6, tid) / v;
+            return ((ctx.isDiscNote && ctx.isDiscNote[tid]) || 0) + (ST._bestOdnK || 0) + ST._seedBonus(ctx, 'seed', 6, tid) / v;
         }
     },
-    { key: 'seed1234567', name: 'overallDiscNotes + ? + (seed1 + ... + seed7) / D', param: 'D',
+    { key: 'seed1234567', name: 'isDiscNote + ? + (seed1 + ... + seed7) / D', param: 'D',
         params: ST._seedDParams,
         makeKey: function(v) { return 'seed1234567' + ST._enc(v); },
-        makeName: function(v) { return 'overallDiscNotes + ? + (seed1 + ... + seed7) / ' + v; },
-        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + bestOdnK + 1/D for matching seed1 through seed7'; },
+        makeName: function(v) { return 'isDiscNote + ? + (seed1 + ... + seed7) / ' + v; },
+        makeDesc: function(v) { return 'weight = isDiscNote[tid] + bestOdnK + 1/D for matching seed1 through seed7'; },
         weight: function(nc, ctx, tid, v) {
-            return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + (ST._bestOdnK || 0) + ST._seedBonus(ctx, 'seed', 7, tid) / v;
+            return ((ctx.isDiscNote && ctx.isDiscNote[tid]) || 0) + (ST._bestOdnK || 0) + ST._seedBonus(ctx, 'seed', 7, tid) / v;
         }
     },
-    { key: 'seed12345678', name: 'overallDiscNotes + ? + (seed1 + ... + seed8) / D', param: 'D',
+    { key: 'seed12345678', name: 'isDiscNote + ? + (seed1 + ... + seed8) / D', param: 'D',
         params: ST._seedDParams,
         makeKey: function(v) { return 'seed12345678' + ST._enc(v); },
-        makeName: function(v) { return 'overallDiscNotes + ? + (seed1 + ... + seed8) / ' + v; },
-        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + bestOdnK + 1/D for matching seed1 through seed8'; },
+        makeName: function(v) { return 'isDiscNote + ? + (seed1 + ... + seed8) / ' + v; },
+        makeDesc: function(v) { return 'weight = isDiscNote[tid] + bestOdnK + 1/D for matching seed1 through seed8'; },
         weight: function(nc, ctx, tid, v) {
-            return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + (ST._bestOdnK || 0) + ST._seedBonus(ctx, 'seed', 8, tid) / v;
+            return ((ctx.isDiscNote && ctx.isDiscNote[tid]) || 0) + (ST._bestOdnK || 0) + ST._seedBonus(ctx, 'seed', 8, tid) / v;
         }
     },
-    { key: 'dynSeed1', name: 'overallDiscNotes + ? + dynSeed1 / D', param: 'D',
+    { key: 'dynSeed1', name: 'isDiscNote + ? + dynSeed1 / D', param: 'D',
         params: ST._seedDParams,
         makeKey: function(v) { return 'dynSeed1' + ST._enc(v); },
-        makeName: function(v) { return 'overallDiscNotes + ? + dynSeed1 / ' + v; },
-        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + bestOdnK + 1/D for matching dynSeed1'; },
+        makeName: function(v) { return 'isDiscNote + ? + dynSeed1 / ' + v; },
+        makeDesc: function(v) { return 'weight = isDiscNote[tid] + bestOdnK + 1/D for matching dynSeed1'; },
         weight: function(nc, ctx, tid, v) {
-            return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + (ST._bestOdnK || 0) + ST._seedBonus(ctx, 'dynSeed', 1, tid) / v;
+            return ((ctx.isDiscNote && ctx.isDiscNote[tid]) || 0) + (ST._bestOdnK || 0) + ST._seedBonus(ctx, 'dynSeed', 1, tid) / v;
         }
     },
-    { key: 'dynSeed12', name: 'overallDiscNotes + ? + (dynSeed1 + dynSeed2) / D', param: 'D',
+    { key: 'dynSeed12', name: 'isDiscNote + ? + (dynSeed1 + dynSeed2) / D', param: 'D',
         params: ST._seedDParams,
         makeKey: function(v) { return 'dynSeed12' + ST._enc(v); },
-        makeName: function(v) { return 'overallDiscNotes + ? + (dynSeed1 + dynSeed2) / ' + v; },
-        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + bestOdnK + 1/D for matching dynSeed1 or dynSeed2'; },
+        makeName: function(v) { return 'isDiscNote + ? + (dynSeed1 + dynSeed2) / ' + v; },
+        makeDesc: function(v) { return 'weight = isDiscNote[tid] + bestOdnK + 1/D for matching dynSeed1 or dynSeed2'; },
         weight: function(nc, ctx, tid, v) {
-            return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + (ST._bestOdnK || 0) + ST._seedBonus(ctx, 'dynSeed', 2, tid) / v;
+            return ((ctx.isDiscNote && ctx.isDiscNote[tid]) || 0) + (ST._bestOdnK || 0) + ST._seedBonus(ctx, 'dynSeed', 2, tid) / v;
         }
     },
-    { key: 'dynSeed123', name: 'overallDiscNotes + ? + (dynSeed1 + dynSeed2 + dynSeed3) / D', param: 'D',
+    { key: 'dynSeed123', name: 'isDiscNote + ? + (dynSeed1 + dynSeed2 + dynSeed3) / D', param: 'D',
         params: ST._seedDParams,
         makeKey: function(v) { return 'dynSeed123' + ST._enc(v); },
-        makeName: function(v) { return 'overallDiscNotes + ? + (dynSeed1 + dynSeed2 + dynSeed3) / ' + v; },
-        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + bestOdnK + 1/D for matching dynSeed1, dynSeed2, or dynSeed3'; },
+        makeName: function(v) { return 'isDiscNote + ? + (dynSeed1 + dynSeed2 + dynSeed3) / ' + v; },
+        makeDesc: function(v) { return 'weight = isDiscNote[tid] + bestOdnK + 1/D for matching dynSeed1, dynSeed2, or dynSeed3'; },
         weight: function(nc, ctx, tid, v) {
-            return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + (ST._bestOdnK || 0) + ST._seedBonus(ctx, 'dynSeed', 3, tid) / v;
+            return ((ctx.isDiscNote && ctx.isDiscNote[tid]) || 0) + (ST._bestOdnK || 0) + ST._seedBonus(ctx, 'dynSeed', 3, tid) / v;
         }
     },
-    { key: 'odnscd', name: 'overallDiscNotes + ? + \u221acount / D', param: 'D',
+    { key: 'odnscd', name: 'isDiscNote + ? + \u221acount / D', param: 'D',
         params: [0.5,1,2,3,4,5,6,7,8,9,10,12,15,20,25,30,40,50,60,80,100,150,200,300,500],
         makeKey: function(v) { return 'odnscd' + ST._enc(v); },
-        makeName: function(v) { return 'overallDiscNotes + ? + \u221acount / ' + v; },
-        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + bestOdnK + sqrt(count[tid]) / ' + v + ' \u2014 odn best-K with sqrt(count)/D'; },
+        makeName: function(v) { return 'isDiscNote + ? + \u221acount / ' + v; },
+        makeDesc: function(v) { return 'weight = isDiscNote[tid] + bestOdnK + sqrt(count[tid]) / ' + v + ' \u2014 odn best-K with sqrt(count)/D'; },
         weight: function(nc, ctx, tid, v) {
-            return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0) + Math.sqrt(nc[tid] || 0) / v + (ST._bestOdnK || 0);
+            return ((ctx.isDiscNote && ctx.isDiscNote[tid]) || 0) + Math.sqrt(nc[tid] || 0) / v + (ST._bestOdnK || 0);
         }
     },
     { key: 'odnmc', name: '(odn + 1) \u00b7 (1 + count / D)', param: 'D',
         params: [0.5,1,2,3,4,5,6,7,8,9,10,12,15,20,25,30,40,50,60,80,100,150,200,300,500],
         makeKey: function(v) { return 'odnmc' + ST._enc(v); },
         makeName: function(v) { return '(odn + 1) \u00b7 (1 + count / ' + v + ')'; },
-        makeDesc: function(v) { return 'weight = (overallDiscNotes[tid] + 1) * (1 + count[tid] / ' + v + ') \u2014 multiplicative'; },
+        makeDesc: function(v) { return 'weight = (isDiscNote[tid] + 1) * (1 + count[tid] / ' + v + ') \u2014 multiplicative'; },
         weight: function(nc, ctx, tid, v) {
-            var odn = (ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0;
+            var odn = (ctx.isDiscNote && ctx.isDiscNote[tid]) || 0;
             return (odn + 1) * (1 + (nc[tid] || 0) / v);
         }
     },
-    { key: 'odncsd', name: 'overallDiscNotes + ? + odn \u00b7 suppNotes / D', param: 'D',
+    { key: 'odncsd', name: 'isDiscNote + ? + odn \u00b7 suppNotes / D', param: 'D',
         params: [0.5,1,2,3,4,5,6,7,8,9,10,12,15,20,25,30,40,50,60,80,100,150,200,300,500],
         makeKey: function(v) { return 'odncsd' + ST._enc(v); },
-        makeName: function(v) { return 'overallDiscNotes + ? + odn\u00b7suppNotes / ' + v; },
-        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + bestOdnK + overallDiscNotes[tid] * startCountsBefore[tid] / ' + v + ' \u2014 odn + bestK + interaction with suppNotes/D'; },
+        makeName: function(v) { return 'isDiscNote + ? + odn\u00b7suppNotes / ' + v; },
+        makeDesc: function(v) { return 'weight = isDiscNote[tid] + bestOdnK + isDiscNote[tid] * startCountsBefore[tid] / ' + v + ' \u2014 odn + bestK + interaction with suppNotes/D'; },
         weight: function(nc, ctx, tid, v) {
-            var odn = (ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0;
+            var odn = (ctx.isDiscNote && ctx.isDiscNote[tid]) || 0;
             return odn + (ST._bestOdnK || 0) + odn * ((ctx.startCountsBefore && ctx.startCountsBefore[tid]) || 0) / v;
         }
     },
@@ -285,13 +485,13 @@ ST.modelGroups = [
                  + ((ctx.discsNotes && ctx.discsNotes[tid]) || 0) + v;
         }
     },
-    { key: 'odnhn', name: 'overallDiscNotes + harmoniesNotes + K', param: 'K',
+    { key: 'odnhn', name: 'isDiscNote + harmoniesNotes + K', param: 'K',
         params: [0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75,3,3.5,4,4.5,5,5.5,6,7,8,10,12,15,20,30],
         makeKey: function(v) { return 'odnhn' + ST._enc(v); },
-        makeName: function(v) { return 'overallDiscNotes + harmoniesNotes + ' + v; },
-        makeDesc: function(v) { return 'weight = overallDiscNotes[tid] + harmoniesNotes[tid] + ' + v; },
+        makeName: function(v) { return 'isDiscNote + harmoniesNotes + ' + v; },
+        makeDesc: function(v) { return 'weight = isDiscNote[tid] + harmoniesNotes[tid] + ' + v; },
         weight: function(nc, ctx, tid, v) {
-            return ((ctx.overallDiscNotes && ctx.overallDiscNotes[tid]) || 0)
+            return ((ctx.isDiscNote && ctx.isDiscNote[tid]) || 0)
                  + ((ctx.harmoniesNotes && ctx.harmoniesNotes[tid]) || 0) + v;
         }
     },
@@ -411,13 +611,12 @@ ST.modelLabel = function(key) {
 ST.evalModel = function(events, modelKey, k) {
     var ncEvents = events.filter(function(e) { return e.context && e.context.noteCounts; });
     if (ncEvents.length === 0) return null;
-    var total = ncEvents.length;
     var nids = ST.NOTE_IDS;
 
     var observed = {};
     nids.forEach(function(tid) { observed[tid] = 0; });
 
-    var ll = 0, expected = {};
+    var ll = 0, total = 0, expected = {};
     nids.forEach(function(tid) { expected[tid] = 0; });
 
     var top1Correct = 0;
@@ -425,19 +624,23 @@ ST.evalModel = function(events, modelKey, k) {
     var calibPairs = [];
 
     ncEvents.forEach(function(e) {
-        observed[e.tid]++;
+        // One observation per base bundle (see ST.fitWeight): a 3-copy base
+        // is one type draw; stack copies add no draw; event bundles expand.
+        var w = ST.fitWeight(e);
+        total += w;
+        observed[e.tid] += w;
         var probs = ST.computeNoteProbs(e.context.noteCounts, modelKey, k, e.context);
         var p = Math.max(probs[e.tid] || 0, 1e-9);
-        ll += Math.log(p);
+        ll += Math.log(p) * w;
 
         var sorted = nids.slice().sort(function(a, b) { return (probs[b] || 0) - (probs[a] || 0); });
-        if (sorted[0] === e.tid) top1Correct++;
-        rankSum += sorted.indexOf(e.tid) + 1;
+        if (sorted[0] === e.tid) top1Correct += w;
+        rankSum += (sorted.indexOf(e.tid) + 1) * w;
 
         nids.forEach(function(tid) {
-            expected[tid] += probs[tid];
+            expected[tid] += probs[tid] * w;
             var actual = tid === e.tid ? 1 : 0;
-            calibPairs.push({ pred: probs[tid], actual: actual });
+            for (var u = 0; u < w; u++) calibPairs.push({ pred: probs[tid], actual: actual });
         });
     });
 
@@ -465,8 +668,10 @@ ST.evalModel = function(events, modelKey, k) {
         ece = 0;
     }
 
-    var meanRank = rankSum / total;
-    var top1Pct = (top1Correct / total) * 100;
+    var meanRank = total === 0 ? 0 : rankSum / total;
+    var top1Pct = total === 0 ? 0 : (top1Correct / total) * 100;
+
+    if (total === 0) return null;
 
     return {
         logLik: ll, n: total,
@@ -560,11 +765,12 @@ ST.buildModelComparison = function(events) {
     var selectedModel = ST.noteFilters.model || 'hn0_5';
     var totalRows = 0;
 
-    var html = '<div class="chart-card"><h3>Model Comparison (' + ncEvents.length + ' events)</h3>' +
+    var html = '<div class="chart-card"><h3>Model Comparison (' + ST.fitTotal(ncEvents) + ' base draws)</h3>' +
         '<div style="font-size:11px;color:#666;margin-bottom:8px;line-height:1.6">' +
             'Each group shows the <strong>best</strong> Correct P% model within its family. Click to expand and see all ' +
             'variations. Rows highlighted green = best overall across all groups for that metric.<br>' +
-            'Correct P%: geometric-mean probability assigned to the dropped note (higher = better) &middot; ' +
+            'One observation per base bundle (a 3-copy base = 1 type draw); stack copies add no draw and ' +
+            'off-grammar packets are excluded. Correct P%: geometric-mean probability assigned to the dropped note (higher = better) &middot; ' +
             'Top-1%: fraction where model\'s favorite won &middot; ' +
             'Mean Rank: avg rank model assigned to the dropped note &middot; ' +
             'Avg Error: calibration error as a percentage (10 equal-mass bins, "—" if fewer than 100 prediction pairs)' +
@@ -572,7 +778,7 @@ ST.buildModelComparison = function(events) {
         '<div style="font-size:10px;color:#555;margin-bottom:8px;line-height:1.5">' +
             'Terms: <strong>harmoniesNotes</strong> = total harmony material copies needed across your 3 equipped discs &middot; ' +
             '<strong>discsNotes</strong> = how many of your 3 discs feature this note (0\u20133) &middot; ' +
-            '<strong>overallDiscNotes</strong> = whether this note appears on any equipped disc (0/1) &middot; ' +
+            '<strong>isDiscNote</strong> = whether this note appears on any equipped disc (0/1) &middot; ' +
             '<strong>count</strong> = how many of this note type you own before the drop &middot; ' +
             '<strong>suppNotes</strong> = startCountsBefore (support discs you brought into the run) &middot; ' +
             '<strong>K, D</strong> = model parameters varied within the group' +
@@ -674,12 +880,13 @@ ST.buildPerNote = function(events, modelKey, k) {
         var probs = ST.computeNoteProbs(e.context.noteCounts, modelKey, k, e.context);
         var sorted = nids.slice().sort(function(a, b) { return (probs[b] || 0) - (probs[a] || 0); });
         var top3 = sorted.slice(0, 3);
+        var w = ST.fitWeight(e);
 
         var tid = e.tid;
-        drops[tid]++;
-        sumP[tid] += probs[tid];
-        sumRank[tid] += sorted.indexOf(tid) + 1;
-        if (top3.indexOf(tid) !== -1) top3Count[tid]++;
+        drops[tid] += w;
+        sumP[tid] += probs[tid] * w;
+        sumRank[tid] += (sorted.indexOf(tid) + 1) * w;
+        if (top3.indexOf(tid) !== -1) top3Count[tid] += w;
     });
 
     var uniformP = 1 / nids.length;
@@ -697,7 +904,7 @@ ST.buildPerNote = function(events, modelKey, k) {
         rows += '<tr><td>' + ST.noteName(tid) + '</td><td class="num">' + n + '</td><td class="pct">' + avgP + '</td><td class="num">' + vsRandom + '</td><td class="num">' + avgRank + '</td><td class="pct">' + top3Pct + '</td></tr>';
     });
 
-    return '<div class="chart-card"><h3>Per-Note Model Performance (' + modelName + ', ' + ncEvents.length + ' events)</h3>' +
+    return '<div class="chart-card"><h3>Per-Note Model Performance (' + modelName + ', ' + ST.fitTotal(ncEvents) + ' base draws)</h3>' +
         '<div style="font-size:11px;color:#555;margin-bottom:8px">Avg P = model\'s probability for this note when it dropped (higher = better). vs Random = how many × uniform. Avg Rank = rank (1=most likely) when it dropped (lower = better). Top-3% = % of drops where model had note in top 3.</div>' +
         '<table class="data-table"><tr><th>Note</th><th class="num">Drops</th><th class="pct">Avg P (when hit)</th><th class="num">vs Random</th><th class="num">Avg Rank (when hit)</th><th class="pct">Top-3 Hit %</th></tr>' +
         rows + '</table></div>';
@@ -716,18 +923,19 @@ ST.buildRankHitRate = function(events, modelKey, k) {
         var probs = ST.computeNoteProbs(e.context.noteCounts, modelKey, k, e.context);
         var sorted = ST.NOTE_IDS.slice().sort(function(a, b) { return (probs[b] || 0) - (probs[a] || 0); });
         var rank = sorted.indexOf(e.tid) + 1;
-        if (rankCounts[rank] !== undefined) rankCounts[rank]++;
+        if (rankCounts[rank] !== undefined) rankCounts[rank] += ST.fitWeight(e);
     });
 
+    var rollsTotal = ST.fitTotal(ncEvents);
     var rows = '', cum = 0;
     for (var r = 1; r <= nRanks; r++) {
         cum += rankCounts[r];
-        var pct = (rankCounts[r] / ncEvents.length * 100).toFixed(1);
-        var cumPct = (cum / ncEvents.length * 100).toFixed(1);
+        var pct = (rankCounts[r] / rollsTotal * 100).toFixed(1);
+        var cumPct = (cum / rollsTotal * 100).toFixed(1);
         rows += '<tr><td class="num">' + r + '</td><td class="num">' + rankCounts[r] + '</td><td class="pct">' + pct + '%</td><td class="pct">' + cumPct + '%</td></tr>';
     }
 
-    var top1Pct = (rankCounts[1] / ncEvents.length * 100).toFixed(1);
+    var top1Pct = (rankCounts[1] / rollsTotal * 100).toFixed(1);
     var uniformPct = (100 / ST.NOTE_IDS.length).toFixed(1);
 
     return '<div class="chart-card"><h3>Hit Rate by Weight Rank (' + modelName + ')</h3>' +
@@ -754,6 +962,7 @@ ST.buildNoteBuckets = function(events, modelKey, k) {
     };
 
     ncEvents.forEach(function(e) {
+        var w = ST.fitWeight(e);
         var xCount = e.context.noteCounts[tid] || 0;
         var key;
         if (xCount === 0) key = '0';
@@ -763,10 +972,10 @@ ST.buildNoteBuckets = function(events, modelKey, k) {
         else if (xCount <= 20) key = '11-20';
         else key = '21+';
 
-        buckets[key].events++;
-        if (e.tid === tid) buckets[key].xDropped++;
+        buckets[key].events += w;
+        if (e.tid === tid) buckets[key].xDropped += w;
         var probs = ST.computeNoteProbs(e.context.noteCounts, modelKey, k, e.context);
-        buckets[key].sumProb += probs[tid];
+        buckets[key].sumProb += probs[tid] * w;
     });
 
     var rows = '';
@@ -825,14 +1034,16 @@ ST.buildTotalNotesBuckets = function(events, modelKey, k) {
             rows += '<tr><td>' + key + '</td><td class="num">0</td><td class="num">—</td><td class="num">—</td></tr>';
             return;
         }
-        var ll = 0;
+        var ll = 0, rolls = 0;
         bucketEvents.forEach(function(e) {
         var probs = ST.computeNoteProbs(e.context.noteCounts, modelKey, k, e.context);
         var p = Math.max(probs[e.tid] || 0, 1e-9);
-        ll += Math.log(p);
+        var w = ST.fitWeight(e);
+        rolls += w;
+        ll += Math.log(p) * w;
         });
-        var avgP = Math.exp(ll / bucketEvents.length);
-        var avgDelta = (ll / bucketEvents.length) - Math.log(uniformP);
+        var avgP = Math.exp(ll / rolls);
+        var avgDelta = (ll / rolls) - Math.log(uniformP);
         rows += '<tr><td>' + key + '</td><td class="num">' + bucketEvents.length + '</td>' +
             '<td class="num">' + (avgP * 100).toFixed(2) + '%</td>' +
             '<td class="num">' + (avgDelta > 0 ? '+' : '') + avgDelta.toFixed(4) + '</td></tr>';
@@ -845,10 +1056,25 @@ ST.buildTotalNotesBuckets = function(events, modelKey, k) {
 };
 
 ST.buildStackInfo = function(events) {
-    var stackCount = events.filter(function(e) { return e.isStack; }).length;
-    var pct = events.length > 0 ? (stackCount / events.length * 100).toFixed(1) : '0.0';
+    var nc = events.filter(function(e) { return e.context && e.context.noteCounts; });
+    var grants = ST.stackGrants(nc);
+    var floors = 0, maxRun = 0;
+    var perRun = {};
+    nc.forEach(function(e) {
+        var s = ST.stackWeight(e);
+        if (s > 0) {
+            floors++;
+            perRun[e.runId] = (perRun[e.runId] || 0) + s;
+        }
+    });
+    Object.keys(perRun).forEach(function(r) { if (perRun[r] > maxRun) maxRun = perRun[r]; });
+    var nRuns = Object.keys(perRun).length;
     return '<div class="chart-card"><h3>Stack Triggers (Note of Surprise III)</h3>' +
-        'Stacks: ' + stackCount + ' / ' + events.length + ' events (' + pct + '%)</div>';
+        '<div style="font-size:11px;color:#555;margin-bottom:8px">Stacks add +6 copies to a base bundle without a new type draw, ' +
+        'so stack grants are excluded from the weight fit above (their base still counts its 1 draw). ' +
+        'Theory cap is 4 triggers per run (+1 possible on Floor 0).</div>' +
+        'Stack grants: ' + grants + ' on ' + floors + ' gain entries across ' + nRuns + ' runs' +
+        ' (max ' + maxRun + ' in one run)</div>';
 };
 
 ST.buildLLMData = function(events) {
@@ -860,18 +1086,21 @@ ST.buildLLMData = function(events) {
     nids.forEach(function(tid, i) { label[tid] = (i + 1) + '=' + ST.noteName(tid); });
     var labels = nids.map(function(tid, i) { return (i + 1) + '=' + ST.noteName(tid); }).join(', ');
 
-    var ndigits = String(ncEvents.length).length;
+    var ndigits = String(ST.fitTotal(ncEvents)).length;
     var lines = [];
     lines.push('=== DATA DESCRIPTION ===');
     lines.push('');
-    lines.push('Below are note drop events from "Star Tower" (a .hack//G.U. derivative).');
-    lines.push('Each event shows the counts of each note type BEFORE the drop and which');
-    lines.push('note won. Note mapping: ' + labels);
+    lines.push('Below are note base-draws from "Star Tower" (a .hack//G.U. derivative).');
+    lines.push('Floor income arrives in base bundles of 3 copies of one rolled type;');
+    lines.push('each base is one draw (one line), no matter its copy count. Stack');
+    lines.push('grants (+6 copies on a base, no new type draw) are excluded, as are');
+    lines.push('off-grammar packets. Event "random note xN" bundles expand one line');
+    lines.push('per unit. Note mapping: ' + labels);
     lines.push('');
-    lines.push('Each event also has harmoniesNotes, discsNotes, overallDiscNotes, startCountsBefore, and startCountsAfter in its context:');
+    lines.push('Each event also has harmoniesNotes, discsNotes, isDiscNote, startCountsBefore, and startCountsAfter in its context:');
     lines.push('- harmoniesNotes = harmony material copies needed across your 3 equipped discs (from NeedSubNoteSkills)');
     lines.push('- discsNotes = how many of your 3 discs feature this note in their secondary skills (0-3)');
-    lines.push('- overallDiscNotes = 1 if this note appears on any equipped disc, 0 otherwise');
+    lines.push('- isDiscNote = 1 if this note appears on any equipped disc, 0 otherwise');
     lines.push('- startCountsBefore = support discs (bag before start.infos)');
     lines.push('- startCountsAfter = support discs + free start.infos (total count at run start)');
     lines.push('These are the same for all events in a run.');
@@ -882,16 +1111,22 @@ ST.buildLLMData = function(events) {
     lines.push('=== EVENTS ===');
     lines.push('');
 
-    ncEvents.forEach(function(e, idx) {
+    var lineNo = 0;
+    ncEvents.forEach(function(e) {
         var cnts = nids.map(function(tid) { return e.context.noteCounts[tid] || 0; });
         var won = nids.indexOf(e.tid) + 1;
         var fl = e.floor !== undefined ? 'F' + e.floor : 'F?';
         var src = e.source || '?';
-        lines.push(
-            String(idx + 1).padStart(ndigits) + ' ' +
+        var line =
             fl.padEnd(4) + ' ' +
-            src.padEnd(7) + ' [' + cnts.join(' ') + '] ' + won
-        );
+            src.padEnd(7) + ' [' + cnts.join(' ') + '] ' + won;
+        var w = ST.fitWeight(e);
+        for (var u = 0; u < w; u++) {
+            lineNo++;
+            lines.push(
+                String(lineNo).padStart(ndigits) + ' ' + line
+            );
+        }
     });
 
     lines.push('');
@@ -920,7 +1155,7 @@ ST.buildLLMData = function(events) {
     lines.push('Return your best guess for the weight formula, your confidence level,');
     lines.push('and what alternative formulas come close.');
     lines.push('');
-    lines.push('Events: ' + ncEvents.length + ' | Notes: ' + nids.length + ' (' + labels + ')');
+    lines.push('Events: ' + ncEvents.length + ' (' + ST.fitTotal(ncEvents) + ' base draws, ' + ST.stackGrants(ncEvents) + ' stack grants excluded) | Notes: ' + nids.length + ' (' + labels + ')');
 
     var text = lines.join('\n');
     var escText = text.replace(/`/g, '\\`').replace(/\$/g, '\\$').replace(/\\/g, '\\\\');
@@ -931,7 +1166,7 @@ ST.buildLLMData = function(events) {
         "var t=document.getElementById('llmDataPre');" +
         "navigator.clipboard.writeText(t.textContent).then(function(){t.style.outline='2px solid #5a8';setTimeout(function(){t.style.outline='none'},800)})" +
         '">Copy to Clipboard</button>' +
-        '<span style="font-size:10px;color:#555">' + ncEvents.length + ' events (filtered)</span></div>' +
+        '<span style="font-size:10px;color:#555">' + ST.fitTotal(ncEvents) + ' base draws (' + ncEvents.length + ' gain entries, filtered)</span></div>' +
         '<pre id="llmDataPre" style="font-size:11px;line-height:1.5;overflow-x:auto;white-space:pre;background:#181818;padding:10px;border-radius:4px;border:1px solid #2a2a2a;color:#aaa;max-height:500px">' +
         escText + '</pre></div>';
 };
@@ -960,18 +1195,23 @@ ST.buildRecentDrops = function(events, limit) {
 
 ST.buildPerRunNotes = function(events, floorFilter, minFloor) {
     if (!ST.runs || ST.runs.length === 0) return '';
+    var odnFilter = ST.noteFilters.odn || 0;
+    var towerFilter = ST.noteFilters.tower || 0;
     var rows = '';
     ST.runs.slice().reverse().forEach(function(run) {
         if (floorFilter > 0 && run.floorReached !== floorFilter) return;
         if (minFloor > 0 && run.floorReached < minFloor) return;
+        var towerId = ST.runTowerId(run);
+        if (towerFilter > 0 && towerId !== towerFilter) return;
+        var odn = ST.runOdnSize(run);
+        if (odnFilter > 0 && odn !== odnFilter) return;
         var runEvents = events.filter(function(e) { return e.runId === run.id && e.context; });
         var totalQty = 0, correctQty = 0;
         runEvents.forEach(function(e) {
             var qty = Math.max(0, e.qty || 0);
             totalQty += qty;
-            if (e.context.overallDiscNotes && e.context.overallDiscNotes[e.tid]) correctQty += qty;
+            if (e.context.isDiscNote && e.context.isDiscNote[e.tid]) correctQty += qty;
         });
-        var overallCount = correctQty;
         var correctPct = totalQty > 0 ? (correctQty / totalQty * 100).toFixed(1) + '%' : '—';
         var chars = (run.start && run.start.data && run.start.data.chars) || [];
         var charHtml = '';
@@ -979,19 +1219,31 @@ ST.buildPerRunNotes = function(events, floorFilter, minFloor) {
             if (c && c.id) charHtml += '<img loading="lazy" src="' + ST.charPortrait(c.id) + '" class="portrait-sm" title="' + ST.charName(c.id) + '" onerror="this.style.display=\'none\'">';
         });
         if (!charHtml) charHtml = '<span style="color:#555">—</span>';
-        rows += '<tr><td>' + (run.start && run.start.data.towerId || '—') + '</td>' +
+        // Allowed element drops: tower pool narrowed to the lead char's
+        // element when applicable (bold = lead lock, single element).
+        var allowedEff = (typeof ST.runAllowedElements === 'function') ? ST.runAllowedElements(run) : (run._allowedElements || null);
+        var elemCell = '<span style="color:#555">—</span>';
+        if (allowedEff && allowedEff.length > 0) {
+            var leadTid = (typeof ST.leadElementTid === 'function') ? ST.leadElementTid(run) : (run._leadElementTid || null);
+            elemCell = allowedEff.map(function(tid) {
+                var nm = (ST.ELEMENT_SHORT && ST.ELEMENT_SHORT[tid]) || String(tid);
+                return (tid === leadTid && allowedEff.length === 1) ? '<strong>' + nm + '</strong>' : nm;
+            }).join(' / ');
+        }
+        rows += '<tr><td>' + (towerId || '—') + '</td>' +
+            '<td>' + elemCell + '</td>' +
             '<td><div class="char-cell">' + charHtml + '</div></td>' +
             '<td class="num">' + (run.floorReached != null ? run.floorReached : '—') + '</td>' +
             '<td class="num">' + (run.potentialCnt || 0) + '</td>' +
-            '<td class="num">' + overallCount + '</td>' +
+            '<td class="num">' + odn + '</td>' +
             '<td class="pct">' + correctPct + '</td></tr>';
     });
     return '<div class="chart-card"><h3>Overall Disc Notes by Run</h3>' +
         '<div style="margin-bottom:8px;font-size:11px">' +
         '<label>Minimum ended floor: <input type="number" min="0" step="1" value="' + (minFloor || '') + '" onchange="ST.noteFilters.runMinFloor=parseInt(this.value)||0;ST.renderNotes()" style="width:70px;margin-left:4px"></label>' +
         '</div>' +
-        '<div style="font-size:11px;color:#666;margin-bottom:8px">OverallDiscNotes = filtered note quantity whose type appears on any equipped disc. Correct % uses the same filtered drops.</div>' +
-        '<table class="data-table"><tr><th>Tower</th><th>Characters</th><th class="num">Floor</th><th class="num">Potentials</th><th class="num">OverallDiscNotes</th><th class="pct">Correct %</th></tr>' + rows + '</table></div>';
+        '<div style="font-size:11px;color:#666;margin-bottom:8px">TDN = amount of different <em>droppable</em> notes needed by your 3 equipped discs (tower pool narrowed to the lead char\'s element when applicable; needs that can never drop are excluded). Elem = allowed element drops for the run (bold = locked to lead char). Correct % = filtered note quantity whose type appears on any equipped disc.</div>' +
+        '<table class="data-table"><tr><th>Tower</th><th>Elem</th><th>Characters</th><th class="num">Floor</th><th class="num">Potentials</th><th class="num">TDN</th><th class="pct">Correct %</th></tr>' + rows + '</table></div>';
 };
 
 ST._selectedNoteDropIdx = null;
@@ -1053,8 +1305,11 @@ ST.renderNotes = function() {
     var activeSources = ST.noteFilters.sources || {};
     srcButtons.forEach(function(src) {
         var active = activeSources[src] ? ' active' : '';
-        srcHtml += '<button class="note-src-btn' + active + '" onclick="ST.toggleNoteSource(\'' + src + '\')">' +
-            src.charAt(0).toUpperCase() + src.slice(1) + '</button>';
+        // The event button only ever passes RNG-rolled event drops —
+        // player-chosen note picks are excluded in the filter below.
+        var label = src === 'event' ? 'RNG event' : src.charAt(0).toUpperCase() + src.slice(1);
+        var title = src === 'event' ? ' title="Only RNG-based event drops (10708, 10808, 114xx quiz, 1200x, 12702); player-chosen notes excluded"' : '';
+        srcHtml += '<button class="note-src-btn' + active + '"' + title + ' onclick="ST.toggleNoteSource(\'' + src + '\')">' + label + '</button>';
     });
 
     var nameLabel = '<span style="margin-left:14px;font-size:11px;color:#555">model: ' + modelName + '</span>';
@@ -1063,6 +1318,54 @@ ST.renderNotes = function() {
     var runFloorOpts = '<option value="0">All End Floors</option>';
     Object.keys(runFloors).map(Number).sort(function(a, b) { return a - b; }).forEach(function(floor) {
         runFloorOpts += '<option value="' + floor + '"' + (ST.noteFilters.runFloor === floor ? ' selected' : '') + '>Ended at Floor ' + floor + '</option>';
+    });
+
+    var events = ST.allNoteEvents || [];
+
+    // Split floor packets into base draws / stack grants on the UNFILTERED
+    // list (filters can split a floor's packet and would fake quarantines).
+    var decompStats = ST.decomposeNoteEntries(events);
+
+    var runOdnById = {};
+    var odnValuesSeen = {};
+    var runTowerById = {};
+    var towerCounts = {};
+    (ST.runs || []).forEach(function(run) {
+        var n = ST.runOdnSize(run);
+        runOdnById[run.id] = n;
+        odnValuesSeen[n] = true;
+        var t = ST.runTowerId(run);
+        runTowerById[run.id] = t;
+        if (t != null) towerCounts[t] = (towerCounts[t] || 0) + 1;
+    });
+    var odnValues = Object.keys(odnValuesSeen).map(Number).sort(function(a, b) { return a - b; });
+    if (ST.noteFilters.odn > 0 && odnValues.indexOf(ST.noteFilters.odn) < 0) ST.noteFilters.odn = 0;
+    var odnOpts = '<option value="0">All TDN</option>';
+    odnValues.forEach(function(n) {
+        odnOpts += '<option value="' + n + '"' + (ST.noteFilters.odn === n ? ' selected' : '') + '>' + n + ' TDN</option>';
+    });
+    var towerIds = Object.keys(towerCounts).map(Number).sort(function(a, b) { return a - b; });
+    if (ST.noteFilters.tower > 0 && towerCounts[ST.noteFilters.tower] === undefined) ST.noteFilters.tower = 0;
+    var towerOpts = '<option value="0">All Towers</option>';
+    towerIds.forEach(function(t) {
+        towerOpts += '<option value="' + t + '"' + (ST.noteFilters.tower === t ? ' selected' : '') + '>Tower ' + t + ' (' + towerCounts[t] + ')</option>';
+    });
+
+    var activeSourcesList = ST.noteFilters.sources || {};
+    var srcKeys = Object.keys(activeSourcesList);
+    var hasActiveSources = srcKeys.length > 0 && srcKeys.some(function(s) { return activeSourcesList[s]; });
+
+    var filtered = events.filter(function(e) {
+        if (ST.noteFilters.note > 0 && e.tid !== ST.noteFilters.note) return false;
+        if (hasActiveSources && !activeSourcesList[e.source]) return false;
+        // The event source only passes RNG-rolled drops: exclude gains from
+        // player-chosen note options (1070x/1080x). Unattributed drops are kept.
+        if (e.source === 'event' && typeof ST.isChosenEventNote === 'function' && ST.isChosenEventNote(e)) return false;
+        if (ST.noteFilters.stack === 'stack' && !e.isStack) return false;
+        if (ST.noteFilters.stack === 'base' && e.isStack) return false;
+        if (ST.noteFilters.odn > 0 && runOdnById[e.runId] !== ST.noteFilters.odn) return false;
+        if (ST.noteFilters.tower > 0 && runTowerById[e.runId] !== ST.noteFilters.tower) return false;
+        return true;
     });
 
     var sliderHtml = nameLabel;
@@ -1078,6 +1381,8 @@ ST.renderNotes = function() {
         '<option value="base"' + (ST.noteFilters.stack === 'base' ? ' selected' : '') + '>Base Only</option>' +
         '</select>' +
         '<select onchange="ST.noteFilters.runFloor=parseInt(this.value);ST.renderNotes()" style="margin-left:8px">' + runFloorOpts + '</select>' +
+        '<select onchange="ST.noteFilters.tower=parseInt(this.value)||0;ST.renderNotes()" style="margin-left:8px" title="Filter runs by tower (each tower drops base notes plus its own 2 elements)">' + towerOpts + '</select>' +
+        '<select onchange="ST.noteFilters.odn=parseInt(this.value)||0;ST.renderNotes()" style="margin-left:8px" title="Filter runs by amount of different droppable notes needed by equipped discs (tower pool narrowed to lead char element when applicable)">' + odnOpts + '</select>' +
         '<span>' + sliderHtml + '</span>' +
         '</div><div class="scroll-panel" id="noteContent"></div>';
 
@@ -1090,23 +1395,18 @@ ST.renderNotes = function() {
     content = document.getElementById('noteContent');
     if (!content) return;
 
-    var events = ST.allNoteEvents;
-
-    var activeSourcesList = ST.noteFilters.sources || {};
-    var srcKeys = Object.keys(activeSourcesList);
-    var hasActiveSources = srcKeys.length > 0 && srcKeys.some(function(s) { return activeSourcesList[s]; });
-
-    var filtered = events.filter(function(e) {
-        if (ST.noteFilters.note > 0 && e.tid !== ST.noteFilters.note) return false;
-        if (hasActiveSources && !activeSourcesList[e.source]) return false;
-        if (ST.noteFilters.stack === 'stack' && !e.isStack) return false;
-        if (ST.noteFilters.stack === 'base' && e.isStack) return false;
-        return true;
-    });
-
     var ncEvents = filtered.filter(function(e) { return e.context && e.context.noteCounts; });
 
-    var out = '<div style="padding:12px 0;font-size:12px;color:#666;">' + ncEvents.length + ' note drops, </div>';
+    var fDraws = ST.fitTotal(ncEvents);
+    var fStacks = ST.stackGrants(ncEvents);
+    var fQuar = ncEvents.filter(function(e) { return e._quarantined; }).length;
+    var out = '<div style="padding:12px 0;font-size:12px;color:#666;">' + ncEvents.length + ' gain entries' +
+        ' (' + fDraws + ' base draws' +
+        (fStacks > 0 ? ', ' + fStacks + ' stack grants excluded' : '') +
+        (fQuar > 0 ? ', ' + fQuar + ' quarantined' : '') +
+        ')' +
+        (decompStats.quarantinedFloors > 0 ? ' — ' + decompStats.quarantinedFloors + ' off-grammar floor packets (all runs)' : '') +
+        '</div>';
 
     var sections = [];
     sections.push(ST.buildModelComparison(filtered));

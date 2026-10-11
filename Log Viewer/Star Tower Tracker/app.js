@@ -5,6 +5,8 @@ window.ST = window.ST || {};
 // ── Data stores ──
 ST.charNames = {};
 ST.noteNames = {};
+ST.charElements = {}; // charId -> element note tid (90018-90023), from bin/Character.json EET
+ST.towerElements = {}; // towerId -> sorted [element note tids] allowed as drops, from drop groups
 ST.runs = [];
 ST.allPotentialEvents = [];
 ST.allNoteEvents = [];
@@ -17,6 +19,15 @@ ST.allRoomVisits = [];
 ST.NOTE_IDS = [90011, 90012, 90013, 90014, 90015, 90016, 90017, 90018];
 ST.ELEMENT_DMG_NOTES = [90018, 90019, 90020, 90021, 90022, 90023];
 ST.ELEMENT_ID = 90018;
+// Short element names, verified against EN/language/en_US/Item.json
+// ("Melody of Aqua/Ignis/Ventus/Terra/Lux/Umbra" for 90018-90023).
+ST.ELEMENT_SHORT = { 90018: 'Aqua', 90019: 'Ignis', 90020: 'Ventus', 90021: 'Terra', 90022: 'Lux', 90023: 'Umbra' };
+// EET number -> element note tid. Order corroborated 3x via StarTower.json
+// EET pairs against SubNoteSkillDropGroup.json pools: tower 109 EET [5,3]
+// drops {Terra 90021, Lux 90022} (group 2); 209 EET [1,4] drops {Aqua 90018,
+// Ventus 90020} (group 3); 309 EET [2,6] drops {Ignis 90019, Umbra 90023}
+// (group 4). Matches the WER/FER/SER/AER/LER/DER enum order (docs/Enums.md).
+ST.EET_TO_NOTE = { 1: 90018, 2: 90019, 3: 90021, 4: 90020, 5: 90022, 6: 90023 };
 ST._seedFields = function(run) {
     var rolls = run._noteRolls || [];
     var dynamicRolls = rolls.slice().reverse();
@@ -107,10 +118,12 @@ ST.fetchNoteNames = function() {
         .then(function(r) { return r.json(); })
         .then(function(data) {
             ST.noteNames = {};
-            ST.NOTE_IDS.forEach(function(tid) {
+            // Load base notes plus all specific element notes (90019-90023),
+            // so element badges can show real names; NOTE_IDS stays collapsed.
+            for (var tid = 90011; tid <= 90023; tid++) {
                 var key = 'Item.' + tid + '.1';
                 if (data[key]) ST.noteNames[tid] = data[key];
-            });
+            }
         });
 };
 
@@ -127,6 +140,78 @@ ST.fetchDiscData = function() {
         .catch(function(err) {
             console.error('disc data failed', err);
         });
+};
+
+// Tower drop pools + character elements, for the allowed-element rule:
+// each tower drops base notes plus 2 elements (SubNoteSkillDropGroup.json
+// groups 2/3/4 for towers 109/209/309); when the lead char's element is one
+// of the tower's two, only his element note drops.
+ST.fetchTowerData = function() {
+    return fetch('/api/stella-data/EN/bin/Character.json')
+        .then(function(r) { return r.json(); })
+        .then(function(charData) {
+            ST.charElements = {};
+            for (var id in charData) {
+                var eet = charData[id] && charData[id].EET;
+                if (ST.EET_TO_NOTE[eet]) ST.charElements[parseInt(id, 10)] = ST.EET_TO_NOTE[eet];
+            }
+            return fetch('/api/stella-data/EN/bin/StarTower.json');
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(towerData) {
+            return fetch('/api/stella-data/EN/bin/SubNoteSkillDropGroup.json')
+                .then(function(r) { return r.json(); })
+                .then(function(dropData) {
+                    var groups = {};
+                    for (var k in dropData) {
+                        var g = dropData[k].GroupId;
+                        var tid = dropData[k].SubNoteSkillId;
+                        if (!groups[g]) groups[g] = [];
+                        groups[g].push(tid);
+                    }
+                    ST.towerElements = {};
+                    for (var towerId in towerData) {
+                        var t = towerData[towerId];
+                        var elems = (groups[t.SubNoteSkillDropGroupId] || [])
+                            .filter(function(x) { return x >= 90018; })
+                            .sort(function(a, b) { return a - b; });
+                        ST.towerElements[t.Id] = elems;
+                    }
+                });
+        })
+        .catch(function(err) {
+            console.error('tower data failed', err);
+        });
+};
+
+// True tower id for a run. NOTE: run.start.data.towerId is the apply-resp
+// field 2 = LastId = the PREVIOUSLY played tower (client Lua only uses it
+// for UI highlight as nLastStarTowerId), so it lags one run behind. The real
+// id is Meta.Id (client: self.nTowerId = mapMeta.Id), logged at info.meta.id.
+// Prefer it; fall back to top-level towerId for old/partial logs.
+ST.runTowerId = function(run) {
+    var d = run && run.start && run.start.data;
+    if (d && d.info && d.info.meta && d.info.meta.id) return d.info.meta.id;
+    return d ? d.towerId : undefined;
+};
+
+// Element note tid of the run's first (lead) character, or null if unknown.
+ST.leadElementTid = function(run) {
+    var chars = run && run.start && run.start.data && run.start.data.chars;
+    if (!chars || !chars[0] || !chars[0].id) return null;
+    return ST.charElements[chars[0].id] || null;
+};
+
+// Element note tids allowed to drop in this run: the tower's pool, narrowed
+// to the lead char's element when it is one of the tower's two. Null means
+// the tower is unknown — no restriction info, keep everything.
+ST.runAllowedElements = function(run) {
+    var towerId = ST.runTowerId(run);
+    var pool = (towerId != null && ST.towerElements[towerId]) ? ST.towerElements[towerId] : null;
+    if (!pool || pool.length === 0) return null;
+    var lead = ST.leadElementTid(run);
+    if (lead && pool.indexOf(lead) >= 0) return [lead];
+    return pool.slice();
 };
 
 ST._buildDiscNoteLookup = function(discData, secData) {
@@ -240,21 +325,48 @@ ST._routeEvents = function(events) {
 ST._beginRun = function(run) {
     var start = run.start.data;
 
-    // Compute disc note need counts from first 3 disc IDs
+    // Compute disc note need counts from first 3 disc IDs.
+    // Only droppable needs are kept: base notes always drop, element notes
+    // only when in this run's allowed set (tower pool narrowed to the lead
+    // char's element when applicable). Needs that can never drop are excluded
+    // so TDN / harmoniesNotes / discsNotes / isDiscNote stay comparable
+    // across towers and builds.
     run._harmoniesNotes = {};
     run._discsNotes = {};
-    run._overallDiscNotes = {};
+    run._isDiscNote = {};
+    run._leadElementTid = ST.leadElementTid(run);
+    run._allowedElements = ST.runAllowedElements(run);
+    var _allowed = run._allowedElements; // null = unknown tower, keep all
+    var _isDroppable = function(rawTid) {
+        if (rawTid < 90018) return true;
+        if (!_allowed) return true;
+        return _allowed.indexOf(rawTid) >= 0;
+    };
     [0, 1, 2].forEach(function(i) {
         var discId = start.discs && start.discs[i] ? String(start.discs[i].id) : null;
         if (!discId) return;
         var need = ST.discNoteNeeds && ST.discNoteNeeds[discId];
         if (!need) return;
+        // Collapse element damage notes (90019-90023) into Element (90018):
+        // drops are logged collapsed via ST._ele, so disc needs must use the
+        // same key space or e.g. {90011, 90019, 90020} counts 3 raw but only
+        // 2 effective ({90011, 90018}).
         for (var noteId in need.harmonyCounts) {
-            run._harmoniesNotes[noteId] = (run._harmoniesNotes[noteId] || 0) + need.harmonyCounts[noteId];
+            var rawH = parseInt(noteId, 10);
+            if (!_isDroppable(rawH)) continue;
+            var effH = ST._ele(rawH);
+            run._harmoniesNotes[effH] = (run._harmoniesNotes[effH] || 0) + need.harmonyCounts[noteId];
         }
+        var seenEff = {};
         need.notes.forEach(function(noteId) {
-            run._discsNotes[noteId] = (run._discsNotes[noteId] || 0) + 1;
-            run._overallDiscNotes[noteId] = 1;
+            var raw = parseInt(noteId, 10);
+            if (!_isDroppable(raw)) return;
+            var eff = ST._ele(raw);
+            if (!seenEff[eff]) {
+                seenEff[eff] = true;
+                run._discsNotes[eff] = (run._discsNotes[eff] || 0) + 1;
+            }
+            run._isDiscNote[eff] = 1;
         });
     });
 
@@ -266,7 +378,7 @@ ST._beginRun = function(run) {
             return { id: c.id, level: c.level, advance: c.advance, affinityLevel: c.affinityLevel, name: ST.charName(c.id) };
         }),
         bag: { notes: {}, potentials: {}, res: {}, secondaries: (start.activeSecondaryIds || []).slice() },
-        towerId: start.towerId,
+        towerId: ST.runTowerId(run),
     };
 
     // Init bag from RUN info
@@ -339,7 +451,7 @@ ST._beginRun = function(run) {
                     startCountsAfter: run._startCountsAfter,
                     harmoniesNotes: run._harmoniesNotes,
                     discsNotes: run._discsNotes,
-                    overallDiscNotes: run._overallDiscNotes,
+                    isDiscNote: run._isDiscNote,
                     seed1: startSeedFields.seed1, seed2: startSeedFields.seed2, seed3: startSeedFields.seed3, seed4: startSeedFields.seed4, seed5: startSeedFields.seed5, seed6: startSeedFields.seed6, seed7: startSeedFields.seed7, seed8: startSeedFields.seed8,
                     dynSeed1: startSeedFields.dynSeed1, dynSeed2: startSeedFields.dynSeed2, dynSeed3: startSeedFields.dynSeed3,
                 },
@@ -458,10 +570,27 @@ ST._processEvent = function(run, ev, state, pendingNpcEvents) {
     if (json.action === 'select' && json.selectResp && json.selectResp.resp) {
         var resp = json.selectResp.resp;
         var selCaseId = json.caseId;
+        // NPC event resolution marker (same test as the pend resolver below):
+        // note gains on this message are event rewards, not floor income.
+        var isNpcEventMsg = resp.optionsResult !== undefined;
         var selectNoteGains = [];
         var selectNoteCountsBefore = ST._collapseNoteCounts(state.bag.notes);
         var selectTotalBefore = 0;
         Object.keys(selectNoteCountsBefore).forEach(function(k) { selectTotalBefore += selectNoteCountsBefore[k]; });
+
+        // Echo pool: the server reports an NPC event reward twice in one
+        // message — once in data.infos, once in resp.items/subNoteSkills
+        // (identical tid+qty multisets). data.infos is recorded (and applied
+        // to the bag) below, so consume matches here: each grant is recorded
+        // and applied exactly once. The infos side is kept because its
+        // before-context predates the grant.
+        var echoPool = noteGains.filter(function(g) { return g.qty > 0; }).map(function(g) { return { tid: g.tid, qty: g.qty }; });
+        var takeEcho = function(tid, qty) {
+            for (var i = 0; i < echoPool.length; i++) {
+                if (echoPool[i].tid === tid && echoPool[i].qty === qty) { echoPool.splice(i, 1); return true; }
+            }
+            return false;
+        };
 
         // Apply state changes
         (resp.items || []).forEach(function(item) {
@@ -470,8 +599,9 @@ ST._processEvent = function(run, ev, state, pendingNpcEvents) {
                 state.bag.potentials[item.tid] = prev + (item.qty || 1);
             } else if (ST.isNote(item.tid)) {
                 var tid = ST._ele(item.tid);
-                var before = selectNoteCountsBefore[tid] || 0;
                 var qty = Math.max(0, item.qty || 1);
+                if (qty > 0 && takeEcho(tid, qty)) return;
+                var before = selectNoteCountsBefore[tid] || 0;
                 state.bag.notes[tid] = (state.bag.notes[tid] || 0) + qty;
                 if (qty > 0) selectNoteGains.push({ tid: tid, qty: qty, before: before });
             }
@@ -479,8 +609,9 @@ ST._processEvent = function(run, ev, state, pendingNpcEvents) {
         (resp.subNoteSkills || []).forEach(function(sn) {
             if (ST.isNote(sn.tid)) {
                 var tid = ST._ele(sn.tid);
-                var before = selectNoteCountsBefore[tid] || 0;
                 var qty = Math.max(0, sn.qty);
+                if (qty > 0 && takeEcho(tid, qty)) return;
+                var before = selectNoteCountsBefore[tid] || 0;
                 state.bag.notes[tid] = (state.bag.notes[tid] || 0) + qty;
                 if (qty > 0) selectNoteGains.push({ tid: tid, qty: qty, before: before });
             }
@@ -495,7 +626,7 @@ ST._processEvent = function(run, ev, state, pendingNpcEvents) {
                     runId: run.id,
                     floor: state.floor,
                     roomType: state.roomType,
-                    source: ST.roomTypeSource(state.roomType),
+                    source: isNpcEventMsg ? 'event' : ST.roomTypeSource(state.roomType),
                     action: json.action,
                     tid: g.tid,
                     qty: g.qty,
@@ -511,7 +642,7 @@ ST._processEvent = function(run, ev, state, pendingNpcEvents) {
                         startCountsAfter: run._startCountsAfter,
                         harmoniesNotes: run._harmoniesNotes,
                         discsNotes: run._discsNotes,
-                        overallDiscNotes: run._overallDiscNotes,
+                        isDiscNote: run._isDiscNote,
                         seed1: selectSeedFields.seed1, seed2: selectSeedFields.seed2, seed3: selectSeedFields.seed3, seed4: selectSeedFields.seed4, seed5: selectSeedFields.seed5, seed6: selectSeedFields.seed6, seed7: selectSeedFields.seed7, seed8: selectSeedFields.seed8,
                         dynSeed1: selectSeedFields.dynSeed1, dynSeed2: selectSeedFields.dynSeed2, dynSeed3: selectSeedFields.dynSeed3,
                     },
@@ -552,6 +683,11 @@ ST._processEvent = function(run, ev, state, pendingNpcEvents) {
 
         var src = ST.roomTypeSource(state.roomType);
         if (state._shopPending) { src = 'shop'; state._shopPending = false; }
+        // NPC event resolution (select carrying optionsResult): data.infos on
+        // this message is the event reward, not floor income — source it as
+        // event. (The selectResp echo of the same grant is dropped above.)
+        if (json.action === 'select' && json.selectResp && json.selectResp.resp &&
+            json.selectResp.resp.optionsResult !== undefined) src = 'event';
 
         var noteSeedFields = ST._seedFields(run);
         noteGains.forEach(function(g) {
@@ -577,7 +713,7 @@ ST._processEvent = function(run, ev, state, pendingNpcEvents) {
                         startCountsAfter: run._startCountsAfter,
                         harmoniesNotes: run._harmoniesNotes,
                         discsNotes: run._discsNotes,
-                        overallDiscNotes: run._overallDiscNotes,
+                        isDiscNote: run._isDiscNote,
                         seed1: noteSeedFields.seed1, seed2: noteSeedFields.seed2, seed3: noteSeedFields.seed3, seed4: noteSeedFields.seed4, seed5: noteSeedFields.seed5, seed6: noteSeedFields.seed6, seed7: noteSeedFields.seed7, seed8: noteSeedFields.seed8,
                         dynSeed1: noteSeedFields.dynSeed1, dynSeed2: noteSeedFields.dynSeed2, dynSeed3: noteSeedFields.dynSeed3,
                     },
@@ -780,7 +916,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // only after the full log is loaded and ST._sseBytes is exact. Connecting
     // earlier sends after=0 and the server re-streams the whole backlog tick
     // by tick, duplicating every run (worse the slower the initial load is).
-    Promise.all([ST.fetchCharNames(), ST.fetchNoteNames(), ST.fetchDiscData()]).then(function() {
+    Promise.all([ST.fetchCharNames(), ST.fetchNoteNames(), ST.fetchDiscData(), ST.fetchTowerData()]).then(function() {
         if (ST.runs.length === 0) return ST.fetchLog();
     }).then(function() {
         ST.startLiveReload();

@@ -1085,6 +1085,9 @@ static void LogStarTowerApplyResp(System_Byte_array* body) {
                     infoJson = ParseStarTowerInfo(r.sub());
                     // Flatten key meta/room info to top level for convenience
                     if (infoJson.contains("meta")) {
+                        // NOTE: meta.id is the CURRENT tower (client: nTowerId = mapMeta.Id).
+                        // Apply-resp field 2 (below) is LastId = the previously played tower.
+                        j["towerId"] = infoJson["meta"].value("id", 0u);
                         j["teamLevel"] = infoJson["meta"].value("teamLevel", 0u);
                         j["charHp"]    = infoJson["meta"].value("charHp", 0u);
                         j["chars"]     = infoJson["meta"].value("chars", json::array());
@@ -1098,7 +1101,7 @@ static void LogStarTowerApplyResp(System_Byte_array* body) {
                     }
                 } else r.skip(wire);
                 break;
-            case 2: j["towerId"]     = (uint32_t)r.varint(); break;
+            case 2: j["lastTowerId"]  = (uint32_t)r.varint(); break;
             case 4: j["coinQty"]     = (uint32_t)r.varint(); break;
             case 5:
                 if (wire == 2) {

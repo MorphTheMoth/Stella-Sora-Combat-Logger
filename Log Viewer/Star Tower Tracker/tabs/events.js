@@ -293,6 +293,42 @@ ST.RANDOM_OPTIONS = {
 // Options that also roll WHICH reward/cost you get, but with a single outcome shape
 ST.ROLLED_REWARD_OPTIONS = [10101, 10102, 10201, 10202, 10203, 10301, 10401, 10402, 10602];
 
+// Note-dropping event options split by RNG vs player choice.
+// RNG_NOTE_OPTIONS: the note TYPE is rolled by the game — usable for weight fitting.
+// CHOSEN_NOTE_OPTIONS: the player picks the note — selection-biased, excluded
+// from the Notes page "RNG event" source filter.
+ST.RNG_NOTE_OPTIONS = [10708, 10808, 11401, 11402, 11403, 11404, 11405, 12001, 12002, 12702];
+ST.CHOSEN_NOTE_OPTIONS = [10701, 10702, 10703, 10704, 10705, 10706, 10707,
+                          10801, 10802, 10803, 10804, 10805, 10806, 10807];
+
+// Resolve the picked option id for an observed NPC event (shared by the
+// Events page and the Notes page RNG-event attribution).
+ST.selectedEventOption = function(e) {
+    var idx = e.selectedIdx;
+    if (idx == null || idx < 0 || idx >= (e.options || []).length) idx = (e.selectedIdx || 1) - 1;
+    return (e.options && e.options[idx] != null) ? e.options[idx] : -1;
+};
+
+// Picked event option behind an event-room note gain, via (runId, floor).
+// Null when no resolved event is found there — caller keeps the drop.
+ST.noteGainEventOption = function(e) {
+    var opt = null;
+    var list = ST.allEventRng || [];
+    for (var i = 0; i < list.length; i++) {
+        var p = list[i];
+        if (p.runId === e.runId && p.floor === e.floor && p.resolved) {
+            opt = ST.selectedEventOption(p); // last match wins (rerolls)
+        }
+    }
+    return opt;
+};
+
+// True when this event-room note gain came from a player-chosen (non-RNG) option.
+ST.isChosenEventNote = function(e) {
+    var opt = ST.noteGainEventOption(e);
+    return opt != null && opt !== -1 && ST.CHOSEN_NOTE_OPTIONS.indexOf(opt) >= 0;
+};
+
 ST.eventFloorFilter = { hideEmpty: true };
 
 ST.renderEvents = function() {
@@ -305,9 +341,7 @@ ST.renderEvents = function() {
 
     // Resolve the selected option id for each observed event
     resolved.forEach(function(e) {
-        var idx = e.selectedIdx;
-        if (idx == null || idx < 0 || idx >= (e.options || []).length) idx = (e.selectedIdx || 1) - 1;
-        e._selOption = (e.options && e.options[idx] != null) ? e.options[idx] : -1;
+        e._selOption = ST.selectedEventOption(e);
     });
 
     // Aggregate observed outcomes per (event, option)
