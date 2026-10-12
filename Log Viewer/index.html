@@ -671,7 +671,7 @@
         .dc-effect-row.disabled .dc-effect-row-val { color: #4a6a4a; }
         .dc-effect-row-lvl {
             display: flex; align-items: center; justify-content: center; gap: 1px;
-            width: 55px; flex-shrink: 0;
+            width: 64px; flex-shrink: 0; white-space: nowrap;
         }
 
         /* ── Level up/down buttons ── */
@@ -689,8 +689,23 @@
             pointer-events: none;
         }
         .dc-lvl-indicator {
-            color: #777; font-size: 11px; margin: 0 3px; vertical-align: middle;
+            color: #777; font-size: 11px; margin: 0 1px; vertical-align: middle;
         }
+        /* Level number fields: identical text to the "/n" next to them, so the
+           pair reads as one unit; only an underline marks the field. */
+        .dc-lvl-input {
+            width: 3ch; box-sizing: border-box;
+            font: inherit; font-size: inherit; line-height: inherit;
+            padding: 0; margin: 0;
+            border: none; border-bottom: 1px dotted transparent; border-radius: 0;
+            background: transparent; color: inherit; outline: none; text-align: center;
+            vertical-align: baseline;
+        }
+        .dc-lvl-input:hover { border-bottom-color: #555; color: #ddd; }
+        .dc-lvl-input:focus { border-bottom-color: #888; color: #ddd; }
+        .dc-lvl-input::-webkit-outer-spin-button,
+        .dc-lvl-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+        .dc-lvl-input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 
         /* ── Effect Impact panel ── */
         #eiPanel {

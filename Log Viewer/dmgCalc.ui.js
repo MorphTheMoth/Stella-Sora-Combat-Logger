@@ -249,6 +249,8 @@ const dcVL = new VirtList({
 // interpolation, so keys/sources containing quotes can't break the markup.
 const dcEffectsPanelEl = document.getElementById('dcEffectsPanel');
 if (dcEffectsPanelEl) dcEffectsPanelEl.addEventListener('click', e => {
+    // Clicks inside a level field must not toggle/disable anything.
+    if (e.target.closest('.dc-lvl-input')) { e.stopPropagation(); return; }
     const lvlBtn = e.target.closest('.dc-lvl-btn');
     if (lvlBtn) {
         e.stopPropagation();
@@ -265,6 +267,53 @@ if (dcEffectsPanelEl) dcEffectsPanelEl.addEventListener('click', e => {
     const sec = e.target.closest('.dc-source-toggle');
     if (sec && sec.dataset.gkey !== undefined) dcToggleSourceSection(sec.dataset.gkey);
 });
+
+// ─── Level number fields ──────────────────────────────────────────────────
+// The level numbers are plain always-visible number inputs: type a level and
+// it commits on change (Enter/blur/stepper), Esc reverts. No editor open or
+// focus juggling — the commit core is dcSetEffectLevel / dcSetSkillLevel.
+if (dcEffectsPanelEl) dcEffectsPanelEl.addEventListener('change', e => {
+    const inp = e.target.closest ? e.target.closest('.dc-lvl-input') : null;
+    if (!inp || !dcEffectsPanelEl.contains(inp)) return;
+    if (inp.dataset.cancelled === '1') { renderEffectsPanel(); return; }
+    const d = String(inp.value).match(/-?\d+/);
+    const v = d ? parseInt(d[0], 10) : NaN;
+    if (!Number.isFinite(v)) { renderEffectsPanel(); return; }
+    if (inp.dataset.charid != null) {
+        dcSetSkillLevel(Number(inp.dataset.charid), Number(inp.dataset.slot), v);
+        // Clamped back to current (or unknown row): setter skipped the
+        // re-render — restore the field ourselves.
+        if (dcEffectsPanelEl.contains(inp)) renderEffectsPanel();
+    } else {
+        const row = inp.closest('.dc-effect-row');
+        if (row && row.dataset.key) {
+            dcSetEffectLevel(row.dataset.key, v);
+            if (dcEffectsPanelEl.contains(inp)) renderEffectsPanel();
+        } else {
+            renderEffectsPanel();
+        }
+    }
+});
+if (dcEffectsPanelEl) dcEffectsPanelEl.addEventListener('keydown', e => {
+    const inp = e.target.closest ? e.target.closest('.dc-lvl-input') : null;
+    if (!inp) return;
+    e.stopPropagation();
+    if (e.key === 'Enter') { e.preventDefault(); inp.blur(); }
+    else if (e.key === 'Escape') {
+        e.preventDefault();
+        inp.dataset.cancelled = '1';
+        inp.blur();
+    }
+});
+
+// True while the user is typing in a level field (it has focus) —
+// background refreshes must not re-render the effects panel under their
+// keystrokes (the commit re-renders instead, picking up deferred effects).
+function dcLvlEditing() {
+    const a = document.activeElement;
+    return !!a && !!a.classList && a.classList.contains('dc-lvl-input')
+        && !!dcEffectsPanelEl && dcEffectsPanelEl.contains(a);
+}
 
 const dcCharsListEl = document.getElementById('dcCharsList');
 if (dcCharsListEl) dcCharsListEl.addEventListener('click', e => {
@@ -358,7 +407,9 @@ function renderEffectsPanel() {
                             <button class="dc-lvl-btn${effectiveLevelIdx <= 0 ? ' dc-lvl-disabled' : ''}"
                                 data-dir="-1"
                                 title="Decrease level">−</button>
-                            <span class="dc-lvl-indicator">${effectiveLevelIdx + 1}/${maxLvl + 1}</span>
+                            <span class="dc-lvl-indicator"><input class="dc-lvl-input" type="number"
+                                min="1" max="${maxLvl + 1}" step="1" value="${effectiveLevelIdx + 1}"
+                                title="Type a level (1–${maxLvl + 1}) — Enter commits, Esc reverts">/ ${maxLvl + 1}</span>
                             <button class="dc-lvl-btn${effectiveLevelIdx >= maxLvl ? ' dc-lvl-disabled' : ''}"
                                 data-dir="1"
                                 title="Increase level">+</button>`;
@@ -459,7 +510,7 @@ function dcRenderSkillLevels() {
                 + ' — ± steps the user change for what-if simulation; reset on the Record page';
             html += `<div class="dc-effect-row" title="${esc(title)}">`
                 + `<span class="dc-effect-row-name">${esc(name)}</span>`
-                + `<span class="dc-effect-row-val">Lv ${eff}/${max}${marker}</span>`
+                + `<span class="dc-effect-row-val">Lv <input class="dc-lvl-input" type="number" data-charid="${cid}" data-slot="${st.slot}" min="0" max="${max}" step="1" value="${eff}" title="Type a level (0–${max}) — Enter commits, Esc reverts">/ ${max}${marker}</span>`
                 + `<span class="dc-effect-row-lvl">`
                 + `<button class="dc-lvl-btn${eff <= 0 ? ' dc-lvl-disabled' : ''}" data-charid="${cid}" data-slot="${st.slot}" data-dir="-1" title="Decrease skill level">−</button>`
                 + `<button class="dc-lvl-btn${eff >= max ? ' dc-lvl-disabled' : ''}" data-charid="${cid}" data-slot="${st.slot}" data-dir="1" title="Increase skill level">+</button>`
@@ -1427,6 +1478,23 @@ window.dcChangeSkillLevel = function(charId, slot, direction) {
     dcApplyAndRender();
 };
 
+// Set a character's skill-slot level directly (click-to-edit on the Skill
+// Levels "Lv n/m" number). Same `change` model as the ± buttons, clamped to
+// the extended sim cap.
+window.dcSetSkillLevel = function(charId, slot, targetLevel) {
+    const st = dcSkillLevels.get(`${Number(charId)}:${Number(slot)}`);
+    if (!st) return;
+    const t = Math.round(Number(targetLevel));
+    if (!Number.isFinite(t)) return;
+    const max = dcSkillMaxLevel(st);
+    const curL = dcSkillEffectiveLevel(st);
+    const newL = Math.min(Math.max(t, 0), max);
+    if (newL === curL) return;
+    st.change = (st.change || 0) + (newL - curL);
+    dcHideCharDeltas();
+    dcApplyAndRender();
+};
+
 // Reset a skill's user change to 0 (record page click).
 window.dcResetSkillLevelChange = function(charId, slot) {
     const st = dcSkillLevels.get(`${Number(charId)}:${Number(slot)}`);
@@ -1550,6 +1618,100 @@ window.dcChangeEffectLevel = function(key, direction) {
         });
     }
 
+    dcHideCharDeltas();
+    dcApplyAndRender();
+};
+
+// Set an effect row's level directly (click-to-edit on the "n/m" indicator).
+// targetOneBased is the 1-based ladder position as displayed. Routed into
+// the same level tables as the ± buttons: skill-scaled rows step the owner's
+// skill-slot change, note rows the note-table change, potential rows the
+// pot-table change, everything else a per-entry level override.
+window.dcSetEffectLevel = function(key, targetOneBased) {
+    const t = Math.round(Number(targetOneBased));
+    if (!Number.isFinite(t)) return;
+    const effects = dcCollectAttrFixEffectsCached();
+    const ef = effects.find(e => e.key === key);
+    if (!ef || ef.configId == null) return;
+    if (!ef.allValueConfigIds || ef.allValueConfigIds.length < 2) return;
+    const newIdx = Math.min(Math.max(t - 1, 0), ef.allValueConfigIds.length - 1);
+    const targetVcId = ef.allValueConfigIds[newIdx].valueConfigId;
+
+    // Skill-scaled effect (levelTypeData 3): decode the ladder entry's skill
+    // level (valueConfigId = configId + L*10) and set the owner's slot to it.
+    if (ef.levelTypeData === 3 && ef.levelData != null) {
+        const cid = ef.fromAttrDict ? (ef._charId ?? null) : (dcEffectOwnerCharId(ef.configId) ?? ef._charId);
+        if (cid != null) {
+            const slot = dcEffectSkillSlot(ef.configId, ef.levelData, cid);
+            dcEnsureSkillLevel(cid, slot,
+                (ef.valueConfigId != null && ef.valueConfigId > ef.configId)
+                    ? Math.round((ef.valueConfigId - ef.configId) / 10) : 0);
+            dcSetSkillLevel(cid, slot, Math.round((targetVcId - ef.configId) / 10));
+            return;
+        }
+    }
+
+    // Note row (levelTypeData 5): ladder entry is configId + L*10.
+    if (ef.levelTypeData === 5 && ef.levelData != null) {
+        let st = dcNoteLevels.get(Number(ef.levelData));
+        if (!st) {
+            const curL0 = (ef.valueConfigId != null && ef.valueConfigId > ef.configId)
+                ? Math.round((ef.valueConfigId - ef.configId) / 10) : 0;
+            st = dcEnsureNoteLevel(ef.levelData, curL0);
+            if (!st) return;
+        }
+        const targetL = Math.min(Math.max(Math.round((targetVcId - ef.configId) / 10), 0), 99);
+        const curEff = dcNoteEffectiveLevel(st);
+        if (targetL === curEff) return;
+        st.change = (st.change || 0) + (targetL - curEff);
+        dcHideCharDeltas();
+        dcApplyAndRender();
+        return;
+    }
+
+    // Potential entry: ladder ids "<gid><P><L><V>" — decode L and set the
+    // potential's table to it (clamped to the 0..9 ladder domain).
+    if (ef.levelSource != null) {
+        let st = dcPotLevels.get(ef.levelSource);
+        if (!st) {
+            const lo0 = ef.configId - (ef.configId % 1000);
+            const loggedL = (ef.valueConfigId != null && ef.valueConfigId > lo0)
+                ? Math.floor(((ef.valueConfigId - lo0) % 100) / 10) : 0;
+            st = dcEnsurePotLevel(ef.levelSource, loggedL, ef._charId);
+            if (!st) return;
+        }
+        const lo = ef.configId - (ef.configId % 1000);
+        const rel = targetVcId > lo ? targetVcId - lo : 0;
+        const targetL = Math.min(Math.max(Math.floor((rel % 100) / 10), 0), 9);
+        const curL = dcPotEffectiveLevel(st);
+        if (targetL === curL) return;
+        st.change = (st.change || 0) + (targetL - curL);
+        dcHideCharDeltas();
+        dcApplyAndRender();
+        return;
+    }
+
+    // Generic entry: per-entry level override at the picked ladder index.
+    const effOverride = (typeof dcGetLevelOverride === 'function') ? dcGetLevelOverride(ef, ef.side) : null;
+    const curVcId = effOverride ? effOverride.newValueConfigId : ef.valueConfigId;
+    const curIdx = ef.allValueConfigIds.findIndex(v => v.valueConfigId === curVcId);
+    if (newIdx === (curIdx >= 0 ? curIdx : ef.currentLevelIdx)) return;
+    const newVcId = targetVcId;
+    const ev = effectValueTable.get(newVcId);
+    if (!ev || ev.value == null) return;
+    const ovKey = ef.fromAttrDict
+        ? `${ef.side}:${ef.configId}:${ef.valueConfigId ?? ''}`
+        : key;
+    if (newVcId === ef.valueConfigId) {
+        dcEffectLevelOverrides.delete(ovKey);
+    } else {
+        dcEffectLevelOverrides.set(ovKey, {
+            newValueConfigId: newVcId,
+            newValue: ev.value,
+            newAttrType: ev.attrType != null ? ev.attrType : ef.attrType,
+            newSubType: ev.subType != null ? ev.subType : ef.subType,
+        });
+    }
     dcHideCharDeltas();
     dcApplyAndRender();
 };
@@ -2029,7 +2191,7 @@ window.dcRefreshIfVisible = function() {
         const newKeys = new Set(newEffects.map(e => e.key));
         if (!_dcLastEffectKeys || _dcLastEffectKeys.size !== newKeys.size || ![...newKeys].every(k => _dcLastEffectKeys.has(k))) {
             _dcLastEffectKeys = newKeys;
-            renderEffectsPanel();
+            if (!dcLvlEditing()) renderEffectsPanel();
         }
 
         document.getElementById('stats').textContent = `${dcFiltered.length} hits`;
@@ -2046,7 +2208,7 @@ window.dcRefreshIfVisible = function() {
         const newKeys = new Set(newEffects.map(e => e.key));
         if (!_dcLastEffectKeys || _dcLastEffectKeys.size !== newKeys.size || ![...newKeys].every(k => _dcLastEffectKeys.has(k))) {
             _dcLastEffectKeys = newKeys;
-            renderEffectsPanel();
+            if (!dcLvlEditing()) renderEffectsPanel();
         }
         if (typeof eiRenderSidebarChips === 'function') eiRenderSidebarChips();
     }
