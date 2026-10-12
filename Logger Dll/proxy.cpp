@@ -11,6 +11,14 @@
 #include "star_tower_hooks.h"
 #include "game_structs.h"
 
+// ─── ScoreBoss "dummy" test-stage feature (dummy.cpp) ───────────────────────
+// Alt+1..5 entry hotkeys + the Blitz formation-screen "Dummy" button, pumped
+// over the game window's message loop and torn down on detach.
+bool InstallHotkeys();
+void StartHotkeyRetry();
+void RemoveHotkeys();
+void EnsureScoreBossTestButton();
+
 #ifdef WINHTTP_PROXY
 // =============================================================================
 //  WINHTTP FORWARDING
@@ -141,6 +149,9 @@ static void __fastcall Hook_ModuleClearData(void* self, void* method) {
     // Re-read the live origin catalog (emblems/gems + char base + discs) from the
     // game's Lua state on the main thread; the next damage event emits it once.
     RefreshOriginCatalog();
+    // Room transition (incl. back to lobby/menu): (re)install the Blitz test
+    // button patch + ensure the clone exists. Same main-thread DoString context.
+    EnsureScoreBossTestButton();
     // Lua-clock modes (Boss Blitz): LuaClockRunStart owns the Reset log — it is
     // emitted when the in-game timer is set back to zero, not here, so a retry
     // produces exactly one Reset/Record pair, stamped at the run start.
@@ -927,6 +938,9 @@ static DWORD WINAPI InitThread(LPVOID) {
     InstallHook(g_base + RVA_GDC_GET_HIT_DAMAGE,     reinterpret_cast<void*>(&GdcHook_GetHitDamage),    (void**)&g_GdcHooks[0].original, g_GdcHooks[0].name);
     InstallHook(g_base + RVA_GDC_GET_MONSTER,        reinterpret_cast<void*>(&GdcHook_GetMonster),      (void**)&g_GdcHooks[1].original, g_GdcHooks[1].name);
     InstallHttpHooks(g_base);
+    if (!InstallHotkeys())
+        log("[hotkey] game window not ready yet; retrying in background for Alt+1..5");
+    StartHotkeyRetry();
 
     log("[init] Ready.");
     CoUninitialize();
@@ -940,6 +954,7 @@ BOOL APIENTRY DllMain(HMODULE hInst, DWORD reason, LPVOID reserved) {
         if (h) CloseHandle(h);
     }
     else if (reason == DLL_PROCESS_DETACH) {
+        RemoveHotkeys();
         MH_DisableHook(MH_ALL_HOOKS);
         MH_Uninitialize();
         if (g_Log)     { log("[uninit] DLL detached."); fclose(g_Log); g_Log = nullptr; }

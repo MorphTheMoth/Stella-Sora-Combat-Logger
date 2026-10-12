@@ -77,7 +77,7 @@ hitDamage.levelData_)` (weapon/area hits use their bound
 `SkillSlotLevelInfo`). `HitDamage.MainOrSupport` is likewise unused in
 combat. For `levelTypeData` 1/2/3 the game does `level-1` before indexing the
 per-level arrays (`decompiled.c:3853176`); the DLL logs
-`skillLevel + 1` (`logging.cpp:1157`), so logged `skillLevel` = the display
+`skillLevel + 1` (`Logger Dll/logging.cpp:1157`), so logged `skillLevel` = the display
 level and `sp[skillLevel-1]` reproduces the game's pick.
 
 ## Tilia's two effects

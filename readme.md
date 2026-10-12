@@ -58,9 +58,11 @@ For linux I had issues with normally injecting a dll, but you can download the s
 ```bash
 x86_64-w64-mingw32-g++ -shared \
     -o stellaCombatLogger.dll \
-    proxy.cpp logging.cpp http_hooks.cpp \
-    -I "./minhook/include" \
-    -L "./minhook" \
+    "Logger Dll/proxy.cpp" "Logger Dll/logging.cpp" "Logger Dll/dummy.cpp" \
+    "Logger Dll/http_hooks.cpp" "Logger Dll/star_tower_hooks.cpp" \
+    -I "./Logger Dll/include" \
+    -I "./Logger Dll/minhook/include" \
+    -L "./Logger Dll/minhook" \
     -lMinHook -m64 -O2 -std=c++17 \
     -static-libgcc -static-libstdc++ \
     -lole32 -luuid -lwinhttp
@@ -69,9 +71,11 @@ x86_64-w64-mingw32-g++ -shared \
 ```bash
 x86_64-w64-mingw32-g++ -shared \
     -o stellaCombatLogger-Linux.dll \
-    proxy.cpp logging.cpp http_hooks.cpp \
-    -I "./minhook/include" \
-    -L "./minhook" \
+    "Logger Dll/proxy.cpp" "Logger Dll/logging.cpp" "Logger Dll/dummy.cpp" \
+    "Logger Dll/http_hooks.cpp" "Logger Dll/star_tower_hooks.cpp" \
+    -I "./Logger Dll/include" \
+    -I "./Logger Dll/minhook/include" \
+    -L "./Logger Dll/minhook" \
     -lMinHook -m64 -O2 -std=c++17 \
     -static-libgcc -static-libstdc++ \
     -lole32 -luuid -lwinhttp \

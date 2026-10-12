@@ -246,6 +246,12 @@ std::unordered_set<int32_t> TakeAppliedHittedAttrFixSnapshot();
 void RefreshOriginCatalog();
 void MaybeEmitOriginCatalog(AdventureActor_o* fromActor, AdventureActor_o* toActor);
 
+// Runs a Lua chunk on the Unity main thread through the game's own LuaEnv
+// (il2cpp DoString).  Returns the chunk's result, or "" on failure (the reason
+// is logged).  Callers must already be on the main thread.  Used by the origin
+// catalog and by dummy.cpp's ScoreBoss test entry.
+std::string RunLuaDoString(const char* chunk, const char* label);
+
 // Resolve the AdventureModuleDebugHelper singleton (SceneSingleton<T>.
 // get_Instance chain — defined in proxy.cpp).  Used by EnableAllDebugGizmos
 // to write the gizmo flag bytes onto the same instance the engine reads.

@@ -1627,7 +1627,7 @@ if ok then return res end
 return 'ERR:' .. (tostring(res):gsub('[%c"\\]', '?'))
 )lua";
 
-static std::string RunLuaDoString(const char* chunk, const char* label) {
+std::string RunLuaDoString(const char* chunk, const char* label) {
     if (!EnsureIl2CppExports()) return "";
 
     static void* mgrKlass        = nullptr;

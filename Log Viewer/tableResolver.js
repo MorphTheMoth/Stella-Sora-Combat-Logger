@@ -33,7 +33,7 @@ const onceAttrValueTable = new Map();
 // (atk / skill dmg / …). Best-effort: buffs whose stat is only reachable through
 // an EffectType-6 ADDBUFF chain have no direct attr effect and stay absent — the
 // pick list then shows no tag. The id space is BuffEntity.buffConfig.id
-// (logging.cpp BuildBuffListJson), i.e. the Buff.json / BuffValue.json keys.
+// (Logger Dll/logging.cpp BuildBuffListJson), i.e. the Buff.json / BuffValue.json keys.
 const buffAttrTypeTable = new Map();
 
 // ─── EffectType enum ──────────────────────────────────────────────────────────
@@ -146,8 +146,8 @@ const skillTable    = new Map();
 // Attribute index -> name string
 const ATTR_NAMES = [
     "None", "Atk", "Def", "Max Hp", "Hit Rate", "Evd", "Crit Rate", "Crit Resist",
-    "Crit Damage", "Penetrate", "Def Ignore", "Wer", "Fer", "Ser",
-    "Aer", "Ler", "Der", "Aqua Dmg", "Ignis Dmg", "Terra Dmg", "Ventus Dmg", "Lux Dmg",
+    "Crit Damage", "Penetrate", "Def Ignore", "Aqua RES", "Ignis RES", "Terra RES",
+    "Ventus RES", "Lux RES", "Umbra RES", "Aqua Dmg", "Ignis Dmg", "Terra Dmg", "Ventus Dmg", "Lux Dmg",
     "Umbra Dmg", "Aqua Pen", "Ignis Pen", "Terra Pen", "Ventus Pen", "Lux Pen", "Umbra Pen", "Wei",
     "Fei", "Sei", "Aei", "Lei", "Dei", "Rcd Aqua Dmg", "Rcd Ignis Dmg",
     "Rcd Terra Dmg", "Rcd Ventus Dmg", "Rcd Lux Dmg", "Rcd Umbra Dmg", "Weight",

@@ -281,14 +281,14 @@
 
 <script>
 // ═══════════════════════════════════════════════════════════════════════════
-//  Attribute resolution  (mirrors http_hooks.cpp logic, client-side)
+//  Attribute resolution  (mirrors Logger Dll/http_hooks.cpp logic, client-side)
 // ═══════════════════════════════════════════════════════════════════════════
 
-// effectAttributeType enum → name  (from kEffectAttrNames in http_hooks.cpp)
+// effectAttributeType enum → name  (from kEffectAttrNames in Logger Dll/http_hooks.cpp)
 const ATTR_NAMES = [
     "None", "Atk", "Def", "Max Hp", "Hit Rate", "Evd", "Crit Rate", "Crit Resist",
-    "Crit Damage", "Penetrate", "Def Ignore", "Wer", "Fer", "Ser",
-    "Aer", "Ler", "Der", "Aqua Dmg", "Ignis Dmg", "Terra Dmg", "Ventus Dmg", "Lux Dmg",
+    "Crit Damage", "Penetrate", "Def Ignore", "Aqua RES", "Ignis RES", "Terra RES",
+    "Ventus RES", "Lux RES", "Umbra RES", "Aqua Dmg", "Ignis Dmg", "Terra Dmg", "Ventus Dmg", "Lux Dmg",
     "Umbra Dmg", "Aqua Pen", "Ignis Pen", "Terra Pen", "Ventus Pen", "Lux Pen", "Umbra Pen", "Wei",
     "Fei", "Sei", "Aei", "Lei", "Dei", "Rcd Aqua Dmg", "Rcd Ignis Dmg",
     "Rcd Terra Dmg", "Rcd Ventus Dmg", "Rcd Lux Dmg", "Rcd Umbra Dmg", "Weight",
@@ -319,7 +319,7 @@ function formatValue(v) {
     return Math.round(v).toString();
 }
 
-// BuildAttrLabel — mirrors BuildAttrLabel() from http_hooks.cpp
+// BuildAttrLabel — mirrors BuildAttrLabel() from Logger Dll/http_hooks.cpp
 // attrType 12: stat boost, 37: charge efficiency, 7: ability level-up, 99: potential (needs charId)
 function buildAttrLabel(attrType, firstSubtype, secondSubtype, value) {
     const val = formatValue(value);
