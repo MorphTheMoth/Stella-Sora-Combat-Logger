@@ -76,11 +76,23 @@ function renderRecordData(panel, rec, synthetic) {
     for (const ch of seq) {
         const cid = String(ch.charId);
         const charName = cid === '0' ? 'Unknown' : resolveActorKey('p:' + cid);
-        const lvl = ch.level != null ? `Lv ${ch.level}` : '';
-        const adv = ch.advance != null && ch.advance > 0 ? ` · Adv ${ch.advance}` : '';
+        // Live character level comes from the dmg-calc char level table
+        // (dcCharLevelInfo) — record lv/adv/atk, user change, effective lv/adv.
+        const lvlInfo = window.dcCharLevelInfo ? window.dcCharLevelInfo(ch.charId) : null;
+        const effLv = lvlInfo ? lvlInfo.effLevel : ch.level;
+        const effAdv = lvlInfo ? lvlInfo.effAdv : ch.advance;
+        const change = lvlInfo ? (lvlInfo.change || 0) : 0;
+        const lvl = effLv != null ? `Lv ${effLv}` : '';
+        const adv = effAdv != null && effAdv > 0 ? ` · Upg ${effAdv}` : '';
+        const atk = lvlInfo ? ` · ${lvlInfo.effAtk} Atk` : '';
+        const chgTxt = change > 0 ? `+${change}` : (change < 0 ? String(change) : '');
+        const chgAttr = change !== 0
+            ? ` title="Click to reset" style="cursor:pointer" onclick="dcResetCharLevelChange(${Number(ch.charId)})"`
+            : '';
+        const chg = change !== 0 ? ` <span class="rec-bonus"${chgAttr}>${chgTxt}*</span>` : '';
 
         html.push(`<div class="rec-char">`);
-        html.push(`<div class="rec-char-name">${charName} <span class="rec-char-sub">${lvl}${adv}</span></div>`);
+        html.push(`<div class="rec-char-name">${charName} <span class="rec-char-sub">${lvl}${adv}${atk}${chg}</span></div>`);
 
         const pots = ch.pots || [];
         if (!pots.length) {

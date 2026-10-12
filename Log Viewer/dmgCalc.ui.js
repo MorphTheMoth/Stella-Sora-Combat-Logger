@@ -255,7 +255,11 @@ if (dcEffectsPanelEl) dcEffectsPanelEl.addEventListener('click', e => {
     if (lvlBtn) {
         e.stopPropagation();
         if (lvlBtn.dataset.charid != null) {
-            dcChangeSkillLevel(Number(lvlBtn.dataset.charid), Number(lvlBtn.dataset.slot), Number(lvlBtn.dataset.dir));
+            if (lvlBtn.dataset.slot != null) {
+                dcChangeSkillLevel(Number(lvlBtn.dataset.charid), Number(lvlBtn.dataset.slot), Number(lvlBtn.dataset.dir));
+            } else if (lvlBtn.dataset.charlvl != null) {
+                dcChangeCharLevel(Number(lvlBtn.dataset.charid), Number(lvlBtn.dataset.dir));
+            }
         } else {
             const row = lvlBtn.closest('.dc-effect-row');
             if (row && row.dataset.key) dcChangeEffectLevel(row.dataset.key, Number(lvlBtn.dataset.dir));
@@ -280,7 +284,11 @@ if (dcEffectsPanelEl) dcEffectsPanelEl.addEventListener('change', e => {
     const v = d ? parseInt(d[0], 10) : NaN;
     if (!Number.isFinite(v)) { renderEffectsPanel(); return; }
     if (inp.dataset.charid != null) {
-        dcSetSkillLevel(Number(inp.dataset.charid), Number(inp.dataset.slot), v);
+        if (inp.dataset.slot != null) {
+            dcSetSkillLevel(Number(inp.dataset.charid), Number(inp.dataset.slot), v);
+        } else if (inp.dataset.charlvl != null) {
+            dcSetCharLevel(Number(inp.dataset.charid), v);
+        }
         // Clamped back to current (or unknown row): setter skipped the
         // re-render — restore the field ourselves.
         if (dcEffectsPanelEl.contains(inp)) renderEffectsPanel();
@@ -405,19 +413,15 @@ function renderEffectsPanel() {
                     if (hasLevels) {
                         levelBtns = `
                             <button class="dc-lvl-btn${effectiveLevelIdx <= 0 ? ' dc-lvl-disabled' : ''}"
-                                data-dir="-1"
-                                title="Decrease level">−</button>
+                                data-dir="-1">−</button>
                             <span class="dc-lvl-indicator"><input class="dc-lvl-input" type="number"
-                                min="1" max="${maxLvl + 1}" step="1" value="${effectiveLevelIdx + 1}"
-                                title="Type a level (1–${maxLvl + 1}) — Enter commits, Esc reverts">/ ${maxLvl + 1}</span>
+                                min="1" max="${maxLvl + 1}" step="1" value="${effectiveLevelIdx + 1}">/ ${maxLvl + 1}</span>
                             <button class="dc-lvl-btn${effectiveLevelIdx >= maxLvl ? ' dc-lvl-disabled' : ''}"
-                                data-dir="1"
-                                title="Increase level">+</button>`;
+                                data-dir="1">+</button>`;
                     }
 
                     g += `<div class="dc-effect-row${disabled ? ' disabled' : ''}"
-                        data-key="${esc(ef.key)}"
-                        title="${esc(ef.name)} — ${esc(valStr).replace(/"/g,'&quot;')}">
+                        data-key="${esc(ef.key)}">
                         <span class="dc-effect-row-name">${esc(ef.name)}</span>
                         <span class="dc-effect-row-val">${valStr}</span>
                         <span class="dc-effect-row-lvl">${levelBtns}</span>
@@ -456,9 +460,16 @@ function renderEffectsPanel() {
         // breakdown, disabling an emblem skill row drops that emblem's bonus.
         html += dcRenderSkillLevels();
 
+        // ── Character Levels ─────────────────────────────────────────────
+        // Per-character base-Atk levels (the character.json `stat` ladder).
+        // ± steps the ladder index (crossing a tier boundary = upgrade),
+        // the level field jumps to the nearest tier holding the typed level.
+        html += dcRenderCharLevels();
+
         html += `</div></div>`;
     }
     panel.innerHTML = html;
+    dcStripSidebarTitles();
     // (dcRenderCharList is rendered by renderFormulaBar in the same
     // dcApplyAndRender pass — no duplicate render here.)
 }
@@ -506,16 +517,60 @@ function dcRenderSkillLevels() {
             const name = SKILL_SLOT_NAMES[st.slot] || ('Skill ' + st.slot);
             const marker = (bonus > 0 ? ` <span class="rec-bonus">+${bonus}</span>` : '')
                          + (change !== 0 ? ` <span class="rec-bonus">${change > 0 ? '+' : ''}${change}*</span>` : '');
-            const title = `Record ${st.recordLv} + bonus ${bonus} + change ${change} = ${eff} (in-game max ${st.maxLv}, sim cap ${max})`
-                + ' — ± steps the user change for what-if simulation; reset on the Record page';
-            html += `<div class="dc-effect-row" title="${esc(title)}">`
+            html += `<div class="dc-effect-row">`
                 + `<span class="dc-effect-row-name">${esc(name)}</span>`
-                + `<span class="dc-effect-row-val">Lv <input class="dc-lvl-input" type="number" data-charid="${cid}" data-slot="${st.slot}" min="0" max="${max}" step="1" value="${eff}" title="Type a level (0–${max}) — Enter commits, Esc reverts">/ ${max}${marker}</span>`
+                + `<span class="dc-effect-row-val">Lv <input class="dc-lvl-input" type="number" data-charid="${cid}" data-slot="${st.slot}" min="0" max="${max}" step="1" value="${eff}">/ ${max}${marker}</span>`
                 + `<span class="dc-effect-row-lvl">`
-                + `<button class="dc-lvl-btn${eff <= 0 ? ' dc-lvl-disabled' : ''}" data-charid="${cid}" data-slot="${st.slot}" data-dir="-1" title="Decrease skill level">−</button>`
-                + `<button class="dc-lvl-btn${eff >= max ? ' dc-lvl-disabled' : ''}" data-charid="${cid}" data-slot="${st.slot}" data-dir="1" title="Increase skill level">+</button>`
+                + `<button class="dc-lvl-btn${eff <= 0 ? ' dc-lvl-disabled' : ''}" data-charid="${cid}" data-slot="${st.slot}" data-dir="-1">−</button>`
+                + `<button class="dc-lvl-btn${eff >= max ? ' dc-lvl-disabled' : ''}" data-charid="${cid}" data-slot="${st.slot}" data-dir="1">+</button>`
                 + `</span></div>`;
         }
+    }
+    return html;
+}
+
+// ─── Character Levels section ───────────────────────────────────────────────
+// One collapsible group ("Character Levels"), one row per record character
+// showing the live effective level/upgrade/base-Atk with ± buttons that step
+// the ladder index (crossing a tier boundary = upgrade) and a level field
+// that jumps to the nearest tier holding the typed level. Same `change`
+// model as the skill levels — record.js shows the breakdown, the delta
+// patches the Origin-domain Atk (dmgCalc.calc.js dcCharLevels).
+function dcRenderCharLevels() {
+    if (typeof dcCharLevels === 'undefined' || dcCharLevels.size === 0) return '';
+    const sts = [...dcCharLevels.values()].sort((a, b) => a.charId - b.charId);
+    const rec = (typeof getOriginRecord === 'function') ? getOriginRecord() : null;
+    if (rec?.team?.length) {
+        const order = new Map(rec.team.map(Number).map((id, i) => [id, i]));
+        sts.sort((a, b) => (order.has(a.charId) ? order.get(a.charId) : 1e9)
+            - (order.has(b.charId) ? order.get(b.charId) : 1e9));
+    }
+    const gkey = 'charlv||levels';
+    if (!(gkey in dcSourceOpenStates)) dcSourceOpenStates[gkey] = true;
+    const isOpen = dcSourceOpenStates[gkey] === true;
+    let html = `<div class="dc-effects-side-header">Character Levels</div>`;
+    html += `<div class="dc-source-toggle" data-gkey="${esc(gkey)}">`
+        + `<span class="dc-source-arrow">${isOpen ? '▾' : '▸'}</span><span>Character Levels</span>`
+        + `<span class="dc-source-count">${sts.length}</span></div>`;
+    if (!isOpen) return html;
+    for (const st of sts) {
+        const ladder = (typeof dcCharLadder === 'function') ? dcCharLadder(st.charId) : null;
+        if (!ladder || !ladder.length) continue;
+        const maxIdx = ladder.length - 1;
+        const effIdx = (typeof dcCharEffectiveIdx === 'function') ? dcCharEffectiveIdx(st)
+            : Math.min(Math.max(st.recordIdx + (st.change || 0), 0), maxIdx);
+        const effAtk = ladder[effIdx].atk;
+        const eff = (typeof dcCharIdxToAdvLevel === 'function')
+            ? dcCharIdxToAdvLevel(ladder, effIdx) : { adv: st.recordAdv, level: st.recordLevel };
+        const change = st.change || 0;
+        const marker = change !== 0 ? ` <span class="rec-bonus">${change > 0 ? '+' : ''}${change}*</span>` : '';
+        html += `<div class="dc-effect-row">`
+            + `<span class="dc-effect-row-name">${esc(st.charName || String(st.charId))}</span>`
+            + `<span class="dc-effect-row-val">Lv <input class="dc-lvl-input" type="number" data-charid="${st.charId}" data-charlvl="1" min="1" max="91" step="1" value="${eff.level}"> Upg ${eff.adv} (${effAtk} Atk)${marker}</span>`
+            + `<span class="dc-effect-row-lvl">`
+            + `<button class="dc-lvl-btn${effIdx <= 0 ? ' dc-lvl-disabled' : ''}" data-charid="${st.charId}" data-charlvl="1" data-dir="-1">−</button>`
+            + `<button class="dc-lvl-btn${effIdx >= maxIdx ? ' dc-lvl-disabled' : ''}" data-charid="${st.charId}" data-charlvl="1" data-dir="1">+</button>`
+            + `</span></div>`;
     }
     return html;
 }
@@ -1329,10 +1384,10 @@ function dcRenderCharList() {
         // current Total Calc is than the Total Calc with this char disabled.
         const pct = dcD && (dcD.baseTotal - delta) > 0 ? ((dcD.baseTotal / (dcD.baseTotal - delta)) - 1) * 100 : null;
         const deltaStr = pct != null
-            ? `<span class="dc-char-delta" title="Total Calc minus Total Calc with this character disabled (its hits + its owned Potentials hits zeroed + its owned effects disabled): ${delta >= 0 ? '+' : ''}${Math.round(delta).toLocaleString()}">${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%</span>`
+            ? `<span class="dc-char-delta">${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%</span>`
             : '';
         return `<div class="dc-char-row${off ? ' disabled' : ''}">
-            <span class="dc-char-name" title="${esc(name)}">${esc(name)}</span>
+            <span class="dc-char-name">${esc(name)}</span>
             ${deltaStr}
             <span class="dc-char-spacer"></span>
             <button class="dc-char-btn${off ? ' on' : ''}" data-char="${esc(name)}">${off ? 'Enable' : 'Disable'}</button>
@@ -1349,15 +1404,9 @@ function dcRenderCharList() {
             // bonus (total minus the 100% baseline, Param5) divided by 1.3 —
             // the engine's /step*ratio (Param4=0.013, Param1=0.01). Shown
             // pre-cap so it reads straight against the cap.
-            const thr = (wba.threshold != null) ? wba.threshold : 1;
-            const aaStr = fmtVal(Math.max(0, wba.maxAA - thr), 'dmgTypePct');
             const valStr = fmtVal(wba.rawConv, 'dmgTypePct');
             const capStr = fmtVal(wba.cap, 'dmgTypePct');
-            const convStr = fmtVal(wba.conv, 'dmgTypePct');
-            const stateStr = wba.disabled ? ' [conversion off]' : (wba.capped ? ' [at cap]' : '');
-            const tip = `Wide Blade Arc (${wba.hits} hit${wba.hits !== 1 ? 's' : ''}): highest Auto Attack DMG bonus ${aaStr} \u00f7 1.3 = ${valStr}, `
-                + `cap ${capStr}, current conversion ${convStr}${stateStr} \u2014 click to jump to that hit`;
-            html += `<div class="dc-char-row dc-wba-row${wba.disabled ? ' disabled' : ''}" title="${esc(tip)}" role="button">
+            html += `<div class="dc-char-row dc-wba-row${wba.disabled ? ' disabled' : ''}" role="button">
                 <span class="dc-char-name">Wide Blade Arc Value:</span>
                 <span class="dc-wba-val">${valStr} / ${capStr}</span>
             </div>`;
@@ -1382,7 +1431,7 @@ function dcRenderCharList() {
         const qTotalIf = dcD ? dcD.baseTotal - qDelta : 0;
         const qpct = dcD && qTotalIf > 0 ? ((dcD.baseTotal / qTotalIf) - 1) * 100 : null;
         const qStr = qpct != null
-            ? `<span class="dc-char-delta" title="Current Total Calc vs Total Calc with this toggle ${active ? 'turned off' : 'applied'} (delta: ${qDelta >= 0 ? '+' : ''}${Math.round(qDelta).toLocaleString()})">${qpct >= 0 ? '+' : ''}${qpct.toFixed(1)}%</span>`
+            ? `<span class="dc-char-delta">${qpct >= 0 ? '+' : ''}${qpct.toFixed(1)}%</span>`
             : '';
         // Disc toggles ride on data-group (delegated handler) — their names
         // can contain quotes that would break an inline onclick string.
@@ -1390,10 +1439,10 @@ function dcRenderCharList() {
             ? `data-group="${esc(t.groupKey)}"`
             : `onclick="${t.onclick}"`;
         html += `<div class="dc-char-row${strike ? ' disabled' : ''}">
-            <span class="dc-char-name" title="${esc(t.title)}">${esc(t.label)}</span>
+            <span class="dc-char-name">${esc(t.label)}</span>
             ${qStr}
             <span class="dc-char-spacer"></span>
-            <button class="dc-char-btn${active ? ' on' : ''}" ${btnAttrs} title="${esc(t.title)}">${label}</button>
+            <button class="dc-char-btn${active ? ' on' : ''}" ${btnAttrs}>${label}</button>
         </div>`;
     }
     // Calculate: recomputes the deltas shown next to the characters and
@@ -1401,6 +1450,16 @@ function dcRenderCharList() {
     // (The Calculate button lives next to the static "Quick Toggles"
     // heading in index.html — no per-render button row here.)
     el.innerHTML = html;
+    dcStripSidebarTitles();
+}
+
+// No hover hints anywhere in the right sidebar: belt-and-suspenders strip
+// of any title="" a render path (current or future) leaves inside
+// #sidebarDcStats. Source titles were removed too; this just enforces it.
+function dcStripSidebarTitles() {
+    const sb = document.getElementById('sidebarDcStats');
+    if (!sb) return;
+    for (const n of sb.querySelectorAll('[title]')) n.removeAttribute('title');
 }
 
 window.dcToggleChar = function(name) {
@@ -1498,6 +1557,65 @@ window.dcSetSkillLevel = function(charId, slot, targetLevel) {
 // Reset a skill's user change to 0 (record page click).
 window.dcResetSkillLevelChange = function(charId, slot) {
     const st = dcSkillLevels.get(`${Number(charId)}:${Number(slot)}`);
+    if (!st || !st.change) return;
+    st.change = 0;
+    dcHideCharDeltas();
+    dcApplyAndRender();
+};
+
+// ± a character's base-Atk ladder index (Character Levels section). Steps
+// the user's `change` — crossing a tier boundary changes the advance (and
+// the Atk jumps by the breakthrough segment).
+window.dcChangeCharLevel = function(charId, direction) {
+    const st = dcCharLevels.get(Number(charId));
+    if (!st) return;
+    const ladder = (typeof dcCharLadder === 'function') ? dcCharLadder(st.charId) : null;
+    if (!ladder || !ladder.length) return;
+    const maxIdx = ladder.length - 1;
+    const curIdx = dcCharEffectiveIdx(st);
+    const newIdx = Math.min(Math.max(curIdx + direction, 0), maxIdx);
+    if (newIdx === curIdx) return;
+    st.change = (st.change || 0) + (newIdx - curIdx);
+    dcHideCharDeltas();
+    dcApplyAndRender();
+};
+
+// Set a character's level directly (click-to-edit on the Character Levels
+// "Lv n" number). Jumps to the ladder entry holding that level nearest the
+// current position (the tier auto-follows — boundary levels live in two
+// tiers, so the nearer one wins) — same `change` model as the ± buttons.
+window.dcSetCharLevel = function(charId, targetLevel) {
+    const st = dcCharLevels.get(Number(charId));
+    if (!st) return;
+    const ladder = (typeof dcCharLadder === 'function') ? dcCharLadder(st.charId) : null;
+    if (!ladder || !ladder.length) return;
+    const t = Math.round(Number(targetLevel));
+    if (!Number.isFinite(t)) return;
+    const effIdx = dcCharEffectiveIdx(st);
+    let newIdx;
+    if (ladder.length !== 99) {
+        newIdx = Math.min(Math.max(t - 1, 0), ladder.length - 1);
+    } else {
+        const lv = Math.min(Math.max(t, 1), 91);
+        newIdx = -1;
+        let bestDist = Infinity;
+        for (let a = 0; a <= 8; a++) {
+            if (lv < dcCharTierMin(a) || lv > dcCharTierMax(a)) continue;
+            const idx = DC_CHAR_TIER_START[a] + (lv - dcCharTierMin(a));
+            const d = Math.abs(idx - effIdx);
+            if (d < bestDist) { bestDist = d; newIdx = idx; }
+        }
+        if (newIdx < 0) return;
+    }
+    if (newIdx === effIdx) return;
+    st.change = (st.change || 0) + (newIdx - effIdx);
+    dcHideCharDeltas();
+    dcApplyAndRender();
+};
+
+// Reset a character's level change to 0 (record page click).
+window.dcResetCharLevelChange = function(charId) {
+    const st = dcCharLevels.get(Number(charId));
     if (!st || !st.change) return;
     st.change = 0;
     dcHideCharDeltas();
@@ -1757,8 +1875,8 @@ function dcRenderTotals() {
             : '';
         compareRows +=
             `<span class="dc-compare-row">` +
-            `<button class="dc-compare-del" onclick="dcDeleteCompare(${c.id})" title="Remove this compare">✕</button>` +
-            `<span class="dc-compare-name" id="dcCmpName${c.id}" title="Click to rename" onclick="dcRenameCompare(${c.id})">${esc(c.name)}</span>` +
+            `<button class="dc-compare-del" onclick="dcDeleteCompare(${c.id})">✕</button>` +
+            `<span class="dc-compare-name" id="dcCmpName${c.id}" onclick="dcRenameCompare(${c.id})">${esc(c.name)}</span>` +
             `: <strong>${Math.round(c.value).toLocaleString()}</strong>${pctStr}` +
             `</span>`;
     }
@@ -1766,13 +1884,14 @@ function dcRenderTotals() {
     const compareSep = dcCompares.length ? `<span class="dc-compare-sep"></span>` : '';
 
     el.innerHTML = `
-        <span style="display:flex;align-items:center;justify-content:space-between"><span>Total Calc: <strong>${Math.round(totalCalc).toLocaleString()}</strong>${d1}</span><button class="dc-compare-btn" onclick="dcAddCompare()" title="Save the current Total Calc as a compare entry">Save to Compare</button></span>
+        <span style="display:flex;align-items:center;justify-content:space-between"><span>Total Calc: <strong>${Math.round(totalCalc).toLocaleString()}</strong>${d1}</span><button class="dc-compare-btn" onclick="dcAddCompare()">Save to Compare</button></span>
         ${compareRows}
         ${compareSep}
         <span style="display:block">Total In-Game: <strong>${Math.round(totalGame).toLocaleString()}</strong>${d2}</span>
         <span style="display:block">Time: <strong>${secs.toFixed(1)}s</strong></span>
         <span style="display:block">DPS: <strong>${dps.toLocaleString()}</strong></span>
     `;
+    if (typeof dcStripSidebarTitles === 'function') dcStripSidebarTitles();
 }
 
 function dcRefreshEI() {

@@ -138,6 +138,8 @@ function dcRecordLevelSig(rec) {
     if (cached !== undefined) return cached;
     const chars = (rec.chars || []).map(c => [
         Number(c.charId) || 0,
+        Number(c.level) || 0,
+        Number(c.advance) || 0,
         c.pots || null,
         c.skills || null,
         c.gems || null,
@@ -260,6 +262,7 @@ window.dcResetSimState = function () {
     dcPotLevels.clear();
     dcSkillLevels.clear();
     dcNoteLevels.clear();
+    dcCharLevels.clear();
     dcLevelTablesSig = null;
     if (typeof dcEffectsDisabled !== 'undefined') dcEffectsDisabled.clear();
     if (typeof dcEffectLevelOverrides !== 'undefined') dcEffectLevelOverrides.clear();
@@ -606,6 +609,117 @@ function dcRebuildSkillLevels() {
     }
     dcBumpLevelState();
 }
+
+// ─── Character level table (char base Atk) ─────────────────────────────────
+// Single source of truth for every character's base-Atk level:
+//   effective Atk = ladder[clamp(recordIdx + change)] — the ladder index IS
+//   the (upgrade, level) position (character.json `stat`, 99 entries in tiers
+//   [10,11,11,11,11,11,11,11,12] = upgrades 0..8; the boundary levels repeat
+//   with ~×1.2 stats). The ± buttons step the ladder index (crossing a tier
+//   boundary = breakthrough); the level input sets the level within the
+//   current tier. The delta (effective Atk − record Atk) patches the
+//   attacker's Origin-domain Atk (attr 1, `origin` slot) — the same domain
+//   the disc/build record rows live in — so every pipeline that funnels
+//   through dcApplyEffectOverrides (dmg calc, Effect Impact, Emblems
+//   Comparison incl. its disable-only baseline) follows char-level moves.
+const dcCharLevels = new Map();   // charId -> { charId, charName, recordIdx, recordLevel, recordAdv, recordAtk, change }
+
+// Ladder index of tier starts (= upgrade tiers 0..8) for the uniform
+// 99-entry ladder; tier t spans levels [tierMin, tierMax].
+const DC_CHAR_TIER_START = [0, 10, 21, 32, 43, 54, 65, 76, 87];
+const DC_CHAR_TIER_SIZE = [10, 11, 11, 11, 11, 11, 11, 11, 12];
+function dcCharTierMin(adv) { return adv <= 0 ? 1 : adv * 10; }
+function dcCharTierMax(adv) { return adv >= 8 ? 91 : adv * 10 + 10; }
+
+// Ladder index for a record (advance, level) pair. Non-uniform ladders
+// (shouldn't happen — verified uniform across the datamine) fall back to a
+// plain level-1 index.
+function dcCharRecordIdx(ladder, adv, level) {
+    if (!ladder || !ladder.length) return 0;
+    if (ladder.length !== 99) return Math.min(Math.max((level || 1) - 1, 0), ladder.length - 1);
+    const a = Math.min(Math.max(adv || 0, 0), 8);
+    const lv = Math.min(Math.max(level || 1, dcCharTierMin(a)), dcCharTierMax(a));
+    return DC_CHAR_TIER_START[a] + (lv - dcCharTierMin(a));
+}
+
+// (upgrade, level) of a ladder index (uniform ladder; fallback mirrors above).
+function dcCharIdxToAdvLevel(ladder, idx) {
+    if (!ladder || ladder.length !== 99) return { adv: 0, level: Math.min(Math.max(idx + 1, 1), 91) };
+    const i = Math.min(Math.max(idx, 0), 98);
+    for (let t = 0; t < 9; t++) {
+        if (i < DC_CHAR_TIER_START[t] + DC_CHAR_TIER_SIZE[t])
+            return { adv: t, level: dcCharTierMin(t) + (i - DC_CHAR_TIER_START[t]) };
+    }
+    return { adv: 8, level: 91 };
+}
+
+function dcCharLadder(charId) {
+    if (typeof charStatLadder === 'undefined') return null;
+    return charStatLadder.get(Number(charId)) || null;
+}
+
+function dcRebuildCharLevels() {
+    const prev = new Map(dcCharLevels);
+    dcCharLevels.clear();
+    const rec = (typeof getOriginRecord === 'function') ? getOriginRecord() : null;
+    for (const ch of (rec?.chars || [])) {
+        const charId = Number(ch.charId);
+        if (!charId || dcCharLevels.has(charId)) continue;
+        const ladder = dcCharLadder(charId);
+        if (!ladder || ladder.length < 2) continue;
+        const adv = Number(ch.advance) || 0;
+        const lvl = Number(ch.level) || 1;
+        const idx = dcCharRecordIdx(ladder, adv, lvl);
+        const old = prev.get(charId);
+        dcCharLevels.set(charId, {
+            charId,
+            charName: (typeof resolveActorKey === 'function') ? resolveActorKey('p:' + charId) : String(charId),
+            recordIdx: idx,
+            recordLevel: lvl,
+            recordAdv: Math.min(Math.max(adv, 0), 8),
+            recordAtk: ladder[idx].atk,
+            change: old ? (old.change || 0) : 0,
+        });
+    }
+    // Keep entries the record doesn't list (same rationale as the pot/skill/
+    // note rebuilds — nothing lazily recreates char rows, but a momentarily
+    // missing record must not destroy pending ± changes).
+    for (const [charId, old] of prev) {
+        if (!dcCharLevels.has(charId)) dcCharLevels.set(charId, old);
+    }
+    dcBumpLevelState();
+}
+
+// Effective ladder index: record + user change, clamped to the ladder.
+function dcCharEffectiveIdx(st) {
+    const ladder = dcCharLadder(st.charId);
+    const max = ladder ? ladder.length - 1 : 98;
+    return Math.min(Math.max(st.recordIdx + (st.change || 0), 0), max);
+}
+
+// Effective base Atk at the current change.
+function dcCharEffectiveAtk(st) {
+    const ladder = dcCharLadder(st.charId);
+    if (!ladder) return st.recordAtk;
+    return ladder[dcCharEffectiveIdx(st)].atk;
+}
+
+// Bridge for record.js (separate scope): per-character level breakdown.
+window.dcCharLevelInfo = function (charId) {
+    const st = dcCharLevels.get(Number(charId));
+    if (!st) return null;
+    const effIdx = dcCharEffectiveIdx(st);
+    const eff = dcCharIdxToAdvLevel(dcCharLadder(st.charId), effIdx);
+    return {
+        recordLevel: st.recordLevel,
+        recordAdv: st.recordAdv,
+        recordAtk: st.recordAtk,
+        effLevel: eff.level,
+        effAdv: eff.adv,
+        effAtk: dcCharEffectiveAtk(st),
+        change: st.change || 0,
+    };
+};
 
 // Sum of the emblem/talent bonus rows not disabled in the sidebar.
 function dcSkillRowBonus(st, disabledSet) {
@@ -1073,6 +1187,7 @@ function dcCollectAttrFixEffects(dcFiltered) {
     dcRebuildPotLevels();   // rebuild the potential level table from the record
     dcRebuildSkillLevels(); // rebuild the skill level table from the record
     dcRebuildNoteLevels();  // rebuild the note level table from the record
+    dcRebuildCharLevels();  // rebuild the character level table from the record
     dcEnsureHitLevels();    // lazy record reconstruction from the hits themselves
     for (const ev of dcFiltered) {
         const evCharId = dcEventCharId(ev);   // attacker charId (skill-level owner)
@@ -1508,7 +1623,7 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides, s
     if (dcIsCharDisabledHit(ev)) {
         return { aStats: origA, dStats: origD, _potentialsDisabled: true };
     }
-    if (dcEffectsDisabled.size === 0 && !(dcEffectLevelOverrides?.size) && dcPotLevels.size === 0 && dcSkillLevels.size === 0 && dcNoteLevels.size === 0) return { aStats: origA, dStats: origD };
+    if (dcEffectsDisabled.size === 0 && !(dcEffectLevelOverrides?.size) && dcPotLevels.size === 0 && dcSkillLevels.size === 0 && dcNoteLevels.size === 0 && dcCharLevels.size === 0) return { aStats: origA, dStats: origD };
 
     // Attacker charId — owner of attacker-side skill-scaled effects
     const attackerCharId = dcEventCharId(ev);
@@ -1705,6 +1820,29 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides, s
                         effectType: e.effectType,
                         bySubType: true,
                     }, override.newValue * stacks, 1, ev.HitConfig.elementType);
+                }
+            }
+        }
+    }
+
+    // ── Character base-Atk level ─────────────────────────────────────
+    // The attacker's char-level delta (effective ladder Atk − record Atk)
+    // lands in the Origin-domain Atk slot — the same domain the disc/build
+    // record rows use. Deliberately OUTSIDE the skipLevelOverrides gate:
+    // the Emblems Comparison / Effect Impact disable-only baseline must
+    // carry it (it is not a replayable level entry, so nothing re-derives
+    // it). Skipped for hits whose Record differs from the level tables'
+    // source, like every other level-table move.
+    if (!recMismatch && dcCharLevels.size > 0 && attackerCharId != null) {
+        const st = dcCharLevels.get(attackerCharId);
+        if (st) {
+            const effIdx = dcCharEffectiveIdx(st);
+            if (effIdx !== st.recordIdx) {
+                const delta = dcCharEffectiveAtk(st) - st.recordAtk;
+                if (delta !== 0) {
+                    let stat = aMap.get(1);
+                    if (!stat) { stat = { origin: 0, base: 0, pct: 0, abs: 0 }; aMap.set(1, stat); }
+                    stat.origin = (stat.origin || 0) + delta;
                 }
             }
         }

@@ -258,6 +258,12 @@ const effectIdPot = new Map();             // effect configId -> potential id (e
 const potEffectIds = new Map();            // potential id -> Set of effect configIds
 // potential id -> display name (from item.json root, same source buildHitTable uses)
 const potentialNameById = new Map();
+// character id -> base-stat ladder from character.json `stat`
+// ([{ l, atk }], 99 entries: upgrade tiers 0..8 = index segments
+// [10,11,11,11,11,11,11,11,12]). Only Atk varies meaningfully for the
+// calc (Hp rides along unused, Def/etc. are constant) — the Dmg Calc's
+// character-level table (dmgCalc.calc.js) resolves deltas through this.
+const charStatLadder = new Map();   // charId -> [{ l, atk }]
 const EMBLEM_SLOT_NAMES = { 1: 'Emblem 70', 2: 'Emblem 80', 3: 'Emblem 90' };
 const GEM_SKILL_SLOT_NAMES = { 1: 'Normal Atk', 2: 'Main Skill', 3: 'Support Skill', 4: 'Ultimate' };
 
@@ -1773,6 +1779,29 @@ function buildSkillTable(jChar, jSkill, jSkillLang) {
     }
 }
 
+// ─── Character base-stat ladder (character.json `stat`) ────────────────────
+// charId -> [{ l, atk }] in ladder order. The ladder's index IS the upgrade
+// axis: segments [10,11,11,11,11,11,11,11,12] = upgrade tiers 0..8 (the
+// boundary levels repeat with ~×1.2 stats, e.g. Lv 10: 358 → 430 —
+// Attribute.json GroupId <charId>, Id = <charId><UU><LLL>). Only Atk feeds
+// the damage formula (Hp is unused there, the rest is constant per char).
+function buildCharStatLadder(jChar) {
+    charStatLadder.clear();
+    if (!jChar) return;
+    for (const [, cval] of Object.entries(jChar)) {
+        const cid = parseInt(cval.id ?? cval.Id, 10);
+        const stats = cval.stat;
+        if (!cid || !Array.isArray(stats) || !stats.length) continue;
+        const ladder = [];
+        for (const s of stats) {
+            const atk = Number(s.ATK);
+            if (!Number.isFinite(atk)) continue;
+            ladder.push({ l: Number(s.Level) || 0, atk });
+        }
+        if (ladder.length > 1) charStatLadder.set(cid, ladder);
+    }
+}
+
 // ─── Public init ─────────────────────────────────────────────────────────────
 
 // ─── Built-table cache (IndexedDB) ───────────────────────────────────────
@@ -1796,7 +1825,7 @@ const EC_DATA_TABLES = [
     effectLevelMetaFallback, effectMainOrSupport, hitLadderFallback, skillTable,
     discLangNames, discBonusNotesById, subNoteNamesById, subNoteEffectIdByNote,
     gemAttrValueById, potentialById, potentialEffectFamily, effectIdPot,
-    potEffectIds, potentialNameById, skillRoleOwner,
+    potEffectIds, potentialNameById, skillRoleOwner, charStatLadder,
 ];
 
 function ecHashStr(s) {
@@ -1811,7 +1840,7 @@ function ecHashStr(s) {
 function ecCodeHash() {
     return ecHashStr([
         buildEffectValueTable, buildOnceAttrValueTable, buildActorNameMap,
-        buildHitTable, buildEffectTable, buildSkillTable, initTables,
+        buildHitTable, buildEffectTable, buildSkillTable, buildCharStatLadder, initTables,
     ].map(f => f.toString()).join('\n'));
 }
 
@@ -2077,6 +2106,8 @@ async function initTables() {
     });
 
     buildSkillTable(jChar, jSkill, jSkillLang);
+
+    buildCharStatLadder(jChar);
 
     // Snapshot the built tables for the next page load (best effort — on any
     // failure the next load just rebuilds from the datamine). Fire-and-forget

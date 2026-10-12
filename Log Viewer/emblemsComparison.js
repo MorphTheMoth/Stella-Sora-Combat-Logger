@@ -2103,6 +2103,7 @@ function ecComputeBase(prof) {
     if (typeof dcRebuildPotLevels === 'function') dcRebuildPotLevels();
     if (typeof dcRebuildSkillLevels === 'function') dcRebuildSkillLevels();
     if (typeof dcRebuildNoteLevels === 'function') dcRebuildNoteLevels();
+    if (typeof dcRebuildCharLevels === 'function') dcRebuildCharLevels();
     if (typeof dcEnsureHitLevels === 'function') dcEnsureHitLevels();
     if (prof) t = prof('level tables', t);
 
