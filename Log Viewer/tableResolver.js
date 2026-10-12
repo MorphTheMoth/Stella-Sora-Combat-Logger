@@ -656,6 +656,7 @@ function enrichHit(ev) {
     padStats(ev.AttackerStats?.attrs);
     padStats(ev.DefenderStats?.attrs);
     enrichAttrList(ev.AttackerStats?.attrs);
+    enrichAttrList(ev.DefenderStats?.attrs);
     enrichAttrList(ev.AttackerSpecial?.specialAttrs);
     enrichAttrList(ev.DefenderSpecial?.specialAttrs);
 }
