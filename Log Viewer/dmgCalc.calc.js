@@ -99,6 +99,25 @@ const dcEffectPot = new Map();   // effect configId -> potential id (exact level
 // resolves the slot for them.
 const dcSkillScaled = new Map();
 
+// ─── Talent rows are not levellable ─────────────────────────────────────────
+// Effects marked as Talent (effectTable label 'Talent: …', source
+// '<char> Talents' / 'Talents') never scale with any level table in game —
+// no skill-slot scaling, no potential ladder, no per-entry value ladder.
+// Central predicate so the collector, the level-override resolver and the
+// synthetic record all agree on which rows are fixed.
+function dcIsTalentRow(e) {
+    if (!e) return false;
+    const src = e.source;
+    if (typeof src === 'string' && src.includes('Talents')) return true;
+    const nm = e.name;
+    if (typeof nm === 'string' && (nm.startsWith('Talent: ') || nm.includes(' / Talent: '))) return true;
+    if (e.configId != null && typeof effectTable !== 'undefined') {
+        const ei = effectTable.get(Number(e.configId));
+        if (ei && typeof ei.label === 'string' && ei.label.startsWith('Talent: ')) return true;
+    }
+    return false;
+}
+
 // ─── Per-hit record scoping ───────────────────────────────────────────────────
 // A log can contain several battles, each with its own Record event. The level
 // tables (pots / skills / notes) are rebuilt from the LATEST record on every
@@ -263,6 +282,7 @@ window.dcSyntheticRecord = function () {
         try {
             for (const ef of dcCollectAttrFixEffects(dcFiltered)) {
                 if (ef.configId == null) continue;
+                if (typeof dcIsTalentRow === 'function' && dcIsTalentRow(ef)) continue; // Talents are not levellable
                 const lo0 = ef.configId - (ef.configId % 1000);
                 if (ef.levelSource != null && ef.valueConfigId != null && ef.valueConfigId > lo0) {
                     dcEnsurePotLevel(ef.levelSource,
@@ -351,6 +371,9 @@ function dcGetLevelOverride(e, side, disabledSet, charId, fromAttrDict) {
 }
 
 function dcGetLevelOverrideImpl(e, side, disabledSet, charId, fromAttrDict) {
+    // Talent rows are not levellable: fixed value, no skill/pot/note rescale
+    // and no per-entry level override (stale user overrides stay inert).
+    if (typeof dcIsTalentRow === 'function' && dcIsTalentRow(e)) return null;
     const key = `${side}:${e.configId}:${e.valueConfigId ?? ''}`;
     const user = dcEffectLevelOverrides.get(key);
     if (user) return user;
@@ -1081,29 +1104,33 @@ function dcCollectAttrFixEffects(dcFiltered) {
                     const key = `${side}:${e.configId}:${er.valueConfigId ?? ''}`;
                     if (!seen.has(key)) {
                         const lm = resolveLevelMap(e.configId);
+                        // Talents are not levellable: fixed value, no ladder, no
+                        // skill-slot link, no potential level source.
+                        const isTalent = (typeof dcIsTalentRow === 'function') && dcIsTalentRow(e);
                         // Skill-scaled effect (levelTypeData 3): register the
                         // configId → slot link so raw battle entries resolve too.
-                        if (lm.levelTypeData === 3) dcSkillScaled.set(e.configId, lm.levelData);
+                        if (!isTalent && lm.levelTypeData === 3) dcSkillScaled.set(e.configId, lm.levelData);
                         // Record rows (emblem pots) carry their own level ladder
                         // (the potential's marginal levels) — keep it as-is.
                         let allVcIds = (er.allValueConfigIds && er.allValueConfigIds.length)
                             ? er.allValueConfigIds : lm.allValueConfigIds;
                         let curIdx = allVcIds.findIndex(v => v.valueConfigId === er.valueConfigId);
-                        if (curIdx < 0 && !(er.allValueConfigIds && er.allValueConfigIds.length)) {
+                        if (!isTalent && curIdx < 0 && !(er.allValueConfigIds && er.allValueConfigIds.length)) {
                             const derived = deriveLevelCandidates(e.configId, er.valueConfigId, false);
                             if (derived) { allVcIds = derived.vc; curIdx = derived.curIdx; }
                         }
                         // Level source: the potential this effect belongs to,
                         // by exact effect id (pot rows carry linkPotential.potId).
-                        const levelSource = e.isPotRow
+                        const levelSource = isTalent ? null : (e.isPotRow
                             ? (e.linkPotential?.potId ?? null)
-                            : (dcEffectPot.get(e.configId) ?? null);
+                            : (dcEffectPot.get(e.configId) ?? null));
                         // The pot row's key drives the bonus term of the level
                         // formula (disabled row → emblem bonus excluded).
                         if (e.isPotRow && levelSource != null) {
                             const stL = dcPotLevels.get(levelSource);
                             if (stL) stL.potKey = key;
                         }
+                        if (isTalent) { allVcIds = []; curIdx = -1; }
                         seen.set(key, {
                             key, side,
                             configId: e.configId,
@@ -1120,7 +1147,7 @@ function dcCollectAttrFixEffects(dcFiltered) {
                             baseStatOnSnapshot: e.baseStatOnSnapshot,
                             pctStatOnSnapshot: e.pctStatOnSnapshot,
                             allValueConfigIds: allVcIds,
-                            levelTypeData: lm.levelTypeData,
+                            levelTypeData: isTalent ? 0 : lm.levelTypeData,
                             levelData: lm.levelData,
                             currentLevelIdx: curIdx >= 0 ? curIdx : -1,
                             // record rows: keep their identity so EI labels them
@@ -1164,10 +1191,13 @@ function dcCollectAttrFixEffects(dcFiltered) {
                     const stacks = e.stacks != null ? e.stacks : 1;
                     if (!seen.has(key)) {
                         const lm = resolveLevelMap(cid);
-                        if (lm.levelTypeData === 3) dcSkillScaled.set(cid, lm.levelData);
-                        let allVcIds = lm.allValueConfigIds;
-                        let curIdx = allVcIds.findIndex(v => v.valueConfigId === e.valueConfigId);
-                        if (curIdx < 0) {
+                        // Talents are not levellable: fixed value, no ladder, no
+                        // skill-slot link, no potential level source.
+                        const isTalentDict = (typeof dcIsTalentRow === 'function') && dcIsTalentRow(e);
+                        if (!isTalentDict && lm.levelTypeData === 3) dcSkillScaled.set(cid, lm.levelData);
+                        let allVcIds = isTalentDict ? [] : lm.allValueConfigIds;
+                        let curIdx = isTalentDict ? -1 : allVcIds.findIndex(v => v.valueConfigId === e.valueConfigId);
+                        if (!isTalentDict && curIdx < 0) {
                             const derived = deriveLevelCandidates(cid, e.valueConfigId, true);
                             if (derived) { allVcIds = derived.vc; curIdx = derived.curIdx; }
                         }
@@ -1178,7 +1208,7 @@ function dcCollectAttrFixEffects(dcFiltered) {
                         // baseId + skillLevel*10 walk, but in-game leveling swaps the
                         // attrId instead — so a stat change via level buttons is never
                         // meaningful. Fewer than 2 candidates remain → no level buttons.
-                        if (e.attrType != null && allVcIds.length) {
+                        if (!isTalentDict && e.attrType != null && allVcIds.length) {
                             allVcIds = allVcIds.filter(v => {
                                 const slots = onceAttrValueTable.get(v.valueConfigId);
                                 if (!slots || !slots.length) return true; // unknown value id — keep
@@ -1201,7 +1231,7 @@ function dcCollectAttrFixEffects(dcFiltered) {
                             fromAttrDict: true,
                             effectType: e.effectType,
                             allValueConfigIds: allVcIds,
-                            levelTypeData: lm.levelTypeData,
+                            levelTypeData: isTalentDict ? 0 : lm.levelTypeData,
                             levelData: lm.levelData,
                             currentLevelIdx: curIdx >= 0 ? curIdx : -1,
                             // Level source for once-attr rows (Effect.json's
@@ -1209,7 +1239,8 @@ function dcCollectAttrFixEffects(dcFiltered) {
                             // dcChangeEffectLevel route the ± buttons into the
                             // potential's level table instead of a per-entry
                             // override that dcGetLevelOverride can't find.
-                            levelSource: dcEffectPot.get(cid) ?? null,
+                            // Talents are not levellable: no level source.
+                            levelSource: isTalentDict ? null : (dcEffectPot.get(cid) ?? null),
                             _charId: e._charId ?? (side === 'attacker' ? evCharId : null)
                         });
                     } else if (stacks > seen.get(key).count) {

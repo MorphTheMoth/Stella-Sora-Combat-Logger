@@ -1508,6 +1508,8 @@ window.dcChangeEffectLevel = function(key, direction) {
     const effects = dcCollectAttrFixEffectsCached();
     const ef = effects.find(e => e.key === key);
     if (!ef || ef.configId == null) return;
+    // Talent rows are not levellable: fixed value, no level buttons.
+    if (typeof dcIsTalentRow === 'function' && dcIsTalentRow(ef)) return;
 
     // Skill-scaled effect (levelTypeData 3): its level lives in the owning
     // character's skill level table — resolve the shared slot 2 by the owner's
@@ -1633,6 +1635,8 @@ window.dcSetEffectLevel = function(key, targetOneBased) {
     const effects = dcCollectAttrFixEffectsCached();
     const ef = effects.find(e => e.key === key);
     if (!ef || ef.configId == null) return;
+    // Talent rows are not levellable: fixed value, no level buttons.
+    if (typeof dcIsTalentRow === 'function' && dcIsTalentRow(ef)) return;
     if (!ef.allValueConfigIds || ef.allValueConfigIds.length < 2) return;
     const newIdx = Math.min(Math.max(t - 1, 0), ef.allValueConfigIds.length - 1);
     const targetVcId = ef.allValueConfigIds[newIdx].valueConfigId;
