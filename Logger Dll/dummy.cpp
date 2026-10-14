@@ -110,6 +110,44 @@ if __SSL_SETTLEPATCH == nil then
   end)
   if okp then __SSL_SETTLEPATCH = true end
 end
+-- __SSL_MONPATCH: Lua-side mirror of the C++ GetMonster FAId rewrite.
+-- The boss HP bar (BossHUDCtrl:SetBossInfo/InitUI/RefreshUI) resolves its icon
+-- and name as ConfigTable.GetData('Monster', nDataId).FAId -> MonsterSkin ->
+-- MonsterManual, but ConfigTable reads _G.DataTable (pure Lua, ConfigTable.lua)
+-- and never goes through the C# GameDataController the C++ hook patches — so
+-- the 3D model swapped while every Lua UI kept the original FAId. Wrapping
+-- GetData('Monster', <dummy target>) to return a copy with FAId replaced fixes
+-- the boss bar, skill-hint portraits, and result/pause screens at once. Copy,
+-- never mutate: GetData caches and returns the shared row. Own flag so live
+-- sessions pick it up on the next pump without a restart.
+if __SSL_MONPATCH == nil then
+  local okm = pcall(function()
+    local origGet = ConfigTable.GetData
+    if type(origGet) ~= 'function' then error('no ConfigTable.GetData') end
+    ConfigTable.GetData = function(name, key, ...)
+      local row = origGet(name, key, ...)
+      if name == 'Monster' and type(row) == 'table' and __SSL_TB ~= nil then
+        local tb = __SSL_TB
+        local tgt = tonumber(tb.dummyTarget) or 0
+        if tgt == 0 then
+          local sbl = _G.DataTable ~= nil and _G.DataTable.ScoreBossLevel or nil
+          local lvl = sbl ~= nil and sbl[tonumber(tb.dummyLevel) or 1] or nil
+          if lvl ~= nil then tgt = tonumber(lvl.MonsterId) or 0 end
+        end
+        local skin = 0
+        if tb.models ~= nil then skin = tonumber(tb.models[(tonumber(tb.mdl) or 0) + 1]) or 0 end
+        if tgt ~= 0 and skin ~= 0 and tonumber(key) == tgt then
+          local c = {}
+          for k, v in pairs(row) do c[k] = v end
+          c.FAId = skin
+          return c
+        end
+      end
+      return row
+    end
+  end)
+  if okm then __SSL_MONPATCH = true end
+end
 )ssl";
 
 // Must run on the Unity main thread (xLua DoString re-entry is only safe

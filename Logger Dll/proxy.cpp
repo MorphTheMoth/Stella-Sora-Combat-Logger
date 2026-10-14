@@ -206,6 +206,10 @@ static inline void CaptureGdc(GameDataController_o* __this) {
 //  reproduce that by rewriting fAId_ in place for the one row id the test UI
 //  targets, driven by what the Blitz test chunk reports back
 //  ('dummy=<monsterId>:<skinId>', see SetDummySkinOverride callers in dummy.cpp).
+//  NOTE: this only covers the C# engine path (preload/spawn). Lua UI (boss HP
+//  bar, result/pause screens) reads _G.DataTable via ConfigTable, never GDC —
+//  its mirror patch (__SSL_MONPATCH wrapping ConfigTable.GetData) lives in
+//  kScoreBossSettlePatch in dummy.cpp.
 // =============================================================================
 static std::atomic<int32_t> g_DummyMonsterId{0};   // Nova.Client.Monster.Id to rewrite
 static std::atomic<int32_t> g_DummySkinId{0};      // MonsterSkin.Id to substitute (0 = original)
