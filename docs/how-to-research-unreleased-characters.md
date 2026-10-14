@@ -18,21 +18,21 @@ Neither fully-coded character ships any datamine table entry, so kits were recon
 | Source | Path | What it contributed |
 |---|---|---|
 | Hotfix decompile | `decompilation/hotfix/<version>/Hotfix.decompiled.cs` (see version table below — default is `1.14/`, the latest) | The kit: skills, perks, buff/AddAttr/param ids, trigger tags, element-mark code. Older folders are historical comparisons; always use the latest. |
-| Il2Cpp dumps | `decompilation/out_new/dump.cs` | Enum values: `AdventureActorElementTriggerType` (Type1=31, Type2=32, `dump.cs:176985`), `characterJobClass` (Vanguard=1 / Balance=2 / Support=3, `dump.cs:175269`). |
+| Il2Cpp dumps | `decompilation/il2cppDumper_out/dump.cs` | Enum values: `AdventureActorElementTriggerType` (Type1=31, Type2=32, `dump.cs:176985`), `characterJobClass` (Vanguard=1 / Balance=2 / Support=3, `dump.cs:175269`). |
 | Datamine language | `Link to StellaSoraData/EN/language/en_US/UIText.json` | Concept names: `LightMark_Trigger_Effect_01` = Lucent (#4028), `_02` = Thunderbolt (#4027). |
-| Datamine history | `StellaSoraData/.git` | The only raw data for unreleased chars (see dates below). |
+| Datamine history | `Link to StellaSoraData/.git` | The only raw data for unreleased chars (see dates below). |
 
 The datamine is auto-updated and strips unreleased content, so anything not in the current tables must be pulled from git history.
 
 ## Hotfix decompile versions in this repository
 
-`decompilation/hotfix/` holds versioned builds. Each folder contains `Hotfix.dec.dll` (decrypted .NET assembly) and `Hotfix.decompiled.cs` (full C# via `ilspycmd -r <Il2CppDumper>/out_new/DummyDll Hotfix.dec.dll -o .` — note the stub assemblies must come from Il2CppDumper's `DummyDll/`; Il2CppInspectorRedux does not emit them). See `decompilation/hotfix/README.md` and `decompilation/hotfix/scripts/README.md` for the `CDPH`/Obfuz VM decryption, `opstable.json` extraction, and `scripts/rerun.sh` re-run.
+`decompilation/hotfix/` holds versioned builds. Each folder contains `Hotfix.decompiled.cs` (full C#, produced by `ilspycmd` against the `DummyDll/` stubs from `decompilation/il2cppDumper_out`; Il2CppInspectorRedux does not emit stub assemblies). See `decompilation/hotfix/README.md` and `decompilation/hotfix/scripts/README.md` for the `CDPH`/Obfuz VM decryption, `opstable.json` extraction, and `scripts/rerun.sh` re-run.
 
 | Folder | Game build / provenance | Size / lines | Commit | What it contains |
 |---|---|---|---|---|
-| `0.5/` | Old build from `/home/morph/Downloads/Hotfix.dll` (predates the two current builds) | 14.8 MB, 533,576 lines, `Hotfix.dec.dll` 8.1 MB, 123 residual `Unknown result type` comments | `f2d36af` (2026-08-07) | Smallest. Only 37 `AIScript.Character` namespaces (`_10101` ... `_15901`/`_15801`/`_99701`); **no** `_15701` (Karin), `_13701` (Eleanor), `_16201`, `_16001`, `_14001`, `_99901` (compare 43 in `1.13`/`1.14`). Decrypted with the `1.13` opcode table (key check `Hello, HybridCLR` OK) — 123 ILSpy stack-analysis edge cases on TrueSync/`FP` (`iFP`/`TSVector2`), still readable (vs 4 warnings in the newer builds). Useful only to prove absence: "character did not exist in the old build". |
-| `1.13/` | Previous game build (`Persistent_Store/Scripts/Hotfix.dll`) | 21 MB, 761,729 lines, `Hotfix.dec.dll` 12 MB, ~4852 types, 0 IL errors, 4 residual warnings (`FP <= FP` in `ILRuntimeAPI.CalcDistanceBetweenMonsterAndPlayer`) | `f77d312` (2026-08-02) moved to `1.13/` in `f2d36af` | First version with the full unreleased kits: Karin `_15701` at `1.13/Hotfix.decompiled.cs:680972-682838` (1866 lines), Eleanor `_13701` at `708314-709935` (1621 lines), plus stubs/full kits for `_16201:668062`, `_16001:669446`, `_14001:705314` — 43 character namespaces total. Retained for historical comparison; superseded by `1.14` for new work. |
-| `1.14/` | Current game build (`Persistent_Store/Scripts/Hotfix.dll`, Aug 14; decompiled Aug 26) | 21 MB, 767,585 lines (+5,856 vs `1.13`), `Hotfix.dec.dll` 12.4 MB, 11032 TypeDefs, 0 IL errors, 4 residual warnings (same pattern) | `d4ea061` (2026-08-18) | **Default for all new research.** Same 43 character namespaces as `1.13`. Eleanor `_13701` at `1.14/Hotfix.decompiled.cs:714170-715791` is byte-for-byte identical to `1.13`. Karin `_15701` moved to `686781-688694` (1913 lines, +47) and was patched — see below. Stubs `_16201:673871`, `_16001:675255`, `_14001:711170` are identical to `1.13`. |
+| `0.5/` | Old beta build (predates the two current builds) | 14.8 MB, 533,576 lines, 123 residual `Unknown result type` comments | `f2d36af` (2026-08-07) | Smallest. Only 37 `AIScript.Character` namespaces (`_10101` ... `_15901`/`_15801`/`_99701`); **no** `_15701` (Karin), `_13701` (Eleanor), `_16201`, `_16001`, `_14001`, `_99901` (compare 43 in `1.13`/`1.14`). Decrypted with the `1.13` opcode table (key check `Hello, HybridCLR` OK) — 123 ILSpy stack-analysis edge cases on TrueSync/`FP` (`iFP`/`TSVector2`), still readable (vs 4 warnings in the newer builds). Useful only to prove absence: "character did not exist in the old build". |
+| `1.13/` | Previous game build (`Persistent_Store/Scripts/Hotfix.dll`) | 21 MB, 761,729 lines, ~4852 types, 0 IL errors, 4 residual warnings (`FP <= FP` in `ILRuntimeAPI.CalcDistanceBetweenMonsterAndPlayer`) | `f77d312` (2026-08-02) moved to `1.13/` in `f2d36af` | First version with the full unreleased kits: Karin `_15701` at `1.13/Hotfix.decompiled.cs:680972-682838` (1866 lines), Eleanor `_13701` at `708314-709935` (1621 lines), plus stubs/full kits for `_16201:668062`, `_16001:669446`, `_14001:705314` — 43 character namespaces total. Retained for historical comparison; superseded by `1.14` for new work. |
+| `1.14/` | Current game build (`Persistent_Store/Scripts/Hotfix.dll`, Aug 14; decompiled Aug 26) | 21 MB, 767,585 lines (+5,856 vs `1.13`), 11032 TypeDefs, 0 IL errors, 4 residual warnings (same pattern) | `d4ea061` (2026-08-18) | **Default for all new research.** Same 43 character namespaces as `1.13`. Eleanor `_13701` at `1.14/Hotfix.decompiled.cs:714170-715791` is byte-for-byte identical to `1.13`. Karin `_15701` moved to `686781-688694` (1913 lines, +47) and was patched — see below. Stubs `_16201:673871`, `_16001:675255`, `_14001:711170` are identical to `1.13`. |
 
 Version choice: always start with `1.14/Hotfix.decompiled.cs`. Fall back to `1.13` only to document a pre-patch mechanic, and to `0.5` only when you need to show a character/kit did not exist yet.
 
@@ -148,7 +148,7 @@ User's build rule: main-control `01,02,05,06,07` = Build 1, `03,04,08,09,10` = B
 
 ## Step 7 — datamine git history (dated facts)
 
-All unreleased raw data came from `StellaSoraData/.git`. Dates:
+All unreleased raw data came from `Link to StellaSoraData/.git`. Dates:
 
 - **Char 137 and 157 `unreleased.json` entries** (names `"137 Eleanor"` / `"157 Karin"`, element Ventus / Umbra): added **2026-04-16** (commit `a087da7c`, "temp 1.9"), removed **2026-07-24** (commit `9a498a99`, "sync").
 - **Char 162 `unreleased.json` entry** (name `"162 "` = still `???`, star 0, element "Ventus" — an **artifact** of generic material id 20043, not the real element): present in commit `eff8411c`, dated **2026-06-30** ("fix unrelease").

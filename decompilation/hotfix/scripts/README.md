@@ -13,7 +13,7 @@ scripts/
 ## Normal re-run (same game build)
 
 ```bash
-./scripts/rerun.sh
+./rerun.sh
 ```
 
 This decrypts `Hotfix.dll` and decompiles with `ilspycmd` against the `DummyDll` reference stubs. Output lands in `scripts/out/`.
@@ -23,7 +23,7 @@ This decrypts `Hotfix.dll` and decompiles with `ilspycmd` against the `DummyDll`
 Use the current `opstable.json` and run the decryptor first:
 
 ```bash
-./scripts/rerun.sh
+./rerun.sh
 ```
 
 The 256-byte decryption key is read from `Hotfix.dll` itself. The stable part of the `decompiled.c` code is the opcode-table lookup and the `"Hello, HybridCLR"` key check; it does not need to be regenerated for every Hotfix version. Only reread that relevant code and re-extract `opstable.json` if the current key check fails.
@@ -53,8 +53,8 @@ If the first attempt fails, the Obfuz VM's opcode table may have become stale af
 2. **Re-extract the table**:
 
    ```bash
-   python3 scripts/extract_opstable.py <new GameAssembly.dll> 0x5757b8 \
-       -o scripts/opstable.json
+   python3 extract_opstable.py <new GameAssembly.dll> 0x5757b8 \
+       -o opstable.json
    ```
 
    (capstone required: `pip install capstone`.)
@@ -62,7 +62,7 @@ If the first attempt fails, the Obfuz VM's opcode table may have become stale af
 3. **Re-run**:
 
    ```bash
-   ./scripts/rerun.sh --opstable 0x5757b8
+   ./rerun.sh --opstable 0x5757b8
    ```
 
    Passing `--opstable` makes rerun.sh repeat step 2 automatically.

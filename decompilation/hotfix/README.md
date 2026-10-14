@@ -6,8 +6,7 @@
 
 Each decompiled build lives in a versioned subfolder. Outputs per version:
 
-- `Hotfix.dec.dll` — the decrypted .NET assembly (load it in dnSpy / ILSpy / ilspycmd). Produced by `tools/cdph/cdph_dump.py`.
-- `Hotfix.decompiled.cs` — full decompiled C#. Produced with: `ilspycmd -r decompilation/il2cppDumper_out/DummyDll Hotfix.dec.dll -o .`.
+- `Hotfix.decompiled.cs` — full decompiled C# (the checked-in artifact). Regenerate with `scripts/rerun.sh`, which decrypts `Hotfix.dll` and decompiles it with `ilspycmd` against the `DummyDll/` stubs in `decompilation/il2cppDumper_out`.
 
 | Version | Source | Decompiled C# |
 |---------|--------|----------------|
@@ -18,7 +17,7 @@ Each decompiled build lives in a versioned subfolder. Outputs per version:
 | `1.14.1/` | previous game build (`Persistent_Store/Scripts/Hotfix.dll`, Aug 28, `GAME_VER 1.14.1` `RES_VER 2608281349`) | ~21 MB, 11035 TypeDefs, 0 IL errors, 4 residual type-resolution warnings |
 | `1.14/` | previous game build (`Persistent_Store/Scripts/Hotfix.dll`, Aug 14) | ~21 MB, 11032 TypeDefs, 0 IL errors, 4 residual type-resolution warnings |
 | `1.13/` | previous game build (`Persistent_Store/Scripts/Hotfix.dll`) | ~21 MB, ~4852 types, 0 IL errors, 4 residual type-resolution warnings |
-| `0.5/`  | `/home/morph/Downloads/Hotfix.dll` | ~14.8 MB, decrypted with the 1.13 opcode table (key check OK); 123 residual `Unknown result type` comments — ILSpy stack-analysis edge cases on TrueSync/FP expressions (`iFP`/`TSVector2`), readable |
+| `0.5/`  | file in a beta version of the game | ~14.8 MB, decrypted with the 1.13 opcode table (key check OK); 123 residual `Unknown result type` comments — ILSpy stack-analysis edge cases on TrueSync/FP expressions (`iFP`/`TSVector2`), readable |
 
 - `scripts/` — everything needed to re-run after a game update (decryptor, opcode-table extractor, one-shot `rerun.sh`). See `scripts/README.md`.
 
@@ -32,13 +31,7 @@ Do not decompile `decompiled.c` just to decompile `Hotfix.dll`. The relevant par
 
 ## Reproduce
 
-```
-python3 ../../tools/cdph/cdph_dump.py "<game>/Persistent_Store/Scripts/Hotfix.dll" -o Hotfix.dec.dll
-# DummyDll = Il2CppDumper stubs for the game's AOT assemblies (Game, GameFramework,
-# TrueSync, spine-*, Unity...). Without them ILSpy can't resolve referenced types
-# and emits ~70k "Unknown result type (missing references)" comments.
-~/.dotnet/tools/ilspycmd -r "decompilation/il2cppDumper_out/DummyDll" Hotfix.dec.dll -o .
-```
+Run `scripts/rerun.sh` (see `scripts/README.md`): it decrypts `Persistent_Store/Scripts/Hotfix.dll` with the CDPH decryptor and decompiles it with `ilspycmd`, using the `DummyDll/` stubs from `decompilation/il2cppDumper_out` as references. Without those stubs ILSpy can't resolve the game's AOT assemblies (`Game`, `GameFramework`, `TrueSync`, `spine-*`, Unity…) and emits ~70k "Unknown result type (missing references)" comments.
 
 ## Why the decompile needs the DummyDll references
 

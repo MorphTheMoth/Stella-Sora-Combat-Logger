@@ -19,7 +19,7 @@ purely for display.
 
 ## The shared B slot
 
-Character table (`StellaSoraData/EN/bin/Character.json`, char 107 Tilia):
+Character table (`Link to StellaSoraData/EN/bin/Character.json`, char 107 Tilia):
 
 - `SkillId: 10731000` — main skill (used when Tilia is in slot 1)
 - `AssistSkillId: 10732000` — support skill (used when Tilia is in slot 2/3)
@@ -33,7 +33,7 @@ Skill binding at battle setup, `PlayerAdventureActor_SetSkillBind`
 So for a support-deployed Tilia, slot B **is** her support skill.
 
 The level the player buys per skill comes from Lua
-(`StellaSoraData Makostar/_Lua/GameCore/Data/DataClass/PlayerCharData.lua`):
+(`Link to Makostar/Lua/GameCore/Data/DataClass/PlayerCharData.lua`):
 
 - `GetSkillIds` (line 296): `[NormalAtkId, SkillId, AssistSkillId, UltimateId]`
   — index 2 = main skill level, index 3 = support skill level, upgraded
@@ -82,7 +82,7 @@ level and `sp[skillLevel-1]` reproduces the game's pick.
 
 ## Tilia's two effects
 
-`StellaSoraData/EN/bin/Skill.json`:
+`Link to StellaSoraData/EN/bin/Skill.json`:
 
 - Main skill `10731000` (`SkillScript_Zhukong_Skill`): `Param3/4 =
   "Effect,LevelUp,10793005,…"`

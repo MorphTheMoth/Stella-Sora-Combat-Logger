@@ -335,7 +335,7 @@ SyncHP                 = 13
 
 ## Source Files (primary references)
 
-All fields above are traced from these source files in the Nebula server at `/home/morph/stella sora meter/Nebula/`:
+All fields above are traced from these source files in the Nebula server at `Link to Nebula/`:
 
 | File | What it defines |
 |------|----------------|

@@ -4,10 +4,10 @@
 # Usage:
 #   ./rerun.sh [GameAssembly.dll] [Hotfix.dll] [--opstable RVA] [-o outdir]
 #
-# Defaults (paths relative to this repo / the game install):
-#   GameAssembly.dll  : /home/morph/stella sora meter/dll/Il2CppDumper-net7-v6.7.46/GameAssembly.dll
-#   Hotfix.dll        : /home/morph/stella sora meter/Link to YostarGames/StellaSora_EN/Persistent_Store/Scripts/Hotfix.dll
-#   DummyDll          : <Il2CppDumper>/out_new/DummyDll   (ILSpy reference stubs)
+# Defaults (via repo-root symlinks):
+#   GameAssembly.dll  : Link to Il2CppDumper/GameAssembly.dll
+#   Hotfix.dll        : Link to YostarGames/StellaSora_EN/Persistent_Store/Scripts/Hotfix.dll
+#   DummyDll          : decompilation/il2cppDumper_out/DummyDll   (ILSpy reference stubs)
 #
 # On a NEW game build (GameAssembly.dll changed) the Obfuz opcode table is
 # regenerated, so you MUST re-extract it first.  Find the jump-table RVA in the
@@ -18,11 +18,12 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
 ILSPYCMD="${ILSPYCMD:-$HOME/.dotnet/tools/ilspycmd}"
 
-GA_DEFAULT="/home/morph/stella sora meter/dll/Il2CppDumper-net7-v6.7.46/GameAssembly.dll"
-HF_DEFAULT="/home/morph/stella sora meter/Link to YostarGames/StellaSora_EN/Persistent_Store/Scripts/Hotfix.dll"
-DD_DEFAULT="/home/morph/stella sora meter/dll/Il2CppDumper-net7-v6.7.46/out_new/DummyDll"
+GA_DEFAULT="$REPO_ROOT/Link to Il2CppDumper/GameAssembly.dll"
+HF_DEFAULT="$REPO_ROOT/Link to YostarGames/StellaSora_EN/Persistent_Store/Scripts/Hotfix.dll"
+DD_DEFAULT="$REPO_ROOT/Link to Il2CppDumper/out_new/DummyDll"
 
 GA="$GA_DEFAULT"
 HF="$HF_DEFAULT"

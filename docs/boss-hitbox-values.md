@@ -16,7 +16,7 @@ The hurtbox is the `CapsuleCollider` on the GameObject whose name equals the las
 
 ```python
 import UnityPy, os
-base="/home/morph/stella sora meter/Link to YostarGames/StellaSora_EN/StellaSora_Data/StreamingAssets/InstallResource"
+base="Link to YostarGames/StellaSora_EN/StellaSora_Data/StreamingAssets/InstallResource"
 env=UnityPy.load(os.path.join(base,"mons_31301jijuxie.unity3d"))
 gname={o.path_id:o.read().m_Name for o in env.objects if o.type.name=="GameObject"}
 for o in env.objects:
