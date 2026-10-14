@@ -315,6 +315,14 @@ end
 __SSL_TB.ddPrefabPath = 'Assets/AssetBundles/UI/CharacterInfoEx/CharEquipmentPanel.prefab'
 __SSL_TB.ddNodeNames = { 'tc_dropdown_01', 'goSortDropdown' }
 __SSL_TB.ddTemplate = function()
+  -- Retry once after evicting: covers the case where the cached asset passes
+  -- the touch test but instantiate still throws (unloaded mid-frame).
+  local ok, tpl = pcall(function() return UI.loadNode(__SSL_TB.ddPrefabPath, __SSL_TB.ddNodeNames) end)
+  if ok and tpl ~= nil then
+    local usable = pcall(function() local _ = tpl.name end)
+    if usable then return tpl end
+    UI.evictNode(__SSL_TB.ddPrefabPath)
+  end
   return UI.loadNode(__SSL_TB.ddPrefabPath, __SSL_TB.ddNodeNames)
 end
 __SSL_TB.wireButton = function(tplGo)

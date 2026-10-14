@@ -125,8 +125,19 @@ UI.dropComp = function(go)
 end
 -- Load a panel prefab as a plain asset (panelId 0 => never auto-unloaded on
 -- panel close) and return one node from it. Cached: the asset outlives panels.
+-- The cache self-heals: a scene transition (battle enter/exit) can still
+-- unload the asset, leaving a dead ref that would make every later instantiate
+-- throw — so a cached hit is touched before use and reloaded on failure.
+UI.evictNode = function(path)
+  __SSL_UI.tplCache[path] = nil
+end
 UI.loadNode = function(path, nodeNames)
-  if __SSL_UI.tplCache[path] ~= nil then return __SSL_UI.tplCache[path] end
+  local hit = __SSL_UI.tplCache[path]
+  if hit ~= nil then
+    local okHit = pcall(function() local _ = hit.name local _ = hit.transform end) and UI.alive(hit)
+    if okHit then return hit end
+    __SSL_UI.tplCache[path] = nil
+  end
   local GRL = require('Game.Common.Resource.GameResourceLoader')
   local prefab = GRL.LoadAsset(GRL.ResType.Any, path, typeof(CS.UnityEngine.Object), 'UI', 0)
   if prefab == nil then error('prefab load failed: ' .. tostring(path)) end

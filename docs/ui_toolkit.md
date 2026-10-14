@@ -18,7 +18,7 @@ UI.manage(dd)                            -- chevron/sound tracking
 -- hiding: UI.closeDrop(dd) first, then SetActive(false)
 ```
 
-Helpers: `alive`, `find` (DFS by name), `renameTree` (`SSL_` prefix), `clone` (reuse-or-create), `place`, `setText` (TMP → legacy → NovaAPI), `buttonComp`/`onClick`, `dropComp`, `loadNode` (cached prefab node), `fillDrop`, `flipUp`, `arrows`/`setArrows`, `manage`/`pollDrop`/`closeDrop`, `playSound`, `onDropEvent`/`subEvent`, `autoSize` (shrink-to-fit text), `fitBar`, `fitList`.
+Helpers: `alive`, `find` (DFS by name), `renameTree` (`SSL_` prefix), `clone` (reuse-or-create), `place`, `setText` (TMP → legacy → NovaAPI), `buttonComp`/`onClick`, `dropComp`, `loadNode` (cached prefab node, self-healing across scene transitions), `fillDrop`, `flipUp`, `arrows`/`setArrows`, `manage`/`pollDrop`/`closeDrop`, `playSound`, `onDropEvent`/`subEvent`, `autoSize` (shrink-to-fit text), `fitBar`, `fitList`.
 
 ## Game UI facts
 
