@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <objbase.h>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -192,13 +193,85 @@ static inline void CaptureGdc(GameDataController_o* __this) {
         g_gdc.store(__this, std::memory_order_relaxed);
 }
 
+// =============================================================================
+//  Dummy-model override (Blitz test UI, "Dummy 1" -> model dropdown)
+//  A monster's combat model is MonsterSkin[Monster.FAId]: both the preload pass
+//  (AdventureModulePreloadAssetsMrg$$PreloadMonster, decompiled.c:4667112) and
+//  the actual spawn (AdventureLevelController$$SpawnMonster, decompiled.c:3704589)
+//  read the row's fAId_ and look the skin (model + scale) up by it. The game
+//  itself ships its wooden-dummy variants of a boss as the very same row with
+//  nothing but a different fAId_ (floor-1 boss 6310010 FAId 5008101 ->
+//  6310011 FAId 9912102 / 6310012 FAId 9912103, byte-identical otherwise), i.e.
+//  the swap is model-only: stats, AI (fCId_) and skills are untouched. We
+//  reproduce that by rewriting fAId_ in place for the one row id the test UI
+//  targets, driven by what the Blitz test chunk reports back
+//  ('dummy=<monsterId>:<skinId>', see SetDummySkinOverride callers in dummy.cpp).
+// =============================================================================
+static std::atomic<int32_t> g_DummyMonsterId{0};   // Nova.Client.Monster.Id to rewrite
+static std::atomic<int32_t> g_DummySkinId{0};      // MonsterSkin.Id to substitute (0 = original)
+static std::atomic<int32_t> g_DummyOrigFAId{0};    // pristine fAId_ of that row
+
+// Nova.Client.Monster (dump.cs:233375) — one row of the 'Monster' bin table.
+struct Nova_Client_Monster_o {
+    void* klass;             // 0x00
+    void* monitor;           // 0x08
+    void* unknownFields;     // 0x10
+    int32_t id_;             // 0x18
+    void* name_;             // 0x20
+    int32_t epicLv_;         // 0x28
+    int32_t subBossType_;    // 0x2C
+    int32_t monsterPosition_;// 0x30
+    int32_t bloodType_;      // 0x34
+    void* force_;            // 0x38
+    int32_t fCId_;           // 0x40  MonsterAI id (behaviour)
+    int32_t fAId_;           // 0x44  MonsterSkin id (model)
+};
+static_assert(offsetof(Nova_Client_Monster_o, fAId_) == 0x44, "Nova.Client.Monster.fAId_ offset");
+
+// Set from the test-button chunk each pump: the row to touch and the skin to put
+// in it (skin 0 = put the original value back). monsterId 0 = leave everything
+// alone (tables not loaded yet / no selection).
+void SetDummySkinOverride(int32_t monsterId, int32_t skinId) {
+    const int32_t prevSkin = g_DummySkinId.load(std::memory_order_relaxed);
+    if (g_DummyMonsterId.load(std::memory_order_relaxed) == monsterId && prevSkin == skinId)
+        return;
+    g_DummyMonsterId.store(monsterId, std::memory_order_relaxed);
+    g_DummySkinId.store(skinId, std::memory_order_relaxed);
+    log("[dummy] model selection: monster=%d skin=%d", monsterId, skinId);
+}
+
+// Rewrite (or restore) fAId_ on the targeted table row. The engine re-reads the
+// row from the GDC dictionary on every preload/spawn, so the value only has to be
+// current by the time the level spawns its monsters — which the pump guarantees
+// (the dropdown is picked while the formation panel is open, seconds before the
+// entry, and the pump runs during the level load too).
+static void ApplyDummySkin(void* monster) {
+    if (monster == nullptr) return;
+    const int32_t target = g_DummyMonsterId.load(std::memory_order_relaxed);
+    if (target == 0) return;
+    auto* row = reinterpret_cast<Nova_Client_Monster_o*>(monster);
+    if (row->id_ != target) return;          // only this one row is ever touched
+    int32_t orig = g_DummyOrigFAId.load(std::memory_order_relaxed);
+    if (orig == 0) {
+        orig = row->fAId_;
+        g_DummyOrigFAId.store(orig, std::memory_order_relaxed);
+    }
+    const int32_t skin = g_DummySkinId.load(std::memory_order_relaxed);
+    const int32_t want = (skin > 0) ? skin : orig;
+    if (row->fAId_ == want) return;
+    log("[dummy] monster %d model: skin %d -> %d", target, row->fAId_, want);
+    row->fAId_ = want;
+}
+
 static void* __fastcall GdcHook_GetHitDamage(GameDataController_o* __this, int32_t key, void* method) {
     CaptureGdc(__this);
     return g_GdcHooks[0].original(__this, key, method);
 }
 static void* __fastcall GdcHook_GetMonster(GameDataController_o* __this, int32_t key, void* method) {
     CaptureGdc(__this);
-    return g_GdcHooks[1].original(__this, key, method);
+    void* row = g_GdcHooks[1].original(__this, key, method);
+    ApplyDummySkin(row);
+    return row;
 }
 
 static GameDataController_o* GetGDC() {

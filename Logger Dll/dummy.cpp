@@ -18,15 +18,15 @@
 // room-transition hook).
 //
 // Hotkey map (Alt+1..5), all server-free ScoreBoss entries:
-//   1 -> ScoreBossLevel 998  (BossRush arena Levels/StoryActivity/StoryActivity_13/
+//   1 -> ScoreBossLevel 1    (Roguelike_2_MiniBoss_005, prefab Roguelike_MiniBoss_DaWuGui_Test)
+//   2 -> ScoreBossLevel 998  (BossRush arena Levels/StoryActivity/StoryActivity_13/
 //                             StoryActivity_13_Boss_A_01, prefab
 //                             StoryActivity_13_Boss_BossRush_1; the no-mechanic
 //                             variant of Lv 26)
-//   2 -> ScoreBossLevel 999  (BossRush arena Levels/Roguelike/Roguelike_2/
+//   3 -> ScoreBossLevel 999  (BossRush arena Levels/Roguelike/Roguelike_2/
 //                             Roguelike_2_Boss_002, prefab
 //                             Roguelike_Boss_ShaSha_BossRush_3; the no-mechanic
 //                             variant of Lv 27)
-//   3 -> ScoreBossLevel 1    (Roguelike_2_MiniBoss_005, prefab Roguelike_MiniBoss_DaWuGui_Test)
 //   4 -> ScoreBossLevel 12   (Roguelike_2_MiniBoss_005, prefab MiniBoss_BingXiangGuai_Test_Lv1)
 //   5 -> ScoreBossLevel 13   (Roguelike_2_MiniBoss_005, prefab MiniBoss_BingXiangGuai_Test_Lv2)
 // All five scenes + config prefabs ship in the client; there is no longer any
@@ -45,12 +45,19 @@
 #include <atomic>
 
 #include "logging.h"
+#include "arenafix.h"
 
 // Entry points consumed by proxy.cpp.
 bool InstallHotkeys();
 void StartHotkeyRetry();
 void RemoveHotkeys();
 void EnsureScoreBossTestButton();
+
+// Provided by proxy.cpp: the "Dummy 1" model dropdown selection. The
+// GameDataController$$GetMonster hook rewrites that one Monster row's FAId —
+// the key the engine resolves the monster's MonsterSkin (model + scale) with —
+// to `skinId`; skinId 0 restores the original value, monsterId 0 is a no-op.
+void SetDummySkinOverride(int32_t monsterId, int32_t skinId);
 
 // =============================================================================
 //  SCOREBOSS TEST-STAGE HOTKEY ENTRY (Alt+1..5)
@@ -104,7 +111,6 @@ if __SSL_SETTLEPATCH == nil then
 end
 )ssl";
 
-// Server-free entry into datamined test levels via the game's own funnel.
 // Must run on the Unity main thread (xLua DoString re-entry is only safe
 // there — same constraint as PollLuaClock/RefreshOriginCatalog).
 static const char* kTestEntryChunkTemplate = R"ssl(
@@ -166,10 +172,27 @@ end)
 if ok then return 'OK ' .. tostring(res) else return 'ERR:' .. tostring(res) end
 )ssl";
 
+// Pull the current dropdown state (the "Dummy 1" model) right before entering:
+// Alt+1 can be pressed inside a pump interval, and the level reads the Monster
+// row only once it spawns its monsters. Same main-thread DoString context as the
+// entry itself; defensive because __SSL_TB may not exist before the first pump.
+static void SyncDummySkinNow() {
+    static const char* kChunk =
+        "local t, s = 0, 0\n"
+        "if __SSL_TB ~= nil and __SSL_TB.dummyState ~= nil then t, s = __SSL_TB.dummyState() end\n"
+        "return tostring(t) .. ':' .. tostring(s)";
+    std::string res = RunLuaDoString(kChunk, "SSLDummyState");
+    if (res.empty()) return;
+    int mon = 0, skin = 0;
+    if (sscanf(res.c_str(), "%d:%d", &mon, &skin) == 2)
+        SetDummySkinOverride(mon, skin);
+}
+
 static void RequestScoreBossTestEntry(int levelId) {
     char chunk[4096];
     snprintf(chunk, sizeof(chunk), kTestEntryChunkTemplate, levelId);
     log("[hotkey] Alt entry requested: ScoreBossLevel %d", levelId);
+    SyncDummySkinNow();
     std::string full = std::string(kScoreBossSettlePatch) + chunk;
     std::string res = RunLuaDoString(full.c_str(), "SSLTestEntry");
     if (res.empty()) {
@@ -200,25 +223,466 @@ static void RequestScoreBossTestEntry(int levelId) {
 // was already open when the patch installed. Runs on the Unity main thread only
 // (WM_TIMER pump installed with the WndProc subclass, plus Hook_ModuleClearData).
 static const char* kTestButtonChunk = R"lua(
-if __SSL_TB == nil or __SSL_TB.v ~= 22 then
-  __SSL_TB = { v = 22, patched = false, go = nil, tgl = nil, opts = {}, listOpen = false,
-    dd = nil, ddTpl = nil, ddArrowUp = nil, ddArrowDn = nil, ddMode = 'none',
-    ctrl = nil, tplDeploy = nil, lastCtrl = 'never', sel = 0,
-    levels = { 998, 999, 1, 12, 13 },
-    labels = { '998 BossRush', '999 ShaSha', '1 DaWuGui', '12 Bing L1', '13 Bing L2' } }
+if __SSL_TB == nil or __SSL_TB.v ~= 26 then
+  __SSL_TB = { v = 26, patched = false, go = nil, dd = nil, dd2 = nil,
+    ctrl = nil, tplDeploy = nil, lastCtrl = 'never', sel = 0, mdl = 0,
+    levels = { 1, 998, 999, 12, 13 },
+    labels = { 'Floor 1', 'Floor 998', 'Floor 999', 'Floor 12', 'Floor 13' },
+    dummyLevel = 1, dummyTarget = 0,
+    models = { 0, 9912101, 9912102 },
+    modelLabels = { 'King Glopo III', 'Sherlock', 'Sherlock Small' } }
 end
-if __SSL_TB.opts == nil then __SSL_TB.opts = {} end
-if __SSL_TB.wasOpen == nil then __SSL_TB.wasOpen = false end
-if __SSL_TB.evSub == nil then __SSL_TB.evSub = false end
-if __SSL_TB.listOpen == nil then __SSL_TB.listOpen = false end
-if __SSL_TB.levels == nil then
-  __SSL_TB.levels = { 998, 999, 1, 12, 13 }
-  __SSL_TB.labels = { '998 BossRush', '999 ShaSha', '1 DaWuGui', '12 Bing L1', '13 Bing L2' }
+-- =============================================================================
+-- __SSL_UI: tiny toolkit for cloning game UI into panels we don't own.
+-- Adding another menu later = clone a button and/or a dropdown off that
+-- menu's own templates, e.g.:
+--   local btn = UI.clone(tplBtn, tplBtn.transform.parent, 'SSL_MyBtn')
+--   UI.place(btn, tplBtn, x, y)             -- same anchor space, own position
+--   UI.onClick(btn, function() ... end)
+--   local dd = UI.clone(UI.loadNode(prefabPath, nodeNames), parent, 'SSL_MyDD')
+--   UI.fillDrop(dd, labels, value, onPick)  -- guarded: safe to call each tick
+--   UI.flipUp(dd)                           -- popup grows upward, not off-screen
+--   local w = UI.fitBar(dd, refBtn)         -- bar as wide as refBtn
+--   UI.fitList(dd, w)                       -- items onto the narrowed width
+--   UI.manage(dd)                           -- chevron/sound event fan-out
+-- each tick while shown: UI.pollDrop(dd); hiding: UI.closeDrop(dd) first
+-- (kills the fullscreen click-eater before deactivating), then SetActive(false).
+-- Everything is defensive (pcall inside) and idempotent: a 0.5 s pump can
+-- re-run it while the panel rebuilds itself underneath.
+-- =============================================================================
+if __SSL_UI == nil then __SSL_UI = {} end
+if __SSL_UI.drops == nil then __SSL_UI.drops = {} end
+if __SSL_UI.tplCache == nil then __SSL_UI.tplCache = {} end
+local UI = __SSL_UI
+UI.alive = function(go)
+  if go == nil then return false end
+  local ok, dead = pcall(function() return go:IsNull() end)
+  if not ok or dead then return false end
+  local ok2, par = pcall(function() return go.transform.parent end)
+  return ok2 and par ~= nil
 end
-if __SSL_TB.sel == nil then __SSL_TB.sel = 0 end
+UI.find = function(root, name)
+  if root == nil then return nil end
+  local found = nil
+  pcall(function()
+    local all = root:GetComponentsInChildren(typeof(CS.UnityEngine.Transform), true)
+    local n = (all ~= nil) and all.Length or 0
+    for i = 0, n - 1 do
+      local t = all[i]
+      if t ~= nil and t.gameObject ~= nil and t.gameObject.name == name then found = t.gameObject break end
+    end
+  end)
+  return found
+end
+-- Unique names: panels re-parse prefabs on reopen and map nodes by DFS name
+-- last-write-wins, so a clone keeping e.g. 'txtStartBattle' would hijack the
+-- real node's localized binds.
+UI.renameTree = function(go)
+  pcall(function()
+    local all = go:GetComponentsInChildren(typeof(CS.UnityEngine.Transform), true)
+    local n = (all ~= nil) and all.Length or 0
+    for i = 0, n - 1 do
+      local t = all[i]
+      if t ~= nil and t ~= go.transform then
+        local nm = t.gameObject.name
+        if nm:sub(1, 4) ~= 'SSL_' then t.gameObject.name = 'SSL_' .. nm end
+      end
+    end
+  end)
+end
+-- Reuse a same-named sibling (survives hiding — GameObject.Find skips inactive
+-- objects, which would otherwise spawn duplicates), else instantiate fresh.
+-- Caller keeps the ref and re-checks UI.alive each tick.
+UI.clone = function(tplGo, parentTr, name)
+  local exist = parentTr:Find(name)
+  if exist ~= nil then return exist.gameObject end
+  local go = instantiate(tplGo, parentTr)
+  go.name = name
+  return go
+end
+-- Copy the template's anchor space; position/size are ours.
+UI.place = function(go, tplGo, x, y, w, h)
+  local tRt = tplGo:GetComponent('RectTransform')
+  local rt = go:GetComponent('RectTransform')
+  if rt == nil or tRt == nil then return end
+  rt.anchorMin = tRt.anchorMin
+  rt.anchorMax = tRt.anchorMax
+  rt.pivot = tRt.pivot
+  local sd = tRt.sizeDelta
+  if w ~= nil then sd.x = w end
+  if h ~= nil then sd.y = h end
+  rt.sizeDelta = sd
+  rt.anchoredPosition = Vector2(x, y)
+end
+UI.setText = function(go, s)
+  local txt = nil
+  pcall(function() txt = go:GetComponentInChildren(typeof(CS.TMPro.TMP_Text), true) end)
+  if txt == nil then pcall(function() txt = go:GetComponentInChildren(typeof(CS.UnityEngine.UI.Text), true) end) end
+  if txt ~= nil then
+    local dok = pcall(function() txt.text = s end)
+    if not dok then pcall(function() NovaAPI.SetTMPText(txt, s) end) end
+  end
+end
+UI.buttonComp = function(go)
+  local b = nil
+  pcall(function() b = go:GetComponent('UIButton') end)
+  if b == nil then pcall(function() b = go:GetComponent('Button') end) end
+  return b
+end
+UI.onClick = function(go, fn)
+  local b = UI.buttonComp(go)
+  if b == nil then error('no Button/UIButton on clone') end
+  b.onClick:RemoveAllListeners()
+  b.onClick:AddListener(fn)
+end
+UI.dropComp = function(go)
+  if go == nil then return nil end
+  local dd = nil
+  pcall(function() dd = go:GetComponent('TMP_Dropdown') end)
+  if dd == nil then pcall(function() dd = go:GetComponent('Dropdown') end) end
+  if dd == nil then pcall(function() dd = go:GetComponentInChildren(typeof(CS.TMPro.TMP_Dropdown), true) end) end
+  if dd == nil then pcall(function() dd = go:GetComponentInChildren(typeof(CS.UnityEngine.UI.Dropdown), true) end) end
+  return dd
+end
+-- Load a panel prefab as a plain asset (panelId 0 => never auto-unloaded on
+-- panel close) and return one node from it. Cached: the asset outlives panels.
+UI.loadNode = function(path, nodeNames)
+  if __SSL_UI.tplCache[path] ~= nil then return __SSL_UI.tplCache[path] end
+  local GRL = require('Game.Common.Resource.GameResourceLoader')
+  local prefab = GRL.LoadAsset(GRL.ResType.Any, path, typeof(CS.UnityEngine.Object), 'UI', 0)
+  if prefab == nil then error('prefab load failed: ' .. tostring(path)) end
+  local all = prefab:GetComponentsInChildren(typeof(CS.UnityEngine.Transform), true)
+  local n = (all ~= nil) and all.Length or 0
+  for _, nm in ipairs(nodeNames or {}) do
+    for i = 0, n - 1 do
+      local t = all[i]
+      if t ~= nil and t.gameObject ~= nil and t.gameObject.name == nm then
+        __SSL_UI.tplCache[path] = t.gameObject
+        return t.gameObject
+      end
+    end
+  end
+  error('node not in prefab: ' .. tostring(path))
+end
+-- Guarded refill, safe to call every tick: rebuilding the option list under
+-- an open popup destroys it and strands IsExpanded=true (chevron stuck open),
+-- so options are only rebuilt when value/count actually changed. Listeners are
+-- re-attached every call (cheap; keeps them fresh across chunk versions).
+UI.fillDrop = function(go, labels, value, onPick)
+  local dd = UI.dropComp(go)
+  if dd == nil then error('no TMP_Dropdown under clone') end
+  labels = labels or {}
+  -- Signature guard (value + count + first label): the donor template ships
+  -- its own options ("Option A/B/C"), so value+count alone can't tell a fresh
+  -- clone from a filled one. Skip the rebuild only on a full match; listeners
+  -- are still re-attached every call (cheap; keeps them fresh).
+  local sig = tostring(value) .. ':' .. tostring(#labels) .. ':' .. tostring(labels[1])
+  local e = UI.entryFor(go)
+  if e == nil or e.fillSig ~= sig then
+    dd:ClearOptions()
+    local List_String = CS.System.Collections.Generic.List(CS.System.String)
+    local lst = List_String()
+    for _, s in ipairs(labels) do lst:Add(s) end
+    dd:AddOptions(lst)
+    dd.value = value
+    if e ~= nil then e.fillSig = sig end
+  end
+  dd.onValueChanged:RemoveAllListeners()
+  if onPick ~= nil then dd.onValueChanged:AddListener(onPick) end
+  return true
+end
+-- The formation screen sits at the bottom of the display, so the stock
+-- downward-opening list runs off-screen. Re-anchor it to the TOP edge with a
+-- bottom pivot: the list grows upward where there is room.
+UI.flipUp = function(go)
+  pcall(function()
+    local dd = UI.dropComp(go)
+    if dd == nil or dd.template == nil then return end
+    local t = dd.template
+    t.anchorMin = Vector2(0, 1)
+    t.anchorMax = Vector2(1, 1)
+    t.pivot = Vector2(0.5, 0)
+    t.anchoredPosition = Vector2(0, 4)
+    -- Stretch anchors + zero x-offset => popup exactly as wide as the bar.
+    t.sizeDelta = Vector2(0, t.sizeDelta.y)
+  end)
+end
+-- Fresh lookup each call (a dozen nodes; cheaper than debugging a stale cache).
+UI.arrows = function(go)
+  if not UI.alive(go) then return nil, nil end
+  local up = UI.find(go.transform, 'SSL_imgUp')
+  if up == nil then up = UI.find(go.transform, 'imgUp') end
+  local dn = UI.find(go.transform, 'SSL_imgDown')
+  if dn == nil then dn = UI.find(go.transform, 'imgDown') end
+  return up, dn
+end
+UI.setArrows = function(go, bOpen)
+  if not UI.alive(go) then return end
+  pcall(function()
+    local up, dn = UI.arrows(go)
+    if up ~= nil then up:SetActive(not bOpen) end
+    if dn ~= nil then dn:SetActive(bOpen) end
+  end)
+end
+UI.entryFor = function(go)
+  for _, e in ipairs(__SSL_UI.drops) do
+    if e.go == go then return e end
+  end
+  return nil
+end
+UI.manage = function(go)
+  local drops = {}
+  for _, e in ipairs(__SSL_UI.drops) do
+    if e.go ~= go and UI.alive(e.go) then drops[#drops + 1] = e end
+  end
+  if UI.alive(go) then
+    -- Preserve the surviving entry (chevron flag + fill signature); only
+    -- truly new dropdowns start blank.
+    local e = UI.entryFor(go)
+    if e == nil then e = { go = go } end
+    if e.was == nil then e.was = false end
+    drops[#drops + 1] = e
+  end
+  __SSL_UI.drops = drops
+end
+UI.pollDrop = function(go)
+  if not UI.alive(go) then return false end
+  local open = false
+  pcall(function()
+    local dd = UI.dropComp(go)
+    if dd == nil then return end
+    open = dd.IsExpanded == true
+    UI.setArrows(go, open)
+    local e = UI.entryFor(go)
+    if e ~= nil then e.was = open end
+  end)
+  return open
+end
+UI.closeDrop = function(go)
+  if not UI.alive(go) then return end
+  pcall(function()
+    local dd = UI.dropComp(go)
+    if dd == nil then return end
+    local open = false
+    pcall(function() open = dd.IsExpanded == true end)
+    if open then dd:Hide() end
+  end)
+  -- The swap is otherwise pump-driven; reset it with the close so a
+  -- dismissed popup never keeps the open chevron.
+  UI.setArrows(go, false)
+  pcall(function()
+    local e = UI.entryFor(go)
+    if e ~= nil then e.was = false end
+  end)
+end
+UI.playSound = function(bOpen)
+  pcall(function()
+    local s = bOpen and 'ui_common_menu_open' or 'ui_common_menu_close'
+    CS.WwiseAudioManager.Instance:PlaySound(s)
+  end)
+end
+-- The C# class only fires 'DropdownOpenState' for GOs named 'Dropdown_List',
+-- so in practice the pump does the swapping; this is the no-double-play path
+-- in case a future prefab is renamed (mirrors TemplateDropdownCtrl:OnEvent_Open).
+UI.onDropEvent = function(_, bOpen)
+  bOpen = (bOpen == true)
+  pcall(function()
+    for _, e in ipairs(__SSL_UI.drops) do
+      if UI.alive(e.go) then
+        local cur = false
+        pcall(function() cur = UI.dropComp(e.go).IsExpanded == true end)
+        if bOpen and cur then
+          e.was = true
+          UI.setArrows(e.go, true)
+          UI.playSound(true)
+        elseif not bOpen and e.was then
+          e.was = false
+          UI.setArrows(e.go, false)
+          UI.playSound(false)
+        end
+      end
+    end
+  end)
+end
+UI.subEvent = function()
+  -- Best-effort unhook of pre-toolkit listeners (same event, old table).
+  pcall(function()
+    if EventManager.Remove ~= nil then EventManager.Remove('DropdownOpenState', __SSL_TB) end
+  end)
+  if __SSL_UI.evSub then return end
+  pcall(function()
+    EventManager.Add('DropdownOpenState', __SSL_UI, __SSL_UI.onDropEvent)
+    __SSL_UI.evSub = true
+  end)
+end
+-- Shrink-to-fit text (never enlarge: max = current size).
+UI.autoSize = function(labelGo, minSize)
+  pcall(function()
+    local cap = labelGo:GetComponentInChildren(typeof(CS.TMPro.TMP_Text), true)
+    if cap == nil then cap = labelGo:GetComponentInChildren(typeof(CS.UnityEngine.UI.Text), true) end
+    if cap == nil then return end
+    local mx = 28
+    pcall(function() mx = cap.fontSize end)
+    cap.enableAutoSizing = true
+    cap.fontSizeMin = minSize or 16
+    cap.fontSizeMax = mx
+  end)
+end
+-- Shrink the donor bar (462 wide) to the reference button's width and re-place
+-- caption/chevron/plate from the prefab's metrics (plate 72, flush right;
+-- caption stopping 21 px left of it). Both the ctrl root and the inner
+-- Dropdown take the width, so the popup matches too. Returns the width.
+UI.fitBar = function(go, refGo)
+  local w = 305
+  pcall(function()
+    if not UI.alive(go) then return end
+    local dRt = UI.alive(refGo) and refGo:GetComponent('RectTransform') or nil
+    if dRt ~= nil then
+      local bw = dRt.rect.width
+      if bw == nil or bw < 1 then bw = dRt.sizeDelta.x end
+      if bw ~= nil and bw > 1 then w = bw end
+    end
+    local rt = go:GetComponent('RectTransform')
+    local inner = UI.find(go.transform, 'SSL_Dropdown')
+    if inner == nil then inner = UI.find(go.transform, 'Dropdown') end
+    local hh = 72
+    local irt = inner ~= nil and inner:GetComponent('RectTransform') or nil
+    if irt ~= nil and irt.sizeDelta.y > 1 then hh = irt.sizeDelta.y end
+    if rt ~= nil then rt.sizeDelta = Vector2(w, hh) end
+    if irt ~= nil then irt.sizeDelta = Vector2(w, hh) end
+    local cx = (w / 2) - 35
+    for _, nm in ipairs({ 'SSL_imgBg', 'SSL_imgUp', 'SSL_imgDown' }) do
+      local g = UI.find(go.transform, nm)
+      if g == nil then g = UI.find(go.transform, nm:sub(5)) end
+      if g ~= nil then
+        local r = g:GetComponent('RectTransform')
+        if r ~= nil then r.anchoredPosition = Vector2(cx, r.anchoredPosition.y) end
+      end
+    end
+    local lbl = UI.find(go.transform, 'SSL_Label')
+    if lbl == nil then lbl = UI.find(go.transform, 'Label') end
+    if lbl ~= nil then
+      local r = lbl:GetComponent('RectTransform')
+      if r ~= nil then
+        local left = -(w / 2)
+        local right = cx - 36 - 21
+        r.anchoredPosition = Vector2((left + right) / 2, r.anchoredPosition.y)
+        r.sizeDelta = Vector2((right - left) - w, r.sizeDelta.y)
+        UI.autoSize(lbl)
+      end
+    end
+    -- The plate is optional decoration; an Image whose sprite didn't resolve
+    -- draws a white quad, so hide it rather than show a blank square.
+    local bg = UI.find(go.transform, 'SSL_imgBg')
+    if bg == nil then bg = UI.find(go.transform, 'imgBg') end
+    if bg ~= nil then
+      local img = nil
+      pcall(function() img = bg:GetComponent('Image') end)
+      if img ~= nil then bg:SetActive(img.sprite ~= nil) end
+    end
+  end)
+  return w
+end
+-- Popup list onto the narrowed bar width w, from live rects: item roots take
+-- w (already-correct ones untouched; LayoutElement clamp as backstop), the 2px
+-- divider is hidden outright, center-anchored ornaments keep their right-edge
+-- distance, and item captions get a centered near-full-width box (the item
+-- has no arrow to clear) plus shrink-to-fit. Idempotent.
+UI.fitList = function(go, w)
+  pcall(function()
+    if not UI.alive(go) then return end
+    if w == nil or w < 1 then return end
+    local all = go:GetComponentsInChildren(typeof(CS.UnityEngine.Transform), true)
+    local n = (all ~= nil) and all.Length or 0
+    local function baseName(nm)
+      if nm ~= nil and nm:sub(-7) == '(Clone)' then return nm:sub(1, -8) end
+      return nm
+    end
+    local function isItem(nm)
+      local b = baseName(nm)
+      return b == 'SSL_Item ' or b == 'Item '
+    end
+    local function isLine(nm)
+      local b = baseName(nm)
+      return b == 'SSL_Item Background' or b == 'Item Background'
+    end
+    -- Pass 1: checkmark shift, BEFORE items shrink (parents still at old width).
+    for i = 0, n - 1 do
+      local t = all[i]
+      if t ~= nil and t.gameObject ~= nil and not isLine(t.gameObject.name) then
+        local par = nil
+        pcall(function() par = t.parent end)
+        if par ~= nil and par.gameObject ~= nil and isItem(par.gameObject.name) then
+          local img = nil
+          pcall(function() img = t.gameObject:GetComponent('Image') end)
+          if img ~= nil then
+            local r = t.gameObject:GetComponent('RectTransform')
+            if r ~= nil then
+              local amin, amax = r.anchorMin, r.anchorMax
+              if amin ~= nil and amax ~= nil
+                and math.abs(amin.x - 0.5) < 0.01 and math.abs(amax.x - 0.5) < 0.01 then
+                local pr = par.gameObject:GetComponent('RectTransform')
+                if pr ~= nil then
+                  local pw = pr.rect.width
+                  if pw ~= nil and pw - w > 1 then
+                    local ap = r.anchoredPosition
+                    r.anchoredPosition = Vector2(ap.x - (pw - w) / 2, ap.y)
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+    -- Pass 2: divider off, item width, caption box.
+    for i = 0, n - 1 do
+      local t = all[i]
+      if t ~= nil and t.gameObject ~= nil then
+        local nm = t.gameObject.name
+        local b = baseName(nm)
+        local isLbl = (b == 'SSL_Item Label' or b == 'Item Label')
+        if isItem(nm) or isLine(nm) or isLbl then
+          if isLine(nm) then
+            t.gameObject:SetActive(false)
+          elseif isLbl then
+            local lr = t.gameObject:GetComponent('RectTransform')
+            if lr ~= nil then
+              local left = -(w / 2) + 16
+              local right = (w / 2) - 16
+              lr.anchoredPosition = Vector2((left + right) / 2, lr.anchoredPosition.y)
+              lr.sizeDelta = Vector2((right - left) - w, lr.sizeDelta.y)
+            end
+            UI.autoSize(t.gameObject)
+          else
+            local r = t.gameObject:GetComponent('RectTransform')
+            if r ~= nil then
+              local cw = r.rect.width
+              if cw ~= nil and cw > 1 then
+                local sd = r.sizeDelta
+                sd.x = sd.x + (w - cw)
+                r.sizeDelta = sd
+                pcall(function()
+                  local le = t.gameObject:GetComponent('LayoutElement')
+                  if le ~= nil then le.minWidth = w end
+                end)
+              end
+            end
+          end
+        end
+      end
+    end
+  end)
+end
+-- =============================================================================
+-- ScoreBoss test entries (Dummy button + level/model dropdowns).
+-- Donor = the character EQUIPMENT panel's preset dropdown ('tc_dropdown_01',
+-- CharacterInfoEx/CharEquipmentPanel.prefab): unlike the list panels' empty
+-- arrow stubs it carries the full ornament (imgBg plate + imgUp/imgDown).
+-- =============================================================================
 __SSL_TB.enter = function()
-  pcall(function() __SSL_TB.closeList() end)
-  pcall(function() __SSL_TB.closePopup() end)
+  UI.closeDrop(__SSL_TB.dd)
+  UI.closeDrop(__SSL_TB.dd2)
   local ok, res = pcall(function()
     if PlayerData == nil or PlayerData.ScoreBoss == nil then
       error('ScoreBoss data not ready (open Boss Blitz once first)')
@@ -239,45 +703,34 @@ __SSL_TB.enter = function()
       end
     end
     if build == 0 then error('no formation build (set a team on any Blitz floor first)') end
+    -- Mirror SendEnterScoreBossApplyReq's msgCallback (PlayerScoreBossData.lua):
+    -- the server apply response zeroes the run score state, which
+    -- EnterScoreBossInstance alone never sets.
     SB.CurHPLvScore = 0
     SB.HPLvScore = 0
     SB.CurHPDamage = 0
     SB.BehaviorScore = 0
     SB.BehaviorScoreCount = 0
+    -- Mark this server-less test run: the settle patch finishes the fight
+    -- locally instead of waiting on a settle ack the server will reject. A
+    -- real, server-authorized entry clears this flag again.
     __SSL_TESTMODE = true
-    local lvl = (__SSL_TB.levels ~= nil and __SSL_TB.levels[(__SSL_TB.sel or 0) + 1]) or 1
+    local lvl = __SSL_TB.selLevel()
     SB:EnterScoreBossInstance(lvl, build)
     return 'entered Lv' .. tostring(lvl)
   end)
   if ok then return 'OK ' .. tostring(res) else return 'ERR:' .. tostring(res) end
-end
-__SSL_TB.alive = function(go)
-  if go == nil then return false end
-  local ok, dead = pcall(function() return go:IsNull() end)
-  if not ok or dead then return false end
-  local ok2, par = pcall(function() return go.transform.parent end)
-  return ok2 and par ~= nil
 end
 __SSL_TB.isBlitzFormation = function(ctrl)
   local ok, v = pcall(function() return ctrl.nType == AllEnum.RegionBossFormationType.ScoreBoss end)
   if ok then return v == true end
   return false
 end
+__SSL_TB.selLevel = function()
+  return (__SSL_TB.levels ~= nil and __SSL_TB.levels[(__SSL_TB.sel or 0) + 1]) or 1
+end
 __SSL_TB.selLabel = function()
-  local lvl = (__SSL_TB.levels ~= nil and __SSL_TB.levels[(__SSL_TB.sel or 0) + 1]) or 1
-  return 'Dummy ' .. tostring(lvl)
-end
-__SSL_TB.setText = function(go, s)
-  local txt = nil
-  pcall(function() txt = go:GetComponentInChildren(typeof(CS.TMPro.TMP_Text), true) end)
-  if txt == nil then pcall(function() txt = go:GetComponentInChildren(typeof(CS.UnityEngine.UI.Text), true) end) end
-  if txt ~= nil then
-    local dok = pcall(function() txt.text = s end)
-    if not dok then pcall(function() NovaAPI.SetTMPText(txt, s) end) end
-  end
-end
-__SSL_TB.setLabel = function(go)
-  __SSL_TB.setText(go, __SSL_TB.selLabel())
+  return 'Dummy ' .. tostring(__SSL_TB.selLevel())
 end
 -- Hotkey preset for the Dummy target (Shift+Alt+1..5, wired in HotkeyWndProc):
 -- selects without entering. Alt+1..5 alone still enters immediately.
@@ -287,677 +740,149 @@ __SSL_TB.setSel = function(i)
   if i < 0 then i = 0 end
   if i >= n then i = n - 1 end
   __SSL_TB.sel = i
-  if __SSL_TB.alive(__SSL_TB.go) then __SSL_TB.setLabel(__SSL_TB.go) end
-  pcall(function() __SSL_TB.markOpts() end)
-  pcall(function() __SSL_TB.closeList() end)
+  if UI.alive(__SSL_TB.go) then UI.setText(__SSL_TB.go, __SSL_TB.selLabel()) end
   pcall(function()
-    if __SSL_TB.alive(__SSL_TB.dd) then
-      local dd = __SSL_TB.ddComp(__SSL_TB.dd)
+    if UI.alive(__SSL_TB.dd) then
+      local dd = UI.dropComp(__SSL_TB.dd)
       if dd ~= nil then dd.value = i end
     end
   end)
+  pcall(function() __SSL_TB.refreshModelDD() end)
   return 'preset Lv' .. tostring((__SSL_TB.levels or {})[i + 1] or '?')
 end
--- Option-list popup built ONLY from same-panel Deploy clones (no foreign
--- prefab, no bundle load, no TMP_Dropdown): a small 'v' toggle beside Dummy
--- plus one button per level stacked upward. Plain sibling buttons can never
--- orphan a fullscreen click-eater, so the worst case is a stray visible
--- button, never dead input.
-__SSL_TB.optText = function(i)
-  local s = tostring((__SSL_TB.labels or {})[i] or ('Lv' .. tostring((__SSL_TB.levels or {})[i] or '?')))
-  if ((__SSL_TB.sel or 0) + 1) == i then return '> ' .. s end
-  return '  ' .. s
-end
-__SSL_TB.markOpts = function()
-  for i, o in ipairs(__SSL_TB.opts or {}) do
-    if __SSL_TB.alive(o) then __SSL_TB.setText(o, __SSL_TB.optText(i)) end
-  end
-end
-__SSL_TB.closeList = function()
-  __SSL_TB.listOpen = false
-  pcall(function()
-    if __SSL_TB.alive(__SSL_TB.tgl) then __SSL_TB.setText(__SSL_TB.tgl, 'v') end
-  end)
-  for _, o in ipairs(__SSL_TB.opts or {}) do
-    if __SSL_TB.alive(o) then o:SetActive(false) end
-  end
-end
-__SSL_TB.toggleList = function()
-  if __SSL_TB.listOpen then
-    __SSL_TB.closeList()
-    return 'closed'
-  end
-  __SSL_TB.listOpen = true
-  pcall(function()
-    if __SSL_TB.alive(__SSL_TB.tgl) then __SSL_TB.setText(__SSL_TB.tgl, '^') end
-  end)
-  pcall(function() __SSL_TB.markOpts() end)
-  for _, o in ipairs(__SSL_TB.opts or {}) do
-    if __SSL_TB.alive(o) then
-      o:SetActive(true)
-      o.transform:SetAsLastSibling()
-    end
-  end
-  if __SSL_TB.alive(__SSL_TB.tgl) then __SSL_TB.tgl.transform:SetAsLastSibling() end
-  for _, o in ipairs(__SSL_TB.opts or {}) do
-    if __SSL_TB.alive(o) then o.transform:SetAsLastSibling() end
-  end
-  return 'open'
-end
--- Real game dropdown (TemplateDropdown visuals), sourced WITHOUT any foreign
--- panel in the scene: a panel prefab is loaded as an asset (panelId 0 =>
--- MakeBundleGroup returns nil => never auto-unloaded on panel close, which is
--- what killed the old full-panel donor), and ONLY its template ctrl is
--- instantiated. No TemplateDropdownCtrl instance is created (it fires the
--- global SelectTemplateDD), the TMP_Dropdown is driven directly. Falls back to
--- the same-panel clone stack if the load fails.
--- Donor = the character EQUIPMENT panel's preset dropdown ('tc_dropdown_01',
--- CharacterInfoEx/CharEquipmentPanel.prefab) rather than the character/disc
--- LIST panel's 'goSortDropdown': both are TemplateDropdownCtrl instances, but
--- the list variants ship imgUp/imgDown as EMPTY placeholders (RectTransform
--- only - see wireArrows), while the equipment one carries the full ornament:
---   Dropdown (462x72)
---     Arrow -> imgBg  Image<disc> 72x72   <- the plate behind the chevron
---              imgUp  Image<chevron> 58x58
---              imgDown Image<chevron> 58x58
---     Label  (stretch, sizeDelta.x -184.2 -> text stops left of the arrow)
---     Template (popup)
--- so the chevron shows with its background disc 'around it' and the caption is
--- already inset, no fitting needed.
 __SSL_TB.ddPrefabPath = 'Assets/AssetBundles/UI/CharacterInfoEx/CharEquipmentPanel.prefab'
 __SSL_TB.ddNodeNames = { 'tc_dropdown_01', 'goSortDropdown' }
-__SSL_TB.ddComp = function(go)
-  if go == nil then return nil end
-  local dd = nil
-  pcall(function() dd = go:GetComponent('TMP_Dropdown') end)
-  if dd == nil then pcall(function() dd = go:GetComponent('Dropdown') end) end
-  if dd == nil then pcall(function() dd = go:GetComponentInChildren(typeof(CS.TMPro.TMP_Dropdown), true) end) end
-  if dd == nil then pcall(function() dd = go:GetComponentInChildren(typeof(CS.UnityEngine.UI.Dropdown), true) end) end
-  return dd
+__SSL_TB.ddTemplate = function()
+  return UI.loadNode(__SSL_TB.ddPrefabPath, __SSL_TB.ddNodeNames)
 end
-__SSL_TB.loadDDTemplate = function()
-  if __SSL_TB.alive(__SSL_TB.ddTpl) then return true end
-  if __SSL_TB.ddTpl ~= nil then
-    local okp = pcall(function() return __SSL_TB.ddTpl:IsNull() end)
-    if okp then __SSL_TB.ddTpl = nil end
-  end
-  local ok, res = pcall(function()
-    local GRL = require('Game.Common.Resource.GameResourceLoader')
-    local prefab = GRL.LoadAsset(GRL.ResType.Any, __SSL_TB.ddPrefabPath, typeof(CS.UnityEngine.Object), 'UI', 0)
-    if prefab == nil then error('prefab load failed: ' .. tostring(__SSL_TB.ddPrefabPath)) end
-    local found = nil
-    local all = prefab:GetComponentsInChildren(typeof(CS.UnityEngine.Transform), true)
-    local n = (all ~= nil) and all.Length or 0
-    for _, nm in ipairs(__SSL_TB.ddNodeNames or {}) do
-      for i = 0, n - 1 do
-        local t = all[i]
-        if t ~= nil and t.gameObject ~= nil and t.gameObject.name == nm then found = t.gameObject break end
-      end
-      if found ~= nil then break end
-    end
-    if found == nil then error('dropdown ctrl node not in prefab') end
-    __SSL_TB.ddTpl = found
-    -- Fallback arrow donors, used ONLY if the dropdown's own imgUp/imgDown turn
-    -- out to be empty placeholders (see wireArrows). The equipment prefab wires
-    -- them itself; the character/disc LIST prefabs instead ship them as
-    -- RectTransform-only 'goDummy' stubs (ui_characterlistex, ui_disc), and the
-    -- only real chevron in those panels sits on the sort-order button
-    -- (goListBtn/btnOrder/AnimRoot/Image/imgArrowUp|imgArrowDown)Enable — one
-    -- shared sprite, 'Down' being that same sprite rotated 180 deg on X.
-    -- Absent here (that panel has no such button), so these stay nil unless the
-    -- prefab path is ever swapped back to a list panel.
-    __SSL_TB.ddArrowUp = __SSL_TB.findDeep(prefab.transform, 'imgArrowUpEnable')
-      or __SSL_TB.findDeep(prefab.transform, 'imgArrowUpDisable')
-    __SSL_TB.ddArrowDn = __SSL_TB.findDeep(prefab.transform, 'imgArrowDownEnable')
-      or __SSL_TB.findDeep(prefab.transform, 'imgArrowDownDisable')
-    return true
-  end)
-  if ok then return true else return 'ERR:' .. tostring(res) end
-end
-__SSL_TB.fillDD = function(go)
-  local dd = __SSL_TB.ddComp(go)
-  if dd == nil then error('no TMP_Dropdown under clone') end
-  dd:ClearOptions()
-  local List_String = CS.System.Collections.Generic.List(CS.System.String)
-  local lst = List_String()
-  for _, s in ipairs(__SSL_TB.labels or {}) do lst:Add(s) end
-  dd:AddOptions(lst)
-  dd.value = __SSL_TB.sel or 0
-  dd.onValueChanged:RemoveAllListeners()
-  dd.onValueChanged:AddListener(function(idx)
-    __SSL_TB.sel = tonumber(idx) or 0
-    if __SSL_TB.alive(__SSL_TB.go) then __SSL_TB.setLabel(__SSL_TB.go) end
-    printLog('[SSL] level pick: Lv' .. tostring((__SSL_TB.levels or {})[(__SSL_TB.sel or 0) + 1] or '?'))
-  end)
-  return true
-end
--- Hide() is a no-op unless the popup is open. Opening a TMP_Dropdown spawns a
--- fullscreen invisible Blocker on the root canvas; deactivating the clone (or
--- leaving the panel) with the popup open orphans it and eats all clicks.
--- Call before EVERY deactivation.
-__SSL_TB.closePopup = function()
-  if not __SSL_TB.alive(__SSL_TB.dd) then return end
-  pcall(function()
-    local dd = __SSL_TB.ddComp(__SSL_TB.dd)
-    if dd == nil then return end
-    local open = false
-    pcall(function() open = dd.IsExpanded == true end)
-    if open then dd:Hide() end
-  end)
-end
--- TemplateDropdownCtrl swaps imgUp/imgDown on open via the DropdownOpenState
--- event; without the ctrl we poll IsExpanded in sync (cheap, pump-rate).
-__SSL_TB.pollArrows = function()
-  if not __SSL_TB.alive(__SSL_TB.dd) then return end
-  pcall(function()
-    local dd = __SSL_TB.ddComp(__SSL_TB.dd)
-    if dd == nil then return end
-    local open = dd.IsExpanded == true
-    __SSL_TB.wasOpen = open
-    local up, dn = __SSL_TB.arrowRefs()
-    if up ~= nil then up:SetActive(not open) end
-    if dn ~= nil then dn:SetActive(open) end
-  end)
-end
--- The formation screen sits at the bottom of the display, so the stock
--- downward-opening template runs off-screen. Re-anchor it to the TOP edge of
--- the control with a bottom pivot: the list grows upward where there is room.
--- dd.template is an object reference, so the SSL_ rename does not affect it.
--- Idempotent: re-applied on every sync.
-__SSL_TB.flipTemplate = function(ddgo)
-  pcall(function()
-    local dd = __SSL_TB.ddComp(ddgo)
-    if dd == nil or dd.template == nil then return end
-    local t = dd.template
-    t.anchorMin = Vector2(0, 1)
-    t.anchorMax = Vector2(1, 1)
-    t.pivot = Vector2(0.5, 0)
-    t.anchoredPosition = Vector2(0, 4)
-    -- Stretch anchors + zero x-offset => popup exactly as wide as the button.
-    t.sizeDelta = Vector2(0, t.sizeDelta.y)
-  end)
-end
--- Arrows + sounds, mirroring TemplateDropdownCtrl:OnEvent_Open exactly. The
--- C# dropdown class fires the global string event 'DropdownOpenState' on
--- show/hide (that is the only listener in _mapEventConfig); our clone is the
--- same component class so it fires too. The event carries no source, so only
--- react when OUR popup is the one involved (open: our IsExpanded is true;
--- close: our wasOpen flag) — otherwise the owning screen's own ctrl already
--- handles its arrows+sound and we would double-play.
--- In practice the event almost never arrives: DropdownOpenState_Start/
--- OnDestroy only Fire it when their own GameObject is named 'Dropdown_List'
--- (decompiled.c → StringLiteral_Dropdown_List), and the prefab's node is
--- 'Template', so nothing fires even in the real panels. pollArrows() is what
--- actually drives the swap; onDDOpen stays as the no-double-play path in case
--- a future prefab is renamed.
--- BaseCtrl resolves node names by DFS (func_MarkAllNode), so imgUp/imgDown may
--- sit nested; a direct-child Find misses them (they hang off an intermediate
--- container two levels below the dropdown root: 'goDummy' in the list prefabs,
--- 'Arrow' in the equipment one). Both ship ACTIVE in the asset, so the explicit
--- SetActive below is what picks one — TemplateDropdownCtrl:Awake would normally
--- do it, but Awake never runs on our ctrl-less clone.
-__SSL_TB.findDeep = function(root, name)
-  if root == nil then return nil end
-  local found = nil
-  pcall(function()
-    local all = root:GetComponentsInChildren(typeof(CS.UnityEngine.Transform), true)
-    local n = (all ~= nil) and all.Length or 0
-    for i = 0, n - 1 do
-      local t = all[i]
-      if t ~= nil and t.gameObject ~= nil and t.gameObject.name == name then found = t.gameObject break end
-    end
-  end)
-  return found
-end
-__SSL_TB.arrowRefs = function()
-  local up, dn = nil, nil
-  pcall(function()
-    if __SSL_TB.alive(__SSL_TB.arrowUp) then up = __SSL_TB.arrowUp end
-    if __SSL_TB.alive(__SSL_TB.arrowDn) then dn = __SSL_TB.arrowDn end
-    if up == nil and __SSL_TB.alive(__SSL_TB.dd) then
-      up = __SSL_TB.findDeep(__SSL_TB.dd.transform, 'SSL_imgUp')
-      if up == nil then up = __SSL_TB.findDeep(__SSL_TB.dd.transform, 'imgUp') end
-      __SSL_TB.arrowUp = up
-    end
-    if dn == nil and __SSL_TB.alive(__SSL_TB.dd) then
-      dn = __SSL_TB.findDeep(__SSL_TB.dd.transform, 'SSL_imgDown')
-      if dn == nil then dn = __SSL_TB.findDeep(__SSL_TB.dd.transform, 'imgDown') end
-      __SSL_TB.arrowDn = dn
-    end
-  end)
-  return up, dn
-end
-__SSL_TB.setArrows = function(bOpen)
-  if not __SSL_TB.alive(__SSL_TB.dd) then return end
-  pcall(function()
-    local up, dn = __SSL_TB.arrowRefs()
-    if up ~= nil then up:SetActive(not bOpen) end
-    if dn ~= nil then dn:SetActive(bOpen) end
-  end)
-end
--- The equipment dropdown wires its own chevrons (imgUp/imgDown carry the Image,
--- with a 'imgBg' plate behind them). If a swapped-in prefab instead ships them
--- as empty placeholders (the character/disc LIST variants), activating them
--- would draw nothing (dd-diag showed 'comps=[RectTransform]' for both) — then
--- clone the panel's own sort-order chevron (ddArrowUp/ddArrowDn) into them.
--- Never touches the box when the prefab already draws it, so the equipment
--- layout (imgBg + chevron at x 195.9) is left exactly as authored.
-__SSL_TB.arrowBox = 44
-__SSL_TB.wireArrows = function()
-  local ok, res = pcall(function()
-    if not __SSL_TB.alive(__SSL_TB.dd) then return 'nodropdown' end
-    local up, dn = __SSL_TB.arrowRefs()
-    if up == nil or dn == nil then return 'noanchors' end
-    local made = 0
-    local w = 236
-    pcall(function()
-      local drt = __SSL_TB.dd:GetComponent('RectTransform')
-      if drt ~= nil then
-        local rw = drt.rect.width          -- only used when we must build the arrow
-        if rw ~= nil and rw > 1 then w = rw else w = drt.sizeDelta.x end
-      end
-    end)
-    if w == nil or w < 1 then w = 236 end
-    local box = __SSL_TB.arrowBox
-    local x = (w / 2) - 12 - (box / 2)
-    local function hasImage(go)
-      local found = false
-      pcall(function() if go:GetComponent('Image') ~= nil then found = true end end)
-      if not found then
-        pcall(function()
-          if go:GetComponentInChildren(typeof(CS.UnityEngine.UI.Image), true) ~= nil then found = true end
-        end)
-      end
-      return found
-    end
-    local function dress(boxGo, donor, nm)
-      if donor == nil or not __SSL_TB.alive(boxGo) then return end
-      if hasImage(boxGo) then return end
-      local child = __SSL_TB.findDeep(boxGo.transform, 'SSL_' .. nm)
-      if child == nil then
-        child = instantiate(donor, boxGo.transform)
-        if child == nil then return end
-        child.name = 'SSL_' .. nm
-        __SSL_TB.renameTree(child)
-        made = made + 1
-      end
-      local brt = boxGo:GetComponent('RectTransform')
-      if brt ~= nil then
-        brt.anchorMin = Vector2(0.5, 0.5)
-        brt.anchorMax = Vector2(0.5, 0.5)
-        brt.pivot = Vector2(0.5, 0.5)
-        brt.sizeDelta = Vector2(box, box)
-        brt.anchoredPosition = Vector2(x, 0)
-      end
-      local crt = child:GetComponent('RectTransform')
-      if crt ~= nil then
-        crt.anchorMin = Vector2(0.5, 0.5)
-        crt.anchorMax = Vector2(0.5, 0.5)
-        crt.pivot = Vector2(0.5, 0.5)
-        crt.anchoredPosition = Vector2(0, 0)
-      end
-    end
-    dress(up, __SSL_TB.ddArrowUp, 'ArrowUp')
-    dress(dn, __SSL_TB.ddArrowDn, 'ArrowDn')
-    -- The plate behind the chevron (equipment prefab: Arrow/imgBg) is optional
-    -- decoration; an Image whose cross-bundle sprite failed to resolve draws a
-    -- white quad, so hide it rather than show a blank square.
-    pcall(function()
-      local bg = __SSL_TB.findDeep(__SSL_TB.dd.transform, 'SSL_imgBg')
-      if bg == nil then bg = __SSL_TB.findDeep(__SSL_TB.dd.transform, 'imgBg') end
-      if bg ~= nil then
-        local img = nil
-        pcall(function() img = bg:GetComponent('Image') end)
-        if img ~= nil then bg:SetActive(img.sprite ~= nil) end
-      end
-    end)
-    return 'arrows=' .. tostring(made)
-  end)
-  if ok then return res else return 'ERR:' .. tostring(res) end
-end
-__SSL_TB.playDDSound = function(bOpen)
-  pcall(function()
-    local s = bOpen and 'ui_common_menu_open' or 'ui_common_menu_close'
-    CS.WwiseAudioManager.Instance:PlaySound(s)
-  end)
-end
-__SSL_TB.onDDOpen = function(_, bOpen)
-  bOpen = (bOpen == true)
-  if bOpen then
-    local ours = false
-    pcall(function()
-      ours = __SSL_TB.alive(__SSL_TB.dd) and __SSL_TB.ddComp(__SSL_TB.dd).IsExpanded == true
-    end)
-    if ours then
-      __SSL_TB.wasOpen = true
-      __SSL_TB.setArrows(true)
-      __SSL_TB.playDDSound(true)
-    end
-  else
-    if __SSL_TB.wasOpen then
-      __SSL_TB.wasOpen = false
-      __SSL_TB.setArrows(false)
-      __SSL_TB.playDDSound(false)
-    end
-  end
-end
--- One-shot diagnostics: dump the clone subtree (names, active, images) so a
--- missing arrow can be located exactly instead of guessed at.
--- The arrow boxes themselves carry only a RectTransform, so the sprite that
--- actually draws is one level down — report the children too.
-__SSL_TB.diagKids = function(go)
-  local s = ''
-  pcall(function()
-    local cn = go.transform.childCount
-    s = ' kids=' .. tostring(cn)
-    for ci = 0, cn - 1 do
-      local cgo = go.transform:GetChild(ci).gameObject
-      local img = nil
-      pcall(function() img = cgo:GetComponent('Image') end)
-      if img ~= nil then
-        local sp = (img.sprite ~= nil) and img.sprite.name or 'nosprite'
-        s = s .. ' [' .. tostring(cgo.name) .. ' Image<' .. tostring(sp) .. '>]'
-      else
-        s = s .. ' [' .. tostring(cgo.name) .. ']'
-      end
-    end
-  end)
-  return s
-end
-__SSL_TB.diagDD = function()
-  if __SSL_TB.diagDone then return end
-  __SSL_TB.diagDone = true
-  pcall(function()
-    if not __SSL_TB.alive(__SSL_TB.dd) then
-      printLog('[SSL] dd-diag: no clone')
-      return
-    end
-    local up, dn = __SSL_TB.arrowRefs()
-    pcall(function()
-      printLog('[SSL] dd-diag: arrows up=' .. tostring(up) .. ' dn=' .. tostring(dn))
-    end)
-    local all = __SSL_TB.dd:GetComponentsInChildren(typeof(CS.UnityEngine.Transform), true)
-    local n = (all ~= nil) and all.Length or 0
-    printLog('[SSL] dd-diag: nodes=' .. tostring(n))
-    pcall(function()
-      for _, key in ipairs({ 'arrowUp', 'arrowDn' }) do
-        local go = __SSL_TB[key]
-        if go ~= nil then
-          local comps = go:GetComponents(typeof(CS.UnityEngine.Component))
-          local names = ''
-          if comps ~= nil then
-            for ci = 0, comps.Length - 1 do
-              local cn = tostring(comps[ci]:GetType().Name)
-              if names ~= '' then names = names .. ',' end
-              names = names .. cn
-            end
-          end
-          local rt = ''
-          pcall(function()
-            local r = go:GetComponent('RectTransform')
-            if r ~= nil then rt = ' pos=' .. tostring(r.anchoredPosition) .. ' sz=' .. tostring(r.sizeDelta) end
-          end)
-          printLog('[SSL] dd-diag: ' .. tostring(key) .. ' comps=[' .. names .. ']' .. rt .. ' active=' .. tostring(go.activeSelf) .. __SSL_TB.diagKids(go))
-        else
-          printLog('[SSL] dd-diag: ' .. tostring(key) .. ' MISSING')
-        end
-      end
-    end)
-    local shown = 0
-    for i = 0, n - 1 do
-      if shown >= 40 then break end
-      local t = all[i]
-      if t ~= nil and t.gameObject ~= nil then
-        local nm = t.gameObject.name
-        local act = tostring(t.gameObject.activeSelf)
-        local extra = ''
-        pcall(function()
-          local img = t.gameObject:GetComponent('Image')
-          if img ~= nil then
-            local sp = (img.sprite ~= nil) and img.sprite.name or 'nosprite'
-            extra = ' Image(en=' .. tostring(img.enabled) .. ' sp=' .. tostring(sp) .. ')'
-          end
-        end)
-        pcall(function()
-          local dd = t.gameObject:GetComponent('TMP_Dropdown')
-          if dd ~= nil then extra = extra .. ' TMP_Dropdown' end
-        end)
-        printLog('[SSL] dd-diag: ' .. tostring(nm) .. ' active=' .. act .. extra)
-        shown = shown + 1
-      end
-    end
-  end)
-end
-__SSL_TB.subDDEvent = function()
-  if __SSL_TB.evSub then return end
-  pcall(function()
-    EventManager.Add('DropdownOpenState', __SSL_TB, __SSL_TB.onDDOpen)
-    __SSL_TB.evSub = true
-  end)
-end
-__SSL_TB.wireRealDD = function(rootTr, tplGo)
-  local ok, res = pcall(function()
-    local tr = __SSL_TB.loadDDTemplate()
-    if tr ~= true then error(tr) end
-    local dd
-    if __SSL_TB.alive(__SSL_TB.dd) then
-      dd = __SSL_TB.dd
-    else
-      local exist = rootTr:Find('SSL_LevelDropdown')
-      if exist ~= nil then
-        dd = exist.gameObject
-      else
-        dd = instantiate(__SSL_TB.ddTpl, rootTr)
-        dd.name = 'SSL_LevelDropdown'
-      end
-    end
-    if not __SSL_TB.alive(__SSL_TB.dd) or __SSL_TB.dd ~= dd then
-      __SSL_TB.arrowUp = nil
-      __SSL_TB.arrowDn = nil
-      __SSL_TB.diagDone = false
-    end
-    __SSL_TB.dd = dd
-    __SSL_TB.renameTree(dd)
-    -- Float above Dummy: keep the prefab's own size/styling, same anchor space.
-    local tRt = tplGo:GetComponent('RectTransform')
-    local dRt = __SSL_TB.alive(__SSL_TB.go) and __SSL_TB.go:GetComponent('RectTransform') or nil
-    local rt = dd:GetComponent('RectTransform')
-    if rt ~= nil and tRt ~= nil and dRt ~= nil then
-      rt.anchorMin = tRt.anchorMin
-      rt.anchorMax = tRt.anchorMax
-      rt.pivot = tRt.pivot
-      -- Keep the prefab's own rect: the equipment dropdown's bar (462x72) is
-      -- wider than the Dummy button and is centred on the ctrl root, so the
-      -- bar hangs symmetrically over the button. Shrinking it would squeeze
-      -- the Label (already inset by 184.2 for the arrow) and re-anchor nothing.
-      rt.anchoredPosition = Vector2(dRt.anchoredPosition.x, dRt.anchoredPosition.y + (dRt.sizeDelta.y + 10))
-    end
-    __SSL_TB.fillDD(dd)
-    __SSL_TB.flipTemplate(dd)
-    __SSL_TB.wireArrows()
-    __SSL_TB.setArrows(false)
-    __SSL_TB.subDDEvent()
-    dd.transform:SetAsLastSibling()
-    __SSL_TB.ddMode = 'real'
-    return 'real-dd'
-  end)
-  if ok then return res else return 'ERR:' .. tostring(res) end
-end
-__SSL_TB.btnOf = function(go)
-  local b = nil
-  pcall(function() b = go:GetComponent('UIButton') end)
-  if b == nil then pcall(function() b = go:GetComponent('Button') end) end
-  return b
-end
--- Creates/wires the toggle + 5 option clones off the SAME Deploy template.
--- Positions are derived from the Dummy clone's rect (toggle to its left,
--- options stacked upward from it), all in the template's anchor space.
-__SSL_TB.wireList = function(rootTr, tplGo)
-  local ok, res = pcall(function()
-    if tplGo == nil or not __SSL_TB.alive(__SSL_TB.go) then error('no dummy yet') end
-    local tRt = tplGo:GetComponent('RectTransform')
-    local dRt = __SSL_TB.go:GetComponent('RectTransform')
-    if tRt == nil or dRt == nil then error('no rect') end
-    local n = #(__SSL_TB.levels or {})
-    -- Toggle: narrow clone left of Dummy.
-    local tgl, tMade
-    if __SSL_TB.alive(__SSL_TB.tgl) then
-      tgl = __SSL_TB.tgl
-      tMade = false
-    else
-      local exist = rootTr:Find('SSL_LvlToggle')
-      if exist ~= nil then
-        tgl = exist.gameObject
-        tMade = false
-      else
-        tgl = instantiate(tplGo, rootTr)
-        tgl.name = 'SSL_LvlToggle'
-        tMade = true
-      end
-    end
-    __SSL_TB.tgl = tgl
-    __SSL_TB.renameTree(tgl)
-    local gRt = tgl:GetComponent('RectTransform')
-    if gRt ~= nil then
-      gRt.anchorMin = tRt.anchorMin
-      gRt.anchorMax = tRt.anchorMax
-      gRt.pivot = tRt.pivot
-      local tw = 64
-      gRt.sizeDelta = Vector2(tw, tRt.sizeDelta.y)
-      gRt.anchoredPosition = Vector2(dRt.anchoredPosition.x - (dRt.sizeDelta.x / 2) - 10 - (tw / 2), dRt.anchoredPosition.y)
-    end
-    __SSL_TB.setText(tgl, __SSL_TB.listOpen and '^' or 'v')
-    local tb = __SSL_TB.btnOf(tgl)
-    if tb == nil then error('no Button on toggle') end
-    tb.onClick:RemoveAllListeners()
-    tb.onClick:AddListener(function()
-      local r = __SSL_TB.toggleList()
-      printLog('[SSL] level list: ' .. tostring(r))
-    end)
-    tgl.transform:SetAsLastSibling()
-    -- Options: same size as Dummy, stacked upward above it.
-    local h = dRt.sizeDelta.y
-    local dx = dRt.anchoredPosition.x
-    local dy = dRt.anchoredPosition.y
-    for i = 1, n do
-      local o
-      if __SSL_TB.alive(__SSL_TB.opts[i]) then
-        o = __SSL_TB.opts[i]
-      else
-        local nm = 'SSL_LvlOpt' .. tostring(i)
-        local exist = rootTr:Find(nm)
-        if exist ~= nil then
-          o = exist.gameObject
-        else
-          o = instantiate(tplGo, rootTr)
-          o.name = nm
-        end
-        __SSL_TB.opts[i] = o
-        __SSL_TB.renameTree(o)
-        local ob = __SSL_TB.btnOf(o)
-        if ob ~= nil then
-          local idx = i
-          ob.onClick:RemoveAllListeners()
-          ob.onClick:AddListener(function()
-            local r = __SSL_TB.setSel(idx - 1)
-            printLog('[SSL] level pick: ' .. tostring(r))
-          end)
-        end
-      end
-      local oRt = o:GetComponent('RectTransform')
-      if oRt ~= nil then
-        oRt.anchorMin = tRt.anchorMin
-        oRt.anchorMax = tRt.anchorMax
-        oRt.pivot = tRt.pivot
-        oRt.sizeDelta = dRt.sizeDelta
-        oRt.anchoredPosition = Vector2(dx, dy + i * (h + 10))
-      end
-      __SSL_TB.setText(o, __SSL_TB.optText(i))
-      o:SetActive(__SSL_TB.listOpen == true)
-      o.transform:SetAsLastSibling()
-    end
-    return 'list:' .. tostring(n) .. 'opts'
-  end)
-  if ok then return res else return 'ERR:' .. tostring(res) end
-end
--- Give every descendant a unique prefixed name. The panel is re-parsed from a
--- cached instance on reopen (BasePanel.lua:94-97 ParsePrefab), and
--- BaseCtrl:_ParseNode's func_MarkAllNode (BaseCtrl.lua:204-213) maps nodes by
--- DFS name with last-write-wins. A clone whose child is still called
--- "txtStartBattle" would out-map the real one, and the panel's localized bind
--- (BaseCtrl.lua:298-299, sLanguageId "RegionBoss_SelectTeam_GoWar") would then
--- write "Deploy" into the clone — exactly the bug. Renaming the subtree keeps
--- both the name map and _mapNode pointing at the genuine nodes.
-__SSL_TB.renameTree = function(go)
-  pcall(function()
-    local all = go:GetComponentsInChildren(typeof(CS.UnityEngine.Transform), true)
-    local n = (all ~= nil) and all.Length or 0
-    for i = 0, n - 1 do
-      local t = all[i]
-      if t ~= nil and t ~= go.transform then
-        local nm = t.gameObject.name
-        if nm:sub(1, 4) ~= 'SSL_' then t.gameObject.name = 'SSL_' .. nm end
-      end
-    end
-  end)
-end
--- Clone of the Deploy button (btnStartBattle): SAME parent and SAME anchor
--- space as the template, only anchoredPosition shifted left by the button width
--- so it sits right beside Deploy. (Earlier attempts forced a different anchor
--- space or cloned the ATK pill — the pill carries its own attribute-rendering
--- component that overwrote the label with the CJK attribute summary.)
-__SSL_TB.apply = function(go, tplGo)
-  local tRt = (tplGo ~= nil) and tplGo:GetComponent('RectTransform') or nil
-  local rt = go:GetComponent('RectTransform')
-  if rt ~= nil and tRt ~= nil then
-    rt.anchorMin = tRt.anchorMin
-    rt.anchorMax = tRt.anchorMax
-    rt.pivot = tRt.pivot
-    rt.sizeDelta = tRt.sizeDelta
-    rt.anchoredPosition = Vector2(tRt.anchoredPosition.x - (tRt.sizeDelta.x + 28), tRt.anchoredPosition.y)
-  end
-  __SSL_TB.renameTree(go)
-  __SSL_TB.setLabel(go)
-  go.transform:SetAsLastSibling()
-end
-__SSL_TB.wire = function(tplGo, ctrl)
+__SSL_TB.wireButton = function(tplGo)
   local ok, res = pcall(function()
     if tplGo == nil then error('no template') end
     -- Stay in the template's own parent/anchor space: guaranteed sane placement.
     local rootTr = tplGo.transform.parent
     if rootTr == nil then error('no template parent') end
-    -- Prefer the tracked reference (survives being hidden — GameObject.Find
-    -- skips inactive objects, which would otherwise spawn duplicates).
-    local go, made
-    if __SSL_TB.alive(__SSL_TB.go) then
-      go = __SSL_TB.go
-      made = false
-    else
-      local exist = rootTr:Find('SSL_TestBlitzBtn')
-      if exist ~= nil then
-        go = exist.gameObject
-        made = false
-      else
-        go = instantiate(tplGo, rootTr)
-        go.name = 'SSL_TestBlitzBtn'
-        made = true
-      end
-    end
+    local go = UI.alive(__SSL_TB.go) and __SSL_TB.go or UI.clone(tplGo, rootTr, 'SSL_TestBlitzBtn')
     __SSL_TB.go = go
-    __SSL_TB.apply(go, tplGo)
-    local btn = go:GetComponent('UIButton')
-    if btn == nil then btn = go:GetComponent('Button') end
-    if btn == nil then error('no Button/UIButton on clone') end
-    btn.onClick:RemoveAllListeners()
-    btn.onClick:AddListener(function()
+    -- Same rect as Deploy, shifted left by its own width beside it. (Not the
+    -- ATK pill: it carries an attribute renderer that overwrites the label.)
+    local tRt = tplGo:GetComponent('RectTransform')
+    if tRt ~= nil then
+      UI.place(go, tplGo, tRt.anchoredPosition.x - (tRt.sizeDelta.x + 28), tRt.anchoredPosition.y)
+    end
+    UI.renameTree(go)
+    UI.setText(go, __SSL_TB.selLabel())
+    go.transform:SetAsLastSibling()
+    UI.onClick(go, function()
       local r = __SSL_TB.enter()
       printLog('[SSL] test button: ' .. tostring(r))
     end)
-    return made and 'created' or 'exists'
+    return 'wired'
   end)
   if ok then return res else return 'ERR:' .. tostring(res) end
 end
--- Single place that (re)creates the clone and mirrors Deploy's visibility.
+__SSL_TB.wireLevelDD = function(rootTr, tplGo)
+  local ok, res = pcall(function()
+    local tpl = __SSL_TB.ddTemplate()
+    local dd = UI.alive(__SSL_TB.dd) and __SSL_TB.dd or UI.clone(tpl, rootTr, 'SSL_LevelDropdown')
+    __SSL_TB.dd = dd
+    UI.renameTree(dd)
+    UI.manage(dd)
+    -- Float above Dummy, same anchor space.
+    local dRt = UI.alive(__SSL_TB.go) and __SSL_TB.go:GetComponent('RectTransform') or nil
+    if dRt ~= nil then
+      UI.place(dd, tplGo, dRt.anchoredPosition.x, dRt.anchoredPosition.y + (dRt.sizeDelta.y + 10))
+    end
+    UI.fillDrop(dd, __SSL_TB.labels, __SSL_TB.sel or 0, function(idx)
+      __SSL_TB.sel = tonumber(idx) or 0
+      if UI.alive(__SSL_TB.go) then UI.setText(__SSL_TB.go, __SSL_TB.selLabel()) end
+      -- Selecting closes the popup: flip the chevron now instead of waiting
+      -- for the next pump, and show/hide the skin bar immediately.
+      UI.setArrows(dd, false)
+      pcall(function() __SSL_TB.refreshModelDD() end)
+      printLog('[SSL] level pick: Lv' .. tostring(__SSL_TB.selLevel()))
+    end)
+    UI.flipUp(dd)
+    local w = UI.fitBar(dd, __SSL_TB.go)
+    UI.fitList(dd, w)
+    UI.setArrows(dd, false)
+    UI.subEvent()
+    dd.transform:SetAsLastSibling()
+    return 'real-dd'
+  end)
+  if ok then return res else return 'ERR:' .. tostring(res) end
+end
+-- Dummy MODEL dropdown (second bar, only while Floor 1 is picked): a spawned
+-- monster's combat model is MonsterSkin[Monster.FAId], so picking one rewrites
+-- that floor's boss row to the wooden-dummy skin (model-only: stats/AI/skills
+-- untouched). The pick reaches the DLL as dummy=<monsterId>:<skinId> (see
+-- dummyState); skin 0 = the row's own FAId, untouched.
+__SSL_TB.modelSkin = function()
+  return (__SSL_TB.models or {})[(__SSL_TB.mdl or 0) + 1] or 0
+end
+__SSL_TB.wantModelDD = function()
+  return ((__SSL_TB.levels or {})[(__SSL_TB.sel or 0) + 1] == (__SSL_TB.dummyLevel or 1))
+end
+__SSL_TB.dummyTargetId = function()
+  local t = __SSL_TB.dummyTarget
+  if t ~= nil and t ~= 0 then return t end
+  local id = 0
+  pcall(function()
+    local cfg = ConfigTable.GetData('ScoreBossLevel', __SSL_TB.dummyLevel or 1)
+    if cfg ~= nil and cfg.MonsterId ~= nil then id = tonumber(cfg.MonsterId) or 0 end
+  end)
+  if id ~= 0 then __SSL_TB.dummyTarget = id end
+  return id
+end
+__SSL_TB.dummyState = function()
+  return __SSL_TB.dummyTargetId(), __SSL_TB.modelSkin()
+end
+__SSL_TB.wireModelDD = function(rootTr, tplGo)
+  local ok, res = pcall(function()
+    local tpl = __SSL_TB.ddTemplate()
+    local dd = UI.alive(__SSL_TB.dd2) and __SSL_TB.dd2 or UI.clone(tpl, rootTr, 'SSL_ModelDropdown')
+    __SSL_TB.dd2 = dd
+    UI.renameTree(dd)
+    UI.manage(dd)
+    local dRt = UI.alive(__SSL_TB.go) and __SSL_TB.go:GetComponent('RectTransform') or nil
+    local lRt = UI.alive(__SSL_TB.dd) and __SSL_TB.dd:GetComponent('RectTransform') or nil
+    if dRt ~= nil then
+      -- Stacked above the level bar (both 72 tall after the fit, 10 px gap).
+      local baseY = dRt.anchoredPosition.y + (dRt.sizeDelta.y + 10)
+      if lRt ~= nil then baseY = lRt.anchoredPosition.y + 36 + 10 + 36 end
+      UI.place(dd, tplGo, dRt.anchoredPosition.x, baseY)
+    end
+    UI.fillDrop(dd, __SSL_TB.modelLabels, __SSL_TB.mdl or 0, function(idx)
+      __SSL_TB.mdl = tonumber(idx) or 0
+      UI.setArrows(dd, false)
+      printLog('[SSL] dummy model: ' .. tostring((__SSL_TB.modelLabels or {})[(__SSL_TB.mdl or 0) + 1] or '?')
+        .. ' (' .. tostring(__SSL_TB.modelSkin()) .. ')')
+    end)
+    UI.flipUp(dd)
+    local w = UI.fitBar(dd, __SSL_TB.go)
+    UI.fitList(dd, w)
+    UI.setArrows(dd, false)
+    dd.transform:SetAsLastSibling()
+    return 'model-dd'
+  end)
+  if ok then return res else return 'ERR:' .. tostring(res) end
+end
+-- Instant skin-bar show/hide for level picks and Shift+Alt presets, without
+-- waiting for the next pump tick (sync re-asserts the same state on its tick).
+__SSL_TB.refreshModelDD = function()
+  local want = false
+  pcall(function() want = __SSL_TB.wantModelDD() end)
+  if want then
+    pcall(function()
+      local tpl = __SSL_TB.tplDeploy
+      if tpl ~= nil then __SSL_TB.wireModelDD(tpl.transform.parent, tpl) end
+    end)
+    if UI.alive(__SSL_TB.dd2) then __SSL_TB.dd2:SetActive(true) end
+  elseif UI.alive(__SSL_TB.dd2) then
+    UI.closeDrop(__SSL_TB.dd2)
+    __SSL_TB.dd2:SetActive(false)
+  end
+end
+-- Single place that (re)creates the clones and mirrors Deploy's visibility.
 -- Called from OnEnable (panel open), Refresh (team added/loaded), and the pump.
 __SSL_TB.sync = function(ctrl)
   if ctrl == nil or ctrl._mapNode == nil or ctrl._mapNode.btnStartBattle == nil then
@@ -965,63 +890,49 @@ __SSL_TB.sync = function(ctrl)
   end
   __SSL_TB.ctrl = ctrl
   if not __SSL_TB.isBlitzFormation(ctrl) then
-    -- Other formation modes (RegionBoss / DailyInstance / ...) reuse this ctrl
-    -- class; never show the Dummy button there.
-    pcall(function() __SSL_TB.closeList() end)
-    pcall(function() __SSL_TB.closePopup() end)
-    if __SSL_TB.alive(__SSL_TB.go) then __SSL_TB.go:SetActive(false) end
-    if __SSL_TB.alive(__SSL_TB.tgl) then __SSL_TB.tgl:SetActive(false) end
-    if __SSL_TB.alive(__SSL_TB.dd) then __SSL_TB.dd:SetActive(false) end
+    -- Other formation modes reuse this ctrl class; never show our clones there.
+    -- Close popups BEFORE deactivating or their click-eaters orphan.
+    UI.closeDrop(__SSL_TB.dd)
+    UI.closeDrop(__SSL_TB.dd2)
+    if UI.alive(__SSL_TB.go) then __SSL_TB.go:SetActive(false) end
+    if UI.alive(__SSL_TB.dd) then __SSL_TB.dd:SetActive(false) end
+    if UI.alive(__SSL_TB.dd2) then __SSL_TB.dd2:SetActive(false) end
     return 'nonblitz'
   end
   local tplGo = ctrl._mapNode.btnStartBattle.gameObject
   __SSL_TB.tplDeploy = tplGo
-  if not __SSL_TB.alive(__SSL_TB.go) then
-    local r = __SSL_TB.wire(tplGo, ctrl)
+  if not UI.alive(__SSL_TB.go) then
+    local r = __SSL_TB.wireButton(tplGo)
     if tostring(r):sub(1, 3) == 'ERR' then return r end
   end
   local show = false
   pcall(function() show = tplGo.activeSelf == true end)
-  if __SSL_TB.alive(__SSL_TB.go) then
+  if UI.alive(__SSL_TB.go) then
     __SSL_TB.go:SetActive(show)
-    -- Re-assert the label after the activation (and on every pump while shown):
-    -- belt-and-braces against any component that re-localizes on enable.
-    if show then __SSL_TB.setLabel(__SSL_TB.go) end
+    -- Re-assert the label on every pump while shown: belt-and-braces against
+    -- any component that re-localizes on enable.
+    if show then UI.setText(__SSL_TB.go, __SSL_TB.selLabel()) end
   end
   local listRes = 'nolist'
   if show then
-    listRes = __SSL_TB.wireRealDD(tplGo.transform.parent, tplGo)
+    listRes = __SSL_TB.wireLevelDD(tplGo.transform.parent, tplGo)
     if tostring(listRes):sub(1, 3) == 'ERR' then
-      -- Bundle load failed (e.g. prefab moved after a game update): fall back
-      -- to the same-panel clone stack. Dummy + Shift+Alt preset keep working.
-      __SSL_TB.ddMode = 'stack'
-      pcall(function() __SSL_TB.closePopup() end)
-      if __SSL_TB.alive(__SSL_TB.dd) then __SSL_TB.dd:SetActive(false) end
-      listRes = 'real:' .. tostring(listRes) .. ' stack:' .. tostring(__SSL_TB.wireList(tplGo.transform.parent, tplGo))
-      if __SSL_TB.alive(__SSL_TB.tgl) then __SSL_TB.tgl:SetActive(true) end
-      if __SSL_TB.listOpen then
-        for _, o in ipairs(__SSL_TB.opts or {}) do
-          if __SSL_TB.alive(o) then o:SetActive(true) end
-        end
-      end
+      -- Prefab gone (game update): dropdowns stay hidden, everything else works.
+      UI.closeDrop(__SSL_TB.dd)
+      UI.closeDrop(__SSL_TB.dd2)
+      if UI.alive(__SSL_TB.dd) then __SSL_TB.dd:SetActive(false) end
+      if UI.alive(__SSL_TB.dd2) then __SSL_TB.dd2:SetActive(false) end
     else
-      -- Real dropdown live: keep the fallback stack hidden.
-      pcall(function() __SSL_TB.closeList() end)
-      if __SSL_TB.alive(__SSL_TB.tgl) then __SSL_TB.tgl:SetActive(false) end
-      for _, o in ipairs(__SSL_TB.opts or {}) do
-        if __SSL_TB.alive(o) then o:SetActive(false) end
-      end
-      if __SSL_TB.alive(__SSL_TB.dd) then __SSL_TB.dd:SetActive(true) end
-      pcall(function() __SSL_TB.pollArrows() end)
-      pcall(function() __SSL_TB.diagDD() end)
+      if UI.alive(__SSL_TB.dd) then __SSL_TB.dd:SetActive(true) end
+      UI.pollDrop(__SSL_TB.dd)
+      __SSL_TB.refreshModelDD()
+      UI.pollDrop(__SSL_TB.dd2)
     end
   else
-    -- Deploy hidden (no team / other mode / leaving): never leave popups up.
-    -- Close the TMP popup BEFORE deactivating or its click-eater orphans.
-    pcall(function() __SSL_TB.closePopup() end)
-    pcall(function() __SSL_TB.closeList() end)
-    if __SSL_TB.alive(__SSL_TB.dd) then __SSL_TB.dd:SetActive(false) end
-    if __SSL_TB.alive(__SSL_TB.tgl) then __SSL_TB.tgl:SetActive(false) end
+    UI.closeDrop(__SSL_TB.dd)
+    UI.closeDrop(__SSL_TB.dd2)
+    if UI.alive(__SSL_TB.dd) then __SSL_TB.dd:SetActive(false) end
+    if UI.alive(__SSL_TB.dd2) then __SSL_TB.dd2:SetActive(false) end
   end
   return (show and 'shown' or 'hidden') .. ' ' .. tostring(listRes)
 end
@@ -1060,7 +971,7 @@ if open then
       local d = CS.UnityEngine.GameObject.Find('btnStartBattle')
       if d ~= nil then
         __SSL_TB.tplDeploy = d
-        wired = 'boot:' .. tostring(__SSL_TB.wire(d, nil))
+        wired = 'boot:' .. tostring(__SSL_TB.wireButton(d))
       else
         wired = 'noTemplate'
       end
@@ -1069,20 +980,39 @@ if open then
 end
 local vis = 'hidden'
 pcall(function()
-  if __SSL_TB.alive(__SSL_TB.go) then vis = __SSL_TB.go.activeSelf and 'shown' or 'hidden' end
+  if UI.alive(__SSL_TB.go) then vis = __SSL_TB.go.activeSelf and 'shown' or 'hidden' end
 end)
-local selinfo = tostring((__SSL_TB.levels or {})[(__SSL_TB.sel or 0) + 1] or '?')
-return 'OK patched=' .. tostring(__SSL_TB.patched) .. ' wired=' .. tostring(wired) .. ' vis=' .. tostring(vis) .. ' sel=' .. selinfo .. ' onenable=' .. tostring(__SSL_TB.lastCtrl) .. ' settle=' .. tostring(__SSL_SETTLEPATCH)
+local selinfo = tostring(__SSL_TB.selLevel())
+local dmt, dms = 0, 0
+pcall(function() dmt, dms = __SSL_TB.dummyState() end)
+return 'OK patched=' .. tostring(__SSL_TB.patched) .. ' wired=' .. tostring(wired) .. ' vis=' .. tostring(vis) .. ' sel=' .. selinfo .. ' onenable=' .. tostring(__SSL_TB.lastCtrl) .. ' settle=' .. tostring(__SSL_SETTLEPATCH) .. ' dummy=' .. tostring(dmt) .. ':' .. tostring(dms)
 )lua";
+
+// The chunk reports the two dropdowns' state as 'dummy=<monsterId>:<skinId>'
+// (see __SSL_TB.dummyState). Push it into the GetMonster hook, which puts that
+// skin into that one Monster row (monsterId 0 = tables not loaded: no-op).
+static void PushDummySkinFromResult(const std::string& res) {
+    size_t pos = res.find(" dummy=");
+    if (pos == std::string::npos) return;
+    int mon = 0, skin = 0;
+    if (sscanf(res.c_str() + pos + 7, "%d:%d", &mon, &skin) == 2)
+        SetDummySkinOverride(mon, skin);
+}
 
 void EnsureScoreBossTestButton() {
     static std::atomic<int64_t> nextMs{0};
     int64_t now = (int64_t)GetTickCount64();
     if (now < nextMs.load(std::memory_order_relaxed)) return;
-    nextMs.store(now + 2000, std::memory_order_relaxed);   // 0.5 Hz is plenty for a lobby button
-    std::string full = std::string(kScoreBossSettlePatch) + kTestButtonChunk;
+    // 0.5 Hz is plenty for a lobby button; poke ~3x faster while the formation
+    // panel is up (the only place the two dropdowns can change) so a model pick
+    // is in place before the level spawns its monsters.
+    nextMs.store(now + 2000, std::memory_order_relaxed);
+    std::string full = std::string(kScoreBossSettlePatch) + InfinityTowerOpenPatch() + kTestButtonChunk;
     std::string res = RunLuaDoString(full.c_str(), "SSLTestBtn");
     if (res.empty()) return;   // failure already logged by RunLuaDoString ([origin] line)
+    if (res.find(" vis=shown") != std::string::npos)
+        nextMs.store(now + 700, std::memory_order_relaxed);
+    PushDummySkinFromResult(res);
     static std::string last;
     if (res != last) {
         last = res;
@@ -1094,12 +1024,13 @@ void EnsureScoreBossTestButton() {
 //  Alt+1..5 ScoreBoss test-stage hotkeys (WndProc subclass)
 //  The subclass proc runs on the Unity main thread (game message pump), so the
 //  xLua DoString in RequestScoreBossTestEntry is safe to call synchronously.
-//  Alt+1/2 = Lv 998/999 (BossRush arenas, no-mechanic variants), Alt+3/4/5 =
-//  Lv 1/12/13 (Roguelike_2_MiniBoss_005; the DaWuGui + BingXiangGuai "Test"
-//  prefabs ship inside roguelike_2_miniboss_005*.unity3d).
+//  Alt+1 = Lv 1 (Roguelike_2_MiniBoss_005 DaWuGui test), Alt+2/3 = Lv 998/999
+//  (BossRush arenas, no-mechanic variants), Alt+4/5 = Lv 12/13
+//  (Roguelike_2_MiniBoss_005; the BingXiangGuai "Test" prefabs ship inside
+//  roguelike_2_miniboss_005*.unity3d).
 //  Shift+Alt+1..5 only presets the Dummy button target (no entry).
 // =============================================================================
-static const int32_t kTestLevelByHotkey[5] = { 998, 999, 1, 12, 13 };
+static const int32_t kTestLevelByHotkey[5] = { 1, 998, 999, 12, 13 };
 static HWND g_GameWnd = nullptr;
 static WNDPROC g_OrigWndProc = nullptr;
 // Main-thread pump for the Blitz test button: WM_TIMER is delivered to the
@@ -1108,7 +1039,10 @@ static WNDPROC g_OrigWndProc = nullptr;
 // safe. Without this the button only got built on room transitions (which
 // never fire while the player just stands on the formation screen).
 static constexpr UINT_PTR kButtonTimerId = 0x5153B001;
-static constexpr UINT kButtonTimerMs = 1500;
+// Fires faster than the chunk's own fast throttle (700 ms while the formation
+// panel is up): the timer is what actually delivers the pump, so a slower
+// timer here would cap the whole UI at its own rate.
+static constexpr UINT kButtonTimerMs = 500;
 
 static LRESULT CALLBACK HotkeyWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (msg == WM_TIMER && wParam == kButtonTimerId) {
@@ -1174,7 +1108,7 @@ bool InstallHotkeys() {
     g_OrigWndProc = orig;
     g_HotkeysArmed.store(true, std::memory_order_relaxed);
     SetTimer(wnd, kButtonTimerId, kButtonTimerMs, nullptr);
-    log("[hotkey] Alt+1..5 armed on hwnd=0x%p (998/999/1/12/13 enter; Shift+Alt+1..5 presets Dummy target); use from Blitz lobby, scores won't save", wnd);
+    log("[hotkey] Alt+1..5 armed on hwnd=0x%p (1/998/999/12/13 enter; Shift+Alt+1..5 presets Dummy target); use from Blitz lobby, scores won't save", wnd);
     return true;
 }
 
