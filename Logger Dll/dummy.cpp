@@ -230,8 +230,8 @@ if __SSL_TB == nil or __SSL_TB.v ~= 26 then
     levels = { 1, 998, 999, 12, 13 },
     labels = { 'Floor 1', 'Floor 998', 'Floor 999', 'Floor 12', 'Floor 13' },
     dummyLevel = 1, dummyTarget = 0,
-    models = { 0, 9912101, 9912102 },
-    modelLabels = { 'King Glopo III', 'Sherlock', 'Sherlock Small' } }
+    models = { 0, 9912101, 9912102, 5054101, 3093101, 7000101, 7200101, 1651001 },
+    modelLabels = { 'King Glopo III', 'Sherlock', 'Sherlock Small', 'Flavor Dread', 'Hazana', 'Opera Ghost: Rovina', 'Celsia Red', 'Lithe Beauty' } }
 end
 -- UI toolkit (__SSL_UI: clone/fit/wire buttons + dropdowns) lives in
 -- ui_toolkit.cpp and is concatenated ahead of this chunk; re-alias it here.
