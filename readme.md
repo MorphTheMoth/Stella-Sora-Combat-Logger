@@ -59,7 +59,7 @@ For linux I had issues with normally injecting a dll, but you can download the s
 x86_64-w64-mingw32-g++ -shared \
     -o stellaCombatLogger.dll \
     "Logger Dll/proxy.cpp" "Logger Dll/logging.cpp" "Logger Dll/dummy.cpp" \
-    "Logger Dll/arenafix.cpp" \
+    "Logger Dll/arenafix.cpp" "Logger Dll/ui_toolkit.cpp" \
     "Logger Dll/http_hooks.cpp" "Logger Dll/star_tower_hooks.cpp" \
     -I "./Logger Dll/include" \
     -I "./Logger Dll/minhook/include" \
@@ -73,7 +73,7 @@ x86_64-w64-mingw32-g++ -shared \
 x86_64-w64-mingw32-g++ -shared \
     -o stellaCombatLogger-Linux.dll \
     "Logger Dll/proxy.cpp" "Logger Dll/logging.cpp" "Logger Dll/dummy.cpp" \
-    "Logger Dll/arenafix.cpp" \
+    "Logger Dll/arenafix.cpp" "Logger Dll/ui_toolkit.cpp" \
     "Logger Dll/http_hooks.cpp" "Logger Dll/star_tower_hooks.cpp" \
     -I "./Logger Dll/include" \
     -I "./Logger Dll/minhook/include" \
