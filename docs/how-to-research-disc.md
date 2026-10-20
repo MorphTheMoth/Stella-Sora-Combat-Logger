@@ -1,5 +1,8 @@
 # How to research a disc
 
+
+> **Export / version note.** `decompiled.c:<line>` citations in this file are anchored to the **1.15** export (`decompilation/versions/1.15/decompiled.c`). `decompilation/current` now points at **2.0.0**, whose AOT image no longer contains the combat classes (they moved to the HybridCLR hotfix, `decompilation/hotfix/2.0.0/Hotfix.decompiled.cs`) — locate a symbol by name (`Namespace_Class_Method`, single underscore) instead of by line number. See `docs/hybrid_hooks.md`.
+
 Practical workflow for finding what a disc actually *does*, from the
 aggregated datamine descriptions down to the raw tables, the C# disc scripts,
 the engine, and the game Lua. Trust only the actual code — descriptions are

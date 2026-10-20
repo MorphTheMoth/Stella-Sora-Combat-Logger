@@ -1,5 +1,8 @@
 # Skill-slot level scaling — how effects/hits pick the "Main" vs "Support" skill level
 
+
+> **Export / version note.** `decompiled.c:<line>` citations in this file are anchored to the **1.15** export (`decompilation/versions/1.15/decompiled.c`). `decompilation/current` now points at **2.0.0**, whose AOT image no longer contains the combat classes (they moved to the HybridCLR hotfix, `decompilation/hotfix/2.0.0/Hotfix.decompiled.cs`) — locate a symbol by name (`Namespace_Class_Method`, single underscore) instead of by line number. See `docs/hybrid_hooks.md`.
+
 Written after investigating Tilia's effects `10795002` / `10793005` both being
 controlled by the Main Skill level in the Log Viewer for saved logs without a
 record log.

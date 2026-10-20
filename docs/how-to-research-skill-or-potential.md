@@ -1,5 +1,8 @@
 # How to research a skill, potential, or disc
 
+
+> **Export / version note.** `decompiled.c:<line>` citations in this file are anchored to the **1.15** export (`decompilation/versions/1.15/decompiled.c`). `decompilation/current` now points at **2.0.0**, whose AOT image no longer contains the combat classes (they moved to the HybridCLR hotfix, `decompilation/hotfix/2.0.0/Hotfix.decompiled.cs`) — locate a symbol by name (`Namespace_Class_Method`, single underscore) instead of by line number. See `docs/hybrid_hooks.md`.
+
 A practical guide for finding what a character's skill / potential / disc actually *does* — from the aggregated datamine descriptions, down to the raw data tables and the game code that executes them Trust only the actual code, the descriptions are not reliable, in case the two disagree, explain me how they disagree.
 
 ---

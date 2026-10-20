@@ -356,3 +356,14 @@ Function names in the current `decompiled.c` use the **Il2CppInspectorRedux** na
 * skillIntensity * perkIntensity * slotDmg * elementDmg * generalDmg + dmgPlus) * (critDmg + slotCritDmg)
 * (erAmend * defAmend * slotDmgTaken * elementDmgTaken * generalDmgTaken * resilienceBreakDmg)) + dmgPlusTaken)
 * finalDmg) + finalDmgPlus)
+
+`Atk` above is the hit's **base attribute**, not always ATK: `CalculateNormalDamage` reads it as
+
+```csharp
+FDP attributeValue = fromAdditionalAttrInfo.GetAttributeValue(
+    (HotfixEnum.effectAttributeType)hitDamageConfig.DamageBonusType);
+```
+
+(`decompilation/hotfix/2.0.0/Hotfix.decompiled.cs:52810`; the DOT path at `41426`/`12738` does the same). `HitDamage.DamageBonusType` is an `effectAttributeType` — `1` ATK (2515 of 2545 hits in the 2.0.0 `EN/bin/HitDamage.json`), `3` MAXHP (all 29 `162*` hits — Firstlight Noya), `2` DEF (unused), `0` on one monster hit (`50111010`). Everything else in the formula (amend tables, element/damage-type/resistance stats, crit, DEF) is attribute-independent, so only the base term changes.
+
+The logger records the per-hit `damageBonusType` in `HitConfig`; the Log Viewer (`dmgCalc.calc.js`) selects the base attribute with `dcHitBaseAttr()` and patches the character-level ladder delta into both ATK (attr 1) and MAXHP (attr 3) origin slots.

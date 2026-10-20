@@ -42,9 +42,16 @@ A folder called Stella Sora Combat Logger should get created in %localappdata% w
 
 In `log_config.json` there are toggles for logging and for enabling hitboxes.
 
+## How the hooks work
+
+- **Up to 1.16.1** the combat implementation is AOT-compiled into `GameAssembly.dll`, so the DLL hooks fixed RVAs (`g_base + RVA_xxx`) and calls the game's helper functions directly.
+- **Since 2.0.0** the combat/AI implementation lives in the HybridCLR-interpreted `Hotfix.dll` and has no stable native address per method. The DLL then attaches to the interpreter instead: `Interpreter::Execute` (native/AOT → hotfix entries) and `InterpFrameGroup::EnterFrameFromInterpreter` (hotfix → hotfix calls), resolves the 23 logged methods by metadata class/method name, and converts the interpreter's argument slots into the same hook bodies. Outgoing game calls (`HotfixDataController`, `CommonHelper`, `ActorHelper`) are resolved by name and invoked through the interpreter as well. Details, layouts and limitations: `docs/hybrid_hooks.md`.
+- Detection is automatic; `hotfix_hooks` in `log_config.json` (default `true`) turns the interpreter attach layer off. `sanity_log.txt` shows one `[hybrid] target ready: ...` line per hooked method, and one `[layout] … OK`/`MISMATCH` line per struct the log bodies read. A `MISMATCH` line disables hotfix logging on purpose (the class layout moved in the update) — set `hotfix_layout_probe: true` to dump the runtime field offsets and report them.
+- Debug gizmos (`player_gizmo`, `hitbox_gizmo`, …) are AOT-only and stay off in hotfix builds.
+
 ## Decompilation & asset extraction
 
-- `decompilation/hotfix/` — versioned HybridCLR hotfix decompilations (`1.13/`, `0.5/`).
+- `decompilation/hotfix/` — versioned HybridCLR hotfix decompilations: one folder per build (`Hotfix.decompiled.cs`, plus `Hotfix.dll`/`Hotfix.dec.dll` from `2.0.0/` on), e.g. `2.0.0/`, `1.16.1/`, `1.13/`, `0.5/`. `Hotfix.dll` is the only HybridCLR assembly the game ships (inside `Persistent_Store/Scripts/hotfix.arch`); the rest of the C# lives in the AOT engine.
 - `decompilation/decompiled.c` — AOT engine from `GameAssembly.dll` (Ghidra decompile with types/names applied from Il2CppInspectorRedux — see `docs/il2cpp-ghidra-pipeline.md`).
 - `decompilation/CombatAssetsBundles/` — **extracted Unity asset-bundle data**: per-character `char_*_combos.unity3d` (`ComboGroup_Char_*` → `ComboClip_*` with `comboEvents[]` including `activeNormalizedTimeRange`, `hitBoxShape/Width/Length`, `hitDamageId`; read at `decompiled.c:3425183`), weapon prefabs, monster area effects. Run `extract_combat_bundles.py` + `summarize_combos.py` there; see its `ExtractCombatAssetsBundles.md`. `HitRepeatCatalog` synthetic timing is replaced by these clips.
 
@@ -61,6 +68,7 @@ x86_64-w64-mingw32-g++ -shared \
     "Logger Dll/proxy.cpp" "Logger Dll/logging.cpp" "Logger Dll/dummy.cpp" \
     "Logger Dll/arenafix.cpp" "Logger Dll/ui_toolkit.cpp" \
     "Logger Dll/http_hooks.cpp" "Logger Dll/star_tower_hooks.cpp" \
+    "Logger Dll/hybrid_hooks.cpp" \
     -I "./Logger Dll/include" \
     -I "./Logger Dll/minhook/include" \
     -L "./Logger Dll/minhook" \
@@ -75,6 +83,7 @@ x86_64-w64-mingw32-g++ -shared \
     "Logger Dll/proxy.cpp" "Logger Dll/logging.cpp" "Logger Dll/dummy.cpp" \
     "Logger Dll/arenafix.cpp" "Logger Dll/ui_toolkit.cpp" \
     "Logger Dll/http_hooks.cpp" "Logger Dll/star_tower_hooks.cpp" \
+    "Logger Dll/hybrid_hooks.cpp" \
     -I "./Logger Dll/include" \
     -I "./Logger Dll/minhook/include" \
     -L "./Logger Dll/minhook" \

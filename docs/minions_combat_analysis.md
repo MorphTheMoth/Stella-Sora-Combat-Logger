@@ -1,5 +1,8 @@
 # Minion and Summon Behavior
 
+
+> **Export / version note.** `decompiled.c:<line>` citations in this file are anchored to the **1.15** export (`decompilation/versions/1.15/decompiled.c`). `decompilation/current` now points at **2.0.0**, whose AOT image no longer contains the combat classes (they moved to the HybridCLR hotfix, `decompilation/hotfix/2.0.0/Hotfix.decompiled.cs`) — locate a symbol by name (`Namespace_Class_Method`, single underscore) instead of by line number. See `docs/hybrid_hooks.md`.
+
 > **Scope.** This document records what is established from the current post-update binary (`decompilation/decompiled.c`), the 1.13 hotfix decompilation, and the hook log. It uses *minion* for the player-owned `SummonType.Minion` case, and *summon* for the broader `MonsterSummonInfo` system. Some summoned monsters are derivatives or other summon types.
 
 ## Executive Summary
