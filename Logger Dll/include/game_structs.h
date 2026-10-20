@@ -2546,6 +2546,10 @@ struct MonsterSummonInfo_o {
 };
 
 struct __declspec(align(8)) ActorAdditionalAttrInfo_Fields {
+	// Runtime-verified (2.0.0): same order as 1.15 — attributeList at 0x10, the
+	// element/damage dictionary at 0x20.  ILSpy prints `attributeList` as a
+	// property, so the declaration order in Hotfix.decompiled.cs says nothing
+	// about the metadata field order.
 	struct AttributeList_o* _attributeList_k__BackingField;
 	bool _forceCrit_k__BackingField;
 	bool _forceMissDamage_k__BackingField;

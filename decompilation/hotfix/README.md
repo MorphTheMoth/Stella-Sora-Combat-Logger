@@ -4,13 +4,16 @@
 
 ## Versioned decompilations
 
-Each decompiled build lives in a versioned subfolder. Outputs per version:
+Each decompiled build lives in a versioned subfolder. Files per version:
 
 - `Hotfix.decompiled.cs` — full decompiled C# (the checked-in artifact). Regenerate with `scripts/rerun.sh`, which decrypts `Hotfix.dll` and decompiles it with `ilspycmd` against the `DummyDll/` stubs in `decompilation/il2cppDumper_out`.
+- `Hotfix.dll` — the CDPH container as shipped (archived from `2.0.0/` onward, like `GameAssembly.dll` is on the AOT side — `Persistent_Store/Scripts/Hotfix.dll` is overwritten by every persistent-store patch, so it is not otherwise recoverable for a diff).
+- `Hotfix.dec.dll` — the decrypted .NET assembly (the `cdph_dump.py` output, `ilspycmd`'s actual input).
+- `README.md` — per-version provenance: md5s of both DLLs, opcode-table md5, `TypeDef`/method-body counts, `ilspycmd` version, `DummyDll` path (`2.0.0/README.md` is the template).
 
 | Version | Source | Decompiled C# |
 |---------|--------|----------------|
-| `2.0.0/` | current game build (`Persistent_Store/Scripts/Hotfix.dll`, mtime Oct 19, `LOCAL_GAME_VERSION 2.0.0`; key check OK with the Jul 21 opcode table, no re-extract needed). **`GameAssembly.dll` changed this build** (md5 `be9c5f631fadbadf14a524c0a4aec4c2`, 126519808 B) → new AOT dump + fresh `DummyDll/` stubs in `decompilation/versions/2.0.0/dumper/`, which the C# was decompiled against | ~31.6 MB, 14948 TypeDef rows, 89334 method bodies, 4 residual type-resolution warnings; +8.9 MB / +338271 lines of C# vs 1.16.1, 53 new namespaces and 0 removed (`AIScript.Monster._72014KuiLeiShiTi`/`_72015KuiLeiBiaoQiang`/`_72016KuiLeiJuNu`/`_73001KuiLeiShi_Mainline`, `_31701MoFaZhen`/`_31801FeiLong`, `_70061WuYu.BigHeadGhost`/`BoomGhost`/`HorrorGhost`/`MageGhost`, `_90001SaoDiJiQiRen`/`_90013WuRenJi`, `AdventureBehaviour`, character `_16101` + its `FangWeiBiao`/`JuDian` summons, `_12101`, `AIScript.Soldier.SoldierPlayerPassive`) |
+| `2.0.0/` | current game build (`Persistent_Store/Scripts/Hotfix.dll`, CDPH md5 `5841fd9c782736f4643d5e43854a12d5`, 17548552 B; `LOCAL_GAME_VERSION 2.0.0`, `ss_win.mani` `$RES_VER:2610201624`; key check OK with the Jul 21 opcode table, no re-extract needed). **`GameAssembly.dll` changed this build** (md5 `be9c5f631fadbadf14a524c0a4aec4c2`, 126519808 B) → new AOT dump + fresh `DummyDll/` stubs in `decompilation/versions/2.0.0/dumper/`, which the C# was decompiled against. See `2.0.0/README.md` for the input/output hashes | ~31.6 MB, 14948 TypeDef rows, 89334 method bodies, 4 residual type-resolution warnings; +8.9 MB / +338271 lines of C# vs 1.16.1, 53 new namespaces and 0 removed (`AIScript.Monster._72014KuiLeiShiTi`/`_72015KuiLeiBiaoQiang`/`_72016KuiLeiJuNu`/`_73001KuiLeiShi_Mainline`, `_31701MoFaZhen`/`_31801FeiLong`, `_70061WuYu.BigHeadGhost`/`BoomGhost`/`HorrorGhost`/`MageGhost`, `_90001SaoDiJiQiRen`/`_90013WuRenJi`, `AdventureBehaviour`, character `_16101` + its `FangWeiBiao`/`JuDian` summons, `_12101`, `AIScript.Soldier.SoldierPlayerPassive`) |
 | `1.16.1/` | current game build (`Persistent_Store/Scripts/Hotfix.dll`, mtime Oct 4, `LOCAL_GAME_VERSION 1.16.1`; key check OK with the Jul 21 `GameAssembly.dll` opcode table, no re-extract needed; `GameAssembly.dll` itself byte-identical to 1.15, md5 `6c39fe8ed4109397d6841aae79c33860`, so no AOT re-decompile) | ~22 MB, 11731 TypeDef rows, 65411 method bodies; 1-line diff vs 1.16.0 (`TowerDefenseGameplayBase.OnPressUp`: `blockInput \|\| (dragState == None && mouseFollower.IsPointerOverClickableUI())` guard simplified to `blockInput`) |
 | `1.16.0/` | previous game build (`Persistent_Store/Scripts/Hotfix.dll`, mtime Sep 29, `LOCAL_GAME_VERSION 1.16.0`; key check OK with the Jul 21 `GameAssembly.dll` opcode table, no re-extract needed; `GameAssembly.dll` itself byte-identical to 1.15, md5 `6c39fe8ed4109397d6841aae79c33860`, so no AOT re-decompile) | ~22 MB, 11731 TypeDef rows, 65411 method bodies, 4 residual type-resolution warnings; +183887 bytes of decompiled C# vs 1.15.1, EP9 content (EP9/GaoDa9_5 level+group controllers, `AIScript.Monster._31101GeLeiHuoEn`/`_18011LiMingFaShi`/`_30921JuJiShou`/`_31102LieQuan` 9_x skill sets, BossRush `_31301JiJuXie` ultra, trial levels 139 + skin-trial 126) |
 | `1.15.1/` | previous game build (`Persistent_Store/Scripts/Hotfix.dll`, mtime Sep 18, `LOCAL_GAME_VERSION 1.15.1`; key check OK with the Jul 21 `GameAssembly.dll` opcode table, no re-extract needed) | ~22 MB, 11579 TypeDef rows, 64718 method bodies, 4 residual type-resolution warnings; +1955 bytes of decompiled C# vs 1.15, boss-logic-only diff (XiaoMoXiang/JuXingMoXiang joint-drill controller) |
@@ -29,6 +32,24 @@ The file is a `CDPH` container (Code Philosophy "Obfuz" + HybridCLR). The decryp
 ## First attempt for a new Hotfix.dll
 
 Do not decompile `decompiled.c` just to decompile `Hotfix.dll`. The relevant part of that C output — the opcode-table lookup and the `"Hello, HybridCLR"` key check — is the same in every version. Start by running the current decryptor with the existing `scripts/opstable.json`; the 256-byte key is read from `Hotfix.dll` itself and the key check confirms whether the current table works. Only reread the relevant `decompiled.c` code and re-extract the table if that attempt fails.
+
+## Is a fresh Hotfix.dll a new build? (check before creating a version folder)
+
+The launcher replaces `Persistent_Store/Scripts/Hotfix.dll` (and `hotfix.arch`) on every persistent-store patch, including patches that only touch assets or Lua. Do not assume a new folder is needed — the content decides:
+
+```bash
+# 1. md5 against the archived input of the newest version folder
+md5sum "<install>/Persistent_Store/Scripts/Hotfix.dll" decompilation/hotfix/<ver>/Hotfix.dll
+# 2. if it differs, decrypt and compare the recorded row counts (README table / <ver>/README.md)
+python3 decompilation/hotfix/scripts/cdph_dump.py \
+    "<install>/Persistent_Store/Scripts/Hotfix.dll" \
+    --opstable decompilation/hotfix/scripts/opstable.json -o /tmp/hf/Hotfix.dec.dll
+# 3. authoritative test: decompile and diff against the existing version's artifact
+~/.dotnet/tools/ilspycmd -r decompilation/versions/<ver>/dumper/DummyDll /tmp/hf/Hotfix.dec.dll -o /tmp/hf
+diff -q /tmp/hf/Hotfix.dec.decompiled.cs decompilation/hotfix/<newver or oldver>/Hotfix.decompiled.cs
+```
+
+Byte-identical output means the same build for our purposes: no new folder, just record the check in the newest version's `README.md` (as `2.0.0/README.md` does for the 2026-10-20 13:43 re-patch). Otherwise create `decompilation/hotfix/<ver>/` with `Hotfix.dll`, `Hotfix.dec.dll`, `Hotfix.decompiled.cs` and a `README.md`, mirroring `2.0.0/`. Note that an identical `.cs` proves identical *decompiled content*; it cannot detect a rebuild whose sources are unchanged, so keep the container md5 too when the archived copy exists.
 
 ## Reproduce
 

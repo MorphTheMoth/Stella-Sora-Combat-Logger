@@ -43,6 +43,16 @@ struct LogConfig {
     bool player_path_gizmo;
     bool camera_gizmo;
     bool monster_dummy_mode;
+    // Hook the HybridCLR interpreter instead of the (2.0.0-removed) AOT combat
+    // methods — see include/hybrid_hooks.h.  Ignored when the interpreter is not
+    // present in this game build.
+    bool hotfix_hooks;
+    // Diagnostics: dump the runtime field layout (name + offset) of every
+    // interpreted class the logger observes.  Needed when a game update moves a
+    // Nova.Client struct (the hook bodies read those structs through the offsets
+    // in game_structs.h and verify them against the runtime once, see
+    // docs/hybrid_hooks.md).
+    bool hotfix_layout_probe;
 };
 
 extern FILE*                g_Log;
@@ -96,6 +106,15 @@ const char* AttrName(int i);
 // Actor logging
 std::string adventureActorId(AdventureActor_o* actor);
 struct ElemDictEntry { int32_t attributeType; int32_t elementOrDamageType; bool isElementType; int32_t mode; double value; };
+
+// Read a pointer-typed field by *name* from a live object, resolving the offset
+// from the object's own runtime class (walks the base chain).  Needed for classes
+// whose layout changed between versions even though the C# source only reordered
+// members — e.g. ActorAdditionalAttrInfo in 2.0.0 (dictionary declared before the
+// attributeList property), and the GameDataController object, which is actually a
+// HotfixDataController in 2.0.0.  Returns nullptr when the class has no such field
+// or the object is unusable — never a stale offset.
+void* ReadObjectFieldPtr(void* obj, const char* fieldName);
 json logAdventureActorAttrsJson(AttributeList_o* attrList, const std::vector<ElemDictEntry>* overlay = nullptr);
 json logAdventureActorSpecialAttrsJson(AdventureActor_o* actor);
 

@@ -2,6 +2,7 @@
 
 #include "game_structs.h"
 #include "logging.h"
+#include "hybrid_hooks.h"
 
 #include <windows.h>
 #include <cstdio>
@@ -275,6 +276,8 @@ static const CfgKey kCfgKeys[] = {
     { "player_path_gizmo",              &LogConfig::player_path_gizmo,              false },
     { "camera_gizmo",                   &LogConfig::camera_gizmo,                   false },
     { "monster_dummy_mode",             &LogConfig::monster_dummy_mode,             false },
+    { "hotfix_hooks",                   &LogConfig::hotfix_hooks,                   true },
+    { "hotfix_layout_probe",            &LogConfig::hotfix_layout_probe,            false },
 };
 
 static void ApplyConfigDefaults() {
@@ -566,13 +569,23 @@ static ElementOrDmgAttrKey DecodeElemKey(int32_t key) {
     return k;
 }
 
+void* ReadObjectFieldPtr(void* obj, const char* fieldName) {
+    if (!obj || !fieldName) return nullptr;
+    int32_t off = hybrid::FieldOffsetInObject(obj, fieldName);
+    if (off < 0) return nullptr;
+    return *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(obj) + off);
+}
+
 // Read all entries from an attributeWithElementOrDamageTypeDict into a flat list
 // so we can apply them on top of an AttributeList_o at serialization time
 // without touching the live game data.
 static std::vector<ElemDictEntry> ReadElemDict(ActorAdditionalAttrInfo_o* info) {
     std::vector<ElemDictEntry> out;
     if (!info) return out;
-    auto* dict = info->fields.attributeWithElementOrDamageTypeDict;
+    // Field offset resolved at runtime: 2.0.0 declares the dictionary before the
+    // attributeList property, so the 1.15 struct offset would read a bool here.
+    auto* dict = reinterpret_cast<System_Collections_Generic_Dictionary_int__FDP__o*>(
+        ReadObjectFieldPtr(info, "attributeWithElementOrDamageTypeDict"));
     if (!dict || !dict->fields._entries) return out;
 
     auto* arr    = reinterpret_cast<System_Collections_Generic_Dictionary_Entry_int__FDP__array*>(dict->fields._entries);
@@ -734,8 +747,10 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage,
 
     // Pre-build key set from GDC's EffectValue_Map for fast level-enumeration lookups
     std::unordered_set<int32_t> effectValueKeys;
-    if (gdc && gdc->fields.EffectValue_Map) {
-        effectValueKeys = CollectDictKeys(gdc->fields.EffectValue_Map);
+    // The captured object is a HotfixDataController in 2.0.0; resolve the map by
+    // name on its actual class instead of using the 1.15 GameDataController offset.
+    if (void* map = ReadObjectFieldPtr(gdc, "EffectValue_Map")) {
+        effectValueKeys = CollectDictKeys(map);
     }
 
     auto* entriesArr = effectsDict->fields._entries;
@@ -998,8 +1013,8 @@ json BuildAdditionalAttrDictJson(
 
     // Pre-build key set from GDC's OnceAdditionalAttributeValue_Map
     std::unordered_set<int32_t> attrValueKeys;
-    if (gdc && gdc->fields.OnceAdditionalAttributeValue_Map) {
-        attrValueKeys = CollectDictKeys(gdc->fields.OnceAdditionalAttributeValue_Map);
+    if (void* map = ReadObjectFieldPtr(gdc, "OnceAdditionalAttributeValue_Map")) {
+        attrValueKeys = CollectDictKeys(map);
     }
 
     for (int32_t i = 0; i < capacity; ++i) {
@@ -1070,8 +1085,6 @@ json BuildAdditionalAttrDictJson(
     return arr;
 }
 
-
-
 void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_Client_HitDamage_o* hitDamageConfig,
                   int32_t skillLevel, bool isCrit, bool isDot, int32_t* hudColorIndex, int64_t* skillPercentAmend,
                   int64_t* talentGroupPercentAmend, int64_t* skillAbsAmend, int64_t* talentGroupAbsAmend, int64_t* perkIntensityRatio,
@@ -1133,6 +1146,12 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
         hitCfg["damageType"]    = f.damageType_;
         hitCfg["effectType"]    = f.effectType_;
         hitCfg["elementType"]   = f.elementType_;
+        // Base attribute of the hit (HotfixEnum.effectAttributeType). The game
+        // reads it straight out of HitDamage:
+        //   fromAdditionalAttrInfo.GetAttributeValue((effectAttributeType)DamageBonusType)
+        // (CommonHelper.CalculateNormalDamage, Hotfix.decompiled.cs:52810), so
+        // ATK (1) is only the common case — 162's whole kit is MAXHP (3).
+        hitCfg["damageBonusType"] = f.damageBonusType_;
         hitCfg["skillId"]       = f.skillId_;
         hitCfg["skillSlotType"] = f.skillSlotType_;
         hitCfg["energyCharge"] = f.energyCharge_;
@@ -1228,7 +1247,11 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
     }
 
     if (g_Cfg.on_hit_defender_attr_dict) {
-        json attrDict = BuildAdditionalAttrDictJson(toAttrDict, fromActor, gdc, GetOnceAttr, GetValueConfigId, GetAttrValue,
+        // Level source must be the defender: GetValueConfigIdByLevelType() scales
+        // the value id by *that actor's* level / perk / skill level
+        // (Hotfix.decompiled.cs:52721).  Passing fromActor (as the 1.15 code did)
+        // resolved the defender's rows against the attacker's levels.
+        json attrDict = BuildAdditionalAttrDictJson(toAttrDict, toActor, gdc, GetOnceAttr, GetValueConfigId, GetAttrValue,
                                                     hitDamageConfig ? hitDamageConfig->fields.elementType_ : 0);
         if (!attrDict.empty())
             j["DefenderAttrDict"] = attrDict;

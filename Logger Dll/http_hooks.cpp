@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdarg>
+#include <cstring>
 #include <ctime>
 #include <mutex>
 #include <string>
@@ -219,11 +220,35 @@ static void __fastcall Hook_DispatchMsgToLua(
 // =============================================================================
 //  RVAs — HTTP layer
 // =============================================================================
-static constexpr uintptr_t RVA_NET_DISPATCH_TO_LUA = 0x133EEA0;
+// HttpNetworkManager$$DispatchMsgToLua: same method, same signature, same
+// prologue in 1.15 and 2.0.0, only the address moved:
+//     script.json 1.15  RVA 0x133EEA0  (dump.cs 1.15:189387, HttpNetMsg fields unchanged)
+//     script.json 2.0.0 RVA 0x12F7060
+// The prologue check picks the right one so a moved table cannot hook garbage.
+static constexpr uintptr_t RVA_NET_DISPATCH_TO_LUA_115 = 0x133EEA0;
+static constexpr uintptr_t RVA_NET_DISPATCH_TO_LUA_200 = 0x12F7060;
+static const uint8_t kDispatchHead[8] = { 0x48, 0x89, 0x6C, 0x24, 0x18, 0x56, 0x41, 0x56 };
+
+static uintptr_t FindDispatchMsgToLua(uintptr_t base) {
+    static const uintptr_t kCandidates[] = { RVA_NET_DISPATCH_TO_LUA_200, RVA_NET_DISPATCH_TO_LUA_115 };
+    for (uintptr_t rva : kCandidates) {
+        if (std::memcmp(reinterpret_cast<const void*>(base + rva), kDispatchHead,
+                        sizeof(kDispatchHead)) == 0)
+            return base + rva;
+    }
+    return 0;
+}
 
 // =============================================================================
 //  InstallHttpHooks (public entry point called from InitThread)
 // =============================================================================
 void InstallHttpHooks(uintptr_t base) {
-    InstallHook(base + RVA_NET_DISPATCH_TO_LUA, reinterpret_cast<void*>(&Hook_DispatchMsgToLua), (void**)&g_OrigDispatchMsgToLua, "HttpNetworkManager$$DispatchMsgToLua");
+    const uintptr_t target = FindDispatchMsgToLua(base);
+    if (!target) {
+        log("[init] HttpNetworkManager$$DispatchMsgToLua not found at a known address "
+            "(neither 0x133EEA0 nor 0x12F7060 matches) — HTTP/Star Tower message logs disabled");
+        return;
+    }
+    InstallHook(target, reinterpret_cast<void*>(&Hook_DispatchMsgToLua),
+                (void**)&g_OrigDispatchMsgToLua, "HttpNetworkManager$$DispatchMsgToLua");
 }

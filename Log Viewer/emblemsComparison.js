@@ -282,15 +282,18 @@ const EC_OP_BASE_ATK = 1, EC_OP_ATK_PCT = 2, EC_OP_ATK_ABS = 3,
     EC_OP_GEN_DMG_RCD = 20, EC_OP_TOUGH = 21, EC_OP_SKILL_INT = 22;
 
 // Which formula factors a stat id feeds, for one (element, damageType,
-// expected-crit) combination. Cached: the reader map only depends on these
-// three, not on the hit. Side codes: 0 = attacker, 1 = defender; map keys are
-// side*128+attr.
+// expected-crit, base-attribute) combination. Cached: the reader map only
+// depends on these four, not on the hit. Side codes: 0 = attacker,
+// 1 = defender; map keys are side*128+attr.
 const _ecReaderCache = new Map();
-function ecReadersFor(el, dt, expected) {
-    const ck = (el == null ? -1 : el) + '|' + (dt == null ? -1 : dt) + '|' + (expected ? 1 : 0);
+function ecReadersFor(el, dt, expected, baseAttr) {
+    const ck = (el == null ? -1 : el) + '|' + (dt == null ? -1 : dt) + '|' + (expected ? 1 : 0) + '|' + (baseAttr || 1);
     let m = _ecReaderCache.get(ck);
     if (m) return m;
     m = new Map();
+    // Base/pct/abs read the hit's own base attribute (HitDamage.DamageBonusType:
+    // Atk normally, Max Hp for 162), not always attr 1.
+    const ba = baseAttr || 1;
     const add = (side, attr, op) => {
         if (attr == null) return;
         const k = side * 128 + attr;
@@ -298,9 +301,9 @@ function ecReadersFor(el, dt, expected) {
         if (!a) { a = []; m.set(k, a); }
         a.push(op);
     };
-    add(0, 1, EC_OP_BASE_ATK);            // baseAtk = statBase(a,1)
-    add(0, 1, EC_OP_ATK_PCT);             // atkPct = 1 + pct(a,1)
-    add(0, 1, EC_OP_ATK_ABS);             // atkAbs = abs(a,1)
+    add(0, ba, EC_OP_BASE_ATK);           // baseAtk = statBase(a, baseAttr)
+    add(0, ba, EC_OP_ATK_PCT);            // atkPct = 1 + pct(a, baseAttr)
+    add(0, ba, EC_OP_ATK_ABS);            // atkAbs = abs(a, baseAttr)
     const ea = ELEM_ATK_STAT[el]; if (ea != null) add(0, ea, EC_OP_ELEM_PCT);
     const ed = ELEM_DEF_STAT[el]; if (ed != null) add(1, ed, EC_OP_ELEM_TAKEN);
     const da = dmgTypeAtkStat(dt); if (da != null) add(0, da, EC_OP_DT_PCT);
@@ -917,7 +920,8 @@ function ecBuildIntel(b, pre, ecDis, extDisabled) {
             genDmgRcd: bon('genDmgRcd'), tough: bon('toughnessBroken'), skillInt: bon('skillIntensity'),
         },
         ...zeroSet.comp,
-        readers: ecReadersFor(fieldsZero._el, hc.damageType, ecDis.has('critRate')),
+        baseAttr: dcHitBaseAttr(hc),
+        readers: ecReadersFor(fieldsZero._el, hc.damageType, ecDis.has('critRate'), dcHitBaseAttr(hc)),
         zeroDmg,
         baseDmg: zeroDmg,   // overwritten below when baseline level-override ops exist
         // hit's own level scaling (multiplier re-pick source)
@@ -1117,9 +1121,9 @@ function ecAnalyticDamage(an, dlist, multRaw) {
             if (!rl) continue;
             for (const op of rl) {
                 switch (op) {
-                    case EC_OP_BASE_ATK: baseAtk = sbOf(0, 1); break;
-                    case EC_OP_ATK_PCT: atkPct = 1 + (acc.get(1)[2] || 0); break;
-                    case EC_OP_ATK_ABS: atkAbs = acc.get(1)[3] || 0; break;
+                    case EC_OP_BASE_ATK: baseAtk = sbOf(0, an.baseAttr || 1); break;
+                    case EC_OP_ATK_PCT: atkPct = 1 + (acc.get(an.baseAttr || 1)[2] || 0); break;
+                    case EC_OP_ATK_ABS: atkAbs = acc.get(an.baseAttr || 1)[3] || 0; break;
                     case EC_OP_ELEM_PCT: elemPct = svOf(0, ELEM_ATK_STAT[an.el]); break;
                     case EC_OP_ELEM_TAKEN: elemTakenPct = svOf(1, ELEM_DEF_STAT[an.el]); break;
                     case EC_OP_DT_PCT: dmgTypePct = svOf(0, dmgTypeAtkStat(an.dt)); break;
@@ -1209,14 +1213,16 @@ function ecCalcDisabled() {
 // Elemental/per-type stats only feed the field matching the hit's element /
 // damage type (ELEM_ATK_STAT / ELEM_PEN_STAT / dmgTypeAtkStat lookups);
 // crit rate fields are display-only unless the whole comparison runs in
-// expected-crit mode; Def / Max Hp never enter the damage formula.
+// expected-crit mode; Atk / Def / Max Hp only matter as the hit's base
+// attribute (HitDamage.DamageBonusType).
 function ecAttrHitAffected(attrType, b, evEV, wbaCpl) {
     if (b.dead) return false;
     const ev = b.ev;
     const hc = ev.HitConfig || {};
     const el = hc.elementType, dt = hc.damageType;
-    if (attrType === 1) return true;                              // Atk → baseAtk / atkPct
-    if (attrType === 2 || attrType === 3) return false;           // Def / Max Hp
+    if (attrType === 1) return dcHitBaseAttr(hc) === 1;           // Atk → baseAtk / atkPct
+    if (attrType === 2 || attrType === 3)                          // Def / Max Hp:
+        return dcHitBaseAttr(hc) === attrType;                     // only when the hit scales off it
     if (attrType >= 17 && attrType <= 22) return ELEM_ATK_STAT[el] === attrType;
     if (attrType >= 23 && attrType <= 28) return ELEM_PEN_STAT[el] === attrType;
     if ((attrType >= 56 && attrType <= 59) || attrType === 64 || attrType === 66) {
@@ -1274,8 +1280,16 @@ function ecComputeCharTable(charId, c) {
 
     const baseline = [];
     let baseTotal = 0;
+    // Base attributes this character's hits actually scale off (Atk normally,
+    // Max Hp for MAXHP kits such as 162). Def / Max Hp stat rows only move
+    // damage when one of the char's hits uses them as its base.
+    const charBaseAttrs = new Set();
     for (const b of teamBaseline) {
-        if (b.charId === charId) { baseline.push(b); baseTotal += b.dmg; }
+        if (b.charId === charId) {
+            baseline.push(b);
+            baseTotal += b.dmg;
+            charBaseAttrs.add(dcHitBaseAttr(b.ev && b.ev.HitConfig));
+        }
     }
 
     const rows = [];
@@ -1293,8 +1307,9 @@ function ecComputeCharTable(charId, c) {
             rows.push({ ...row, copies, gains: row.tiers.map(() => null), bases: row.tiers.map(() => 0) });
             continue;
         }
-        if (row.attrType === 2 || row.attrType === 3) {
-            // Def / Max Hp never enter the damage formula — gain 0 by definition.
+        if ((row.attrType === 2 || row.attrType === 3) && !charBaseAttrs.has(row.attrType)) {
+            // Def / Max Hp only enter the formula as the hit's base attribute
+            // (DamageBonusType) — gain 0 when this char's hits never use it.
             rows.push({ ...row, copies, gains: row.tiers.map(() => 0), bases: row.tiers.map(() => 1) });
             continue;
         }

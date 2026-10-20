@@ -148,6 +148,58 @@ if __SSL_MONPATCH == nil then
   end)
   if okm then __SSL_MONPATCH = true end
 end
+-- __SSL_RESOLVE_BUILD: which formation build a dummy entry should use.
+-- PlayerScoreBossData.entryBuild is written by EnterScoreBossInstance (:232) and
+-- never cleared, so the old `build = SB.entryBuild` read made every entry after
+-- the first one reuse the first team (fight, quit, pick another team, enter ->
+-- still team #1). The team the player actually has selected lives in:
+--   * RegionBossFormationCtrl.mbuildId — the live panel selection and exactly
+--     what Deploy passes to SendEnterScoreBossApplyReq (:528);
+--   * PlayerScoreBossData.tabCachedBuildId[levelId] — written by the build
+--     picker, RegionBossBuildCtrl:OnBtnClickGrid (:394).
+-- Those win; entryBuild stays only as a last resort. Per-level sources are used
+-- for the level being entered, not "any level with a cached team".
+if __SSL_BUILDRESOLVE_V ~= 2 then
+  __SSL_RESOLVE_BUILD = function(level)
+    level = tonumber(level) or 0
+    local SB = (PlayerData ~= nil) and PlayerData.ScoreBoss or nil
+    if SB == nil then return 0 end
+    local tb = _G.__SSL_TB
+    local ctrl = (tb ~= nil) and tb.ctrl or nil
+    local live, ctrlBuild = false, 0
+    if ctrl ~= nil then
+      local okc, blitz = pcall(function()
+        if tb.isBlitzFormation ~= nil then return tb.isBlitzFormation(ctrl) end
+        return ctrl.nType == AllEnum.RegionBossFormationType.ScoreBoss
+      end)
+      pcall(function() ctrlBuild = tonumber(ctrl.mbuildId) or 0 end)
+      live = (okc and blitz == true)
+    end
+    local panelOpen = false
+    pcall(function() panelOpen = PanelManager.CheckPanelOpen(PanelId.RegionBossFormation) == true end)
+    -- (1) Live panel: the team Deploy would send right now.
+    if panelOpen and live and ctrlBuild ~= 0 then return ctrlBuild end
+    -- (2) Team cached for this floor by the build picker.
+    local b = 0
+    pcall(function() b = tonumber(SB:GetCachedBuild(level)) or 0 end)
+    if b ~= 0 then return b end
+    -- (3) Team recorded for this floor by a previous server-authorised run.
+    b = 0
+    pcall(function() b = tonumber(SB:GetLevelBuild(level)) or 0 end)
+    if b ~= 0 then return b end
+    -- (4) Last team shown on the formation panel (panel already closed).
+    if live and ctrlBuild ~= 0 then return ctrlBuild end
+    -- (5) Whatever the previous entry used (first-run fallback only).
+    b = tonumber(SB.entryBuild) or 0
+    if b ~= 0 then return b end
+    -- (6) Any cached team at all, keeps a brand-new floor entry working.
+    for _, v in pairs(SB.tabCachedBuildId or {}) do
+      if (tonumber(v) or 0) ~= 0 then return tonumber(v) end
+    end
+    return 0
+  end
+  __SSL_BUILDRESOLVE_V = 2
+end
 )ssl";
 
 // Must run on the Unity main thread (xLua DoString re-entry is only safe
@@ -165,16 +217,22 @@ local ok, res = pcall(function()
   if not SB.isGetScInfo then
     error('Blitz season info not loaded (open Boss Blitz once first)')
   end
-  local build = tonumber(SB.entryBuild) or 0
-  if build == 0 then
-    for _, b in pairs(SB.tabCachedBuildId or {}) do
-      if tonumber(b) ~= 0 then build = tonumber(b) break end
+  local build = 0
+  if type(__SSL_RESOLVE_BUILD) == 'function' then
+    build = tonumber(__SSL_RESOLVE_BUILD(LEVEL)) or 0
+  else
+    -- Legacy fallback (resolver chunk failed to install).
+    build = tonumber(SB.entryBuild) or 0
+    if build == 0 then
+      for _, b in pairs(SB.tabCachedBuildId or {}) do
+        if tonumber(b) ~= 0 then build = tonumber(b) break end
+      end
     end
-  end
-  if build == 0 and SB.OpenLevelGroup then
-    for _, lid in ipairs(SB.OpenLevelGroup) do
-      local lv = SB.tabScoreBossLevel and SB.tabScoreBossLevel[lid]
-      if lv and tonumber(lv.BuildId) ~= 0 then build = tonumber(lv.BuildId) break end
+    if build == 0 and SB.OpenLevelGroup then
+      for _, lid in ipairs(SB.OpenLevelGroup) do
+        local lv = SB.tabScoreBossLevel and SB.tabScoreBossLevel[lid]
+        if lv and tonumber(lv.BuildId) ~= 0 then build = tonumber(lv.BuildId) break end
+      end
     end
   end
   if build == 0 then
@@ -290,16 +348,23 @@ __SSL_TB.enter = function()
     local SB = PlayerData.ScoreBoss
     if SB.curLevel ~= nil then error('already inside a level (quit to menu first)') end
     if not SB.isGetScInfo then error('Blitz season info not loaded (open Boss Blitz once first)') end
-    local build = tonumber(SB.entryBuild) or 0
-    if build == 0 then
-      for _, b in pairs(SB.tabCachedBuildId or {}) do
-        if tonumber(b) ~= 0 then build = tonumber(b) break end
+    local lvl = __SSL_TB.selLevel()
+    local build = 0
+    if type(__SSL_RESOLVE_BUILD) == 'function' then
+      build = tonumber(__SSL_RESOLVE_BUILD(lvl)) or 0
+    else
+      -- Legacy fallback (resolver chunk failed to install).
+      build = tonumber(SB.entryBuild) or 0
+      if build == 0 then
+        for _, b in pairs(SB.tabCachedBuildId or {}) do
+          if tonumber(b) ~= 0 then build = tonumber(b) break end
+        end
       end
-    end
-    if build == 0 and SB.OpenLevelGroup then
-      for _, lid in ipairs(SB.OpenLevelGroup) do
-        local lv = SB.tabScoreBossLevel and SB.tabScoreBossLevel[lid]
-        if lv and tonumber(lv.BuildId) ~= 0 then build = tonumber(lv.BuildId) break end
+      if build == 0 and SB.OpenLevelGroup then
+        for _, lid in ipairs(SB.OpenLevelGroup) do
+          local lv = SB.tabScoreBossLevel and SB.tabScoreBossLevel[lid]
+          if lv and tonumber(lv.BuildId) ~= 0 then build = tonumber(lv.BuildId) break end
+        end
       end
     end
     if build == 0 then error('no formation build (set a team on any Blitz floor first)') end
@@ -315,9 +380,8 @@ __SSL_TB.enter = function()
     -- locally instead of waiting on a settle ack the server will reject. A
     -- real, server-authorized entry clears this flag again.
     __SSL_TESTMODE = true
-    local lvl = __SSL_TB.selLevel()
     SB:EnterScoreBossInstance(lvl, build)
-    return 'entered Lv' .. tostring(lvl)
+    return 'entered Lv' .. tostring(lvl) .. ' build=' .. tostring(build)
   end)
   if ok then return 'OK ' .. tostring(res) else return 'ERR:' .. tostring(res) end
 end

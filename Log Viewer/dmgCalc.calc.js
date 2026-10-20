@@ -610,8 +610,8 @@ function dcRebuildSkillLevels() {
     dcBumpLevelState();
 }
 
-// ─── Character level table (char base Atk) ─────────────────────────────────
-// Single source of truth for every character's base-Atk level:
+// ─── Character level table (char base Atk / Max Hp) ────────────────────────
+// Single source of truth for every character's base-Atk and base-MaxHp level:
 //   effective Atk = ladder[clamp(recordIdx + change)] — the ladder index IS
 //   the (upgrade, level) position (character.json `stat`, 99 entries in tiers
 //   [10,11,11,11,11,11,11,11,12] = upgrades 0..8; the boundary levels repeat
@@ -622,7 +622,9 @@ function dcRebuildSkillLevels() {
 //   the disc/build record rows live in — so every pipeline that funnels
 //   through dcApplyEffectOverrides (dmg calc, Effect Impact, Emblems
 //   Comparison incl. its disable-only baseline) follows char-level moves.
-const dcCharLevels = new Map();   // charId -> { charId, charName, recordIdx, recordLevel, recordAdv, recordAtk, change }
+//   Max Hp (attr 3) gets the same treatment because MAXHP-scaling hits take
+//   their base from it (162's kit, HitDamage.DamageBonusType = 3).
+const dcCharLevels = new Map();   // charId -> { charId, charName, recordIdx, recordLevel, recordAdv, recordAtk, recordHp, change }
 
 // Ladder index of tier starts (= upgrade tiers 0..8) for the uniform
 // 99-entry ladder; tier t spans levels [tierMin, tierMax].
@@ -678,6 +680,7 @@ function dcRebuildCharLevels() {
             recordLevel: lvl,
             recordAdv: Math.min(Math.max(adv, 0), 8),
             recordAtk: ladder[idx].atk,
+            recordHp: Number.isFinite(ladder[idx].hp) ? ladder[idx].hp : null,
             change: old ? (old.change || 0) : 0,
         });
     }
@@ -702,6 +705,15 @@ function dcCharEffectiveAtk(st) {
     const ladder = dcCharLadder(st.charId);
     if (!ladder) return st.recordAtk;
     return ladder[dcCharEffectiveIdx(st)].atk;
+}
+
+// Effective base Max Hp at the current change (null when the cached ladder was
+// built before Hp was kept — the HP patch then stays off rather than guessing).
+function dcCharEffectiveHp(st) {
+    const ladder = dcCharLadder(st.charId);
+    if (!ladder || !Number.isFinite(st.recordHp)) return null;
+    const e = ladder[dcCharEffectiveIdx(st)];
+    return (e && Number.isFinite(e.hp)) ? e.hp : null;
 }
 
 // Bridge for record.js (separate scope): per-character level breakdown.
@@ -1092,6 +1104,36 @@ function statAbs(attrs, id) {
     const s = attrs[id];
     if (!s) return 0;
     return s.abs || 0;
+}
+
+// ─── Hit base attribute (HitDamage.DamageBonusType) ─────────────────────────
+// The game takes the hit's base value from its own attribute, not always ATK:
+//   `fromAdditionalAttrInfo.GetAttributeValue((effectAttributeType)hitDamageConfig.DamageBonusType)`
+// (CommonHelper.CalculateNormalDamage, Hotfix.decompiled.cs:52810). ATK (1) is
+// the common case; DEF (2) and MAXHP (3) are the others in HitDamage.json —
+// 162's entire kit is MAXHP (3). `damageBonusType` is logged in HitConfig by
+// current DLLs; older logs resolve it from the HitDamage.json entry the level
+// map carries (fallback "db").
+const DC_BONUS_ATTR = { 1: 1, 2: 2, 3: 3 };   // effectAttributeType → attributeList index
+function dcHitBonusType(hc) {
+    if (!hc) return 1;
+    const own = Number(hc.damageBonusType);
+    if (Number.isFinite(own) && own > 0) return own;
+    // Older logs: HitConfig has no damageBonusType, and the persisted levelMap
+    // entry carries only the amend arrays — read the HitDamage.json copy.
+    const id = Number(hc.hitDamageId);
+    if (Number.isFinite(id) && typeof hitLadderFallback !== 'undefined') {
+        const fb = hitLadderFallback.get(id);
+        const n = fb ? Number(fb.db) : NaN;
+        if (Number.isFinite(n) && n > 0) return n;
+    }
+    const hm = (typeof resolveHitLevelMap === 'function' && hc.hitDamageId != null)
+        ? resolveHitLevelMap(hc.hitDamageId) : null;
+    const n = hm ? Number(hm.db) : NaN;
+    return (Number.isFinite(n) && n > 0) ? n : 1;
+}
+function dcHitBaseAttr(hc) {
+    return DC_BONUS_ATTR[dcHitBonusType(hc)] || 1;
 }
 
 // DamageType → attacker dmgType stat index
@@ -1825,25 +1867,30 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides, s
         }
     }
 
-    // ── Character base-Atk level ─────────────────────────────────────
+    // ── Character base-Atk / base-MaxHp level ────────────────────────
     // The attacker's char-level delta (effective ladder Atk − record Atk)
     // lands in the Origin-domain Atk slot — the same domain the disc/build
-    // record rows use. Deliberately OUTSIDE the skipLevelOverrides gate:
-    // the Emblems Comparison / Effect Impact disable-only baseline must
-    // carry it (it is not a replayable level entry, so nothing re-derives
-    // it). Skipped for hits whose Record differs from the level tables'
-    // source, like every other level-table move.
+    // record rows use. Max Hp gets the same delta treatment (attr 3) because
+    // hits whose DamageBonusType is MAXHP read their base from it (162).
+    // Deliberately OUTSIDE the skipLevelOverrides gate: the Emblems
+    // Comparison / Effect Impact disable-only baseline must carry it (it is
+    // not a replayable level entry, so nothing re-derives it). Skipped for
+    // hits whose Record differs from the level tables' source, like every
+    // other level-table move.
     if (!recMismatch && dcCharLevels.size > 0 && attackerCharId != null) {
         const st = dcCharLevels.get(attackerCharId);
         if (st) {
             const effIdx = dcCharEffectiveIdx(st);
             if (effIdx !== st.recordIdx) {
-                const delta = dcCharEffectiveAtk(st) - st.recordAtk;
-                if (delta !== 0) {
-                    let stat = aMap.get(1);
-                    if (!stat) { stat = { origin: 0, base: 0, pct: 0, abs: 0 }; aMap.set(1, stat); }
+                const bumpOrigin = (attr, delta) => {
+                    if (!Number.isFinite(delta) || delta === 0) return;
+                    let stat = aMap.get(attr);
+                    if (!stat) { stat = { origin: 0, base: 0, pct: 0, abs: 0 }; aMap.set(attr, stat); }
                     stat.origin = (stat.origin || 0) + delta;
-                }
+                };
+                bumpOrigin(1, dcCharEffectiveAtk(st) - st.recordAtk);
+                const effHp = dcCharEffectiveHp(st);
+                if (effHp != null) bumpOrigin(3, effHp - st.recordHp);
             }
         }
     }
@@ -1889,7 +1936,7 @@ function calcHitFields(ev, statOverrides, dcEffectsDisabled, dcEffectLevelOverri
     // calcDamage produces 0 without touching the stat arrays.
     if (resolved._potentialsDisabled) {
         return {
-            multiplier: 0, baseAtk: 0, atkPct: 1, atkAbs: 0,
+            multiplier: 0, baseAtk: 0, atkPct: 1, atkAbs: 0, baseAttr: dcHitBaseAttr(hc),
             elemPct: 1, elemTakenPct: 1, dmgTypePct: 1, dmgTypeTakenPct: 1,
             critRate: 0, critDmg: 1, pen: 0, res: 0, penRes: 1,
             effectiveDef: 0, defAmend: 1,
@@ -1951,13 +1998,17 @@ function calcHitFields(ev, statOverrides, dcEffectsDisabled, dcEffectLevelOverri
         }
     }
 
-    // BaseAtk
-    const baseAtk = statBase(aStats, 1);
+    // Base value — the hit's own base attribute (DamageBonusType: Atk, Def or
+    // Max Hp), not necessarily Atk. The field names stay `baseAtk`/`atkPct`/
+    // `atkAbs` because the whole formula pipeline (calcDamage, emblems
+    // comparison, UI) is built around them.
+    const baseAttr = dcHitBaseAttr(hc);
+    const baseAtk = statBase(aStats, baseAttr);
 
-    // Atk% = (origin+base) * pct
-    const atkStat = aStats[1];
+    // Base% = (origin+base) * pct
+    const atkStat = aStats[baseAttr];
     const atkPct  = atkStat ? (1 + (atkStat.pct || 0)) : 1;
-    const atkAbs  = statAbs(aStats, 1);
+    const atkAbs  = statAbs(aStats, baseAttr);
 
     // Element%
     const elemIdx = ELEM_ATK_STAT[el];
@@ -2015,7 +2066,7 @@ function calcHitFields(ev, statOverrides, dcEffectsDisabled, dcEffectLevelOverri
     const skillIntensity  = statValue(aStats, 85) + 1;
 
     return {
-        multiplier, baseAtk, atkPct, atkAbs, elemPct, elemTakenPct,
+        multiplier, baseAtk, atkPct, atkAbs, baseAttr, elemPct, elemTakenPct,
         dmgTypePct, dmgTypeTakenPct,
         critRate, critDmg,
         pen, res, penRes,

@@ -1,0 +1,1285 @@
+// =============================================================================
+//  HybridCLR hotfix attach layer — implementation
+// =============================================================================
+//  See include/hybrid_hooks.h for the architecture.  Everything below is
+//  grounded in the 2.0.0 `GameAssembly.dll` (game base 0x180000000) and in the
+//  upstream HybridCLR sources (hybridclr/interpreter/{Interpreter_Execute.cpp,
+//  Engine.cpp, InterpreterModule.cpp, InterpreterDefs.h, InterpreterUtil.cpp}):
+//
+//    Interpreter::Execute(const MethodInfo*, StackObject* args, void* ret)
+//        RVA 0x64E270 (62,428 bytes) — found through the "CallInterpDelegate"
+//        string (VA 0x186ABD278, 3 RIP-relative xrefs inside Execute).
+//    InterpFrameGroup::EnterFrameFromInterpreter(this, const MethodInfo*, StackObject* argBase)
+//        RVA 0x64E1C0 (172 bytes) — called from Execute; loads method->interpData
+//        (+0x58), imi->maxStackSize (+0x2C) and imi->argStackObjectSize (+0x20),
+//        writes {method, argBase} into the new frame (frame+0x00 / frame+0x08)
+//        and calls MachineState::AllocStackSlot / PushFrame.
+//
+//  Layout facts used here (all verified against the 2.0.0 image, see
+//  docs/ghidra.md §6 and decompilation/versions/2.0.0/README.md):
+//
+//    MethodInfo     : name +0x18, klass +0x20, interpData +0x58 (vanilla il2cpp
+//                     0x58-byte prefix, HybridCLR extras appended).
+//    Il2CppClass    : name +0x10, namespaze +0x18, methods +0x98 (Il2CppClass_1),
+//                     method_count via Il2CppClass_2 (game_structs.h).
+//    InterpMethodInfo: codes +0x00, args +0x08, resolveDatas +0x10,
+//                     exClauses +0x18, argStackObjectSize +0x20,
+//                     retStackObjectSize +0x24 (24 bits), localStackSize +0x28,
+//                     maxStackSize +0x2C, argCount +0x30 (low 8 bits),
+//                     codeLength +0x30 (high 24), localVarBaseOffset +0x34.
+//    MethodArgDesc  : {u8 passbyValWhenInvoke, u8 type, u16 stackObjectSize} (4 B)
+//    MachineState   : _stackBase 0x00, _stackSize 0x08, _stackTopIdx 0x0C,
+//                     _localPoolBottomIdx 0x10, _frameBase 0x18, _frameTopIdx 0x20,
+//                     _frameCount 0x24, ... (PushFrame: 0x180662950).
+//    InterpFrameGroup: _machineState* +0x00 (Engine.h).
+// =============================================================================
+
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
+#include <algorithm>
+#include <atomic>
+#include <cstring>
+#include <mutex>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+#include "MinHook.h"
+#include "logging.h"
+#include "game_structs.h"
+#include "hybrid_hooks.h"
+
+namespace hybrid {
+
+// ---------------------------------------------------------------------------
+//  Constants / offsets
+// ---------------------------------------------------------------------------
+static constexpr int kOffMiName       = 0x18;
+static constexpr int kOffMiKlass      = 0x20;
+static constexpr int kOffMiInterpData = 0x58;
+
+static constexpr int kOffImiArgs              = 0x08;
+static constexpr int kOffImiArgStackObjSize   = 0x20;
+static constexpr int kOffImiRetStackObjSize   = 0x24;
+static constexpr int kOffImiMaxStackSize      = 0x2C;
+static constexpr int kOffImiArgCount          = 0x30;
+
+static constexpr int kOffMsFrameTopIdx = 0x20;
+
+static constexpr int kMaxArgs    = 32;   // metadata args we accept (incl. `this`)
+static constexpr int kMaxSlots   = 40;   // slots a call may occupy
+static constexpr int kMaxPending = 8;
+
+static constexpr uintptr_t kRvaExecuteFallback = 0x64E270;   // 2.0.0
+static constexpr uintptr_t kRvaEnterFallback   = 0x64E1C0;   // 2.0.0
+
+// ---------------------------------------------------------------------------
+//  Module / PE helpers
+// ---------------------------------------------------------------------------
+static uintptr_t g_base = 0;
+static uintptr_t g_execAddr = 0;
+static uintptr_t g_enterAddr = 0;
+static bool      g_installed = false;
+static bool      g_detected = false;
+
+static inline bool PlausiblePtr(const void* p) {
+    auto v = reinterpret_cast<uintptr_t>(p);
+    return v >= 0x10000 && (v & 7) == 0 && v < 0x00007FFFFFFFFFFF;
+}
+
+// True when [p, p+n) is committed and readable.  Needed because FieldInfo arrays
+// for hotfix classes over-report their length (Il2CppClass::field_count can be
+// larger than the number of entries allocated), so the iteration below can walk
+// into adjacent heap; dereferencing a garbage name pointer there crashes.
+static bool ReadableRange(const void* p, size_t n) {
+    auto addr = reinterpret_cast<uintptr_t>(p);
+    if (addr < 0x10000) return false;
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(p, &mbi, sizeof(mbi)) == 0) return false;
+    if (mbi.State != MEM_COMMIT) return false;
+    if (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) return false;
+    auto regionEnd = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
+    return addr + n <= regionEnd;
+}
+
+// Metadata strings (method/class names) live in the mapped global-metadata blob
+// and are byte-packed, so they must not be alignment-checked.
+static bool PlausibleName(const char* s) {
+    auto v = reinterpret_cast<uintptr_t>(s);
+    if (v < 0x10000 || v >= 0x00007FFFFFFFFFFF) return false;
+    if (!ReadableRange(s, 200)) return false;
+    for (int i = 0; i < 200; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (c == 0) return i > 0;
+        if (c < 0x20 || c > 0x7E) return false;
+    }
+    return false;   // no terminator within 200 bytes
+}
+
+static bool ReadPtrAt(uintptr_t addr, uintptr_t* out) {
+    // All pointers fed to this helper come from the interpreter itself (the
+    // MethodInfo of a live call), so a plausibility check is enough; SEH is not
+    // available in the MinGW build.
+    if (addr < 0x10000 || (addr & 7)) return false;
+    *out = *reinterpret_cast<uintptr_t*>(addr);
+    return true;
+}
+
+struct Section { uintptr_t begin; size_t size; bool exec; };
+
+static int ReadSections(Section* out, int maxSections) {
+    auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(g_base);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return 0;
+    auto* nt = reinterpret_cast<IMAGE_NT_HEADERS64*>(g_base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return 0;
+    int n = 0;
+    auto* sec = IMAGE_FIRST_SECTION(nt);
+    for (int i = 0; i < nt->FileHeader.NumberOfSections && n < maxSections; i++) {
+        out[n].begin = g_base + sec[i].VirtualAddress;
+        out[n].size  = sec[i].Misc.VirtualSize;
+        out[n].exec  = (sec[i].Characteristics & IMAGE_SCN_MEM_EXECUTE) != 0;
+        n++;
+    }
+    return n;
+}
+
+// .pdata (RUNTIME_FUNCTION) lookup: the image ships ~366k entries in 2.0.0.
+// RUNTIME_FUNCTION is 12 bytes — {BeginAddress, EndAddress, UnwindInfoAddress}.
+// Declaring only begin/end (8 bytes) makes the count and every entry wrong, which
+// silently breaks function-bounds lookups (discovery then reports "no xref
+// resolved" even though the xref is there).
+struct RuntimeFunc { uint32_t begin; uint32_t end; uint32_t unwind; };
+static_assert(sizeof(RuntimeFunc) == 12, "RUNTIME_FUNCTION must be 12 bytes");
+
+static bool LoadFunctionTable(std::vector<RuntimeFunc>& out) {
+    auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(g_base);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return false;
+    auto* nt = reinterpret_cast<IMAGE_NT_HEADERS64*>(g_base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return false;
+    auto& dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+    if (!dir.VirtualAddress || !dir.Size) return false;
+    auto* rf = reinterpret_cast<RuntimeFunc*>(g_base + dir.VirtualAddress);
+    size_t count = dir.Size / sizeof(RuntimeFunc);
+    out.assign(rf, rf + count);
+    return true;
+}
+
+// Function containing `va` (RVA space), from a preloaded table.
+static bool FuncBounds(const std::vector<RuntimeFunc>& table, uintptr_t va,
+                       uintptr_t* begin, uintptr_t* end) {
+    uint32_t rva = (uint32_t)(va - g_base);
+    size_t lo = 0, hi = table.size();
+    while (lo < hi) {
+        size_t mid = (lo + hi) / 2;
+        if (table[mid].begin <= rva) lo = mid + 1; else hi = mid;
+    }
+    if (lo == 0) return false;
+    const RuntimeFunc& f = table[lo - 1];
+    if (rva < f.begin || rva >= f.end) return false;
+    *begin = g_base + f.begin;
+    *end   = g_base + f.end;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+//  Interpreter discovery
+// ---------------------------------------------------------------------------
+// "CallInterpDelegate" is a literal the interpreter error path formats; the
+// interpreter entry is the only function that references it (3 xrefs in 2.0.0).
+static bool FindStringRefs(const char* needle, std::vector<uintptr_t>* strVas,
+                           int maxHits) {
+    Section secs[16];
+    int n = ReadSections(secs, 16);
+    size_t len = std::strlen(needle);
+    for (int i = 0; i < n; i++) {
+        auto* p = reinterpret_cast<uint8_t*>(secs[i].begin);
+        if (secs[i].size < len) continue;
+        for (size_t off = 0; off + len <= secs[i].size; off++) {
+            if (p[off] != (uint8_t)needle[0]) continue;
+            if (std::memcmp(p + off, needle, len) != 0) continue;
+            if (p[off + len] != 0) continue;            // must be the full literal
+            strVas->push_back(secs[i].begin + off);
+            if ((int)strVas->size() >= maxHits) return true;
+        }
+    }
+    return !strVas->empty();
+}
+
+static bool IsRipLeaBefore(const uint8_t* code, size_t pos) {
+    // pos = offset of the disp32; the lea is `48/4C 8D <modrm>` 3 bytes before.
+    if (pos < 3) return false;
+    uint8_t b0 = code[pos - 3], b1 = code[pos - 2], b2 = code[pos - 1];
+    if (b0 != 0x48 && b0 != 0x4C) return false;
+    if (b1 != 0x8D) return false;
+    return (b2 & 0xC7) == 0x05;                          // mod=00, rm=101 (RIP)
+}
+
+// Locate `Interpreter::Execute`.  Primary: xref to the "CallInterpDelegate"
+// literal.  Fallback: the version-keyed RVA, sanity-checked by shape.
+static bool FindExecute(uintptr_t* out) {
+    std::vector<RuntimeFunc> table;
+    LoadFunctionTable(table);
+
+    std::vector<uintptr_t> strVas;
+    if (FindStringRefs("CallInterpDelegate", &strVas, 4)) {
+        Section secs[16];
+        int n = ReadSections(secs, 16);
+        std::unordered_map<uintptr_t, int> votes;
+        for (int i = 0; i < n; i++) {
+            if (!secs[i].exec) continue;
+            auto* code = reinterpret_cast<uint8_t*>(secs[i].begin);
+            for (size_t off = 0; off + 4 <= secs[i].size; off++) {
+                if (!IsRipLeaBefore(code, off)) continue;
+                int32_t disp;
+                std::memcpy(&disp, code + off, 4);
+                uintptr_t target = secs[i].begin + off + 4 + (int64_t)disp;
+                for (uintptr_t sv : strVas) {
+                    if (target != sv) continue;
+                    uintptr_t fbeg, fend;
+                    if (FuncBounds(table, secs[i].begin + off, &fbeg, &fend))
+                        votes[fbeg]++;
+                }
+            }
+        }
+        uintptr_t best = 0;
+        int bestVotes = 0;
+        uintptr_t bestSize = 0;
+        for (auto& kv : votes) {
+            uintptr_t fbeg, fend;
+            if (!FuncBounds(table, kv.first, &fbeg, &fend)) continue;
+            if (fend - fbeg < 20000) continue;           // the interpreter is huge
+            if (kv.second > bestVotes) {
+                bestVotes = kv.second; best = kv.first; bestSize = fend - fbeg;
+            }
+        }
+        if (best) {
+            log("[hybrid] Interpreter::Execute @ 0x%llX (%llu bytes, %d literal xref(s))",
+                (unsigned long long)best, (unsigned long long)bestSize, bestVotes);
+            *out = best;
+            return true;
+        }
+        log("[hybrid] CallInterpDelegate literal found (%d) but no xref resolved", (int)strVas.size());
+    } else {
+        log("[hybrid] CallInterpDelegate literal not found");
+    }
+
+    uintptr_t cand = g_base + kRvaExecuteFallback;
+    uintptr_t fbeg, fend;
+    if (FuncBounds(table, cand, &fbeg, &fend) && cand == fbeg && (fend - fbeg) > 20000) {
+        log("[hybrid] Interpreter::Execute @ 0x%llX (version-table RVA 0x%llX)",
+            (unsigned long long)cand, (unsigned long long)kRvaExecuteFallback);
+        *out = cand;
+        return true;
+    }
+    return false;
+}
+
+// Does the function at `va` contain `mov r64, [reg+0x58]` (method->interpData)?
+static bool HasInterpDataLoad(uintptr_t va, uintptr_t end) {
+    for (uintptr_t p = va; p + 3 <= end; p++) {
+        auto* b = reinterpret_cast<const uint8_t*>(p);
+        if (b[0] == 0x48 && b[1] == 0x8B && (b[2] & 0xC0) == 0x40 && b[3] == 0x58)
+            return true;
+    }
+    return false;
+}
+
+// Does it contain `mov [reg+0x58], r64` — i.e. does it *cache* interpData?
+// InterpreterModule::GetInterpMethodInfo does exactly that (`method->interpData =
+// imi` at the end), while EnterFrameFromInterpreter only reads the field.  Without
+// this test both functions score identically (both read +0x58, both are small,
+// both are called from Execute) and the choice would be arbitrary.
+static bool HasInterpDataStore(uintptr_t va, uintptr_t end) {
+    for (uintptr_t p = va; p + 3 <= end; p++) {
+        auto* b = reinterpret_cast<const uint8_t*>(p);
+        if (b[0] == 0x48 && b[1] == 0x89 && (b[2] & 0xC0) == 0x40 && b[3] == 0x58)
+            return true;
+    }
+    return false;
+}
+
+// Locate `InterpFrameGroup::EnterFrameFromInterpreter` among Execute's direct
+// call targets.  Shape tests: .pdata function start, <= 512 bytes, contains the
+// interpData load and at least two calls, and is called from Execute at least
+// twice.
+static bool FindEnterFrame(uintptr_t execBeg, uintptr_t execEnd, uintptr_t* out) {
+    std::vector<RuntimeFunc> table;
+    LoadFunctionTable(table);
+
+    std::unordered_map<uintptr_t, int> callCount;
+    auto* code = reinterpret_cast<const uint8_t*>(execBeg);
+    for (uintptr_t p = execBeg; p + 5 <= execEnd; p++) {
+        if (code[p - execBeg] != 0xE8) continue;
+        int32_t rel;
+        std::memcpy(&rel, code + (p - execBeg) + 1, 4);
+        uintptr_t target = p + 5 + (int64_t)rel;
+        if (target < g_base || target >= g_base + 0x10000000) continue;
+        callCount[target]++;
+    }
+
+    uintptr_t best = 0;
+    int bestScore = 0;
+    struct Scored { int score; uintptr_t va; int calls; };
+    std::vector<Scored> scored;
+    for (auto& kv : callCount) {
+        uintptr_t cand = kv.first;
+        uintptr_t fbeg, fend;
+        if (!FuncBounds(table, cand, &fbeg, &fend)) continue;
+        if (cand != fbeg) continue;
+        size_t size = (size_t)(fend - fbeg);
+        if (size < 64 || size > 512) continue;
+        if (HasInterpDataStore(fbeg, fend)) continue;   // GetInterpMethodInfo, not the frame push
+        int score = 0;
+        if (HasInterpDataLoad(fbeg, fend)) score += 3;
+        if (kv.second >= 2) score += 2;
+        if (kv.second >= 5) score += 1;
+        if (score >= 5) scored.push_back({ score, cand, kv.second });
+    }
+    // Deterministic order: best score first, then lowest address.
+    std::sort(scored.begin(), scored.end(), [](const Scored& a, const Scored& b) {
+        if (a.score != b.score) return a.score > b.score;
+        return a.va < b.va;
+    });
+    for (const Scored& s : scored) {
+        if (s.score > bestScore) { bestScore = s.score; best = s.va; }
+    }
+    if (best) {
+        int calls = 0;
+        for (const Scored& s : scored) if (s.va == best) calls = s.calls;
+        log("[hybrid] EnterFrameFromInterpreter @ 0x%llX (score %d, %d calls from Execute, %d candidate(s))",
+            (unsigned long long)best, bestScore, calls, (int)scored.size());
+        *out = best;
+        return true;
+    }
+
+    uintptr_t cand = g_base + kRvaEnterFallback;
+    uintptr_t fbeg, fend;
+    if (FuncBounds(table, cand, &fbeg, &fend) && cand == fbeg && (fend - fbeg) >= 64 &&
+        (fend - fbeg) <= 512 && HasInterpDataLoad(cand, fend) && !HasInterpDataStore(cand, fend)) {
+        log("[hybrid] EnterFrameFromInterpreter @ 0x%llX (version-table RVA 0x%llX)",
+            (unsigned long long)cand, (unsigned long long)kRvaEnterFallback);
+        *out = cand;
+        return true;
+    }
+    return false;
+}
+
+bool Detect(uintptr_t gameBase) {
+    if (g_detected) return g_execAddr != 0;
+    g_base = gameBase;
+    if (!g_base) return false;
+    std::vector<RuntimeFunc> table;
+    if (!LoadFunctionTable(table) || table.empty()) {
+        log("[hybrid] no .pdata function table — cannot locate the interpreter");
+        return false;
+    }
+    log("[hybrid] .pdata: %d functions", (int)table.size());
+    if (!FindExecute(&g_execAddr)) {
+        log("[hybrid] interpreter entry not found; hotfix hooks unavailable");
+        return false;
+    }
+    uintptr_t fbeg, fend;
+    if (!FuncBounds(table, g_execAddr, &fbeg, &fend)) return false;
+    if (!FindEnterFrame(fbeg, fend, &g_enterAddr)) {
+        // Not fatal: native entries still work, interpreted->interpreted calls
+        // are not observable.
+        log("[hybrid] EnterFrameFromInterpreter not identified — "
+            "interpreted->interpreted hooks disabled (native entries still hooked)");
+    }
+    g_detected = true;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+//  Argument layout
+// ---------------------------------------------------------------------------
+static const char* MethodName(const void* method);
+static void* MethodKlass(const void* method);
+
+struct ImiInfo {
+    void*    args;              // MethodArgDesc*
+    uint32_t argStackObjectSize;
+    uint32_t retStackObjectSize;
+    uint32_t argCount;
+};
+
+static bool ReadImi(const void* method, ImiInfo* out) {
+    uintptr_t imi;
+    if (!ReadPtrAt(reinterpret_cast<uintptr_t>(method) + kOffMiInterpData, &imi)) return false;
+    if (!imi || (imi & 7)) return false;
+    out->args = *reinterpret_cast<void**>(imi + kOffImiArgs);
+    out->argStackObjectSize = *reinterpret_cast<uint32_t*>(imi + kOffImiArgStackObjSize);
+    out->retStackObjectSize = (*reinterpret_cast<uint32_t*>(imi + kOffImiRetStackObjSize)) & 0x00FFFFFF;
+    out->argCount = (*reinterpret_cast<uint32_t*>(imi + kOffImiArgCount)) & 0xFF;
+    return true;
+}
+
+// Slot index of every metadata argument (index 0 is `this` for instance
+// methods, matching ImiInfo::args[0] as used by InterpreterModule).
+// `MethodArgDesc::stackObjectSize` is in StackObject units; value types that do
+// not fit one slot (e.g. TrueSync.TSVector2 = 16 bytes) occupy two, their bytes
+// stored inline.
+static bool ComputeArgOffsets(const void* method, int* offsets, int* argCount,
+                              int* slotCount) {
+    ImiInfo imi;
+    if (!ReadImi(method, &imi)) return false;
+    if (!imi.args || imi.argCount == 0 || imi.argCount > (uint32_t)kMaxArgs) return false;
+    auto* descs = reinterpret_cast<const uint8_t*>(imi.args);
+    int slot = 0;
+    for (uint32_t i = 0; i < imi.argCount; i++) {
+        uint8_t passByVal = descs[i * 4 + 0];
+        uint16_t size = *reinterpret_cast<const uint16_t*>(descs + i * 4 + 2);
+        int step = passByVal ? 1 : (int)size;
+        if (step <= 0) return false;
+        if (slot + step > kMaxSlots) return false;
+        offsets[i] = slot;
+        slot += step;
+    }
+    if ((uint32_t)slot != imi.argStackObjectSize) {
+        log("[hybrid] arg layout mismatch for '%s': computed %d slots, imi says %u",
+            PlausibleName(MethodName(method)) ? MethodName(method) : "?",
+            slot, imi.argStackObjectSize);
+        return false;
+    }
+    *argCount = (int)imi.argCount;
+    *slotCount = slot;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+//  Registry
+// ---------------------------------------------------------------------------
+struct CacheRec {
+    const void* method;
+    int         target;        // index into g_targets, -1 = resolved non-target
+    int         argCount;
+    int         slotCount;
+    int         off[kMaxArgs];
+};
+
+static const TargetDesc* g_targets = nullptr;
+static int               g_targetCount = 0;
+
+static constexpr int kCacheSize = 8192;      // power of two
+static std::atomic<CacheRec*> g_cache[kCacheSize];
+static std::mutex g_resolveMutex;
+// Authoritative store: every method seen so far.  The array above is only a
+// fast path (two methods hashing to the same slot must not re-resolve/allocate
+// on every call), and CacheRec objects are never freed.
+static std::unordered_map<const void*, CacheRec*> g_resolvedMap;
+
+static std::mutex g_klassMutex;
+static std::unordered_map<std::string, void*> g_klassByName;
+static std::unordered_map<std::string, void*> g_methodByName;
+
+static void LearnClass(void* klass) {
+    if (!PlausiblePtr(klass)) return;
+    const char* name = reinterpret_cast<Il2CppClass*>(klass)->_1.name;
+    if (!PlausibleName(name)) return;
+    std::lock_guard<std::mutex> lk(g_klassMutex);
+    auto it = g_klassByName.find(name);
+    if (it == g_klassByName.end()) g_klassByName.emplace(name, klass);
+}
+
+static int MatchTarget(void* klass, const char* methodName) {
+    const char* klassName = klass
+        ? reinterpret_cast<Il2CppClass*>(klass)->_1.name : nullptr;
+    if (!klassName) return -1;
+    for (int i = 0; i < g_targetCount; i++) {
+        if (std::strcmp(g_targets[i].klass, klassName) != 0) continue;
+        if (std::strcmp(g_targets[i].method, methodName) != 0) continue;
+        return i;
+    }
+    return -1;
+}
+
+// ---------------------------------------------------------------------------
+//  Struct-layout verification
+// ---------------------------------------------------------------------------
+// 2.0.0 moved the whole Nova.Client data model (AdventureActor, HitDamage,
+// Effect, …) out of the AOT image into the hotfix assembly, so their instance
+// layouts are now defined by the hotfix metadata while game_structs.h still
+// carries the offsets generated from the 1.15 AOT dump.  The hook bodies read
+// those structs, so verify the offsets the bodies depend on against the runtime
+// FieldInfo table once per class, and fail safe (no bodies) if one moved.
+//
+// FieldInfo (il2cpp-class-internals.h, Unity 2019-2022):
+//     +0x00 const char* name
+//     +0x08 const Il2CppType* type
+//     +0x10 Il2CppClass* parent
+//     +0x18 int32_t offset
+//     +0x1C uint32_t token
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Winvalid-offsetof"
+
+struct FieldCheck { const char* klass; const char* field; int32_t expected; };
+
+static const FieldCheck g_fieldChecks[] = {
+    // Fields whose *offset* the hook bodies depend on when they dereference
+    // pointers straight out of these structs.
+    { "AdventureActor",   "_dataID_k__BackingField",
+      (int32_t)offsetof(AdventureActor_o, fields._dataID_k__BackingField) },
+    { "AdventureActor",   "attributeList",
+      (int32_t)offsetof(AdventureActor_o, fields.attributeList) },
+    { "AdventureActor",   "specialAttributeList",
+      (int32_t)offsetof(AdventureActor_o, fields.specialAttributeList) },
+    { "AdventureActor",   "stateAttributeList",
+      (int32_t)offsetof(AdventureActor_o, fields.stateAttributeList) },
+    { "AdventureActor",   "actorInfo",
+      (int32_t)offsetof(AdventureActor_o, fields.actorInfo) },
+    { "MonsterSummonInfo", "_SummonActor_k__BackingField",
+      (int32_t)offsetof(MonsterSummonInfo_o, fields._SummonActor_k__BackingField) },
+    { "MonsterSummonInfo", "_Entity_k__BackingField",
+      (int32_t)offsetof(MonsterSummonInfo_o, fields._Entity_k__BackingField) },
+    { "AreaEffectEntity", "_owner_k__BackingField",
+      (int32_t)offsetof(AreaEffectEntity_o, fields._owner_k__BackingField) },
+    { "AreaEffectEntity", "_fxPlayer_k__BackingField",
+      (int32_t)offsetof(AreaEffectEntity_o, fields._fxPlayer_k__BackingField) },
+    { "AdventureWeapon",  "_owner",
+      (int32_t)offsetof(AdventureWeapon_o, fields._owner) },
+    { "BuffEntity",       "buffUidLs",
+      (int32_t)offsetof(BuffEntity_o, fields.buffUidLs) },
+    { "BuffEntity",       "fromActors",
+      (int32_t)offsetof(BuffEntity_o, fields.fromActors) },
+    { "HitDamage",        "id_",
+      (int32_t)offsetof(Nova_Client_HitDamage_o, fields.id_) },
+    { "HitDamage",        "damageBonusType_",
+      (int32_t)offsetof(Nova_Client_HitDamage_o, fields.damageBonusType_) },
+    { "Effect",           "id_",
+      (int32_t)offsetof(Nova_Client_Effect_o, fields.id_) },
+    { "EffectValue",      "id_",
+      (int32_t)offsetof(Nova_Client_EffectValue_o, fields.id_) },
+    { "BuffEffect",       "id_",
+      (int32_t)offsetof(Nova_Client_BuffEffect_o, fields.id_) },
+
+    // Pointer fields dereferenced by the hit path (BuildHitJson / effect and buff
+    // lists).  Any of these moving must disable logging, not crash.
+    { "ActorAdditionalAttrInfo", "attributeWithElementOrDamageTypeDict",
+      (int32_t)offsetof(ActorAdditionalAttrInfo_o, fields.attributeWithElementOrDamageTypeDict) },
+    { "ActorAdditionalAttrInfo", "_attributeList_k__BackingField",
+      (int32_t)offsetof(ActorAdditionalAttrInfo_o, fields._attributeList_k__BackingField) },
+    { "ActorEffectManage", "effectsDict",
+      (int32_t)offsetof(ActorEffectManage_o, fields.effectsDict) },
+    { "ActorEffectManage", "_actor",
+      (int32_t)offsetof(ActorEffectManage_o, fields._actor) },
+    { "ActorEffectManage", "_timeTriggerEffects",
+      (int32_t)offsetof(ActorEffectManage_o, fields._timeTriggerEffects) },
+    { "AdventureActor",   "buffComponent",
+      (int32_t)offsetof(AdventureActor_o, fields.buffComponent) },
+    { "AdventureActor",   "effectManage",
+      (int32_t)offsetof(AdventureActor_o, fields.effectManage) },
+    { "AdventureEffect",  "_effectConfig_k__BackingField",
+      (int32_t)offsetof(AdventureEffect_o, fields._effectConfig_k__BackingField) },
+    { "AdventureEffect",  "_effectValueConfig_k__BackingField",
+      (int32_t)offsetof(AdventureEffect_o, fields._effectValueConfig_k__BackingField) },
+    { "AdventureEffect",  "_effectStack",
+      (int32_t)offsetof(AdventureEffect_o, fields._effectStack) },
+    { "AdventureEffect",  "_owner",
+      (int32_t)offsetof(AdventureEffect_o, fields._owner) },
+    { "AdventureEffect",  "_fromActor",
+      (int32_t)offsetof(AdventureEffect_o, fields._fromActor) },
+    { "AdventureEffectBase", "_effect",
+      (int32_t)offsetof(AdventureEffectBase_o, fields._effect) },
+    { "BuffEntity",       "_buffCom",
+      (int32_t)offsetof(BuffEntity_o, fields._buffCom) },
+    { "BuffEntity",       "buffConfig",
+      (int32_t)offsetof(BuffEntity_o, fields.buffConfig) },
+    { "BuffCom",          "_BuffList_k__BackingField",
+      (int32_t)offsetof(BuffCom_o, fields._BuffList_k__BackingField) },
+    { "AttributeList",    "entries",
+      (int32_t)offsetof(AttributeList_o, fields.entries) },
+    { "AdventureSkill",   "_owner_k__BackingField",
+      (int32_t)offsetof(AdventureSkill_o, fields._owner_k__BackingField) },
+};
+#pragma GCC diagnostic pop
+
+static constexpr int kFieldInfoStride = 0x20;
+static std::atomic<bool> g_layoutOk{true};
+// Il2CppClass::fields is an array of FieldInfo structs in il2cpp, but the dumper
+// types it as void*; decide once at runtime by checking which interpretation
+// yields printable names, so a layout change cannot make the probe itself crash.
+static int g_fieldsArePointers = -1;   // -1 = undecided, 0 = array, 1 = pointer array
+static std::unordered_map<const void*, bool> g_layoutChecked;
+
+static void* ClassFieldEntry(void* klassPtr, int index) {
+    auto* klass = reinterpret_cast<Il2CppClass*>(klassPtr);
+    auto* base = reinterpret_cast<uint8_t*>(klass->_1.fields);
+    if (!base) return nullptr;
+    if (g_fieldsArePointers < 0) {
+        // Decide with the first entry of this class: as an array of FieldInfo
+        // structs the first qword is the name pointer; as an array of pointers it
+        // is a FieldInfo* whose first qword is the name pointer.
+        const char* nameIfStruct = *reinterpret_cast<const char* const*>(base);
+        void* firstIfPtr = *reinterpret_cast<void* const*>(base);
+        const char* nameIfPtr = (PlausiblePtr(firstIfPtr) && ReadableRange(firstIfPtr, 0x20))
+            ? *reinterpret_cast<const char* const*>(firstIfPtr) : nullptr;
+        bool okStruct = PlausibleName(nameIfStruct);
+        bool okPtr = PlausibleName(nameIfPtr);
+        g_fieldsArePointers = (okStruct || !okPtr) ? 0 : 1;
+    }
+    if (g_fieldsArePointers == 1) {
+        auto* arr = reinterpret_cast<void**>(base);
+        if (index < 0) return nullptr;
+        return arr[index];
+    }
+    return base + (size_t)index * kFieldInfoStride;
+}
+
+// game_structs.h (Il2CppDumper) sanitises compiler-generated names:
+// `<owner>k__BackingField` is written `_owner_k__BackingField`.  Compare both
+// forms, otherwise every auto-property check reports "not found".
+static bool FieldNameMatches(const char* runtimeName, const char* want) {
+    if (std::strcmp(runtimeName, want) == 0) return true;
+    static const char kSuffix[] = "_k__BackingField";
+    const size_t wantLen = std::strlen(want);
+    const size_t suffixLen = sizeof(kSuffix) - 1;
+    if (wantLen <= suffixLen) return false;
+    if (std::strcmp(want + wantLen - suffixLen, kSuffix) != 0) return false;
+    const size_t base = wantLen - suffixLen;          // includes the leading '_'
+    if (base < 2) return false;
+    char alt[128];
+    if (base + suffixLen >= sizeof(alt)) return false;
+    alt[0] = '<';
+    std::memcpy(alt + 1, want + 1, base - 1);
+    std::memcpy(alt + base, ">k__BackingField", suffixLen + 1);
+    return std::strcmp(runtimeName, alt) == 0;
+}
+
+// Look up a field's runtime offset.  A class's FieldInfo array holds only its
+// *own* fields, so inherited fields (e.g. MonsterSummonInfo._Entity, declared on
+// LogicComponent) require walking the base chain; inherited fields keep the same
+// offset in the derived instance.
+static bool FieldOffsetOf(void* klassPtr, const char* fieldName, int32_t* out) {
+    auto* klass = reinterpret_cast<Il2CppClass*>(klassPtr);
+    for (int depth = 0; klass && depth < 16; depth++) {
+        int count = klass->_2.field_count;
+        if (count > 0 && count <= 20000) {
+            for (int i = 0; i < count; i++) {
+                void* fi = ClassFieldEntry(klass, i);
+                if (!fi) break;
+                const char* n = *reinterpret_cast<const char* const*>(fi);
+                // Own fields come first; a non-name entry means we left the real array.
+                if (!PlausibleName(n)) break;
+                if (!FieldNameMatches(n, fieldName)) continue;
+                *out = *reinterpret_cast<int32_t*>(reinterpret_cast<uint8_t*>(fi) + 0x18);
+                return true;
+            }
+        }
+        klass = klass->_1.parent;
+    }
+    return false;
+}
+
+// Public: field offset inside a live object (walks the object's own class and
+// base chain).  Used for objects whose runtime class differs from the header
+// (the captured GameDataController object is a HotfixDataController in 2.0.0).
+int32_t FieldOffsetInObject(const void* obj, const char* fieldName) {
+    if (!obj || !fieldName) return -1;
+    void* klass = *reinterpret_cast<void* const*>(obj);
+    if (!PlausiblePtr(klass)) return -1;
+    int32_t off = 0;
+    if (!FieldOffsetOf(klass, fieldName, &off)) return -2;
+    return off;
+}
+
+static void DumpClassLayout(void* klassPtr) {
+    auto* klass = reinterpret_cast<Il2CppClass*>(klassPtr);
+    const char* name = klass->_1.name;
+    log("[layout] class %s: instance_size=0x%X fields=%u",
+        PlausibleName(name) ? name : "?", klass->_2.instance_size,
+        (unsigned)klass->_2.field_count);
+    int count = klass->_2.field_count;
+    if (count <= 0) return;
+    if (count > 2000) count = 2000;
+    for (int i = 0; i < count; i++) {
+        void* fi = ClassFieldEntry(klassPtr, i);
+        if (!fi) { log("[layout]   (stopped at entry %d: no field)", i); break; }
+        auto* p = reinterpret_cast<const uint8_t*>(fi);
+        const char* n = *reinterpret_cast<const char* const*>(p);
+        void* type = *reinterpret_cast<void* const*>(p + 0x08);
+        int32_t off = *reinterpret_cast<const int32_t*>(p + 0x18);
+        // `field_count` over-reports for hotfix classes (PlayerAdventureActor:
+        // 80 reported, 36 real), so stop at the first entry that is not a field.
+        if (!PlausibleName(n)) { log("[layout]   (stopped at entry %d: no name)", i); break; }
+        if (off < -1 || off > 0x1000000) { log("[layout]   (stopped at entry %d: offset %d)", i, off); break; }
+        log("[layout]   %+6d (0x%X) %-40s ty=%u type=0x%llX",
+            off, (uint32_t)off, n,
+            type ? ((*reinterpret_cast<const uint32_t*>(reinterpret_cast<uint8_t*>(type) + 0x08) >> 16) & 0xFF) : 0u,
+            (unsigned long long)reinterpret_cast<uintptr_t>(type));
+    }
+}
+
+static std::unordered_map<const void*, bool> g_dumped;
+
+// Dump the class and its base chain (offsets of inherited fields are relative to
+// the base instance, so the whole chain is needed to rebuild a struct).
+static void DumpClassAndParents(void* klassPtr, int maxParents) {
+    auto* klass = reinterpret_cast<Il2CppClass*>(klassPtr);
+    for (int i = 0; klass && i <= maxParents; i++) {
+        if (!g_dumped.emplace(klass, true).second) break;
+        DumpClassLayout(klass);
+        klass = klass->_1.parent;
+    }
+}
+
+// Runs once per class (under g_resolveMutex).  Bodies stop running as soon as a
+// check cannot be confirmed, so a moved offset degrades to a clear log instead
+// of a crash.
+static void VerifyClassLayout(void* klassPtr) {
+    if (!g_layoutChecked.emplace(klassPtr, true).second) return;
+    auto* klass = reinterpret_cast<Il2CppClass*>(klassPtr);
+    const char* name = klass->_1.name;
+    if (!PlausibleName(name)) return;
+
+    // Only dump when asked to: a MISMATCH / missing field dumps the chain itself
+    // (below), and `hotfix_layout_probe` dumps every interpreted class.
+    if (g_Cfg.hotfix_layout_probe) DumpClassLayout(klassPtr);
+
+    for (const FieldCheck& c : g_fieldChecks) {
+        if (std::strcmp(c.klass, name) != 0) continue;
+        int32_t got = 0;
+        if (!FieldOffsetOf(klassPtr, c.field, &got)) {
+            log("[layout] %s.%s: not found in the runtime class — hotfix logging disabled "
+                "(game_structs.h is stale for this class; layout dumped above)",
+                name, c.field);
+            g_layoutOk.store(false, std::memory_order_relaxed);
+            DumpClassAndParents(klassPtr, 6);
+            continue;
+        }
+        if (got == c.expected) {
+            log("[layout] %s.%s OK (+0x%X)", name, c.field, got);
+        } else {
+            log("[layout] %s.%s MISMATCH: game_structs.h +0x%X, runtime +0x%X — "
+                "hotfix logging disabled; re-run with hotfix_layout_probe=1 to dump every class",
+                name, c.field, c.expected, got);
+            g_layoutOk.store(false, std::memory_order_relaxed);
+            DumpClassAndParents(klassPtr, 6);
+        }
+    }
+}
+
+static const char* MethodName(const void* method) {
+    return *reinterpret_cast<const char* const*>(
+        reinterpret_cast<uintptr_t>(method) + kOffMiName);
+}
+
+static void* MethodKlass(const void* method) {
+    return *reinterpret_cast<void* const*>(
+        reinterpret_cast<uintptr_t>(method) + kOffMiKlass);
+}
+
+// Defined with the outgoing-call helpers; used from ResolveMethod to remember
+// every interpreted method by name (see LearnMethodName).
+static void LearnMethodName(void* klass, const char* methodName, void* method);
+
+// Cold path: identify `method`, learn its class, build the argument layout.
+static CacheRec* ResolveMethod(const void* method) {
+    std::lock_guard<std::mutex> lk(g_resolveMutex);
+
+    int idx = (int)((reinterpret_cast<uintptr_t>(method) >> 4) & (kCacheSize - 1));
+    CacheRec* cached = g_cache[idx].load(std::memory_order_relaxed);
+    if (cached && cached->method == method) return cached;
+
+    auto known = g_resolvedMap.find(method);
+    if (known != g_resolvedMap.end()) {
+        g_cache[idx].store(known->second, std::memory_order_release);   // re-fill fast path
+        return known->second;
+    }
+
+    const char* name = MethodName(method);
+    if (!PlausibleName(name)) name = nullptr;
+    void* klass = MethodKlass(method);
+    if (!PlausiblePtr(klass)) klass = nullptr;
+    if (klass) LearnClass(klass);
+    if (klass) VerifyClassLayout(klass);
+    // Also remember every method we see by name: some hotfix classes expose only
+    // a prefix of their metadata methods in klass->methods (see LearnMethodName).
+    if (klass && name) LearnMethodName(klass, name, const_cast<void*>(method));
+
+    int target = (name && klass) ? MatchTarget(klass, name) : -1;
+
+    ImiInfo probe;
+    if (target >= 0 && !ReadImi(method, &probe)) {
+        // `interpData` is filled in by the interpreter itself on the very first
+        // native entry (PREPARE_NEW_FRAME_FROM_NATIVE runs *after* our detour),
+        // so the first call of a method can arrive before its layout exists.
+        // Do not cache a negative result — the next call resolves normally.
+        return nullptr;
+    }
+
+    auto* rec = new CacheRec();
+    rec->method = method;
+    rec->target = target;
+    rec->argCount = 0;
+    rec->slotCount = 0;
+    std::memset(rec->off, 0, sizeof(rec->off));
+    ComputeArgOffsets(method, rec->off, &rec->argCount, &rec->slotCount);
+
+    if (rec->target >= 0) {
+        const TargetDesc& d = g_targets[rec->target];
+        if (rec->argCount != d.argCount) {
+            log("[hybrid] '%s.%s' arg count mismatch: metadata %d, expected %d — target disabled",
+                d.klass, d.method, rec->argCount, d.argCount);
+            rec->target = -1;
+        } else if (rec->slotCount == 0) {
+            log("[hybrid] '%s.%s': argument layout unavailable (interpData not ready) — target disabled",
+                d.klass, d.method);
+            rec->target = -1;
+        } else {
+            log("[hybrid] target ready: %s.%s (args %d, slots %d, %s)",
+                d.klass, d.method, rec->argCount, rec->slotCount,
+                d.mode == Mode::Entry ? "entry" : "after");
+        }
+    }
+
+    g_resolvedMap.emplace(method, rec);
+    g_cache[idx].store(rec, std::memory_order_release);
+    return rec;
+}
+
+static inline CacheRec* Lookup(const void* method) {
+    int idx = (int)((reinterpret_cast<uintptr_t>(method) >> 4) & (kCacheSize - 1));
+    CacheRec* r = g_cache[idx].load(std::memory_order_acquire);
+    if (r && r->method == method) return r;
+    return ResolveMethod(method);
+}
+
+// ---------------------------------------------------------------------------
+//  Per-thread state
+// ---------------------------------------------------------------------------
+struct Pending {
+    const CacheRec* rec;
+    int             slotCount;
+    int             depth;
+    StackObject     slots[kMaxSlots];
+};
+
+static __thread Pending  tls_pend[kMaxPending];
+static __thread int      tls_pendN = 0;
+static __thread void*    tls_machineState = nullptr;
+static __thread const void* tls_curMethod = nullptr;
+static __thread bool     tls_retValid = false;
+static __thread int64_t  tls_retValue = 0;
+
+static inline int32_t FrameDepth() {
+    if (!tls_machineState) return -1;
+    return *reinterpret_cast<int32_t*>(reinterpret_cast<uintptr_t>(tls_machineState) + kOffMsFrameTopIdx);
+}
+
+void*   CurrentMethod()    { return const_cast<void*>(tls_curMethod); }
+bool    CurrentRetValid()  { return tls_retValid; }
+int64_t CurrentRetValue()  { return tls_retValue; }
+
+// ---------------------------------------------------------------------------
+//  Detours
+// ---------------------------------------------------------------------------
+using FnExecute    = void  (__fastcall*)(const void* method, StackObject* args, void* ret);
+using FnEnterFrame = void* (__fastcall*)(void* frameGroup, const void* method, StackObject* argBase);
+
+static FnExecute    g_origExecute    = nullptr;
+static FnEnterFrame g_origEnterFrame = nullptr;
+
+static void RunBody(const CacheRec* rec, const StackObject* slots, void* ret) {
+    // Fail safe: if a struct the bodies read has moved in this game build
+    // (VerifyClassLayout), stop running bodies instead of dereferencing garbage.
+    if (!g_layoutOk.load(std::memory_order_relaxed)) return;
+    const TargetDesc& d = g_targets[rec->target];
+    const void* prevMethod = tls_curMethod;
+    bool prevValid = tls_retValid;
+    int64_t prevValue = tls_retValue;
+    tls_curMethod = rec->method;
+    d.body(const_cast<void*>(rec->method), slots, rec->off, ret);
+    tls_curMethod = prevMethod;
+    tls_retValid = prevValid;
+    tls_retValue = prevValue;
+}
+
+static void FlushPending(int32_t depth) {
+    // Pop first, run after: a body can call back into the interpreter and queue
+    // new entries, which must not disturb this loop.
+    while (tls_pendN > 0) {
+        Pending& p = tls_pend[tls_pendN - 1];
+        if (depth >= 0 && depth > p.depth) break;      // callee still on the stack
+        const CacheRec* rec = p.rec;
+        StackObject slots[kMaxSlots];
+        const int n = p.slotCount;
+        std::memcpy(slots, p.slots, sizeof(StackObject) * (n > 0 ? n : 0));
+        tls_pendN--;
+        if (rec && rec->target >= 0) {
+            tls_retValid = false;
+            RunBody(rec, slots, nullptr);
+        }
+    }
+}
+
+static void QueueAfter(const CacheRec* rec, const StackObject* slots, int32_t depth) {
+    if (tls_pendN >= kMaxPending) {                    // try to drain finished ones
+        FlushPending(depth);
+        if (tls_pendN >= kMaxPending) return;          // 8 nested After-targets: drop
+    }
+    Pending& p = tls_pend[tls_pendN++];
+    p.rec = rec;
+    p.slotCount = rec->slotCount;
+    p.depth = depth;
+    std::memcpy(p.slots, slots, sizeof(StackObject) * rec->slotCount);
+}
+
+static void* __fastcall Hook_EnterFrame(void* frameGroup, const void* method,
+                                        StackObject* argBase) {
+    if (frameGroup) {
+        void* ms = *reinterpret_cast<void**>(frameGroup);
+        if (ms) tls_machineState = ms;                 // InterpFrameGroup::_machineState
+    }
+    // Index the callee frame will occupy (i.e. before the push).  Needed for the
+    // pending-flush condition and for queueing After bodies.
+    const int32_t depthBefore = FrameDepth();
+
+    CacheRec* rec = Lookup(method);
+
+    // Push the frame FIRST, then run/queue the body.  `argBase` is a raw pointer
+    // into the caller's eval stack and only becomes stable once the callee frame
+    // holds it (the machine state relocates `stackBasePtr` on stack growth); a
+    // body that calls back into the interpreter (ResolveHitSource, the
+    // CalculateNormalDamage helpers, …) before the push could grow/relocate the
+    // stack and leave EnterFrameFromInterpreter writing a stale stackBasePtr.
+    void* frame = g_origEnterFrame(frameGroup, method, argBase);
+
+    FlushPending(depthBefore);
+    if (rec && rec->target >= 0) {
+        const TargetDesc& d = g_targets[rec->target];
+        if (d.mode == Mode::Entry) RunBody(rec, argBase, nullptr);
+        else                       QueueAfter(rec, argBase, depthBefore);
+    }
+    return frame;
+}
+
+static void __fastcall Hook_Execute(const void* method, StackObject* args, void* ret) {
+    // Safe position: nothing on the interpreter stack refers to this call yet.
+    FlushPending(FrameDepth());
+
+    CacheRec* rec = Lookup(method);
+    if (!rec || rec->target < 0) {
+        g_origExecute(method, args, ret);
+        return;
+    }
+    const TargetDesc& d = g_targets[rec->target];
+
+    if (d.needsRealOrig) {
+        // Run the real call first so the body can pick the result up through its
+        // original-call adapter (which reuses the captured return value).
+        g_origExecute(method, args, ret);
+        bool prevValid = tls_retValid;
+        int64_t prevValue = tls_retValue;
+        tls_retValid = (ret != nullptr);
+        tls_retValue = (ret != nullptr) ? *reinterpret_cast<int64_t*>(ret) : 0;
+        RunBody(rec, args, ret);
+        tls_retValid = prevValid;
+        tls_retValue = prevValue;
+        return;
+    }
+
+    if (d.mode == Mode::Entry) {
+        RunBody(rec, args, nullptr);
+        g_origExecute(method, args, ret);
+    } else {
+        g_origExecute(method, args, ret);
+        bool prevValid = tls_retValid;
+        tls_retValid = (ret != nullptr);
+        tls_retValue = (ret != nullptr) ? *reinterpret_cast<int64_t*>(ret) : 0;
+        RunBody(rec, args, ret);
+        tls_retValid = prevValid;
+    }
+}
+
+// ---------------------------------------------------------------------------
+//  Outgoing calls
+// ---------------------------------------------------------------------------
+// Compare a MethodInfo's name without requiring the whole 200-byte window
+// PlausibleName() insists on: the metadata blob is byte-packed, so a name can
+// end near the end of a committed region and still be perfectly valid.  Only
+// the bytes we actually compare have to be readable.
+static bool MethodNameIs(const void* method, const char* want) {
+    const char* mn = MethodName(method);
+    auto v = reinterpret_cast<uintptr_t>(mn);
+    if (v < 0x10000 || v >= 0x00007FFFFFFFFFFF) return false;
+    if (!ReadableRange(mn, 64)) return false;
+    return std::strcmp(mn, want) == 0;   // reads at most strlen(want)+1 bytes
+}
+
+static void* FindMethodInClass(void* klassPtr, const char* methodName) {
+    if (!PlausiblePtr(klassPtr)) return nullptr;
+    auto* klass = reinterpret_cast<Il2CppClass*>(klassPtr);
+    for (int depth = 0; depth < 32 && klass; depth++) {
+        auto* methods = reinterpret_cast<void**>(klass->_1.methods);
+        uint32_t count = klass->_2.method_count;
+        // Scan the WHOLE array.  `method_count` over-reports for hotfix classes
+        // the same way `field_count` does, but `methods` itself is allocated with
+        // `method_count` slots (Class::Init calloc's it), so the tail is a run of
+        // nulls, not out of bounds.  Stopping at the first null / unreadable /
+        // odd-named entry silently hides every method declared after it — which
+        // is exactly how the giant data-controller classes (HotfixDataController:
+        // ~3.5k methods, GetOnceAdditionalAttribute sits past 65% of them) lost
+        // their lookups.
+        for (uint32_t i = 0; methods && i < count; i++) {
+            // The array itself is method_count slots (Class::Init calloc'd it),
+            // but guard the dereference against an over-reported count whose
+            // backing block ends early — a read past the region would fault.
+            if (!ReadableRange(methods + i, sizeof(void*))) break;
+            void* m = methods[i];
+            if (!m || (reinterpret_cast<uintptr_t>(m) & 7)) continue;
+            if (!ReadableRange(m, 0x60)) continue;
+            if (MethodNameIs(m, methodName)) return m;
+        }
+        klass = klass->_1.parent;
+    }
+    return nullptr;
+}
+
+// One-shot explanation of a failed lookup, so a name mismatch or an incomplete
+// class method array is visible instead of the feature silently going quiet.
+static void LogMethodMiss(void* klassPtr, const char* methodName) {
+    if (!PlausiblePtr(klassPtr)) {
+        log("[hybrid] method lookup: %s — class pointer unusable", methodName);
+        return;
+    }
+    auto* klass = reinterpret_cast<Il2CppClass*>(klassPtr);
+    const char* kn = PlausibleName(klass->_1.name) ? klass->_1.name : "?";
+    log("[hybrid] method lookup: %s.%s not found (class reports %u methods)",
+        kn, methodName, (unsigned)klass->_2.method_count);
+}
+
+// Record name→MethodInfo for every interpreted method the hooks see.  Not all
+// hotfix classes expose their full metadata method list through
+// `klass->_1.methods` (2.0.0's HotfixDataController registers 935 entries while
+// the class declares ~3.5k), so a class-array scan alone can miss real methods.
+// The interpreter hands us the MethodInfo of everything that actually runs —
+// which is exactly the set we call back into (GetOnceAdditionalAttribute &
+// co. run from the game's own AddAttr).
+static void LearnMethodName(void* klass, const char* methodName, void* method) {
+    if (!klass || !method || !methodName) return;
+    const char* kn = reinterpret_cast<Il2CppClass*>(klass)->_1.name;
+    if (!PlausibleName(kn)) return;
+    std::lock_guard<std::mutex> lk(g_klassMutex);
+    std::string key(kn);
+    key += '.';
+    key += methodName;
+    g_methodByName.emplace(std::move(key), method);
+    std::string bare("#");
+    bare += methodName;
+    g_methodByName.emplace(std::move(bare), method);
+}
+
+// Fallback lookup in the executed-method table.  Verifies the declaring class
+// name so a same-named method on another class can never be picked.
+static void* LookupLearnedMethod(const char* klassName, const char* methodName) {
+    std::string bare("#");
+    bare += methodName;
+    void* m = nullptr;
+    {
+        std::lock_guard<std::mutex> lk(g_klassMutex);
+        auto it = g_methodByName.find(bare);
+        if (it == g_methodByName.end()) return nullptr;
+        m = it->second;
+    }
+    void* mk = MethodKlass(m);
+    if (!PlausiblePtr(mk)) return nullptr;
+    const char* kn = reinterpret_cast<Il2CppClass*>(mk)->_1.name;
+    if (!kn || std::strcmp(kn, klassName) != 0) return nullptr;
+    return m;
+}
+
+static void* ResolveGameMethod(const char* klassName, const char* methodName) {
+    std::string key;
+    key.reserve(64);
+    key += klassName;
+    key += '.';
+    key += methodName;
+    {
+        std::lock_guard<std::mutex> lk(g_klassMutex);
+        auto it = g_methodByName.find(key);
+        if (it != g_methodByName.end()) return it->second;
+    }
+
+    void* klass = nullptr;
+    {
+        std::lock_guard<std::mutex> lk(g_klassMutex);
+        auto it = g_klassByName.find(klassName);
+        if (it != g_klassByName.end()) klass = it->second;
+    }
+    if (!klass) {
+        static std::mutex m;
+        static std::unordered_set<std::string> seen;
+        bool first;
+        { std::lock_guard<std::mutex> lk(m); first = seen.insert(key).second; }
+        if (first) log("[hybrid] method lookup: class '%s' not learned yet (%s)", klassName, methodName);
+        return nullptr;
+    }
+
+    void* m = FindMethodInClass(klass, methodName);
+    if (!m) {
+        m = LookupLearnedMethod(klassName, methodName);
+    }
+    if (!m) {
+        static std::mutex m2;
+        static std::unordered_set<std::string> seen;
+        bool first;
+        { std::lock_guard<std::mutex> lk(m2); first = seen.insert(key).second; }
+        if (first) LogMethodMiss(klass, methodName);
+        return nullptr;
+    }
+
+    std::lock_guard<std::mutex> lk(g_klassMutex);
+    g_methodByName.emplace(std::move(key), m);
+    return m;
+}
+
+// Same lookup, but the class comes straight from the live object, so no class
+// table / name spelling is involved.  Cached under the class's own runtime name.
+static void* ResolveMethodOnObject(void* obj, const char* methodName) {
+    if (!PlausiblePtr(obj)) return nullptr;
+    void* klass = *reinterpret_cast<void**>(obj);          // Il2CppObject::klass
+    if (!PlausiblePtr(klass)) return nullptr;
+    const char* kn = reinterpret_cast<Il2CppClass*>(klass)->_1.name;
+    if (!PlausibleName(kn)) return nullptr;
+
+    std::string key;
+    key.reserve(64);
+    key += kn;
+    key += '.';
+    key += methodName;
+    {
+        std::lock_guard<std::mutex> lk(g_klassMutex);
+        auto it = g_methodByName.find(key);
+        if (it != g_methodByName.end()) return it->second;
+    }
+
+    void* m = FindMethodInClass(klass, methodName);
+    if (!m) {
+        m = LookupLearnedMethod(kn, methodName);
+    }
+    if (!m) {
+        static std::mutex m2;
+        static std::unordered_set<std::string> seen;
+        bool first;
+        { std::lock_guard<std::mutex> lk(m2); first = seen.insert(key).second; }
+        if (first) LogMethodMiss(klass, methodName);
+        return nullptr;
+    }
+
+    std::lock_guard<std::mutex> lk(g_klassMutex);
+    g_methodByName.emplace(std::move(key), m);
+    return m;
+}
+
+int64_t DupCall(const uint64_t* argValues, int argCount) {
+    const void* method = tls_curMethod;
+    if (!method || !g_origExecute || argCount <= 0 || argCount > kMaxArgs) return 0;
+    CacheRec* rec = Lookup(method);
+    if (!rec || rec->target < 0 || rec->argCount != argCount) return 0;
+    StackObject slots[kMaxSlots];
+    std::memset(slots, 0, sizeof(slots));
+    for (int i = 0; i < argCount; i++)
+        slots[rec->off[i]].v = argValues[i];
+    uint64_t ret = 0;
+    g_origExecute(method, slots, &ret);
+    return (int64_t)ret;
+}
+
+// Shared tail: build the argument slots from the metadata layout and invoke.
+// `retStackObjectSize` is in StackObject units (HybridCLR's GetTypeArgDesc:
+// reference returns are 1), so the 4-slot cap only rejects oversized value-type
+// returns.  Previously this refused silently, which hid the failure.
+static uint64_t InvokeOnMethod(void* method, const char* klassName, const char* methodName,
+                               const uint64_t* args, int argCount, const char* dbgName) {
+    int off[kMaxArgs];
+    int count = 0, slots = 0;
+    if (!ComputeArgOffsets(method, off, &count, &slots) || count != argCount) {
+        static std::atomic<int> warn{0};
+        if (warn.fetch_add(1) < 8)
+            log("[hybrid] %s: cannot build arguments for %s.%s (metadata %d, call %d)",
+                dbgName, klassName, methodName, count, argCount);
+        return 0;
+    }
+    ImiInfo imi{};
+    if (!ReadImi(method, &imi) || imi.retStackObjectSize > 4) {
+        static std::atomic<int> warn{0};
+        if (warn.fetch_add(1) < 8)
+            log("[hybrid] %s: unusable return layout for %s.%s (%u slots)",
+                dbgName, klassName, methodName, (unsigned)imi.retStackObjectSize);
+        return 0;
+    }
+
+    StackObject buf[kMaxSlots];
+    std::memset(buf, 0, sizeof(buf));
+    for (int i = 0; i < argCount; i++)
+        buf[off[i]].v = args[i];
+
+    uint64_t ret = 0;
+    g_origExecute(method, buf, &ret);
+    return ret;
+}
+
+uint64_t CallGameMethod(const char* klassName, const char* methodName,
+                        const uint64_t* args, int argCount, const char* dbgName) {
+    if (!g_origExecute || !klassName) return 0;
+    void* method = ResolveGameMethod(klassName, methodName);
+    if (!method) return 0;                       // logged once by the resolver
+    return InvokeOnMethod(method, klassName, methodName, args, argCount, dbgName);
+}
+
+uint64_t CallGameMethodOnObject(void* obj, const char* methodName,
+                                const uint64_t* args, int argCount, const char* dbgName) {
+    if (!g_origExecute || !obj || !methodName) return 0;
+    void* method = ResolveMethodOnObject(obj, methodName);
+    if (!method) return 0;                       // logged once by the resolver
+    const char* kn = reinterpret_cast<Il2CppClass*>(*reinterpret_cast<void**>(obj))->_1.name;
+    return InvokeOnMethod(method, kn, methodName, args, argCount, dbgName);
+}
+
+// ---------------------------------------------------------------------------
+//  Install
+// ---------------------------------------------------------------------------
+bool InstallAll(const TargetDesc* targets, int count) {
+    if (g_installed) return true;
+    if (!g_detected) return false;
+
+    g_targets = targets;
+    g_targetCount = count;
+
+    MH_STATUS s = MH_CreateHook(reinterpret_cast<void*>(g_execAddr),
+                                reinterpret_cast<void*>(&Hook_Execute),
+                                reinterpret_cast<void**>(&g_origExecute));
+    if (s != MH_OK) {
+        log("[hybrid] MH_CreateHook(Interpreter::Execute) failed: %d", (int)s);
+        return false;
+    }
+    s = MH_EnableHook(reinterpret_cast<void*>(g_execAddr));
+    if (s != MH_OK) {
+        log("[hybrid] MH_EnableHook(Interpreter::Execute) failed: %d", (int)s);
+        return false;
+    }
+    log("[hybrid] hooked Interpreter::Execute @ 0x%llX", (unsigned long long)g_execAddr);
+
+    if (g_enterAddr) {
+        s = MH_CreateHook(reinterpret_cast<void*>(g_enterAddr),
+                          reinterpret_cast<void*>(&Hook_EnterFrame),
+                          reinterpret_cast<void**>(&g_origEnterFrame));
+        if (s == MH_OK) s = MH_EnableHook(reinterpret_cast<void*>(g_enterAddr));
+        if (s != MH_OK) {
+            log("[hybrid] MH_CreateHook(EnterFrameFromInterpreter) failed: %d — "
+                "interpreted->interpreted hooks disabled", (int)s);
+            g_enterAddr = 0;
+        } else {
+            log("[hybrid] hooked EnterFrameFromInterpreter @ 0x%llX", (unsigned long long)g_enterAddr);
+        }
+    }
+
+    g_installed = true;
+    log("[hybrid] attach layer active (%d targets registered)", g_targetCount);
+    return true;
+}
+
+bool Active() { return g_installed && g_Cfg.hotfix_hooks; }
+
+} // namespace hybrid

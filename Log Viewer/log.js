@@ -202,7 +202,7 @@ function attrDictRows(list) {
         const stName = a.subType != null ? effectSubTypeName(a.subType) : '';
         const raw = a.value;
         const val = raw != null ? (Math.abs(raw) < 15 ? (raw*100).toFixed(2)+'%' : raw) : '';
-        return `<tr><td>${esc(a.name || String(a.attrId))}</td><td>${a.stacks}</td><td>${esc(atName)}</td><td>${esc(stName)}</td><td>${val}</td><td>${a.valueConfigId}</td><td>${a.attrId}</td></tr>`;
+        return `<tr><td>${esc(a.name || String(a.attrId))}</td><td>${a.stacks}</td><td>${esc(atName)}</td><td>${esc(stName)}</td><td>${val}</td><td>${a.valueConfigId != null ? a.valueConfigId : '—'}</td><td>${a.attrId}</td></tr>`;
     }).join('') || '';
 }
 

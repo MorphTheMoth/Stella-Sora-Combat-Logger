@@ -986,6 +986,10 @@ function buildHitTable(jHit, jSkill, jLang, jChar, jPotential, jItemRoot, jWord,
                 t: 'hit',
                 lt: hitEntry.levelTypeData || 0,
                 ld: hitEntry.LevelData || 0,
+                // DamageBonusType = the hit's base effectAttributeType
+                // (1 Atk / 2 Def / 3 Max Hp). Logs written before the DLL
+                // recorded HitConfig.damageBonusType resolve it from here.
+                db: Number(hitEntry.DamageBonusType) || 0,
                 sp: (hitEntry.SkillPercentAmend || []).map(v => parseInt(v, 10) || 0),
                 sa: (hitEntry.SkillAbsAmend || []).map(v => parseInt(v, 10) || 0),
                 tp: (hitEntry.TalentPercentAmend || []).map(v => parseInt(v, 10) || 0),
@@ -1781,11 +1785,12 @@ function buildSkillTable(jChar, jSkill, jSkillLang) {
 }
 
 // ─── Character base-stat ladder (character.json `stat`) ────────────────────
-// charId -> [{ l, atk }] in ladder order. The ladder's index IS the upgrade
+// charId -> [{ l, atk, hp }] in ladder order. The ladder's index IS the upgrade
 // axis: segments [10,11,11,11,11,11,11,11,12] = upgrade tiers 0..8 (the
 // boundary levels repeat with ~×1.2 stats, e.g. Lv 10: 358 → 430 —
-// Attribute.json GroupId <charId>, Id = <charId><UU><LLL>). Only Atk feeds
-// the damage formula (Hp is unused there, the rest is constant per char).
+// Attribute.json GroupId <charId>, Id = <charId><UU><LLL>). Atk feeds the
+// damage formula for ATK-based hits; HP feeds it for hits whose
+// HitDamage.DamageBonusType is MAXHP (3) — currently 162's whole kit.
 function buildCharStatLadder(jChar) {
     charStatLadder.clear();
     if (!jChar) return;
@@ -1797,7 +1802,7 @@ function buildCharStatLadder(jChar) {
         for (const s of stats) {
             const atk = Number(s.ATK);
             if (!Number.isFinite(atk)) continue;
-            ladder.push({ l: Number(s.Level) || 0, atk });
+            ladder.push({ l: Number(s.Level) || 0, atk, hp: Number(s.HP) });
         }
         if (ladder.length > 1) charStatLadder.set(cid, ladder);
     }
