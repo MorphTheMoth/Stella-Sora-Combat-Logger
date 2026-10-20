@@ -16,7 +16,13 @@ scripts/
 ./rerun.sh
 ```
 
-This decrypts `Hotfix.dll` and decompiles with `ilspycmd` against the `DummyDll` reference stubs. Output lands in `scripts/out/`.
+This decrypts `Hotfix.dll` and decompiles with `ilspycmd` against the `DummyDll` reference stubs from `decompilation/il2cppDumper_out` (= `decompilation/current/dumper/DummyDll`). Output lands in `scripts/out/`.
+
+If the stubs for the current build live somewhere else (e.g. the newest version folder before `decompilation/current` is re-pointed), pass them explicitly:
+
+```bash
+./rerun.sh --dummy ../../../decompilation/versions/2.0.0/dumper/DummyDll -o out/2.0.0
+```
 
 ## First attempt for a new Hotfix.dll
 
@@ -30,7 +36,10 @@ The 256-byte decryption key is read from `Hotfix.dll` itself. The stable part of
 
 ## After a game update (new GameAssembly.dll)
 
-If the first attempt fails, the Obfuz VM's opcode table may have become stale after a `GameAssembly.dll` update, and the key check (`"Hello, HybridCLR"`) will fail. Reread the relevant opcode-table lookup in `decompiled.c` and re-extract it:
+Two independent things can go stale:
+
+1. **The ILSpy reference stubs.** If `GameAssembly.dll` changed, the `DummyDll/` set must be regenerated from the new build (decrypt metadata + Il2CppDumper, `docs/ghidra.md` steps 0–1). Decompiling against the old stubs still works, but every type whose layout/API changed degrades to `Unknown result type`. 2.0.0 needed this (`be9c5f631fadbadf14a524c0a4aec4c2`); 1.15.1–1.16.1 did not (binary byte-identical to 1.15).
+2. **The Obfuz VM opcode table.** If the first attempt fails, the opcode table may have become stale, and the key check (`"Hello, HybridCLR"`) will fail. 2.0.0's key check still passed with the Jul 21 table, so this is only needed when it fails. Reread the relevant opcode-table lookup in `decompiled.c` and re-extract it:
 
 1. **Find the jump-table RVA in the new `decompilation/decompiled.c`** (or the ghidra/IDA project used to make it):
    - grep for `Hello, HybridCLR` → the `LoadCDPHHeader` function (the one that does the 16-byte key check). It calls the **VM dispatcher** (`DecryptBlock`) to decrypt that check.
