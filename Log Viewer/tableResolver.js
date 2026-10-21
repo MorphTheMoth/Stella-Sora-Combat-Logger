@@ -249,6 +249,19 @@ const subNoteEffectIdByNote = new Map();
 //   gemAttrValueById: CharGemAttrValue id -> {attrType, first, second, value}
 //   potentialById:    potential id  -> Potential.json row (MaxLevel/EffectGroupId/Build)
 const gemAttrValueById = new Map();
+
+const GEM_EFFECT_IDS = [
+    81011, 81012, 81013, 81014,   // Emblem 70, line 1, rolls +1..+4
+    81021, 81022, 81023, 81024,   // Emblem 70, line 2
+    81031, 81032, 81033, 81034,   // Emblem 70, line 3
+    82011, 82012, 82013, 82014,   // Emblem 80, line 1
+    82021, 82022, 82023, 82024,   // Emblem 80, line 2
+    82031, 82032, 82033, 82034,   // Emblem 80, line 3
+    83011, 83012, 83013, 83014,   // Emblem 90, line 1
+    83021, 83022, 83023, 83024,   // Emblem 90, line 2
+    83031, 83032, 83033, 83034,   // Emblem 90, line 3
+];
+const gemEffectIds = new Set(GEM_EFFECT_IDS);
 const potentialById = new Map();
 // potential id -> effect-id family base (Effect.json LevelData link; the
 // effect-id family is NOT always <EffectGroupId> — e.g. Nazuka's potentials
@@ -719,7 +732,13 @@ function enrichBuffList(buffList) {
 
 function enrichEffectList(effectList) {
     if (!effectList?.effects) return;
-    for (const e of effectList.effects) {
+
+    const effects = effectList.effects;
+    let kept = 0;
+    for (let i = 0; i < effects.length; i++) {
+        const e = effects[i];
+        if (gemEffectIds.has(Number(e.configId))) continue;
+        effects[kept++] = e;
         const ei = effectTable.get(e.configId);
         if (ei) {
             e.name = (ei.charName && ei.charName !== '?')
@@ -745,6 +764,7 @@ function enrichEffectList(effectList) {
             });
         }
     }
+    effects.length = kept;
 }
 
 function enrichAttrList(attrs) {
