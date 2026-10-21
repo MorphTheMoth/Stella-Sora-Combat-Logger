@@ -1666,9 +1666,15 @@ function buildEffectTable(dataFiles) {
         [13295011,  'Minova', 'Astral Hex'],
         [15503011,  'Shia', 'Moongaze Stacks'],
         [13900003,  'Allie', 'Quick Sweep'],
+        // Firstlight Noya (162) normal-attack additional attribute. Source is
+        // the skill that grants it (Skill.json 16210000 Param6/7), so the
+        // Effect Impact groups it under Noya's skill rows instead of
+        // 'Unknown' (enrichAttrDictList / dcCollectAttrFixEffects copy the
+        // effectTable source onto the Attr Dict row).
+        [16290001,  'Firstlight Noya', 'Honed Sword Art', 3, 'Firstlight Noya Skills'],
     ];
-    for (const [id, cname, label] of hardcoded)
-        effectTable.set(id, { charName: cname, label, levelTypeData: -1, source: 'Unknown' });
+    for (const [id, cname, label, ldt, src] of hardcoded)
+        effectTable.set(id, { charName: cname, label, levelTypeData: ldt ?? -1, source: src ?? 'Unknown' });
 
     // Buff → primary stat: BuffValue.json lists the effect configIds a buff
     // applies; take the first one whose EffectValue entry carries an attr
