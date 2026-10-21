@@ -1236,6 +1236,14 @@ function buildHitTable(jHit, jSkill, jLang, jChar, jPotential, jItemRoot, jWord,
         // instance (hitDamageIdMapping_P5, Clothesline Stance 513905).
         [139543102, 'Allie', 'Mirror Blade', 1, 'Potentials'],
         [139543302, 'Allie', 'Mirror Blade', 1, 'Potentials'],
+        // Firefly: P26 "Stellar Crash" (perk 511526) Avalanche: Flying Blade
+        // boom. The base bullet (Bullet_11501_Support_Skill_P26_Boom) fires
+        // 115322601, which Potential.json 511526 Param2
+        // ("HitDamage,DamageNum,115322601") already resolves to Stellar Crash
+        // #1. When the P22 perk 511522 "Radiance Blade: Firefly" is active,
+        // Hotfix Config_Support.OnPlayerDamaged swaps the bullet to
+        // Bullet_11501_Support_Skill_P26P21_Boom_Strengthen
+        [115322602, 'Firefly', 'Stellar Crash', 2, 'Potentials'],
     ];
     for (const [hitId, charName, skillTitle, hitNum, src] of hardcoded)
         hitTable.set(hitId, { charName, skillTitle, hitNum, source: `${charName} ${src}` });
