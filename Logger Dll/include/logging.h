@@ -211,6 +211,10 @@ void BuildHitJson(
 void BuildSkillCastJson(int32_t skillId);
 void WriteLevelMapEntry(int32_t configId, int32_t levelTypeData, int32_t levelData, const json& allValueConfigIds);
 void WriteHitDamageLevelMapEntry(const Nova_Client_HitDamage_o* hitDamageConfig);
+// Flush the in-memory level map (new ids seen since the last flush) to
+// levelMap.txt.  Called by the background flusher thread every 2 s and from
+// DllMain on unload, so the file is always complete when the viewer reads it.
+void FlushLevelMapFile();
 void BuildResetJson();
 
 // Utility

@@ -16,6 +16,7 @@
 #include <vector>
 #include <algorithm>
 #include <atomic>
+#include <memory>
 #include <string>
 
 
@@ -42,6 +43,14 @@ static std::atomic<int64_t>   g_LastLogicTickWallMs{0};
 static std::string                  g_LevelMapPath;
 static std::unordered_set<int32_t>  g_LevelMapKnown;
 static std::unordered_set<int32_t>  g_HitLevelMapKnown;
+// The file is one JSON array, appended once per new id.  Parsing + rewriting it
+// per new id cost ~4.4 ms inside the damage calc (and produced a 155 ms/hit
+// stall in the baseline), so the live array is kept here and flushed by a
+// background thread.  `known` is only touched on the game thread; the JSON
+// array is shared with the flusher under g_LevelMapMutex.
+static std::mutex   g_LevelMapMutex;
+static json         g_LevelMapJson = json::array();
+static bool         g_LevelMapDirty = false;
 
 // =============================================================================
 //  GAME TIME
@@ -174,39 +183,57 @@ static json ReadRepeatedFieldInt(Google_Protobuf_Collections_RepeatedField_int__
     return arr;
 }
 
-// Shared append: read the JSON array file, push `entry`, rewrite.
-static void AppendLevelMapEntry(const json& entry, int32_t id, std::unordered_set<int32_t>& known) {
+// Shared append: keep the entry in the in-memory array; the flusher thread
+// rewrites the file from it (same JSON-array format the viewer already reads).
+static void AppendLevelMapEntry(json entry, int32_t id, std::unordered_set<int32_t>& known) {
     if (id <= 0) return;
     if (known.count(id)) return;
     known.insert(id);
 
-    // Read existing JSON array from file
-    json arr = json::array();
+    std::lock_guard<std::mutex> lk(g_LevelMapMutex);
+    g_LevelMapJson.push_back(std::move(entry));
+    g_LevelMapDirty = true;
+}
+
+// Called by LevelMapFlushThread every 2 s, and once from DllMain on unload.
+// Dumps under the lock (the in-memory array is small) and writes outside it so
+// the game thread is not blocked by disk latency.
+void FlushLevelMapFile() {
     {
-        FILE* f = fopen(g_LevelMapPath.c_str(), "r");
-        if (f) {
-            fseek(f, 0, SEEK_END);
-            long sz = ftell(f);
-            if (sz > 0) {
-                rewind(f);
-                std::string buf(sz, '\0');
-                size_t read = fread(&buf[0], 1, sz, f);
-                buf.resize(read);
-                try { arr = json::parse(buf); } catch (...) {}
-            }
-            fclose(f);
-        }
+        std::lock_guard<std::mutex> lk(g_LevelMapMutex);
+        if (!g_LevelMapDirty) return;
     }
 
-    // Append new entry
-    arr.push_back(entry);
-
-    // Rewrite file
+    std::string out;
+    {
+        std::lock_guard<std::mutex> lk(g_LevelMapMutex);
+        if (!g_LevelMapDirty) return;          // another flusher won the race
+        out = g_LevelMapJson.dump();
+        g_LevelMapDirty = false;
+    }
+    if (g_LevelMapPath.empty()) return;
     FILE* f = fopen(g_LevelMapPath.c_str(), "w");
-    if (f) {
-        fprintf(f, "%s", arr.dump().c_str());
-        fclose(f);
+    if (!f) return;
+    fwrite(out.data(), 1, out.size(), f);
+    fclose(f);
+}
+
+static DWORD WINAPI LevelMapFlushThread(LPVOID) {
+    for (;;) {
+        Sleep(2000);
+        FlushLevelMapFile();
     }
+    return 0;
+}
+
+// Defined with the effect-list builder below; forward-declared for the helper.
+static json EnumerateValueConfigIds(const std::unordered_set<int32_t>& keys, int32_t baseId);
+
+static void WriteLevelMapEntryIfNew(int32_t configId, int32_t levelTypeData, int32_t levelData,
+                                    const std::unordered_set<int32_t>& keys) {
+    if (configId <= 0 || g_LevelMapKnown.count(configId)) return;
+    WriteLevelMapEntry(configId, levelTypeData, levelData,
+                       EnumerateValueConfigIds(keys, configId));
 }
 
 void WriteLevelMapEntry(int32_t configId, int32_t levelTypeData, int32_t levelData, const json& allValueConfigIds) {
@@ -217,7 +244,7 @@ void WriteLevelMapEntry(int32_t configId, int32_t levelTypeData, int32_t levelDa
     entry["lt"]  = levelTypeData;
     entry["ld"]  = levelData;
     entry["vc"]  = allValueConfigIds;
-    AppendLevelMapEntry(entry, configId, g_LevelMapKnown);
+    AppendLevelMapEntry(std::move(entry), configId, g_LevelMapKnown);
 }
 
 // Capture a hit config's per-level value arrays into the level map, once per
@@ -229,6 +256,7 @@ void WriteHitDamageLevelMapEntry(const Nova_Client_HitDamage_o* hitDamageConfig)
     if (!hitDamageConfig) return;
     const auto& f = hitDamageConfig->fields;
     if (f.id_ <= 0) return;
+    if (g_HitLevelMapKnown.count(f.id_)) return;   // already captured in an earlier hit
 
     json entry;
     entry["id"] = f.id_;
@@ -241,7 +269,7 @@ void WriteHitDamageLevelMapEntry(const Nova_Client_HitDamage_o* hitDamageConfig)
     entry["ta"] = ReadRepeatedFieldInt(f.talentAbsAmend_);
     entry["ap"] = ReadRepeatedFieldInt(f.additionalPercent_);
     entry["pi"] = ReadRepeatedFieldInt(f.perkIntensity_);
-    AppendLevelMapEntry(entry, f.id_, g_HitLevelMapKnown);
+    AppendLevelMapEntry(std::move(entry), f.id_, g_HitLevelMapKnown);
 }
 
 // =============================================================================
@@ -438,10 +466,10 @@ json logAdventureActorAttrsJson(AttributeList_o* attrList, const std::vector<Ele
         if (!nearZero(base_))   attr["base"]   = Round(base_, 4);
         if (!nearZero(pct))     attr["pct"]    = Round(pct, 4);
         if (!nearZero(abs_))    attr["abs"]    = Round(abs_, 4);
-        attrs.push_back(attr);
+        attrs.push_back(std::move(attr));
     }
 
-    j["attrs"] = attrs;
+    j["attrs"] = std::move(attrs);
     return j;
 }
 
@@ -470,10 +498,10 @@ json logAdventureActorSpecialAttrsJson(AdventureActor_o* actor) {
         sattr["id"]      = i;
         sattr["current"] = Round(current, 6);
         sattr["maxType"] = max_type;
-        sattrs.push_back(sattr);
+        sattrs.push_back(std::move(sattr));
     }
 
-    j["specialAttrs"] = sattrs;
+    j["specialAttrs"] = std::move(sattrs);
     return j;
 }
 
@@ -642,10 +670,10 @@ json BuildBuffListJson(AdventureActor_o* fromActor) {
             buff["stacks"]   = be->fields.buffNum;
             buff["totalTime"] = Round((double)be->fields.configBuffTime.fields._serializedValue / FP_ONE, 2);
             buff["leftTime"]  = Round((double)be->fields.buffLeftTime.fields._serializedValue / FP_ONE, 2);
-            buffs.push_back(buff);
+            buffs.push_back(std::move(buff));
         }
     }
-    j["buffs"] = buffs;
+    j["buffs"] = std::move(buffs);
     return j;
 }
 
@@ -678,6 +706,47 @@ static std::unordered_set<int32_t> CollectDictKeys(void* dictPtr) {
     return keys;
 }
 
+// The two GDC tables (EffectValue_Map ~16k entries, OnceAdditionalAttributeValue_Map
+// ~3.7k) are static for the session, but CollectDictKeys costs ~0.5 ms and ran
+// twice per hit (attacker + defender) although only the EnumerateValueConfigIds
+// lookups use the result.  Cache the key set per (map pointer, Dictionary._count)
+// so a repopulated/replaced table rebuilds once.
+struct DictKeyEntry {
+    void* map;
+    int32_t count;
+    std::unordered_set<int32_t> keys;
+};
+
+static std::mutex g_DictKeyMutex;
+static std::vector<std::unique_ptr<DictKeyEntry>> g_DictKeyEntries;
+
+static const std::unordered_set<int32_t>& CachedDictKeys(void* map) {
+    static const std::unordered_set<int32_t> kEmpty;
+    if (!map) return kEmpty;
+
+    // Dictionary._count is at +0x20 (same layout CollectDictKeys reads).
+    const int32_t count = *reinterpret_cast<int32_t*>(
+        reinterpret_cast<uintptr_t>(map) + 0x20);
+    {
+        std::lock_guard<std::mutex> lk(g_DictKeyMutex);
+        for (const auto& e : g_DictKeyEntries)
+            if (e->map == map && e->count == count) return e->keys;
+    }
+
+    std::unordered_set<int32_t> keys = CollectDictKeys(map);   // slow: not under the lock
+
+    std::lock_guard<std::mutex> lk(g_DictKeyMutex);
+    for (const auto& e : g_DictKeyEntries)                     // lost the race
+        if (e->map == map && e->count == count) return e->keys;
+    auto e = std::make_unique<DictKeyEntry>();
+    e->map = map;
+    e->count = count;
+    e->keys = std::move(keys);
+    const std::unordered_set<int32_t>* out = &e->keys;         // unique_ptr: stable
+    g_DictKeyEntries.push_back(std::move(e));
+    return *out;
+}
+
 // Enumerate the EffectValue ids for `baseId` at each level (ids advance by +10
 // per level) as [{"l":level,"v":valueConfigId}, ...]. Stops after the first gap
 // past the first hit. Empty input / baseId yields an empty array.
@@ -692,7 +761,7 @@ static json EnumerateValueConfigIds(const std::unordered_set<int32_t>& keys, int
             json ve;
             ve["l"] = lvl;
             ve["v"] = vid;
-            options.push_back(ve);
+            options.push_back(std::move(ve));
         } else if (anyFound) {
             break;
         }
@@ -719,7 +788,7 @@ static bool AppendEffectRows(json& out, AdventureEffect_o* effect, int32_t baseC
         row["damage"] = static_cast<int64_t>(parent->fields.Damage);
         if (parent->fields._owner)
             row["owner"] = adventureActorId(parent->fields._owner);
-        out.push_back(row);
+        out.push_back(std::move(row));
         any = true;
     }
     return any;
@@ -737,13 +806,10 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage,
     auto* effectsDict = effectManage->fields.effectsDict;
     if (!effectsDict) return j;
 
-    // Pre-build key set from GDC's EffectValue_Map for fast level-enumeration lookups
-    std::unordered_set<int32_t> effectValueKeys;
+    // Key set of GDC's EffectValue_Map, cached for the session (CachedDictKeys).
     // The captured object is a HotfixDataController in 2.0.0; resolve the map by
     // name on its actual class instead of using the 1.15 GameDataController offset.
-    if (void* map = ReadObjectFieldPtr(gdc, "EffectValue_Map")) {
-        effectValueKeys = CollectDictKeys(map);
-    }
+    const auto& effectValueKeys = CachedDictKeys(ReadObjectFieldPtr(gdc, "EffectValue_Map"));
 
     auto* entriesArr = effectsDict->fields._entries;
     int   slotCount  = effectsDict->fields._count;
@@ -796,8 +862,8 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage,
                 je["fromOwnerSnapshot"] = true;
                 if (!e.ownerId.empty())
                     je["owner"] = e.ownerId;
-                WriteLevelMapEntry(e.configId, 0, 0, EnumerateValueConfigIds(effectValueKeys, e.configId));
-                effects.push_back(je);
+                WriteLevelMapEntryIfNew(e.configId, 0, 0, effectValueKeys);
+                effects.push_back(std::move(je));
             }
         }
     }
@@ -851,7 +917,7 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage,
                     }
                     int32_t ltd = effectCfg ? effectCfg->fields.levelTypeData_ : 0;
                     int32_t ld = effectCfg ? effectCfg->fields.levelData_ : 0;
-                    WriteLevelMapEntry(baseConfigId, ltd, ld, EnumerateValueConfigIds(effectValueKeys, baseConfigId));
+                    WriteLevelMapEntryIfNew(baseConfigId, ltd, ld, effectValueKeys);
                     if (AppendEffectRows(effects, effect, baseConfigId))
                         usedLive = true;
                     break;
@@ -869,11 +935,11 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage,
                 je["sourceType"] = info.sourceType;
                 je["damage"] = info.damage;
                 if (!info.ownerId.empty()) je["owner"] = info.ownerId;
-                WriteLevelMapEntry(info.configId, info.levelTypeData, info.levelData, EnumerateValueConfigIds(effectValueKeys, info.configId));
-                effects.push_back(je);
+                WriteLevelMapEntryIfNew(info.configId, info.levelTypeData, info.levelData, effectValueKeys);
+                effects.push_back(std::move(je));
             }
         }
-        j["effects"] = effects;
+        j["effects"] = std::move(effects);
         return j;
     }
 
@@ -901,12 +967,12 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage,
             int32_t levelTypeData = effectCfg ? effectCfg->fields.levelTypeData_ : 0;
             int32_t levelData = effectCfg ? effectCfg->fields.levelData_ : 0;
 
-            WriteLevelMapEntry(baseConfigId, levelTypeData, levelData, EnumerateValueConfigIds(effectValueKeys, baseConfigId));
+            WriteLevelMapEntryIfNew(baseConfigId, levelTypeData, levelData, effectValueKeys);
             AppendEffectRows(effects, effect, baseConfigId);
         }
     }
 
-    j["effects"] = effects;
+    j["effects"] = std::move(effects);
 
 
     auto* timeTrigList = effectManage->fields._timeTriggerEffects;
@@ -929,11 +995,11 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage,
                 te["configId"]   = cfgPtr ? cfgPtr->fields.id_ : 0;
                 te["sourceType"] = effect->fields.sourceType;
                 te["effectType"] = effect->fields._effectType;
-                timeTrig.push_back(te);
+                timeTrig.push_back(std::move(te));
             }
         }
     }
-    j["timeTriggerEffects"] = timeTrig;
+    j["timeTriggerEffects"] = std::move(timeTrig);
 
 
     return j;
@@ -959,11 +1025,8 @@ json BuildAdditionalAttrDictJson(
     int32_t capacity = static_cast<int32_t>(entryArr->max_length);
     if (capacity <= 0 || capacity > 4096) return arr;
 
-    // Pre-build key set from GDC's OnceAdditionalAttributeValue_Map
-    std::unordered_set<int32_t> attrValueKeys;
-    if (void* map = ReadObjectFieldPtr(gdc, "OnceAdditionalAttributeValue_Map")) {
-        attrValueKeys = CollectDictKeys(map);
-    }
+    // Key set of GDC's OnceAdditionalAttributeValue_Map (cached, see CachedDictKeys).
+    const auto& attrValueKeys = CachedDictKeys(ReadObjectFieldPtr(gdc, "OnceAdditionalAttributeValue_Map"));
 
     for (int32_t i = 0; i < capacity; ++i) {
         const auto& e = entryArr->m_Items[i].fields;
@@ -984,7 +1047,7 @@ json BuildAdditionalAttrDictJson(
                     fromActor, baseId, lt, ld, nullptr);
                 entry["valueConfigId"] = currentValueConfigId;
 
-                WriteLevelMapEntry(baseId, lt, ld, EnumerateValueConfigIds(attrValueKeys, baseId));
+                WriteLevelMapEntryIfNew(baseId, lt, ld, attrValueKeys);
 
                 // ── Applied check (data-driven, mirrors the game's gating) ──
                 // OnceAdditionalAttributeValue rows are element-keyed: a slot
@@ -1017,7 +1080,7 @@ json BuildAdditionalAttrDictJson(
             }
         }
 
-        arr.push_back(entry);
+        arr.push_back(std::move(entry));
     }
     return arr;
 }
@@ -1041,16 +1104,18 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
                   const std::unordered_set<int32_t>* appliedHittedAttrFix) {
     if (!g_Cfg.damage) return;
     // Build element/dmg dict overlays once — read-only, no game memory mutation
-    std::vector<ElemDictEntry> fromRawOverlay = ReadElemDict(fromAdditionalAttrInfo);
-    std::vector<ElemDictEntry> toRawOverlay   = ReadElemDict(toAdditionalAttrInfo);
-    // Filter to only include entries matching this hit's element/damage type
     std::vector<ElemDictEntry> fromOverlay, toOverlay;
-    if (hitDamageConfig) {
-        fromOverlay = FilterElemDictForHit(fromRawOverlay, hitDamageConfig->fields.elementType_, hitDamageConfig->fields.damageType_);
-        toOverlay   = FilterElemDictForHit(toRawOverlay,   hitDamageConfig->fields.elementType_, hitDamageConfig->fields.damageType_);
-    } else {
-        fromOverlay = std::move(fromRawOverlay);
-        toOverlay   = std::move(toRawOverlay);
+    {
+        std::vector<ElemDictEntry> fromRawOverlay = ReadElemDict(fromAdditionalAttrInfo);
+        std::vector<ElemDictEntry> toRawOverlay   = ReadElemDict(toAdditionalAttrInfo);
+        // Filter to only include entries matching this hit's element/damage type
+        if (hitDamageConfig) {
+            fromOverlay = FilterElemDictForHit(fromRawOverlay, hitDamageConfig->fields.elementType_, hitDamageConfig->fields.damageType_);
+            toOverlay   = FilterElemDictForHit(toRawOverlay,   hitDamageConfig->fields.elementType_, hitDamageConfig->fields.damageType_);
+        } else {
+            fromOverlay = std::move(fromRawOverlay);
+            toOverlay   = std::move(toRawOverlay);
+        }
     }
     json j;
     j["Type"] = "Hit";
@@ -1096,7 +1161,7 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
         if (f.hitdamageInfo_)
             hitCfg["info"] = Il2CppStringToStd(f.hitdamageInfo_);
 
-        j["HitConfig"] = hitCfg;
+        j["HitConfig"] = std::move(hitCfg);
     }
     j["HitType"] = g_CurrentDamageTypeTemp;
 
@@ -1131,7 +1196,7 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
     dmgParams["critRatio"]               = Round(toDbl(critRatio), 4);
     dmgParams["envAmendRatio"]           = Round(toDbl(envAmendRatio), 4);
     dmgParams["finalDamage"]             = finalDamage;
-    j["DamageParams"]                    = dmgParams;
+    j["DamageParams"]                    = std::move(dmgParams);
 
 
 
@@ -1139,48 +1204,48 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
     if (fromActor && g_Cfg.on_hit_attacker_stats) {
         json attackerStats = logAdventureActorAttrsJson(attackerInfo, fromOverlay.empty() ? nullptr : &fromOverlay);
         json attackerSpecial = logAdventureActorSpecialAttrsJson(fromActor);
-        j["AttackerStats"] = attackerStats;
+        j["AttackerStats"] = std::move(attackerStats);
         if (!attackerSpecial.empty())
-            j["AttackerSpecial"] = attackerSpecial;
+            j["AttackerSpecial"] = std::move(attackerSpecial);
     }
 
     if (toActor && g_Cfg.on_hit_defender_stats) {
         json defenderStats = logAdventureActorAttrsJson(defenderInfo, toOverlay.empty() ? nullptr : &toOverlay);
         json defenderSpecial = logAdventureActorSpecialAttrsJson(toActor);
-        j["DefenderStats"] = defenderStats;
+        j["DefenderStats"] = std::move(defenderStats);
         if (!defenderSpecial.empty())
-            j["DefenderSpecial"] = defenderSpecial;
+            j["DefenderSpecial"] = std::move(defenderSpecial);
     }
 
     if (fromActor && g_Cfg.on_hit_buff_list) {
         json attackerBuffs = BuildBuffListJson(fromActor);
-        j["AttackerBuffs"] = attackerBuffs;
+        j["AttackerBuffs"] = std::move(attackerBuffs);
     }
 
     if (toActor && g_Cfg.on_hit_buff_list) {
         json defenderBuffs = BuildBuffListJson(toActor);
-        j["DefenderBuffs"] = defenderBuffs;
+        j["DefenderBuffs"] = std::move(defenderBuffs);
     }
 
     if (fromActor && g_Cfg.on_hit_effect_list) {
         ActorEffectManage_o* effectManage = fromActor->fields.effectManage;
         json effects = BuildEffectListJson(effectManage, gdc, fromActor, effectSnapshot, appliedHittedAttrFix);
         if (!effects.empty())
-            j["AttackerEffects"] = effects;
+            j["AttackerEffects"] = std::move(effects);
     }
 
     if (toActor && g_Cfg.on_hit_effect_list) {
         ActorEffectManage_o* effectManage = toActor->fields.effectManage;
         json effects = BuildEffectListJson(effectManage, gdc, toActor, nullptr, appliedHittedAttrFix);
         if (!effects.empty())
-            j["DefenderEffects"] = effects;
+            j["DefenderEffects"] = std::move(effects);
     }
 
     if (g_Cfg.on_hit_attacker_attr_dict) {
         json attrDict = BuildAdditionalAttrDictJson(fromAttrDict, fromActor, gdc, GetOnceAttr, GetValueConfigId, GetAttrValue,
                                                     hitDamageConfig ? hitDamageConfig->fields.elementType_ : 0);
         if (!attrDict.empty())
-            j["AttackerAttrDict"] = attrDict;
+            j["AttackerAttrDict"] = std::move(attrDict);
     }
 
     if (g_Cfg.on_hit_defender_attr_dict) {
@@ -1191,7 +1256,7 @@ void BuildHitJson(AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_C
         json attrDict = BuildAdditionalAttrDictJson(toAttrDict, toActor, gdc, GetOnceAttr, GetValueConfigId, GetAttrValue,
                                                     hitDamageConfig ? hitDamageConfig->fields.elementType_ : 0);
         if (!attrDict.empty())
-            j["DefenderAttrDict"] = attrDict;
+            j["DefenderAttrDict"] = std::move(attrDict);
     }
 
     // Per-room origin catalog (emblems/gems + char base + discs): one entry after
@@ -2201,10 +2266,16 @@ void InitializeLogger() {
                             else
                                 g_LevelMapKnown.insert(id);
                         }
+                        g_LevelMapJson = std::move(arr);   // live copy the flusher rewrites
                     }
                 } catch (...) {}
             }
             fclose(existing);
         }
     }
+
+    // Background level-map writer: new ids are appended in memory on the game
+    // thread (AppendLevelMapEntry) and the file is rewritten here, off-thread.
+    HANDLE lmThread = CreateThread(nullptr, 0, LevelMapFlushThread, nullptr, 0, nullptr);
+    if (lmThread) CloseHandle(lmThread);
 }

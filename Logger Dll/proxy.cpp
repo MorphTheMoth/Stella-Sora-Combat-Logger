@@ -1129,6 +1129,7 @@ BOOL APIENTRY DllMain(HMODULE hInst, DWORD reason, LPVOID reserved) {
         RemoveHotkeys();
         MH_DisableHook(MH_ALL_HOOKS);
         MH_Uninitialize();
+        FlushLevelMapFile();
         if (g_Log)     { log("[uninit] DLL detached."); fclose(g_Log); g_Log = nullptr; }
         if (g_JsonLog) { fclose(g_JsonLog); g_JsonLog = nullptr; }
         ShutdownStarTowerLogger();

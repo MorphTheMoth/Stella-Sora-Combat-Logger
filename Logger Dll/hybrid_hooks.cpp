@@ -708,8 +708,14 @@ static bool FieldNameMatches(const char* runtimeName, const char* want) {
 // *own* fields, so inherited fields (e.g. MonsterSummonInfo._Entity, declared on
 // LogicComponent) require walking the base chain; inherited fields keep the same
 // offset in the derived instance.
-static bool FieldOffsetOf(void* klassPtr, const char* fieldName, int32_t* out,
-                           void** declaring = nullptr) {
+//
+// This is the expensive scan: every entry name goes through PlausibleName() ->
+// VirtualQuery, ~22 us per lookup for the big HotfixDataController maps, and the
+// hit path did ~185 lookups/s.  Layouts are fixed once the class is loaded, so
+// FieldOffsetOf() memoizes positive results per (class, field name); misses are
+// not cached (a class can legitimately be queried before its metadata is ready).
+static bool FieldOffsetOfUncached(void* klassPtr, const char* fieldName, int32_t* out,
+                                  void** declaring) {
     auto* klass = reinterpret_cast<Il2CppClass*>(klassPtr);
     for (int depth = 0; klass && depth < 16; depth++) {
         int count = klass->_2.field_count;
@@ -729,6 +735,53 @@ static bool FieldOffsetOf(void* klassPtr, const char* fieldName, int32_t* out,
         klass = klass->_1.parent;
     }
     return false;
+}
+
+struct FieldOffsetMemo {
+    std::string name;
+    int32_t     off;
+    void*       declaring;
+};
+
+static std::mutex g_fieldMemoMutex;
+static std::unordered_map<const void*, std::vector<FieldOffsetMemo>> g_fieldMemo;
+
+static bool FieldOffsetOf(void* klassPtr, const char* fieldName, int32_t* out,
+                           void** declaring = nullptr) {
+    if (!klassPtr || !fieldName) return false;
+    {
+        std::lock_guard<std::mutex> lk(g_fieldMemoMutex);
+        auto it = g_fieldMemo.find(klassPtr);
+        if (it != g_fieldMemo.end()) {
+            for (const auto& m : it->second) {
+                if (m.name == fieldName) {
+                    *out = m.off;
+                    if (declaring) *declaring = m.declaring;
+                    return true;
+                }
+            }
+        }
+    }
+
+    int32_t off = 0;
+    void* decl = nullptr;
+    if (!FieldOffsetOfUncached(klassPtr, fieldName, &off, &decl)) return false;
+
+    {
+        std::lock_guard<std::mutex> lk(g_fieldMemoMutex);
+        auto& vec = g_fieldMemo[klassPtr];
+        for (const auto& m : vec) {                 // another thread won the race
+            if (m.name == fieldName) {
+                *out = m.off;
+                if (declaring) *declaring = m.declaring;
+                return true;
+            }
+        }
+        vec.push_back({fieldName, off, decl});
+    }
+    *out = off;
+    if (declaring) *declaring = decl;
+    return true;
 }
 
 // Public: field offset inside a live object (walks the object's own class and
@@ -1085,9 +1138,12 @@ static bool ReadReturnValue(const CacheRec* rec, const uint8_t* frame, int64_t* 
     if (!rec || !rec->captureReturn || !frame) return false;
     void* stackBase = *reinterpret_cast<void* const*>(frame + kOffFrameStackBase);
     if (!PlausiblePtr(stackBase)) return false;
+    // No ReadableRange() here: the frame is the interpreter's own live frame
+    // (committed stack) and retOffset was bounds-checked against maxStackSize at
+    // resolve time.  A VirtualQuery per hit only re-proved what the frame
+    // already guarantees.
     auto* src = reinterpret_cast<const uint8_t*>(stackBase) +
                 (size_t)rec->retOffset * sizeof(StackObject);
-    if (!ReadableRange(src, sizeof(int64_t))) return false;
     std::memcpy(out, src, sizeof(int64_t));
     return true;
 }
@@ -1404,6 +1460,41 @@ static bool FirstSighting(std::unordered_set<std::string>& seen, const std::stri
     return seen.insert(key).second;
 }
 
+// Per-call-site resolved-method cache.  The GDC adapters call the same handful
+// of methods by literal name for every attribute row; without this, every call
+// built a "Class.Method" std::string, took g_klassMutex and hashed it.  Keyed by
+// (runtime class | class-name pointer, method-name pointer) — callers pass
+// string literals, so the identity is stable for the process lifetime.  Only
+// successful lookups are cached (a class may not be learned yet).
+struct ResolvedMethodEntry {
+    const void* klass;
+    const char* klassName;
+    const char* methodName;
+    void*       method;
+};
+static constexpr int kResolvedMethodCache = 16;
+static ResolvedMethodEntry g_resolvedMethodCache[kResolvedMethodCache];
+static std::atomic<int>    g_resolvedMethodCacheN{0};
+
+static void* ResolveMethodCached(const void* klass, const char* klassName,
+                                 const char* methodName) {
+    const int n = g_resolvedMethodCacheN.load(std::memory_order_acquire);
+    for (int i = 0; i < n; i++) {
+        const ResolvedMethodEntry& e = g_resolvedMethodCache[i];
+        if (e.methodName == methodName && e.klass == klass && e.klassName == klassName)
+            return e.method;
+    }
+    return nullptr;
+}
+
+static void CacheResolvedMethod(const void* klass, const char* klassName,
+                                const char* methodName, void* method) {
+    const int i = g_resolvedMethodCacheN.load(std::memory_order_relaxed);
+    if (i >= kResolvedMethodCache) return;
+    g_resolvedMethodCache[i] = {klass, klassName, methodName, method};
+    g_resolvedMethodCacheN.store(i + 1, std::memory_order_release);
+}
+
 // Shared tail of both resolvers: class-chain scan, learned-name fallback,
 // one-shot miss log, cache the result.
 static void* ResolveMethodInClass(void* klass, const char* klassName,
@@ -1421,8 +1512,13 @@ static void* ResolveMethodInClass(void* klass, const char* klassName,
 }
 
 static void* ResolveGameMethod(const char* klassName, const char* methodName) {
+    if (void* m = ResolveMethodCached(nullptr, klassName, methodName)) return m;
+
     const std::string key = MethodKey(klassName, methodName);
-    if (void* m = LookupMethodCache(key)) return m;
+    if (void* m = LookupMethodCache(key)) {
+        CacheResolvedMethod(nullptr, klassName, methodName, m);
+        return m;
+    }
 
     void* klass = nullptr;
     {
@@ -1436,7 +1532,9 @@ static void* ResolveGameMethod(const char* klassName, const char* methodName) {
             log("[hybrid] method lookup: class '%s' not learned yet (%s)", klassName, methodName);
         return nullptr;
     }
-    return ResolveMethodInClass(klass, klassName, methodName, key);
+    void* m = ResolveMethodInClass(klass, klassName, methodName, key);
+    if (m) CacheResolvedMethod(nullptr, klassName, methodName, m);
+    return m;
 }
 
 // Same lookup, but the class comes straight from the live object, so no class
@@ -1445,12 +1543,18 @@ static void* ResolveMethodOnObject(void* obj, const char* methodName) {
     if (!PlausiblePtr(obj)) return nullptr;
     void* klass = *reinterpret_cast<void**>(obj);          // Il2CppObject::klass
     if (!PlausiblePtr(klass)) return nullptr;
+    if (void* m = ResolveMethodCached(klass, nullptr, methodName)) return m;
     const char* kn = reinterpret_cast<Il2CppClass*>(klass)->_1.name;
     if (!PlausibleName(kn)) return nullptr;
 
     const std::string key = MethodKey(kn, methodName);
-    if (void* m = LookupMethodCache(key)) return m;
-    return ResolveMethodInClass(klass, kn, methodName, key);
+    if (void* m = LookupMethodCache(key)) {
+        CacheResolvedMethod(klass, nullptr, methodName, m);
+        return m;
+    }
+    void* m = ResolveMethodInClass(klass, kn, methodName, key);
+    if (m) CacheResolvedMethod(klass, nullptr, methodName, m);
+    return m;
 }
 
 int64_t DupCall(const uint64_t* argValues, int argCount) {
@@ -1471,11 +1575,46 @@ int64_t DupCall(const uint64_t* argValues, int argCount) {
 // `retStackObjectSize` is in StackObject units (HybridCLR's GetTypeArgDesc:
 // reference returns are 1), so the 4-slot cap only rejects oversized value-type
 // returns; a refusal is logged.
+// Same, but memoize the metadata argument layout per method: the layout is
+// immutable once interpData exists, and InvokeOnMethod is called once per
+// attribute row.
+struct ArgLayoutEntry {
+    const void* method;
+    int count;
+    int slots;
+    int off[kMaxArgs];
+};
+static constexpr int kArgLayoutCache = 16;
+static ArgLayoutEntry g_argLayoutCache[kArgLayoutCache];
+static std::atomic<int> g_argLayoutCacheN{0};
+
+static bool ArgOffsetsFor(const void* method, int* off, int* count, int* slots) {
+    const int n = g_argLayoutCacheN.load(std::memory_order_acquire);
+    for (int i = 0; i < n; i++) {
+        const ArgLayoutEntry& e = g_argLayoutCache[i];
+        if (e.method != method) continue;
+        *count = e.count;
+        *slots = e.slots;
+        std::memcpy(off, e.off, sizeof(int) * e.count);
+        return true;
+    }
+    if (!ComputeArgOffsets(method, off, count, slots)) return false;
+    const int i = g_argLayoutCacheN.load(std::memory_order_relaxed);
+    if (i < kArgLayoutCache) {
+        g_argLayoutCache[i].method = method;
+        g_argLayoutCache[i].count  = *count;
+        g_argLayoutCache[i].slots  = *slots;
+        std::memcpy(g_argLayoutCache[i].off, off, sizeof(int) * *count);
+        g_argLayoutCacheN.store(i + 1, std::memory_order_release);
+    }
+    return true;
+}
+
 static uint64_t InvokeOnMethod(void* method, const char* klassName, const char* methodName,
                                const uint64_t* args, int argCount, const char* dbgName) {
     int off[kMaxArgs];
     int count = 0, slots = 0;
-    if (!ComputeArgOffsets(method, off, &count, &slots) || count != argCount) {
+    if (!ArgOffsetsFor(method, off, &count, &slots) || count != argCount) {
         static std::atomic<int> warn{0};
         if (warn.fetch_add(1) < 8)
             log("[hybrid] %s: cannot build arguments for %s.%s (metadata %d, call %d)",
