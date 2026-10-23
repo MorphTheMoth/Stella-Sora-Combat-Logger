@@ -29,9 +29,6 @@
 //                             variant of Lv 27)
 //   4 -> ScoreBossLevel 12   (Roguelike_2_MiniBoss_005, prefab MiniBoss_BingXiangGuai_Test_Lv1)
 //   5 -> ScoreBossLevel 13   (Roguelike_2_MiniBoss_005, prefab MiniBoss_BingXiangGuai_Test_Lv2)
-// All five scenes + config prefabs ship in the client; there is no longer any
-// scene/prefab redirect for the stripped QunGuai floors (the 999x entries were
-// removed from the hotkey map).
 //
 // NOTE: scores from a dummy run do not persist (there is no server-side run to
 // settle); the settle bypass only makes the fight end cleanly.
@@ -150,15 +147,14 @@ if __SSL_MONPATCH == nil then
 end
 -- __SSL_RESOLVE_BUILD: which formation build a dummy entry should use.
 -- PlayerScoreBossData.entryBuild is written by EnterScoreBossInstance (:232) and
--- never cleared, so the old `build = SB.entryBuild` read made every entry after
--- the first one reuse the first team (fight, quit, pick another team, enter ->
--- still team #1). The team the player actually has selected lives in:
+-- never cleared, so it is only a last-resort fallback. The team the player
+-- actually has selected lives in:
 --   * RegionBossFormationCtrl.mbuildId — the live panel selection and exactly
 --     what Deploy passes to SendEnterScoreBossApplyReq (:528);
 --   * PlayerScoreBossData.tabCachedBuildId[levelId] — written by the build
 --     picker, RegionBossBuildCtrl:OnBtnClickGrid (:394).
--- Those win; entryBuild stays only as a last resort. Per-level sources are used
--- for the level being entered, not "any level with a cached team".
+-- Per-level sources are used for the level being entered, not "any level with a
+-- cached team".
 if __SSL_BUILDRESOLVE_V ~= 2 then
   __SSL_RESOLVE_BUILD = function(level)
     level = tonumber(level) or 0
@@ -306,15 +302,12 @@ static void RequestScoreBossTestEntry(int levelId) {
 //  SCOREBOSS TEST-STAGE GUI BUTTONS (Blitz formation panel)
 // =============================================================================
 // Clones the Deploy button (btnStartBattle, RegionBossFormationCtrl._mapNodeConfig:32)
-// via the game's own instantiate() — no raw GameObject/AddComponent work.
-// The clone is a sibling of btnStartBattle under "---Team---" (goHaveTeam), and
-// is shown/hidden the same way the natives are: by mirroring btnStartBattle's
-// own active state, which Refresh() (:105) toggles together with the
-// goHaveTeam/goNoneTeam localScale swap. So we hook *both* OnEnable and Refresh:
-// OnEnable creates the clone, Refresh is what actually reveals the team UI (and
-// is what runs after the async build load / after returning from team select),
-// so without the Refresh hook the clone lagged a WM_TIMER tick behind the
-// native buttons when a team was picked from the blank state.
+// via the game's own instantiate().  The clone is a sibling of btnStartBattle
+// under "---Team---" (goHaveTeam) and is shown/hidden the same way the natives
+// are: by mirroring btnStartBattle's own active state, which Refresh() (:105)
+// toggles together with the goHaveTeam/goNoneTeam localScale swap.  Both
+// OnEnable and Refresh are hooked: OnEnable creates the clone, Refresh reveals
+// the team UI (after the async build load / returning from team select).
 // Shown only for Blitz formations (nType == RegionBossFormationType.ScoreBoss
 // == 8, PanelId 43); the GameObject.Find fallback covers a formation screen that
 // was already open when the patch installed. Runs on the Unity main thread only
@@ -708,8 +701,8 @@ static WNDPROC g_OrigWndProc = nullptr;
 // Main-thread pump for the Blitz test button: WM_TIMER is delivered to the
 // window's owning thread (Unity's main thread), so the xLua DoString inside
 // EnsureScoreBossTestButton runs in the only context where Lua VM re-entry is
-// safe. Without this the button only got built on room transitions (which
-// never fire while the player just stands on the formation screen).
+// safe.  A room-transition-driven build would miss a player who just stands on
+// the formation screen.
 static constexpr UINT_PTR kButtonTimerId = 0x5153B001;
 // Fires faster than the chunk's own fast throttle (700 ms while the formation
 // panel is up): the timer is what actually delivers the pump, so a slower

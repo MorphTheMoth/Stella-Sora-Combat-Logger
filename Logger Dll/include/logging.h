@@ -82,18 +82,17 @@ void OnResetTime();
 
 // Lua game clock (Boss Blitz "ScoreBoss_Gameplay_Time" countdown) — defined in
 // logging.cpp:
-//   PollLuaClock: call every Hook_UpdateLogic tick.  Installs a persistent Lua
-//     listener + PlayerScoreBossData:EnterScoreBossInstance room wrapper via
-//     xLua DoString (3 s retry), polls both at 10 Hz.  On room enter: seeds the
-//     pre-fight clock and emits Reset + Record.  On countdown start: re-bases
-//     the meter clock on the in-game countdown (elapsed == limit - remaining),
-//     emits "Timer Start" (with the pre-fight time) + a second Record.
+//   PollLuaClock: call every Hook_UpdateLogic tick.  Installs the persistent Lua
+//     listener via xLua DoString (3 s retry), then polls it at 10 Hz.  On
+//     countdown start it re-bases the meter clock on the in-game countdown
+//     (elapsed == limit - remaining) and emits "Timer Start" + a Record.
+//   LuaClockNotifyRoomEnter: called from the native EnterScoreBossFloor hook;
+//     seeds the pre-fight clock and emits Reset + the first Record.
 //   LuaClockOwnsResetLog: true while a Blitz session is alive (room entry or
 //     countdown event within a 10 min window) — gates Hook_ModuleClearData's
-//     own Reset/Record emission and the OnBattleStart re-seed, because the
-//     room-enter / timer-start paths own those now.
+//     Reset/Record emission and the OnBattleStart re-seed.
 //   ResetHitSnapshots: defined in proxy.cpp — clears the per-room hit snapshot
-//     state (g_HaveHitSnapshot / g_SnapshotTime), called by the timer-zero path.
+//     state (g_HaveHitSnapshot / g_SnapshotTime) on room enter.
 void PollLuaClock();
 bool LuaClockOwnsResetLog();
 void ResetHitSnapshots();
@@ -248,23 +247,22 @@ extern const std::vector<GizmoFlag> g_GizmoFlags;
 void MarkHittedAdditionalAttrFixApplied(int32_t configId);
 std::unordered_set<int32_t> TakeAppliedHittedAttrFixSnapshot();
 
-// ─── Lua VM origin catalog (emblems/gems + char base + discs + build) ─────────
+// ─── Lua VM origin catalog (blitz team: char base + discs + build + gems) ────
 // Executes a Lua chunk in the game's xlua VM via LuaManager.luaEnv:DoString on
 // the Unity main thread. The chunk calls the game's own accessors
-// (PlayerData.StarTower.LevelData, PlayerData.Equipment, ...) and returns a JSON
-// string with, per character, the pieces that bake into the attr 'origin'
+// (PlayerData.ScoreBoss, PlayerData.Equipment, PlayerData.Char, ...) and returns
+// a JSON string with, per character, the pieces that bake into the attr 'origin'
 // bucket:
 //   base  — Attribute-table row values (char base, per AllEnum.AttachAttr key)
-//   disc  — summed disc mapAttrBase contributions (tower run)
-//   gems  — equipped gem rolls: {AttrId, CfgValue, Value} (CharGemAttrValue ids)
-//   pots/skills/effects — gem affixes of those kinds
-// Results are cached; emission points:
-//   Lua-clock mode (Boss Blitz, LuaClockOwnsResetLog): LuaClockRunStart refreshes
-//     the catalog at timer zero and force-emits one "Origin" entry (team batch,
-//     or every resolved char).
-//   Otherwise: Hook_ModuleClearData refreshes it; the team batch (e.g. Star
-//     Tower) is emitted immediately, other modes lazily per appearing actor on
-//     the first damage events.
+//   disc  — summed disc mapAttrBase contributions
+//   build — summed record/build attrs
+//   gems  — equipped gem rolls (attrs/effects/potentials/skills)
+//   pots/skills — record potential and skill levels (record vs effective)
+// The chunk returns "" outside Boss Blitz.  Results are cached; a refresh runs on
+// every room transition (Hook_ModuleClearData) and from the Lua-clock room-enter
+// path.  A parsed team is emitted as one "Record" entry immediately, except in
+// Lua-clock mode, where the first Record follows from the poll once the async
+// build data is ready.
 void RefreshOriginCatalog();
 void MaybeEmitOriginCatalog(AdventureActor_o* fromActor, AdventureActor_o* toActor);
 

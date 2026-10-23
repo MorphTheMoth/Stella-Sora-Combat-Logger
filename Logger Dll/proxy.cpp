@@ -140,8 +140,8 @@ static Nova_Client_OnceAdditionalAttribute_o* __fastcall HyGetOnceAdditionalAttr
         GameDataController_o* self, int32_t key, void*) {
     uint64_t a[2] = { (uint64_t)(uintptr_t)self, (uint64_t)(int64_t)key };
     // Class from the live object: HotfixDataController declares ~3.5k methods
-    // (GetOnceAdditionalAttribute is past 65% of them), so name-based lookup
-    // through the learned class table is both unnecessary and fragile here.
+    // while its class array exposes only 935, so a class-table name lookup can
+    // miss; the object already knows its class.
     auto r = hybrid::CallGameMethodOnObject(self, "GetOnceAdditionalAttribute", a, 2,
                                             "GetOnceAdditionalAttribute");
     return reinterpret_cast<Nova_Client_OnceAdditionalAttribute_o*>(r);
@@ -196,16 +196,10 @@ static inline void CaptureGdc(GameDataController_o* __this) {
 // =============================================================================
 //  Dummy-model override (Blitz test UI, "Dummy 1" -> model dropdown)
 //  A monster's combat model is MonsterSkin[Monster.FAId]: both the preload pass
-//  (AdventureModulePreloadAssetsMrg$$PreloadMonster, decompiled.c:4667112) and
-//  the actual spawn (AdventureLevelController$$SpawnMonster, decompiled.c:3704589)
-//  read the row's fAId_ and look the skin (model + scale) up by it. The game
-//  itself ships its wooden-dummy variants of a boss as the very same row with
-//  nothing but a different fAId_ (floor-1 boss 6310010 FAId 5008101 ->
-//  6310011 FAId 9912102 / 6310012 FAId 9912103, byte-identical otherwise), i.e.
-//  the swap is model-only: stats, AI (fCId_) and skills are untouched. We
-//  reproduce that by rewriting fAId_ in place for the one row id the test UI
-//  targets, driven by what the Blitz test chunk reports back
-//  ('dummy=<monsterId>:<skinId>', see SetDummySkinOverride callers in dummy.cpp).
+//  (AdventureModulePreloadAssetsMrg$$PreloadMonster) and the actual spawn
+//  (AdventureLevelController$$SpawnMonster) read the row's fAId_.  We rewrite
+//  fAId_ in place for the one row the test UI targets — model only, since stats,
+//  AI (fCId_) and skills are untouched.
 //  NOTE: this only covers the C# engine path (preload/spawn). Lua UI (boss HP
 //  bar, result/pause screens) reads _G.DataTable via ConfigTable, never GDC —
 //  its mirror patch (__SSL_MONPATCH wrapping ConfigTable.GetData) lives in
@@ -458,10 +452,9 @@ static void __fastcall Hook_CopyBattleData(void* areaEntity, bool force, void* m
 
     auto* area = reinterpret_cast<AreaEffectEntity_o*>(areaEntity);
 
-    // Owner is the game's stats source. NOTE: since the game update,
-    // _fxPlayer_k__BackingField is a real AdventureFXPlayer (MonoBehaviour, NOT
-    // an AdventureActor); it is kept only as a legacy fallback for the
-    // pre-update layout where it pointed at the owner actor.
+    // Owner is the game's stats source.  `_fxPlayer` is a real AdventureFXPlayer
+    // (MonoBehaviour, not an actor) in 2.0.0; it stays only as a fallback for the
+    // older layout where it pointed at the owner actor.
     AdventureActor_o* fxPlayer = reinterpret_cast<AdventureActor_o*>(area->fields._fxPlayer_k__BackingField);
     AdventureActor_o* owner = area->fields._owner_k__BackingField;
     AdventureActor_o* source = owner ? owner : fxPlayer;
@@ -891,14 +884,11 @@ static void __fastcall Hook_UpdateLogic(void* self, TrueSync_FP_o logicDeltaTime
     g_OrigUpdateLogic(self, logicDeltaTime, method);
 }
 
-// The gizmo helper is `SceneSingleton<AdventureModuleDebugHelper>` in 2.0.0:
-// AdventureModuleDebugHelper is a hotfix class (Hotfix.decompiled.cs:54145) and
-// the singleton base is an AOT generic instantiated over it, so there is no AOT
-// `get_Instance` address and the MethodInfo is not interpreted either.  The
-// instance is therefore read straight out of the declaring class's static field
-// (`SceneSingleton<T>.g_instance`), which is per-instantiation and initialized by
-// the game's own Awake.  The class is learned by the attach layer as soon as the
-// helper's own interpreted methods (Update/…) run.
+// The gizmo helper is `SceneSingleton<AdventureModuleDebugHelper>`: the helper is
+// hotfix code and the singleton is an AOT generic over it, so there is no AOT
+// `get_Instance` address and no interpreted MethodInfo either.  Read the instance
+// from the declaring class's static field (`SceneSingleton<T>.g_instance`, set by
+// the game's own Awake); the class is learned once its own methods run.
 void* GetDebugHelperInstance() {
     // Nothing to do if every gizmo is off.
     bool anyGizmo = false;
@@ -955,20 +945,17 @@ static void* __fastcall Hook_SpawnSkill(void* self, int32_t skillId, void* metho
 // =============================================================================
 //  HybridCLR (hotfix) attach layer
 // =============================================================================
-//  2.0.0 moved the complete combat/AI implementation into the HybridCLR
-//  interpreted `Hotfix.dll`, so this is now the only hook path: there are no
-//  per-method AOT addresses for the combat methods any more (the 1.15 RVA table
-//  was removed).  The hooks are registered by metadata name (see
-//  include/hybrid_hooks.h) and the engine calls are performed by the layer:
+//  2.0.0 moved the combat/AI implementation into the HybridCLR-interpreted
+//  `Hotfix.dll`, so this is the only hook path (the 1.15 RVA table was removed).
+//  Hooks are registered by metadata name (see include/hybrid_hooks.h) and the
+//  attach layer performs the engine call itself:
 //
-//    * `InstallHybridOrigStubs` replaces every `g_OrigX` with a stub, because the
-//      layer runs the real call itself (before an Entry body, after an After
-//      body) — calling the original again inside the body would double-run it.
-//      `CalculateNormalDamage` and `HotfixDataController.GetMonster` keep a
+//    * `InstallHybridOrigStubs` makes every `g_OrigX` a stub, because calling the
+//      original again inside the body would double-run the method.
+//    * `CalculateNormalDamage` and `HotfixDataController.GetMonster` keep a
 //      working original: their bodies need the result (damage value / table
-//      row), which is taken from the native entry's return buffer or, for
-//      interpreted->interpreted calls, from a duplicate call (both methods are
-//      verified side-effect free apart from static caches).
+//      row), taken from the native entry's return buffer or, for
+//      interpreted→interpreted calls, from a duplicate call.
 //    * the `HyGet*` helpers are the only implementation of the hotfix
 //      GameDataController/CommonHelper/ActorHelper accessors.
 // =============================================================================

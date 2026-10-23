@@ -1,43 +1,29 @@
 // =============================================================================
 //  HybridCLR hotfix attach layer — implementation
 // =============================================================================
-//  See include/hybrid_hooks.h for the architecture.  Everything below is
-//  grounded in the 2.0.0 `GameAssembly.dll` (game base 0x180000000) and in the
-//  upstream HybridCLR sources (hybridclr/interpreter/{Interpreter_Execute.cpp,
-//  Engine.cpp, InterpreterModule.cpp, InterpreterDefs.h, InterpreterUtil.cpp}):
+//  See include/hybrid_hooks.h for the architecture and docs/hybrid_hooks.md for
+//  the full layouts.  Everything below is grounded in the 2.0.0
+//  `GameAssembly.dll` (game base 0x180000000) and the upstream HybridCLR sources
+//  (hybridclr/interpreter/{Interpreter_Execute.cpp, Engine.cpp,
+//  InterpreterModule.cpp, InterpreterDefs.h, InterpreterUtil.cpp}):
 //
 //    Interpreter::Execute(const MethodInfo*, StackObject* args, void* ret)
-//        RVA 0x64E270 (62,428 bytes) — found through the "CallInterpDelegate"
-//        string (VA 0x186ABD278, 3 RIP-relative xrefs inside Execute).
-//    InterpFrameGroup::EnterFrameFromInterpreter(this, const MethodInfo*, StackObject* argBase)
-//        RVA 0x64E1C0 (172 bytes) — called from Execute; loads method->interpData
-//        (+0x58), imi->maxStackSize (+0x2C) and imi->argStackObjectSize (+0x20),
-//        writes {method, argBase} into the new frame (frame+0x00 / frame+0x08)
-//        and calls MachineState::AllocStackSlot / PushFrame.
+//        RVA 0x64E270 — found through the "CallInterpDelegate" literal.
+//    InterpFrameGroup::EnterFrameFromInterpreter(this, const MethodInfo*,
+//        StackObject* argBase)
+//        RVA 0x64E1C0 — pushes an interpreted→interpreted callee frame.
 //    InterpFrameGroup::LeaveFrame(this) -> InterpFrame*
-//        RVA 0x662410 (185 bytes) — the interpreter's return event: every
-//        `ret`/unwind handler in Execute reads frame->ret (+0x18) and calls it
-//        with the frame group; it restores MachineState::_stackTopIdx from
-//        frame+0x10, pops the frame (_frameTopIdx at +0x20) and returns the new
-//        top frame (null when the outermost Execute frame left).
+//        RVA 0x662410 — the interpreter's return event, called from every
+//        ret/unwind handler in Execute before the callee frame is popped.
 //
-//  Layout facts used here (all verified against the 2.0.0 image, see
-//  docs/ghidra.md §6 and decompilation/versions/2.0.0/README.md):
-//
-//    MethodInfo     : name +0x18, klass +0x20, interpData +0x58 (vanilla il2cpp
-//                     0x58-byte prefix, HybridCLR extras appended).
-//    Il2CppClass    : name +0x10, namespaze +0x18, methods +0x98 (Il2CppClass_1),
-//                     method_count via Il2CppClass_2 (game_structs.h).
-//    InterpMethodInfo: codes +0x00, args +0x08, resolveDatas +0x10,
-//                     exClauses +0x18, argStackObjectSize +0x20,
-//                     retStackObjectSize +0x24 (24 bits), localStackSize +0x28,
-//                     maxStackSize +0x2C, argCount +0x30 (low 8 bits),
-//                     codeLength +0x30 (high 24), localVarBaseOffset +0x34.
-//    MethodArgDesc  : {u8 passbyValWhenInvoke, u8 type, u16 stackObjectSize} (4 B)
-//    MachineState   : _stackBase 0x00, _stackSize 0x08, _stackTopIdx 0x0C,
-//                     _localPoolBottomIdx 0x10, _frameBase 0x18, _frameTopIdx 0x20,
-//                     _frameCount 0x24, ... (PushFrame: 0x180662950).
-//    InterpFrameGroup: _machineState* +0x00 (Engine.h).
+//  Key struct offsets (verified against the 2.0.0 image):
+//    MethodInfo     : name +0x18, klass +0x20, interpData +0x58
+//    Il2CppClass    : name +0x10, namespaze +0x18, methods +0x98
+//    InterpMethodInfo: args +0x08, argStackObjectSize +0x20, retStackObjectSize
+//                     +0x24, maxStackSize +0x2C, argCount/codeLength +0x30
+//    MethodArgDesc  : {u8 passbyValWhenInvoke, u8 type, u16 stackObjectSize}
+//    MachineState   : _stackTopIdx +0x0C, _frameBase +0x18, _frameTopIdx +0x20
+//    InterpFrameGroup: _machineState* +0x00
 // =============================================================================
 
 #define WIN32_LEAN_AND_MEAN
@@ -98,10 +84,9 @@ static inline bool PlausiblePtr(const void* p) {
     return v >= 0x10000 && (v & 7) == 0 && v < 0x00007FFFFFFFFFFF;
 }
 
-// True when [p, p+n) is committed and readable.  Needed because FieldInfo arrays
-// for hotfix classes over-report their length (Il2CppClass::field_count can be
-// larger than the number of entries allocated), so the iteration below can walk
-// into adjacent heap; dereferencing a garbage name pointer there crashes.
+// True when [p, p+n) is committed and readable.  `Il2CppClass::field_count` can
+// over-report for hotfix classes, so the field iteration below can walk past the
+// real array; a garbage name pointer there must not be dereferenced.
 static bool ReadableRange(const void* p, size_t n) {
     auto addr = reinterpret_cast<uintptr_t>(p);
     if (addr < 0x10000) return false;
@@ -155,10 +140,8 @@ static int ReadSections(Section* out, int maxSections) {
 }
 
 // .pdata (RUNTIME_FUNCTION) lookup: the image ships ~366k entries in 2.0.0.
-// RUNTIME_FUNCTION is 12 bytes — {BeginAddress, EndAddress, UnwindInfoAddress}.
-// Declaring only begin/end (8 bytes) makes the count and every entry wrong, which
-// silently breaks function-bounds lookups (discovery then reports "no xref
-// resolved" even though the xref is there).
+// RUNTIME_FUNCTION is 12 bytes — {BeginAddress, EndAddress, UnwindInfoAddress};
+// an 8-byte struct makes the count and every entry wrong.
 struct RuntimeFunc { uint32_t begin; uint32_t end; uint32_t unwind; };
 static_assert(sizeof(RuntimeFunc) == 12, "RUNTIME_FUNCTION must be 12 bytes");
 
@@ -1037,13 +1020,10 @@ static void FlushPending(int32_t depth) {
         Pending& p = tls_pend[tls_pendN - 1];
         if (depth >= 0 && depth > p.depth) break;      // callee still on the stack
         if (depth >= 0 && depth < p.depth) {
-            // The caller frame is gone as well, so the caller's locals — the
-            // body's `out`/`ref` targets — have been released and may already
-            // belong to a newer frame.  Replaying the call against them is what
-            // corrupts the duplicate call's own arguments (deadout targets can
-            // land on its argument slots).  LeaveFrame normally flushes these
-            // in time; if one slipped through, drop it instead of running it
-            // against stale pointers.
+            // The caller frame is gone as well, so its locals — the body's
+            // `out`/`ref` targets — have been released and may already belong to
+            // a newer frame.  LeaveFrame normally flushes these in time; drop
+            // instead of replaying against stale pointers.
             if (g_droppedBodies.fetch_add(1) == 0) {
                 log("[hybrid] dropped a deferred body whose caller frame had already returned (%s)",
                     p.rec && PlausibleName(MethodName(p.rec->method)) ? MethodName(p.rec->method) : "?");
@@ -1068,27 +1048,17 @@ static void QueueAfter(const CacheRec* rec, const StackObject* slots, int32_t de
     std::memcpy(p.slots, slots, sizeof(StackObject) * rec->slotCount);
 }
 
-// `LeaveFrame` is the interpreter's only return event (it is called from every
+// `LeaveFrame` is the interpreter's only return event (called from every
 // `ret`/unwind handler right before the callee frame is popped).  Flushing a
-// queued After body here — instead of from the next interpreter event — keeps
-// the caller frame, and therefore the caller's `out`/`ref` slots, alive while
-// the body runs.
+// queued After body here, instead of from the next interpreter event, keeps the
+// caller frame — and therefore the caller's `out`/`ref` slots — alive while the
+// body runs.
 //
-// The body must run *before* the original LeaveFrame, i.e. with the callee frame
+// The body runs *before* the original LeaveFrame, i.e. with the callee frame
 // still pushed: the machine stack top then already sits above that frame, so the
-// replay (and everything it calls) can only allocate above it.  Running it after
-// the pop would let the replay frame land on the callee's own eval stack and
-// overwrite the return value that `SET_RET_AND_LEAVE_FRAME` copies out one
-// instruction later (CalculateNormalDamage's return slot is at
-// `argBase + evalStackBaseOffset`, well inside the region a replay allocates).
-//
-// Deferring past the caller's own return is what used to crash the duplicate
-// call: `CalculateNormalDamage`'s 16 `out FDP` targets live in the caller's
-// frame, and once that frame was released the duplicate call's own frame could
-// be allocated right on top of them.  The body then wrote `defAmend` (0.5652)
-// over its own `toActor` argument, and the next
-// `ClampAttributeSetWithLimit(..., toActor, ...)` executed
-// `isinst PlayerAdventureActor` on that FDP, faulting in `Object::IsInst`.
+// replay (and everything it calls) can only allocate above it.  After the pop it
+// could cover the callee's eval stack, including the return slot at
+// `argBase + evalStackBaseOffset` that SET_RET_AND_LEAVE_FRAME copies out.
 static void* __fastcall Hook_LeaveFrame(void* frameGroup) {
     void* ms = frameGroup ? *reinterpret_cast<void**>(frameGroup) : nullptr;
     if (ms) tls_machineState = ms;
@@ -1236,18 +1206,14 @@ static void* FindMethodInClass(void* klassPtr, const char* methodName) {
     for (int depth = 0; depth < 32 && klass; depth++) {
         auto* methods = reinterpret_cast<void**>(klass->_1.methods);
         uint32_t count = klass->_2.method_count;
-        // Scan the WHOLE array.  `method_count` over-reports for hotfix classes
-        // the same way `field_count` does, but `methods` itself is allocated with
-        // `method_count` slots (Class::Init calloc's it), so the tail is a run of
-        // nulls, not out of bounds.  Stopping at the first null / unreadable /
-        // odd-named entry silently hides every method declared after it — which
-        // is exactly how the giant data-controller classes (HotfixDataController:
-        // ~3.5k methods, GetOnceAdditionalAttribute sits past 65% of them) lost
-        // their lookups.
+        // Scan the whole array: `method_count` is not a reliable length.  For
+        // hotfix classes it can over-report (trailing nulls) and it can also
+        // under-report — HotfixDataController exposes 935 of its ~3.5k methods.
+        // Methods outside the array are covered by the learned-name fallback
+        // (LookupLearnedMethod).
         for (uint32_t i = 0; methods && i < count; i++) {
-            // The array itself is method_count slots (Class::Init calloc'd it),
-            // but guard the dereference against an over-reported count whose
-            // backing block ends early — a read past the region would fault.
+            // Guard against an over-reported count whose backing block ends
+            // early — a read past the region would fault.
             if (!ReadableRange(methods + i, sizeof(void*))) break;
             void* m = methods[i];
             if (!m || (reinterpret_cast<uintptr_t>(m) & 7)) continue;
@@ -1412,7 +1378,7 @@ int64_t DupCall(const uint64_t* argValues, int argCount) {
 // Shared tail: build the argument slots from the metadata layout and invoke.
 // `retStackObjectSize` is in StackObject units (HybridCLR's GetTypeArgDesc:
 // reference returns are 1), so the 4-slot cap only rejects oversized value-type
-// returns.  Previously this refused silently, which hid the failure.
+// returns; a refusal is logged.
 static uint64_t InvokeOnMethod(void* method, const char* klassName, const char* methodName,
                                const uint64_t* args, int argCount, const char* dbgName) {
     int off[kMaxArgs];

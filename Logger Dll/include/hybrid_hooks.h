@@ -77,12 +77,10 @@ struct TargetDesc {
     bool        isStatic;     // false => argOffsets[0] is `this`
     Mode        mode;
     // The hook body needs the engine call's result or post state through its
-    // `g_OrigX` slot.  In the interpreted->interpreted path that is answered by
-    // a second (duplicate) call through the interpreter, so this must only be
-    // set for verified-idempotent getters/calculators.  The duplicate call is
-    // made from the callee's LeaveFrame, i.e. with the caller still on the
-    // stack, so the caller's `out`/`ref` slots are valid (a later duplicate can
-    // land on top of them and overwrite the call's own arguments).
+    // `g_OrigX` slot.  On the interpreted→interpreted path this is answered by
+    // repeating the call through the interpreter, so only set it for verified-
+    // idempotent getters/calculators.  The duplicate runs from LeaveFrame, i.e.
+    // while the caller frame (which owns the `out`/`ref` targets) is still live.
     bool        needsRealOrig;
     // Receives the arguments.  `argOffsets[k]` is the slot index of metadata
     // argument k (0 = `this` for instance methods); `ret` points at the return

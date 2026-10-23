@@ -384,21 +384,13 @@ const char* AttrName(int i) {
 // =============================================================================
 //  Effect activation gate
 // =============================================================================
-// Ground-truth gate: AdventureEffect._effectStack is the game's own
-// "currently applied" state. Execute() pushes the payload onto it
-// (AdventureEffect$$Execute, decompiled.c:3634414) and the matching post phase
-// pops + undoes it: OnDamage pops triggers 2/3/4/5/11 after the damage calc,
-// OnCastSkillEnd pops 6, OnEffectPostExecute pops 18, OnBattleFinish pops
-// IN_BATTLE_STATE, and AdventureEffectBase$$set_Removed (decompiled.c:3631990)
-// drains it with undo. Continuous (trigger 1) effects are pushed once inside
-// AdventureEffect$$OnInit (decompiled.c:3635117) — conditions are evaluated
-// once at registration — and stay pushed for the effect's whole lifetime.
-// CalculateNormalDamage runs inside that bracket for every damage-relevant
-// trigger, so stack > 0 ⟺ the effect's contribution is alive for this hit:
-// per-hit effects (pushed pre-settlement, popped post-settlement), continuous
-// effects, and time-triggered ones alike. Dormant effects (PreExecute failed —
-// e.g. Tailwind Journey's "main Trekker HP above 80%" unmet, or Daylight
-// Garden registered while its conditions failed) are never pushed → skipped.
+// AdventureEffect._effectStack is the game's own "currently applied" state:
+// Execute() pushes the payload and the matching post phase (OnDamage,
+// OnCastSkillEnd, OnEffectPostExecute, OnBattleFinish, set_Removed) pops and
+// undoes it. Continuous (trigger 1) effects are pushed once at OnInit and stay
+// pushed for their lifetime. CalculateNormalDamage runs inside that bracket for
+// every damage-relevant trigger, so stack > 0 means the effect's contribution is
+// alive for this hit; dormant effects (PreExecute never ran) are never pushed.
 static bool EffectStackAlive(const AdventureEffect_o* effect) {
     if (!effect) return false;
     auto* st = effect->fields._effectStack;
@@ -1040,23 +1032,12 @@ json BuildAdditionalAttrDictJson(
                 WriteLevelMapEntry(baseId, lt, ld, EnumerateValueConfigIds(attrValueKeys, baseId));
 
                 // ── Applied check (data-driven, mirrors the game's gating) ──
-                // The melody value rows are ELEMENT-KEYED: e.g. "Wings of
-                // Dream" (disc 214059) OnceAdditionalAttributeValue 4059121 /
-                // 4059131 carry ElementType = 4 (Ventus) — "+5% Normal/Skill
-                // Dmg" and "+1.5%/stack Skill Crit Dmg" are implemented as
-                // bonuses on Ventus-element damage. ActorAdditionalAttrInfo$$
-                // AddAttr_2 (decompiled.c:3421741) routes elementType != 0
-                // values into the overlay's element-keyed dict under
-                // (attributeType, elementType), and the damage calc reads each
-                // attribute keyed by THE HIT'S element (e.g. SKILLCRITPOWER for
-                // skill crits, decompiled.c:3613344). A Ventus-keyed entry is
-                // therefore consumed only by Ventus-element hits — on any other
-                // element the element-keyed probe misses and the contribution
-                // never reaches the calc (observed: skill crits at stacks=10
-                // keep the base-only critRatio because every hit in that log
-                // was element 1 while the entry is keyed to 4). That is the
-                // whole gate — there is no explicit element/main-control check
-                // in the melody code; the filtering is data-driven.
+                // OnceAdditionalAttributeValue rows are element-keyed: a slot
+                // with elementType != 0 is routed by ActorAdditionalAttrInfo$$
+                // AddAttr_2 into the overlay dict under (attributeType,
+                // elementType), and the damage calc reads each attribute keyed
+                // by the hit's element.  A slot keyed to another element can
+                // therefore never reach this hit's calc — skip the entry.
                 bool applied = true;
                 if (GetAttrValue && gdc) {
                     auto* oav = GetAttrValue(gdc, currentValueConfigId, nullptr);
@@ -1280,9 +1261,8 @@ void BuildSkillCastJson(int32_t skillId) {
 // =============================================================================
 // Reads the live game state through the game's own Lua code:
 //   LuaManager (MonoSingleton, g_instance @static 0x0) → luaEnv @0x20
-//   → xlua.LuaEnv.DoString (found by il2cpp reflection, not by address) with a
-//   chunk that mirrors PlayerCharData.lua:CalCharacterAttrBattle (line 1690) /
-//   the tower variant StarTowerLevelData.lua:1132, using the game's own accessors.
+//   → xlua.LuaEnv.DoString (found by il2cpp reflection, not by address) running
+//   the collector chunk below, which uses the game's own accessors.
 // Field offsets from dump.cs:188464 (LuaManager) — static g_instance @0x0,
 // luaEnv backing field @0x20.
 
@@ -1406,10 +1386,9 @@ struct Il2CppObjectArrayRef {
     void* m_Items[65535];
 };
 
-// The collector chunk. Mirrors the game's own origin computation:
-//  - PlayerCharData.lua:CalCharacterAttrBattle (line 1690) — general modes
-//  - StarTowerLevelData.lua:CalCharacterAttrBattle (line 1132) — tower runs
-// All state read from the live Lua globals (PlayerData is global, utils.lua:30).
+// The collector chunk: Boss Blitz team only (returns '' otherwise).  Mirrors
+// PlayerCharData.lua:CalCharacterAttrBattle (line 1690); all state is read from
+// the live Lua globals (PlayerData is global, utils.lua:30).
 static const char* kOriginChunk = R"lua(
 local ok, res = pcall(function()
   local CD = require("GameCore.Data.ConfigData")
@@ -1876,40 +1855,25 @@ void MaybeEmitOriginCatalog(AdventureActor_o* fromActor, AdventureActor_o* toAct
 //  LUA GAME CLOCK (Boss Blitz countdown sync)
 // =============================================================================
 //  ScoreBossLevelController (HybridCLR hotfix, Hotfix.decompiled.cs:55013)
-//  drives the top-middle countdown the player sees in Boss Blitz:
-//    - LevelStart zeroes totalTime and reads levelTotalTime from the config
-//      "ScoreBossTimeLimit" (Hotfix.decompiled.cs:55121-55125)
-//    - UpdateLogic accumulates the same per-tick logicDeltaTime our g_GameTimeFP
-//      hook sums; once per whole second it fires the Lua event
-//      "ScoreBoss_Gameplay_Time" with levelTotalTime - totalTime (:55140-55149)
-//    - timing starts at the engine's LEVEL_START_TIMING trigger (:55191-55195)
-//  We attach a persistent Lua listener via xLua DoString (same plumbing as the
-//  origin catalog — panels register string-keyed events through
-//  EventManager.Add, BaseCtrl.lua:458; CsPushToLua passes the raw name through,
-//  GameCore.lua:43) that records (seq, remaining) into a global table, and wrap
-//  PlayerScoreBossData:EnterScoreBossInstance — the single funnel for every
-//  Blitz floor entry (first entry + retry via EntryLvAgain,
-//  PlayerScoreBossData.lua:207/541).  Room entry is detected natively instead:
-//  AdventureModuleHelper$$EnterScoreBossFloor (il2cpp, script.json 0x11b46d0,
-//  called from ScoreBossLevel.lua:76 on every entry) is MinHooked in proxy.cpp
-//  — available from DLL init, so the first entry after game start is covered
-//  too (a Lua-side wrapper could not be: the listener installs from the first
-//  UpdateLogic tick, which only happens inside the first level).  Room enter is
-//  processed immediately in the hook; only the origin-catalog DoString is
-//  deferred to PollLuaClock (re-entering the Lua VM from inside the hook's
-//  Lua→C# call is not safe).
+//  drives the Blitz countdown: LevelStart zeroes totalTime and reads
+//  "ScoreBossTimeLimit", UpdateLogic accumulates each tick and fires the Lua
+//  event "ScoreBoss_Gameplay_Time" once per second with levelTotalTime -
+//  totalTime.
 //
-//    Room enter (Hook_EnterScoreBossFloor — native, so it works on the first
-//      entry after game start, before any Lua install has happened):  seed the
-//      meter clock (pre-fight time starts running), Reset log at 00:00.000 —
-//      emitted synchronously in the hook, so it precedes the actor-spawn
-//      effect/buff logs of the load.  Record #1 follows from the poll once the
-//      async build data is ready (3 s retry).
-//    Timer start (countdown jumped UP = totalTime was zeroed, or first observed
-//      event of a fresh listener): re-base the meter clock onto the run start
-//      (elapsed == limit - remaining), emit "Timer Start" with the pre-fight
-//      time, then Record #2.  ModuleClearData / OnBattleStart are gated off via
-//      LuaClockOwnsResetLog while a Blitz session is alive.
+//  We attach a persistent Lua listener through xLua DoString (the same plumbing
+//  as the origin catalog) that records (seq, remaining) into a global table, and
+//  poll it from Hook_UpdateLogic.  Room entry is detected natively by the
+//  AdventureModuleHelper$$EnterScoreBossFloor hook, which also runs on the first
+//  entry after game start; re-entering the Lua VM from inside that Lua→C# call
+//  is not safe, so the catalog refresh is deferred to the poll.
+//
+//    Room enter: seed the pre-fight clock and emit Reset at 00:00.000; Record #1
+//      follows from the poll once the async build data is ready (3 s retry).
+//    Timer start (countdown jumped UP, or the first event of a fresh listener):
+//      re-base the meter clock onto the run start (elapsed == limit - remaining),
+//      emit "Timer Start" with the pre-fight time, then Record #2.
+//    ModuleClearData / OnBattleStart are gated off via LuaClockOwnsResetLog
+//      while a Blitz session is alive.
 static const char* kClockInstallChunk = R"lua(
 if __SSL_CLOCK ~= nil then return 'OK' end
 if EventManager == nil then return 'ERR:no EventManager' end
