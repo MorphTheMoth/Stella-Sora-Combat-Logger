@@ -20,9 +20,11 @@
 //    MethodInfo     : name +0x18, klass +0x20, interpData +0x58
 //    Il2CppClass    : name +0x10, namespaze +0x18, methods +0x98
 //    InterpMethodInfo: args +0x08, argStackObjectSize +0x20, retStackObjectSize
-//                     +0x24, maxStackSize +0x2C, argCount/codeLength +0x30
+//                     +0x24, maxStackSize +0x2C, argCount/codeLength +0x30,
+//                     evalStackBaseOffset +0x38
 //    MethodArgDesc  : {u8 passbyValWhenInvoke, u8 type, u16 stackObjectSize}
 //    MachineState   : _stackTopIdx +0x0C, _frameBase +0x18, _frameTopIdx +0x20
+//    InterpFrame    : method +0x00, stackBasePtr +0x08, ret +0x18, stride 0x40
 //    InterpFrameGroup: _machineState* +0x00
 // =============================================================================
 
@@ -55,15 +57,19 @@ static constexpr int kOffMiInterpData = 0x58;
 static constexpr int kOffImiArgs              = 0x08;
 static constexpr int kOffImiArgStackObjSize   = 0x20;
 static constexpr int kOffImiRetStackObjSize   = 0x24;
+static constexpr int kOffImiMaxStackSize      = 0x2C;
 static constexpr int kOffImiArgCount          = 0x30;
+static constexpr int kOffImiEvalStackBase     = 0x38;
 
 static constexpr int kOffMsFrameTopIdx = 0x20;   // _frameTopIdx (frame count)
 static constexpr int kOffMsFrameBase   = 0x18;   // _frameBase
 static constexpr int kFrameStride      = 0x40;   // sizeof(InterpFrame)
+static constexpr int kOffFrameStackBase = 0x08;  // InterpFrame::stackBasePtr
 
 static constexpr int kMaxArgs    = 32;   // metadata args we accept (incl. `this`)
 static constexpr int kMaxSlots   = 40;   // slots a call may occupy
 static constexpr int kMaxPending = 8;
+static constexpr int kMaxTargets = 64;   // g_retSlotChecked / g_retSlotBad capacity
 
 static constexpr uintptr_t kRvaExecuteFallback = 0x64E270;   // 2.0.0
 static constexpr uintptr_t kRvaEnterFallback   = 0x64E1C0;   // 2.0.0
@@ -453,6 +459,9 @@ struct ImiInfo {
     void*    args;              // MethodArgDesc*
     uint32_t argStackObjectSize;
     uint32_t retStackObjectSize;
+    uint32_t maxStackSize;
+    uint32_t evalStackBaseOffset;   // slot index of the eval stack base, i.e. the
+                                    // return slot for a non-void method
     uint32_t argCount;
 };
 
@@ -463,6 +472,8 @@ static bool ReadImi(const void* method, ImiInfo* out) {
     out->args = *reinterpret_cast<void**>(imi + kOffImiArgs);
     out->argStackObjectSize = *reinterpret_cast<uint32_t*>(imi + kOffImiArgStackObjSize);
     out->retStackObjectSize = (*reinterpret_cast<uint32_t*>(imi + kOffImiRetStackObjSize)) & 0x00FFFFFF;
+    out->maxStackSize = *reinterpret_cast<uint32_t*>(imi + kOffImiMaxStackSize);
+    out->evalStackBaseOffset = *reinterpret_cast<uint32_t*>(imi + kOffImiEvalStackBase);
     out->argCount = (*reinterpret_cast<uint32_t*>(imi + kOffImiArgCount)) & 0xFF;
     return true;
 }
@@ -507,6 +518,12 @@ struct CacheRec {
     int         target;        // index into g_targets, -1 = resolved non-target
     int         argCount;
     int         slotCount;
+    // Where the callee's return value sits while the frame is still pushed:
+    // `evalStackBaseOffset` slots from `InterpFrame::stackBasePtr`.  Only filled
+    // for targets whose body needs the engine result (`needsRealOrig`) and whose
+    // return fits one StackObject; everything else falls back to DupCall.
+    int         retOffset;
+    bool        captureReturn;
     int         off[kMaxArgs];
 };
 
@@ -893,6 +910,8 @@ static CacheRec* ResolveMethod(const void* method) {
     rec->target = target;
     rec->argCount = 0;
     rec->slotCount = 0;
+    rec->retOffset = 0;
+    rec->captureReturn = false;
     std::memset(rec->off, 0, sizeof(rec->off));
     ComputeArgOffsets(method, rec->off, &rec->argCount, &rec->slotCount);
 
@@ -907,9 +926,28 @@ static CacheRec* ResolveMethod(const void* method) {
                 d.klass, d.method);
             rec->target = -1;
         } else {
-            log("[hybrid] target ready: %s.%s (args %d, slots %d, %s)",
+            // `needsRealOrig` bodies need the engine's result.  On the internal
+            // path the value is read from the callee frame at LeaveFrame (see
+            // ReadReturnValue): the interpreter copies it into `frame->ret` only
+            // after LeaveFrame returns, so it is still in the frame here.  That
+            // works for a one-slot return (i64 / reference); anything else keeps
+            // the duplicate call.
+            rec->retOffset = (int)probe.evalStackBaseOffset;
+            rec->captureReturn = d.needsRealOrig &&
+                                 rec->target < kMaxTargets &&
+                                 probe.retStackObjectSize == 1 &&
+                                 probe.evalStackBaseOffset < probe.maxStackSize;
+            if (d.needsRealOrig && !rec->captureReturn) {
+                log("[hybrid] '%s.%s': return not capturable from the frame "
+                    "(ret slots %u, eval base %u, max stack %u) — deferred bodies "
+                    "re-ask the engine call",
+                    d.klass, d.method, (unsigned)probe.retStackObjectSize,
+                    (unsigned)probe.evalStackBaseOffset, (unsigned)probe.maxStackSize);
+            }
+            log("[hybrid] target ready: %s.%s (args %d, slots %d, %s%s)",
                 d.klass, d.method, rec->argCount, rec->slotCount,
-                d.mode == Mode::Entry ? "entry" : "after");
+                d.mode == Mode::Entry ? "entry" : "after",
+                d.needsRealOrig ? (rec->captureReturn ? ", ret from frame" : ", ret re-asked") : "");
         }
     }
 
@@ -942,6 +980,11 @@ static __thread const void* tls_curMethod = nullptr;
 static __thread bool     tls_retValid = false;
 static __thread int64_t  tls_retValue = 0;
 static std::atomic<int>  g_droppedBodies{0};   // deferred bodies dropped as unsafe
+
+// One-time per-target check of the return-slot assumption (see VerifyReturnSlot).
+// `bad` makes every later hit fall back to DupCall, i.e. the pre-slot behaviour.
+static std::atomic<bool> g_retSlotChecked[kMaxTargets]{};
+static std::atomic<bool> g_retSlotBad[kMaxTargets]{};
 
 static inline int32_t FrameDepth() {
     if (!tls_machineState) return -1;
@@ -986,8 +1029,8 @@ static void RunPending(const Pending& p) {
     std::memcpy(slots, p.slots, sizeof(StackObject) * p.slotCount);
     bool prevValid = tls_retValid;
     int64_t prevValue = tls_retValue;
-    tls_retValid = false;      // deferred: the body's original-call adapter must re-ask
-    tls_retValue = 0;
+    tls_retValid = false;      // fallback flush: no frame to read the result from
+    tls_retValue = 0;          // -> the body's original-call adapter re-asks
     RunBody(rec, slots, nullptr);
     tls_retValid = prevValid;
     tls_retValue = prevValue;
@@ -1028,6 +1071,70 @@ static void QueueAfter(const CacheRec* rec, const StackObject* slots, int32_t de
     std::memcpy(p.slots, slots, sizeof(StackObject) * rec->slotCount);
 }
 
+// Read a one-slot return value out of the still-pushed callee frame.  Every
+// `ret` handler in Execute does `void* _curRet = frame->ret;` then
+// `frame = LeaveFrame();` and only then `Copy8(_curRet, localVarBase + __ret)`
+// (HybridCLR Interpreter_Execute.cpp, SET_RET_AND_LEAVE_FRAME), with
+// `localVarBase == frame->stackBasePtr` of the callee.  For a non-void method the
+// transpiler asserts `evalStackTop == 1` at RET and emits `__ret =
+// evalStackBaseOffset`, so the value sits in that slot while the frame is pushed.
+// Reading it here gives the exact engine result with one execution; only when
+// this fails (no frame / unreadable slot / multi-slot return) does the body fall
+// back to DupCall.
+static bool ReadReturnValue(const CacheRec* rec, const uint8_t* frame, int64_t* out) {
+    if (!rec || !rec->captureReturn || !frame) return false;
+    void* stackBase = *reinterpret_cast<void* const*>(frame + kOffFrameStackBase);
+    if (!PlausiblePtr(stackBase)) return false;
+    auto* src = reinterpret_cast<const uint8_t*>(stackBase) +
+                (size_t)rec->retOffset * sizeof(StackObject);
+    if (!ReadableRange(src, sizeof(int64_t))) return false;
+    std::memcpy(out, src, sizeof(int64_t));
+    return true;
+}
+
+// One-time per target, on the first hit whose value came from the frame slot:
+// repeat the call through the interpreter and compare.  Both run at the same
+// point (callee frame still pushed, caller frame alive), so an idempotent method
+// must produce the same value; a mismatch marks the target so every later hit
+// uses DupCall.  This turns a wrong slot assumption into one warning line plus
+// the pre-slot behaviour instead of silently wrong numbers for the whole session.
+// The comparison is done before the body runs, so the body still logs the frame
+// value on this hit (the duplicate's own out-parameter writes are identical).
+static int64_t VerifyReturnSlot(const CacheRec* rec, const StackObject* slots, int64_t captured) {
+    if (rec->target < 0 || rec->target >= kMaxTargets) return captured;
+    if (g_retSlotChecked[rec->target].load(std::memory_order_relaxed)) return captured;
+
+    uint64_t a[kMaxArgs];
+    for (int i = 0; i < rec->argCount; i++) a[i] = slots[rec->off[i]].v;
+
+    const void* prevMethod = tls_curMethod;
+    bool     prevValid = tls_retValid;
+    int64_t  prevValue = tls_retValue;
+    tls_curMethod = rec->method;
+    tls_retValid = false;
+    tls_retValue = 0;
+    int64_t dup = DupCall(a, rec->argCount);
+    tls_curMethod = prevMethod;
+    tls_retValid = prevValid;
+    tls_retValue = prevValue;
+
+    // Set last: a thread that races this one repeats the check (harmless) rather
+    // than using an unverified slot while another thread is still comparing.
+    g_retSlotChecked[rec->target].store(true, std::memory_order_relaxed);
+
+    const char* name = PlausibleName(MethodName(rec->method)) ? MethodName(rec->method) : "?";
+    if (dup != captured) {
+        g_retSlotBad[rec->target].store(true, std::memory_order_relaxed);
+        log("[hybrid] return-slot check: %s read 0x%llX from the frame but the "
+            "duplicate call returned 0x%llX — target falls back to the duplicate call",
+            name, (unsigned long long)captured, (unsigned long long)dup);
+        return dup;      // this hit stays consistent with the duplicate's out params
+    }
+    log("[hybrid] return-slot check: %s OK (0x%llX)",
+        name, (unsigned long long)captured);
+    return captured;
+}
+
 // `LeaveFrame` is the interpreter's only return event (called from every
 // `ret`/unwind handler right before the callee frame is popped).  Flushing a
 // queued After body here, instead of from the next interpreter event, keeps the
@@ -1035,10 +1142,15 @@ static void QueueAfter(const CacheRec* rec, const StackObject* slots, int32_t de
 // body runs.
 //
 // The body runs *before* the original LeaveFrame, i.e. with the callee frame
-// still pushed: the machine stack top then already sits above that frame, so the
-// replay (and everything it calls) can only allocate above it.  After the pop it
-// could cover the callee's eval stack, including the return slot at
-// `argBase + evalStackBaseOffset` that SET_RET_AND_LEAVE_FRAME copies out.
+// still pushed: the machine stack top then already sits above that frame, so
+// anything the body invokes can only allocate above it.  After the pop it could
+// cover the callee's eval stack, including the return slot at
+// `stackBasePtr + evalStackBaseOffset`.
+//
+// That still-pushed frame is also what makes the return value observable:
+// `needsRealOrig` bodies get it from ReadReturnValue instead of re-running the
+// method.  DupCall remains only for the fallback flush in FlushPending (when
+// LeaveFrame was not hooked) and for multi-slot returns.
 static void* __fastcall Hook_LeaveFrame(void* frameGroup) {
     void* ms = frameGroup ? *reinterpret_cast<void**>(frameGroup) : nullptr;
     if (ms) tls_machineState = ms;
@@ -1052,7 +1164,14 @@ static void* __fastcall Hook_LeaveFrame(void* frameGroup) {
 
     const CacheRec* rec = nullptr;
     StackObject slots[kMaxSlots];
+    const uint8_t* leavingFrame = nullptr;
     if (leaving >= 0) {
+        // The frame being popped is still at _frameBase[_frameTopIdx - 1].
+        if (auto* base = *reinterpret_cast<void**>(
+                reinterpret_cast<uintptr_t>(ms) + kOffMsFrameBase)) {
+            leavingFrame = reinterpret_cast<const uint8_t*>(base) +
+                           (size_t)leaving * kFrameStride;
+        }
         // Any queued frame above the one being popped is already gone; drop it.
         while (tls_pendN > 0 && tls_pend[tls_pendN - 1].depth > leaving) {
             tls_pendN--;
@@ -1062,12 +1181,8 @@ static void* __fastcall Hook_LeaveFrame(void* frameGroup) {
             // Match both the frame index and the frame's method: the index alone
             // would also match a frame that reused the slot in a later call
             // chain, whose caller memory is unrelated to the snapshotted slots.
-            const void* frameMethod = nullptr;
-            if (auto* base = *reinterpret_cast<void**>(
-                    reinterpret_cast<uintptr_t>(ms) + kOffMsFrameBase)) {
-                auto* frame = reinterpret_cast<uint8_t*>(base) + (size_t)leaving * kFrameStride;
-                frameMethod = *reinterpret_cast<void**>(frame);
-            }
+            const void* frameMethod = leavingFrame
+                ? *reinterpret_cast<const void* const*>(leavingFrame) : nullptr;
             if (p.depth == leaving && p.rec && frameMethod == p.rec->method) {
                 rec = p.rec;
                 std::memcpy(slots, p.slots, sizeof(StackObject) * p.slotCount);
@@ -1089,6 +1204,15 @@ static void* __fastcall Hook_LeaveFrame(void* frameGroup) {
         int64_t prevValue = tls_retValue;
         tls_retValid = false;
         tls_retValue = 0;
+        int64_t captured = 0;
+        if (rec->target >= 0 && rec->target < kMaxTargets &&
+            g_targets[rec->target].needsRealOrig &&
+            !g_retSlotBad[rec->target].load(std::memory_order_relaxed) &&
+            ReadReturnValue(rec, leavingFrame, &captured)) {
+            captured = VerifyReturnSlot(rec, slots, captured);
+            tls_retValid = true;
+            tls_retValue = captured;
+        }
         RunBody(rec, slots, nullptr);
         tls_retValid = prevValid;
         tls_retValue = prevValue;

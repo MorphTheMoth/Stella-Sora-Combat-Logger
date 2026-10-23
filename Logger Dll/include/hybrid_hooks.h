@@ -60,8 +60,11 @@ enum class Mode {
     // queued with a snapshot of the argument slots and flushed when that frame
     // is popped, i.e. while the caller frame (which owns the `out`/`ref`
     // targets) is still alive.  On the native entry path the body simply runs
-    // after forward(…) returned.  The original-call adapters are no-ops except
-    // for `needsRealOrig` targets, which re-ask the engine call.
+    // after forward(…) returned.  The original-call adapters answer from the
+    // engine's actual result: the captured `ret` value on the native path, the
+    // callee's still-pushed eval-stack slot on the internal path.  Only when that
+    // slot is unavailable (LeaveFrame not hooked, multi-slot return) is the call
+    // re-asked through DupCall.
     After,
 };
 
@@ -71,10 +74,10 @@ struct TargetDesc {
     int         argCount;     // expected imi->argCount, `this` included when instance
     Mode        mode;
     // The hook body needs the engine call's result or post state through its
-    // `HyOrig_*` adapter.  On the interpreted→interpreted path this is answered
-    // by repeating the call through the interpreter, so only set it for verified-
-    // idempotent getters/calculators.  The duplicate runs from LeaveFrame, i.e.
-    // while the caller frame (which owns the `out`/`ref` targets) is still live.
+    // `HyOrig_*` adapter.  On the native path the adapter answers from the
+    // captured `ret` value; on the interpreted→interpreted path from the
+    // callee's still-pushed eval-stack slot, read at LeaveFrame (exact, one
+    // execution).  DupCall is only the fallback when that slot is unavailable.
     bool        needsRealOrig;
     // Receives the arguments.  `argOffsets[k]` is the slot index of metadata
     // argument k (0 = `this` for instance methods); `ret` points at the return
@@ -140,17 +143,17 @@ void* ReadStaticFieldPtr(void* klassPtr, const char* fieldName,
 // ---------------------------------------------------------------------------
 //  Called from the hook bodies (proxy.cpp)
 // ---------------------------------------------------------------------------
-// Native-entry duplicate-call support: when the hooked call arrived through
-// Interpreter::Execute the engine call already produced its result and the
-// body's original-call adapter returns it instead of re-running the method.
+// The engine result for a `needsRealOrig` body: captured from the native entry's
+// `ret` value or, on the interpreted→interpreted path, from the callee's
+// still-pushed eval-stack slot at LeaveFrame.  The adapters return this instead
+// of re-running the method.
 bool     CurrentRetValid();
 int64_t  CurrentRetValue();
-// Re-run the currently-running method through the interpreter with freshly
-// built argument values (`args[k]` = metadata argument k, one uint64 per slot).
-// Used by bodies whose original-call result is required but which were entered
-// through the interpreted->interpreted path.  Only for idempotent methods; the
-// caller frame must still be alive because the arguments include its `out`/`ref`
-// pointers.
+// Fallback only (LeaveFrame not hooked / multi-slot return): re-run the
+// currently-running method through the interpreter with freshly built argument
+// values (`args[k]` = metadata argument k, one uint64 per slot).  Only for
+// idempotent methods; the caller frame must still be alive because the arguments
+// include its `out`/`ref` pointers.
 int64_t  DupCall(const uint64_t* args, int argCount);
 
 // True when the hotfix attach layer is active (detected and enabled by config).

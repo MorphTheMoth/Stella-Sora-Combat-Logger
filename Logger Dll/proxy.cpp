@@ -843,14 +843,17 @@ static void* __fastcall Hook_SpawnSkill(void* self, int32_t skillId, void* metho
 //  targets are exceptions because their bodies consume the call's result:
 //  `CalculateNormalDamage` (damage value + out parameters) and
 //  `HotfixDataController.GetMonster` (dummy-model row).  Their `HyOrig_*`
-//  adapters return what the engine call produced, or repeat the call through the
-//  interpreter when the body runs on the interpreted→interpreted path.
+//  adapters return what the engine call produced: the captured `ret` value on
+//  native entries, the callee's still-pushed return slot at LeaveFrame on the
+//  interpreted→interpreted path.  `DupCall` is the fallback when that slot is
+//  unavailable (LeaveFrame not hooked, multi-slot return).
 //  The `HyGet*` helpers are the only implementation of the hotfix
 //  GameDataController/CommonHelper/ActorHelper accessors.
 // =============================================================================
 
 // GDC table row (dummy-model feature): the engine call already ran, so reuse its
-// result on native entries and otherwise repeat the (side-effect free) lookup.
+// result (captured native `ret` or the frame's return slot); only re-run the
+// side-effect free lookup if neither is available.
 static void* __fastcall HyOrig_GdcGetMonster(GameDataController_o* self, int32_t key, void* method) {
     if (hybrid::CurrentRetValid()) return (void*)hybrid::CurrentRetValue();
     uint64_t a[2] = { (uint64_t)(uintptr_t)self, (uint64_t)(int64_t)key };
@@ -858,9 +861,10 @@ static void* __fastcall HyOrig_GdcGetMonster(GameDataController_o* self, int32_t
     return (void*)hybrid::DupCall(a, 2);
 }
 
-// Damage value: same treatment.  CommonHelper.CalculateNormalDamage only writes
-// the static from/to attribute caches (deterministic for unchanged inputs), so
-// the duplicate call is safe (see docs/damage_flow_analysis.md).
+// Damage value: same treatment.  The out parameters are the ones the engine's
+// own call wrote; only the return value is needed here.  The fallback duplicate
+// is safe because CommonHelper.CalculateNormalDamage only writes the static
+// from/to attribute caches (see docs/damage_flow_analysis.md).
 static int64_t __fastcall HyOrig_CalcNormalDamage(
     AdventureActor_o* fromActor, AdventureActor_o* toActor, Nova_Client_HitDamage_o* hitDamageConfig,
     int32_t skillLevel, bool isCrit, bool isDot, int32_t* hudColorIndex, int64_t* skillPercentAmend,
