@@ -6,8 +6,8 @@
 //  Since game 2.0.0 the whole combat/AI implementation lives in the HybridCLR
 //  interpreted assembly `Hotfix.dll`, not in the AOT image (`GameAssembly.dll`):
 //  there are no `Nova.Client` combat classes in the AOT dump any more, so the
-//  legacy `g_base + RVA_xxx` hooks and the legacy `g_base + RVA` outgoing calls
-//  have nothing to attach to.
+//  old `g_base + RVA_xxx` hooks and outgoing calls have nothing to attach to
+//  (they were removed in favour of this layer).
 //
 //  Interpreted methods have no stable native address per method.  All native to
 //  interpreted entries (AOT -> hotfix bridges, delegates, reflection) funnel
@@ -92,7 +92,7 @@ bool Detect(uintptr_t gameBase);
 bool InstallAll(const TargetDesc* targets, int count);
 
 // ---------------------------------------------------------------------------
-//  Outgoing calls (replacements for the legacy `g_base + RVA` calls)
+//  Outgoing calls (the only way into hotfix code now)
 // ---------------------------------------------------------------------------
 // `args` holds one uint64 per parameter slot, in metadata order (`this` first
 // for instance methods).  Returns the raw return value (0 when the method could
@@ -115,6 +115,27 @@ uint64_t CallGameMethodOnObject(void* obj, const char* methodName,
 //  -2 when the class is fine but has no such field (treat as absent).
 // ---------------------------------------------------------------------------
 int32_t FieldOffsetInObject(const void* obj, const char* fieldName);
+
+// ---------------------------------------------------------------------------
+//  Class / static field lookup (debug-gizmo singleton)
+// ---------------------------------------------------------------------------
+// Il2CppClass* of a hotfix class the attach layer has already seen as the
+// declaring class of an interpreted method (nullptr before that).  Used for
+// `AdventureModuleDebugHelper`, whose messages (Update/Awake) start running
+// with the level scene, so the class is learned shortly after load.
+void* ClassByName(const char* klassName);
+
+// Read a static reference field by name, walking the class's base chain; the
+// value comes out of the declaring class's `static_fields` block.  This is how
+// `SceneSingleton<AdventureModuleDebugHelper>.g_instance` is read: the singleton
+// is a runtime-inflated generic over a hotfix type, so it has no AOT get_Instance
+// address and its MethodInfo is not interpreted — a static-field read is the
+// only stable route.  Returns nullptr when the class is unknown, the field does
+// not exist, or the class has not been initialized yet; `declaringName` (when
+// given) receives the runtime name of the class that declares the field, which
+// shows whether the inflated generic base was found.
+void* ReadStaticFieldPtr(void* klassPtr, const char* fieldName,
+                         const char** declaringName = nullptr);
 
 // ---------------------------------------------------------------------------
 //  Called from the hook bodies (proxy.cpp)

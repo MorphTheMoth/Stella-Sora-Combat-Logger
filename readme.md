@@ -44,10 +44,10 @@ In `log_config.json` there are toggles for logging and for enabling hitboxes.
 
 ## How the hooks work
 
-- **Up to 1.16.1** the combat implementation is AOT-compiled into `GameAssembly.dll`, so the DLL hooks fixed RVAs (`g_base + RVA_xxx`) and calls the game's helper functions directly.
-- **Since 2.0.0** the combat/AI implementation lives in the HybridCLR-interpreted `Hotfix.dll` and has no stable native address per method. The DLL then attaches to the interpreter instead: `Interpreter::Execute` (native/AOT → hotfix entries) and `InterpFrameGroup::EnterFrameFromInterpreter` (hotfix → hotfix calls), resolves the 23 logged methods by metadata class/method name, and converts the interpreter's argument slots into the same hook bodies. Outgoing game calls (`HotfixDataController`, `CommonHelper`, `ActorHelper`) are resolved by name and invoked through the interpreter as well. Details, layouts and limitations: `docs/hybrid_hooks.md`.
+- **Up to 1.16.1** the combat implementation was AOT-compiled into `GameAssembly.dll`, so the DLL hooked fixed RVAs (`g_base + RVA_xxx`) and called the game's helper functions directly. That path has been removed — it only ever applied to those builds.
+- **Since 2.0.0** the combat/AI implementation lives in the HybridCLR-interpreted `Hotfix.dll` and has no stable native address per method. The DLL attaches to the interpreter instead: `Interpreter::Execute` (native/AOT → hotfix entries) and `InterpFrameGroup::EnterFrameFromInterpreter` (hotfix → hotfix calls), resolves the 23 logged methods by metadata class/method name, and converts the interpreter's argument slots into the same hook bodies. Outgoing game calls (`HotfixDataController`, `CommonHelper`, `ActorHelper`) are resolved by name and invoked through the interpreter as well. Details, layouts and limitations: `docs/hybrid_hooks.md`.
 - Detection is automatic; `hotfix_hooks` in `log_config.json` (default `true`) turns the interpreter attach layer off. `sanity_log.txt` shows one `[hybrid] target ready: ...` line per hooked method, and one `[layout] … OK`/`MISMATCH` line per struct the log bodies read. A `MISMATCH` line disables hotfix logging on purpose (the class layout moved in the update) — set `hotfix_layout_probe: true` to dump the runtime field offsets and report them.
-- Debug gizmos (`player_gizmo`, `hitbox_gizmo`, …) are AOT-only and stay off in hotfix builds.
+- Debug gizmos (`player_gizmo`, `hitbox_gizmo`, …) read the `AdventureModuleDebugHelper` singleton (`SceneSingleton<T>.g_instance`) through the hotfix class and resolve the flag offsets by field name, so they keep working in 2.0.0.
 
 ## Decompilation & asset extraction
 

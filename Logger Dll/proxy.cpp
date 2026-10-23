@@ -4,7 +4,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
-#include <cstring>
 #include <string>
 #include <unordered_map>
 #include "MinHook.h"
@@ -48,43 +47,12 @@ __attribute__((constructor)) void init_forwards() {
 #endif
 
 // =============================================================================
-//  RVAs
+//  Module base
 // =============================================================================
-static constexpr uintptr_t RVA_EFFECT_ON_INIT                = 0x113E6D0;
-static constexpr uintptr_t RVA_EFFECT_ON_CLEAR               = 0x1139B40;
-static constexpr uintptr_t RVA_UPDATE_LOGIC                  = 0x118EF10;
-static constexpr uintptr_t RVA_BATTLE_START                  = 0x10450B0;
-static constexpr uintptr_t RVA_SPAWN_SKILL                   = 0x118DA40;
-static constexpr uintptr_t RVA_BUFF_EFFECT_ON_INIT           = 0x16F6B80;
-static constexpr uintptr_t RVA_BUFF_ENTITY_EXCUTE            = 0x16FA360;
-static constexpr uintptr_t RVA_CALC_NORMAL_DAMAGE            = 0x11213B0;
-static constexpr uintptr_t RVA_HITTED_ADDITIONAL_ATTR_FIX_EXECUTE = 0x114A730;  // HittedAdditionalAttriFix$$Execute
-static constexpr uintptr_t RVA_GET_ONCE_ATTR                      = 0x1298660;
-static constexpr uintptr_t RVA_GET_VALUE_CONFIG_ID                = 0x1126950;
-static constexpr uintptr_t RVA_GET_EFFECT_VALUE                   = 0x1296860;
-static constexpr uintptr_t RVA_GET_ONCE_ADDITIONAL_ATTRIBUTE_VALUE = 0x12984E0;
-static constexpr uintptr_t RVA_MONSTER_ACTION_STATE_ON_ENTER = 0x1119F30;
-static constexpr uintptr_t RVA_MODULE_CLEAR_DATA     = 0x15DF600;  // AdventureModuleController$$ClearData
-static constexpr uintptr_t RVA_GET_BOTH_ALL_INFO     = 0x123EDF0;  // AdventureActor$$GetBothAllInfo
-static constexpr uintptr_t RVA_AREA_COPY_BATTLE      = 0x16AADA0;  // AreaEffectEntity$$CopyBattleData
-static constexpr uintptr_t RVA_WEAPON_SETUP          = 0x1727CC0;  // AdventureWeapon$$Setup
-static constexpr uintptr_t RVA_FAKE_SET_ATTR_INFO     = 0x1373550;  // FakeAdventureActor$$SetAttrInfo
-static constexpr uintptr_t RVA_SET_PLAYER_SUMMON_ATTR = 0x137BB80;  // MonsterAdventureActor$$SetPlayerSummonAttrInfo
-static constexpr uintptr_t RVA_SET_PLAYER_SUMMON_SNAP = 0x137B6B0;  // MonsterAdventureActor$$SetPlayerSummonAttrInfoBySnapshot
-static constexpr uintptr_t RVA_CLONE_SET_ATTR         = 0x149F820;  // MonsterCloneAdventureActor$$SetAttr
-static constexpr uintptr_t RVA_PARSE_SUMMON_CFG       = 0x14A0490;  // MonsterSummonInfo$$ParseSummonCfg
-static constexpr uintptr_t RVA_SAVE_PLAYER_SNAPSHOT  = 0x14A9B80;  // PlayerAdventureActor$$SavePlayerAttributeSnapshot
-static constexpr uintptr_t RVA_IS_USE_HIT_FROM_SUMMON  = 0x110BFC0;  // ActorHelper$$IsUseHitFromSummon
-static constexpr uintptr_t RVA_GDC_GET_HIT_DAMAGE      = 0x1296E60;  // GameDataController$$GetHitDamage
-static constexpr uintptr_t RVA_GDC_GET_MONSTER         = 0x1298160;  // GameDataController$$GetMonster
-// SceneSingleton<AdventureModuleDebugHelper>.get_Instance() — the global (in
-// .data) that the engine's metadata init (FUN_180608250) patches to point at
-// the MethodInfo.  FUN_180014830 (RVA 0x14830) is the shared get_Instance body
-// we replicate in GetDebugHelperInstance().
-static constexpr uintptr_t RVA_ADM_GET_INSTANCE_METHODINFO = 0x71F4C18;
-static constexpr uintptr_t RVA_GET_INSTANCE_IMPL           = 0x14830;   // FUN_180014830 (get_Instance)
-
-//  Cached module base
+// Since 2.0.0 the combat/AI implementation is HybridCLR-interpreted code in
+// `Hotfix.dll`; there are no per-method addresses to hook.  The module base is
+// still needed to locate the interpreter (hybrid::Detect) and for the one
+// remaining AOT hook, `HttpNetworkManager$$DispatchMsgToLua` (http_hooks.cpp).
 static uintptr_t g_base = 0;
 
 //  Per-hit effect snapshot (set by GetBothAllInfo hook, used by CalculateNormalDamage)
@@ -123,15 +91,14 @@ void ResetHitSnapshots() {
 
 // =============================================================================
 //  Boss Blitz floor-enter hook (room-enter signal for the Lua game clock)
-//  AdventureModuleHelper$$EnterScoreBossFloor (il2cpp, script.json 0x11b46d0)
-//  is called from ScoreBossLevel.lua:76 on every Blitz floor entry — first
-//  entry and retry — so it works on the first combat after game start, before
-//  the Lua clock listener has been installed.  Room-enter processing (clock
-//  seed + Reset) runs synchronously here, before the scene load starts, so it
-//  precedes the actor-spawn setup logs; the origin catalog refresh is deferred
-//  to PollLuaClock (Lua VM re-entry not safe from this call context).
+//  AdventureModuleHelper.EnterScoreBossFloor is called from ScoreBossLevel.lua:76
+//  on every Blitz floor entry — first entry and retry — so it works on the first
+//  combat after game start, before the Lua clock listener has been installed.
+//  Room-enter processing (clock seed + Reset) runs synchronously here, before the
+//  scene load starts, so it precedes the actor-spawn setup logs; the origin
+//  catalog refresh is deferred to PollLuaClock (Lua VM re-entry not safe from
+//  this call context).
 // =============================================================================
-static constexpr uintptr_t RVA_ENTER_SCORE_BOSS_FLOOR = 0x11B46D0;  // AdventureModuleHelper$$EnterScoreBossFloor
 using FnEnterScoreBossFloor = void(__fastcall*)(int32_t id, void* team, void* method);
 static FnEnterScoreBossFloor g_OrigEnterScoreBossFloor = nullptr;
 
@@ -166,18 +133,9 @@ static void __fastcall Hook_ModuleClearData(void* self, void* method) {
 // =============================================================================
 //  CalculateNormalDamage hook
 // =============================================================================
-// HybridCLR (hotfix) mode flag — set once the interpreter attach layer is live,
-// see the hybrid block further down (InstallHybridLayer).
-static bool g_Hybrid = false;
-
-// Defined with the hook installer below; used by GetDebugHelperInstance to
-// refuse 1.15-only gizmo addresses on other builds.
-static bool LegacyRvaTableMatches();
-
-// Hotfix replacements for the legacy `g_base + RVA` calls into GameDataController
-// / CommonHelper.  In AOT builds these are plain calls to the addresses above;
-// in hotfix builds the methods are interpreted and are resolved + invoked by
-// name through the interpreter.
+// Game data / helper accessors.  All of them are interpreted hotfix methods, so
+// they are resolved + invoked by name through the interpreter (the old
+// `g_base + RVA` direct calls only existed in <=1.16.1).
 static Nova_Client_OnceAdditionalAttribute_o* __fastcall HyGetOnceAdditionalAttribute(
         GameDataController_o* self, int32_t key, void*) {
     uint64_t a[2] = { (uint64_t)(uintptr_t)self, (uint64_t)(int64_t)key };
@@ -406,21 +364,13 @@ static int64_t __fastcall Hook_CalcNormalDamage(
 
     // ── Step 4: GDC ─────────────────────────────────────────────────────────
     GameDataController_o* gdc = GetGDC();
-    FnGetOnceAttr                     GetOnceAttr   = nullptr;
+    FnGetOnceAttr                     GetOnceAttr      = nullptr;
     FnGetValueConfigId                GetValueConfigId = nullptr;
-    FnGetOnceAdditionalAttributeValue GetAttrValue      = nullptr;
-    if (gdc && g_base) {
-        if (g_Hybrid) {
-            // Hotfix build: these are interpreted methods, resolve + invoke them
-            // by name through the interpreter.
-            GetOnceAttr      = &HyGetOnceAdditionalAttribute;
-            GetValueConfigId = &HyGetValueConfigIdByLevelType;
-            GetAttrValue     = &HyGetOnceAdditionalAttributeValue;
-        } else {
-            GetOnceAttr   = reinterpret_cast<FnGetOnceAttr>                    (g_base + RVA_GET_ONCE_ATTR);
-            GetValueConfigId = reinterpret_cast<FnGetValueConfigId>            (g_base + RVA_GET_VALUE_CONFIG_ID);
-            GetAttrValue      = reinterpret_cast<FnGetOnceAdditionalAttributeValue>(g_base + RVA_GET_ONCE_ADDITIONAL_ATTRIBUTE_VALUE);
-        }
+    FnGetOnceAdditionalAttributeValue GetAttrValue     = nullptr;
+    if (gdc) {
+        GetOnceAttr      = &HyGetOnceAdditionalAttribute;
+        GetValueConfigId = &HyGetValueConfigIdByLevelType;
+        GetAttrValue     = &HyGetOnceAdditionalAttributeValue;
     }
 
     // ── Step 5: resolve raw attr lists  ──────────────────────────────────────
@@ -459,33 +409,17 @@ static int64_t __fastcall Hook_CalcNormalDamage(
 using FnCopyBattleData = void(__fastcall*)(void*, bool, void*);
 static FnCopyBattleData g_OrigCopyBattleData = nullptr;
 
-using FnIsUseHitFromSummon = bool(__fastcall*)(LogicEntity_o*, PlayerAdventureActor_o**, void*);
-static FnIsUseHitFromSummon g_IsUseHitFromSummon = nullptr;
-
 // Resolve the real stats source: if the actor is a summoned entity, use the
-// summoner instead (ActorHelper$$IsUseHitFromSummon).
+// summoner instead (ActorHelper.IsUseHitFromSummon).
 static AdventureActor_o* ResolveHitSource(AdventureActor_o* source) {
-    if (!source || !g_base) return source;
+    if (!source) return source;
 
-    if (g_Hybrid) {
-        // Interpreted method: resolve by name, call through the interpreter.
-        // Until the game has run any ActorHelper method the class is unknown and
-        // the source is returned unchanged.
-        PlayerAdventureActor_o* summoner = nullptr;
-        uint64_t a[2] = { (uint64_t)(uintptr_t)source, (uint64_t)(uintptr_t)&summoner };
-        uint64_t r = hybrid::CallGameMethod("ActorHelper", "IsUseHitFromSummon", a, 2, "IsUseHitFromSummon");
-        bool isSummoned = (r & 0xFF) != 0;
-        return (isSummoned && summoner) ? reinterpret_cast<AdventureActor_o*>(summoner) : source;
-    }
-
-    if (!g_IsUseHitFromSummon)
-        g_IsUseHitFromSummon = reinterpret_cast<FnIsUseHitFromSummon>(g_base + RVA_IS_USE_HIT_FROM_SUMMON);
-    if (!g_IsUseHitFromSummon) return source;
+    // Until the game has run any ActorHelper method the class is unknown and the
+    // source is returned unchanged (the resolver logs the miss once).
     PlayerAdventureActor_o* summoner = nullptr;
-    bool isSummoned = g_IsUseHitFromSummon(
-        reinterpret_cast<LogicEntity_o*>(source),
-        reinterpret_cast<PlayerAdventureActor_o**>(&summoner),
-        nullptr);
+    uint64_t a[2] = { (uint64_t)(uintptr_t)source, (uint64_t)(uintptr_t)&summoner };
+    uint64_t r = hybrid::CallGameMethod("ActorHelper", "IsUseHitFromSummon", a, 2, "IsUseHitFromSummon");
+    bool isSummoned = (r & 0xFF) != 0;
     return (isSummoned && summoner) ? reinterpret_cast<AdventureActor_o*>(summoner) : source;
 }
 
@@ -952,69 +886,48 @@ static void __fastcall Hook_UpdateLogic(void* self, TrueSync_FP_o logicDeltaTime
 
     // Re-apply gizmo flags every tick — the engine clears them between frames,
     // so a one-shot write at DllMain is not enough.
-    EnableAllDebugGizmos(g_base);
+    EnableAllDebugGizmos();
 
     g_OrigUpdateLogic(self, logicDeltaTime, method);
 }
 
+// The gizmo helper is `SceneSingleton<AdventureModuleDebugHelper>` in 2.0.0:
+// AdventureModuleDebugHelper is a hotfix class (Hotfix.decompiled.cs:54145) and
+// the singleton base is an AOT generic instantiated over it, so there is no AOT
+// `get_Instance` address and the MethodInfo is not interpreted either.  The
+// instance is therefore read straight out of the declaring class's static field
+// (`SceneSingleton<T>.g_instance`), which is per-instantiation and initialized by
+// the game's own Awake.  The class is learned by the attach layer as soon as the
+// helper's own interpreted methods (Update/…) run.
 void* GetDebugHelperInstance() {
-    if (!g_base) return nullptr;
-
     // Nothing to do if every gizmo is off.
     bool anyGizmo = false;
     for (const auto& g : g_GizmoFlags)
         if (g_Cfg.*(g.enabled)) { anyGizmo = true; break; }
     if (!anyGizmo) return nullptr;
 
-    // Hotfix build, or a build whose combat functions are not the ones the
-    // 1.15 RVA table refers to: both RVA_GET_INSTANCE_IMPL (0x14830) and
-    // RVA_ADM_GET_INSTANCE_METHODINFO (0x71F4C18) are 1.15-specific and point at
-    // unrelated code in 2.0.0, so never call through them unless the table
-    // verifiably belongs to this image.
-    if (g_Hybrid || !LegacyRvaTableMatches()) {
-        static bool once = false;
-        if (!once) {
-            once = true;
-            log("[gizmo] debug gizmos unavailable: this build has no usable "
-                "AdventureModuleDebugHelper.get_Instance address (hotfix/newer build)");
-        }
-        return nullptr;
-    }
-
-    // The game's generic-class metadata lives on the il2cpp HEAP, not in the
-    // module image (observed: mi=0x3276AD00, klass=0x3276A180), so any manual
-    // re-implementation that range-checks against the module is wrong.  Just
-    // call the engine's own get_Instance (FUN_180014830) with the MethodInfo*
-    // the engine itself uses — exactly what the pre-update code did.  It
-    // handles Class::Init internally and returns the singleton (or null until
-    // the helper has been Awake'd).
-    typedef uintptr_t(__fastcall* FnGetInstance)(uintptr_t mi);
-    static FnGetInstance getInstance = nullptr;
-    if (!getInstance) getInstance = (FnGetInstance)(g_base + RVA_GET_INSTANCE_IMPL);
-
-    uintptr_t mi = *(uintptr_t*)(g_base + RVA_ADM_GET_INSTANCE_METHODINFO);
-
     // Rate-limited diagnostics — log the first ~20 attempts and every 300th
-    // after that.
+    // after that; the loop retries every logic tick until the level scene is up.
     static int64_t s_attempts = 0;
     s_attempts++;
     #define GIZMO_LOG(...) do { if (s_attempts <= 20 || (s_attempts % 300) == 0) log(__VA_ARGS__); } while (0)
 
-    // Guard before handing mi to the engine's getter (which derefs it): require
-    // a plausible pointer.  Unpatched metadata tokens are tiny/unaligned and are
-    // rejected here; the patched MethodInfo is 8-aligned.
-    if (!mi || mi < 0x10000 || (mi & 7)) {
-        GIZMO_LOG("[gizmo] resolve #%lld mi=0x%llX -> implausible (not patched yet?)", (long long)s_attempts, (unsigned long long)mi);
+    void* klass = hybrid::ClassByName("AdventureModuleDebugHelper");
+    if (!klass) {
+        GIZMO_LOG("[gizmo] resolve #%lld: AdventureModuleDebugHelper not learned yet "
+                  "(no interpreted method of the class has run)", (long long)s_attempts);
         return nullptr;
     }
 
-    uintptr_t inst = getInstance(mi);
+    const char* declaredOn = "?";
+    void* inst = hybrid::ReadStaticFieldPtr(klass, "g_instance", &declaredOn);
     if (!inst) {
-        GIZMO_LOG("[gizmo]   get_Instance -> 0 (helper not awake yet, retrying)");
+        GIZMO_LOG("[gizmo] resolve #%lld: g_instance (declared on %s) is null "
+                  "(helper not awake yet, retrying)", (long long)s_attempts, declaredOn);
         return nullptr;
     }
     #undef GIZMO_LOG
-    return (void*)inst;
+    return inst;
 }
 
 using FnBattleStart = void(__fastcall*)( void*, void*, void*);
@@ -1043,10 +956,10 @@ static void* __fastcall Hook_SpawnSkill(void* self, int32_t skillId, void* metho
 //  HybridCLR (hotfix) attach layer
 // =============================================================================
 //  2.0.0 moved the complete combat/AI implementation into the HybridCLR
-//  interpreted `Hotfix.dll`; the AOT RVAs above refer to functions that only
-//  exist in <=1.16.1.  When the interpreter is present (hybrid::Detect) the
-//  hooks are instead registered by metadata name (see include/hybrid_hooks.h)
-//  and the engine calls are performed by the layer:
+//  interpreted `Hotfix.dll`, so this is now the only hook path: there are no
+//  per-method AOT addresses for the combat methods any more (the 1.15 RVA table
+//  was removed).  The hooks are registered by metadata name (see
+//  include/hybrid_hooks.h) and the engine calls are performed by the layer:
 //
 //    * `InstallHybridOrigStubs` replaces every `g_OrigX` with a stub, because the
 //      layer runs the real call itself (before an Entry body, after an After
@@ -1056,8 +969,8 @@ static void* __fastcall Hook_SpawnSkill(void* self, int32_t skillId, void* metho
 //      row), which is taken from the native entry's return buffer or, for
 //      interpreted->interpreted calls, from a duplicate call (both methods are
 //      verified side-effect free apart from static caches).
-//    * the `HyGet*` helpers replace the legacy `g_base + RVA` calls into hotfix
-//      code (GameDataController/CommonHelper/ActorHelper helpers).
+//    * the `HyGet*` helpers are the only implementation of the hotfix
+//      GameDataController/CommonHelper/ActorHelper accessors.
 // =============================================================================
 
 // ── original-call stubs ─────────────────────────────────────────────────────
@@ -1312,45 +1225,29 @@ static const hybrid::TargetDesc g_HybridTargets[] = {
     { "HotfixDataController",        "GetMonster",                       2,  false, hybrid::Mode::After, true,  HY_GetMonster },
 };
 
-// Install the hotfix attach layer (if this build has one).  Returns true when
-// the legacy AOT hooks must be skipped.
+// Install the hotfix attach layer.  Returns true when it is live; without it
+// there are no combat hooks at all (the legacy AOT path no longer exists).
 static bool InstallHybridLayer() {
-    if (!hybrid::Detect(g_base)) return false;
+    if (!hybrid::Detect(g_base)) {
+        log("[init] HybridCLR interpreter not found — this is not a 2.0.0+ build; "
+            "no combat hooks installed");
+        return false;
+    }
     InstallHybridOrigStubs();
     const int count = (int)(sizeof(g_HybridTargets) / sizeof(g_HybridTargets[0]));
     hybrid::InstallAll(g_HybridTargets, count);
-    g_Hybrid = hybrid::Active();
-    if (g_Hybrid)
+    if (hybrid::Active()) {
         log("[init] hotfix attach layer active — %d combat methods hooked by name", count);
-    else
-        log("[init] hotfix build detected but hotfix_hooks is disabled — no combat hooks");
-    return g_Hybrid;
+        return true;
+    }
+    log("[init] hotfix attach layer detected but hotfix_hooks is disabled in the config — "
+        "no combat hooks");
+    return false;
 }
 
 // =============================================================================
 //  Hook installer / init
 // =============================================================================
-// Prologue check for the AOT RVA table above.
-//
-// Every constant in that table was derived from 1.15.  Since 2.0.0 all of those
-// methods are hotfix code and the RVAs point at unrelated functions, so hooking
-// them would corrupt whatever happens to live there.  The interpreter attach
-// layer normally takes over first (InstallHybridLayer), but if the interpreter is
-// ever not found (e.g. a future build moved it), the legacy branch must not fire
-// blindly: require the two anchor prologues to match the 1.15 image.
-static bool LegacyRvaTableMatches() {
-    static const uint8_t kCalcNormalDamage[12] =
-        { 0x44, 0x89, 0x4C, 0x24, 0x20, 0x4C, 0x89, 0x44, 0x24, 0x18, 0x48, 0x89 };
-    static const uint8_t kEffectOnInit[12] =
-        { 0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x6C, 0x24, 0x18, 0x56, 0x57 };
-    if (!g_base) return false;
-    bool calc = std::memcmp(reinterpret_cast<const void*>(g_base + RVA_CALC_NORMAL_DAMAGE),
-                            kCalcNormalDamage, sizeof(kCalcNormalDamage)) == 0;
-    bool eff  = std::memcmp(reinterpret_cast<const void*>(g_base + RVA_EFFECT_ON_INIT),
-                            kEffectOnInit, sizeof(kEffectOnInit)) == 0;
-    return calc && eff;
-}
-
 bool InstallHook(uintptr_t target, void* hook, void** original, const char* name) {
     MH_STATUS s = MH_CreateHook(reinterpret_cast<void*>(target), hook, original);
     if (s != MH_OK) { log("[ERROR] MH_CreateHook failed for %s: %d", name, (int)s); return false; }
@@ -1381,43 +1278,10 @@ static DWORD WINAPI InitThread(LPVOID) {
 
     if (MH_Initialize() != MH_OK) { log("[ERROR] MH_Initialize failed."); CoUninitialize(); return 1; }
 
-    // 2.0.0+ : the combat implementation lives in the HybridCLR-interpreted
-    // Hotfix.dll, so the AOT RVAs below have nothing to attach to.  Prefer the
-    // interpreter attach layer whenever it is present.
-    const bool hybridMode = InstallHybridLayer();
+    // Combat/AI lives in the HybridCLR-interpreted Hotfix.dll; the attach layer
+    // is the only hook path (see the hybrid block above).
+    InstallHybridLayer();
 
-    if (!hybridMode) {
-    if (!LegacyRvaTableMatches()) {
-        log("[init] this GameAssembly build does not match the built-in (1.15) AOT RVA table — "
-            "AOT combat hooks skipped (the interpreter attach layer did not take over either). "
-            "If this is a pre-2.0.0 build, the RVA table in proxy.cpp needs re-deriving; "
-            "if it is 2.0.0+, check the [hybrid] detection lines above.");
-    } else {
-    InstallHook(g_base + RVA_EFFECT_ON_INIT,         reinterpret_cast<void*>(&Hook_EffectOnInit),       (void**)&g_OrigEffectOnInit,       "AdventureEffect$$OnInit");
-    InstallHook(g_base + RVA_EFFECT_ON_CLEAR,        reinterpret_cast<void*>(&Hook_EffectOnClear),      (void**)&g_OrigEffectOnClear,      "AdventureEffectBase$$OnClear");
-    InstallHook(g_base + RVA_HITTED_ADDITIONAL_ATTR_FIX_EXECUTE, reinterpret_cast<void*>(&Hook_HittedAdditionalAttrFixExecute), (void**)&g_OrigHittedAdditionalAttrFixExecute, "HittedAdditionalAttriFix$$Execute");
-    InstallHook(g_base + RVA_UPDATE_LOGIC,           reinterpret_cast<void*>(&Hook_UpdateLogic),        (void**)&g_OrigUpdateLogic,        "AdventureLevelController$$UpdateLogic");
-    InstallHook(g_base + RVA_BATTLE_START,           reinterpret_cast<void*>(&Hook_BattleStart),        (void**)&g_OrigBattleStart,        "ActorEffectManage$$OnBattleStart");
-    InstallHook(g_base + RVA_SPAWN_SKILL,            reinterpret_cast<void*>(&Hook_SpawnSkill),         (void**)&g_OrigSpawnSkill,         "AdventureLevelController$$SpawnSkill");
-    InstallHook(g_base + RVA_BUFF_EFFECT_ON_INIT,    reinterpret_cast<void*>(&Hook_BuffEffectOnInit),   (void**)&g_OrigBuffEffectOnInit,   "BuffEffectBase$$OnInit");
-    InstallHook(g_base + RVA_BUFF_ENTITY_EXCUTE,     reinterpret_cast<void*>(&Hook_BuffEntityExcute),   (void**)&g_OrigBuffEntityExcute,   "BuffEntity$$BuffExcute");
-    InstallHook(g_base + RVA_CALC_NORMAL_DAMAGE,     reinterpret_cast<void*>(&Hook_CalcNormalDamage),   (void**)&g_OrigCalcNormalDamage,   "CommonHelper$$CalculateNormalDamage");
-    InstallHook(g_base + RVA_MONSTER_ACTION_STATE_ON_ENTER, reinterpret_cast<void*>(&Hook_MonsterActionStateOnEnter), (void**)&g_OrigMonsterActionStateOnEnter, "MonsterActionState$$OnEnter");
-    InstallHook(g_base + RVA_MODULE_CLEAR_DATA,      reinterpret_cast<void*>(&Hook_ModuleClearData),    (void**)&g_OrigModuleClearData,    "AdventureModuleController$$ClearData");
-    InstallHook(g_base + RVA_ENTER_SCORE_BOSS_FLOOR, reinterpret_cast<void*>(&Hook_EnterScoreBossFloor), (void**)&g_OrigEnterScoreBossFloor, "AdventureModuleHelper$$EnterScoreBossFloor");
-    InstallHook(g_base + RVA_GET_BOTH_ALL_INFO,      reinterpret_cast<void*>(&Hook_GetBothAllInfo),     (void**)&g_OrigGetBothAllInfo,     "AdventureActor$$GetBothAllInfo");
-    InstallHook(g_base + RVA_AREA_COPY_BATTLE,       reinterpret_cast<void*>(&Hook_CopyBattleData),     (void**)&g_OrigCopyBattleData,     "AreaEffectEntity$$CopyBattleData");
-    InstallHook(g_base + RVA_WEAPON_SETUP,           reinterpret_cast<void*>(&Hook_WeaponSetup),        (void**)&g_OrigWeaponSetup,        "AdventureWeapon$$Setup");
-    InstallHook(g_base + RVA_FAKE_SET_ATTR_INFO,     reinterpret_cast<void*>(&Hook_FakeSetAttrInfo),    (void**)&g_OrigFakeSetAttrInfo,    "FakeAdventureActor$$SetAttrInfo");
-    InstallHook(g_base + RVA_SET_PLAYER_SUMMON_ATTR, reinterpret_cast<void*>(&Hook_SetPlayerSummonAttr),(void**)&g_OrigSetPlayerSummonAttr,"MonsterAdventureActor$$SetPlayerSummonAttrInfo");
-    InstallHook(g_base + RVA_SET_PLAYER_SUMMON_SNAP, reinterpret_cast<void*>(&Hook_SetPlayerSummonSnap),(void**)&g_OrigSetPlayerSummonSnap,"MonsterAdventureActor$$SetPlayerSummonAttrInfoBySnapshot");
-    InstallHook(g_base + RVA_CLONE_SET_ATTR,         reinterpret_cast<void*>(&Hook_CloneSetAttr),       (void**)&g_OrigCloneSetAttr,       "MonsterCloneAdventureActor$$SetAttr");
-    InstallHook(g_base + RVA_PARSE_SUMMON_CFG,       reinterpret_cast<void*>(&Hook_ParseSummonCfg),     (void**)&g_OrigParseSummonCfg,     "MonsterSummonInfo$$ParseSummonCfg");
-    InstallHook(g_base + RVA_SAVE_PLAYER_SNAPSHOT,   reinterpret_cast<void*>(&Hook_SavePlayerSnapshot), (void**)&g_OrigSaveSnapshot,       "PlayerAdventureActor$$SavePlayerAttributeSnapshot");
-    InstallHook(g_base + RVA_GDC_GET_HIT_DAMAGE,     reinterpret_cast<void*>(&GdcHook_GetHitDamage),    (void**)&g_GdcHooks[0].original, g_GdcHooks[0].name);
-    InstallHook(g_base + RVA_GDC_GET_MONSTER,        reinterpret_cast<void*>(&GdcHook_GetMonster),      (void**)&g_GdcHooks[1].original, g_GdcHooks[1].name);
-    }
-    }
     InstallHttpHooks(g_base);
     if (!InstallHotkeys())
         log("[hotkey] game window not ready yet; retrying in background for Alt+1..5");

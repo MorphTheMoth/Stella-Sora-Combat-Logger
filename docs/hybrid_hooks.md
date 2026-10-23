@@ -22,7 +22,7 @@ Verified statements this design rests on (2.0.0 image, base `0x180000000`; upstr
 1. Parse `.pdata` (`IMAGE_DIRECTORY_ENTRY_EXCEPTION`) into `{begin, end}` ranges. **`RUNTIME_FUNCTION` is 12 bytes** (`BeginAddress`, `EndAddress`, `UnwindInfoAddress`) — declaring an 8-byte struct makes every lookup wrong, which shows up as `CallInterpDelegate literal found (1) but no xref resolved` even though the xref exists. That exact mistake cost one game run; the struct now carries a `static_assert(sizeof(RuntimeFunc) == 12)`.
 2. Find the `"CallInterpDelegate"` literal, then scan `.text` for `lea reg, [rip+disp32]` instructions (byte form `48/4C 8D <modrm with mod=00,rm=101>`) whose target equals the literal, and vote on the *.pdata* function containing each xref. Require the winner to be a function start larger than 20 KB. Fallback: the version-table RVA `0x64E270` (`.pdata` start + >20 KB), which is what a 2.0.0 run reports when the literal scan is inconclusive.
 3. Within `Interpreter::Execute`'s range, collect direct `call` targets and keep functions that are `.pdata` starts of 64..512 bytes, are called at least twice, and read `method->interpData` (`48 8B <mod=01 disp8> 58`). **Two** functions match that in 2.0.0: `EnterFrameFromInterpreter` (`0x64E1C0`, 172 B, 9 calls) and `InterpreterModule::GetInterpMethodInfo` (`0x65D840`, 285 B, 14 calls, the lazy `interpData` resolver Execute calls from its prologue). They are told apart by a store test: `GetInterpMethodInfo` *writes* `method->interpData` (`48 89 <mod=01 disp8> 58`) as its cache, while the frame-enter only reads the field. Candidates are scored (interpData read +3, ≥2 calls +2, ≥5 calls +1) and sorted by score then address, so the choice is deterministic; the log line reports `score`, call count and candidate count.
-4. On failure the internal hook is skipped with a log line and the native-entry hook still installs; if `Execute` itself is not found, `InstallHybridLayer()` returns false and the legacy path takes over (guarded by its own prologue check).
+4. On failure the internal hook is skipped with a log line and the native-entry hook still installs; if `Execute` itself is not found, `InstallHybridLayer()` returns false and **no combat hooks are installed** — as of 2.0.0 there is no AOT fallback path left (the 1.15 RVA table and `LegacyRvaTableMatches()` were removed).
 
 ## Layouts used
 
@@ -161,7 +161,7 @@ Verified in game (2.0.0):
 - deferred (`after`) bodies flush at the expected time (casts, buffs, effects and hits log in the right order);
 - all `[layout] … OK` checks pass, and the outgoing calls (`GetOnceAdditionalAttribute`, `GetOnceAdditionalAttributeValue`, `GetValueConfigIdByLevelType`, `IsUseHitFromSummon`) resolve and return the same values the 1.15 AOT path produced.
 
-To check a run, grep the log for `[hybrid]`. `hotfix_hooks` in the config enables/disables the layer (default true); when it is disabled the hotfix build simply installs no combat hooks, and when the interpreter is not detected (≤1.16.1) the legacy RVA path is used unchanged.
+To check a run, grep the log for `[hybrid]`. `hotfix_hooks` in the config enables/disables the layer (default true); when it is disabled the hotfix build simply installs no combat hooks. The interpreter attach layer is the only combat path — builds without it (≤1.16.1) are no longer supported.
 
 ## 2.0.0 symbol audit (old RVAs / names)
 
@@ -204,8 +204,8 @@ Every constant in the legacy `RVA_*` table was re-checked against `versions/2.0.
 Notes:
 
 - `GameDataController` *as a type* still exists in the AOT image (it is the config loader now) but has none of the combat/cache accessors; the object the logger captures is a `HotfixDataController`, so matching on the old name would never succeed (which is why the table uses the hotfix name).
-- Only one legacy hook still points at AOT code: `HttpNetworkManager$$DispatchMsgToLua`. Same signature and byte-identical prologue (`48 89 6C 24 18 56 41 56`), so `http_hooks.cpp` now probes `0x12F7060` then `0x133EEA0` and disables the HTTP/Star Tower message logs if neither matches.
-- The whole 1.15-derived table is now guarded: `LegacyRvaTableMatches()` requires the 1.15 prologues at `RVA_EFFECT_ON_INIT`/`RVA_CALC_NORMAL_DAMAGE` before any AOT hook is installed, so a build where the interpreter attach layer fails cannot hook unrelated 2.0.0 code (the 2.0.0 bytes at those RVAs are completely different: `24 30 48 85 C9 0F 85 3E 0E 00 00 45` / `05 48 8B 88 B8 00 00 00 48 8B 11 48`).
+- Only one hook still points at AOT code: `HttpNetworkManager$$DispatchMsgToLua`. Same signature and byte-identical prologue (`48 89 6C 24 18 56 41 56`), so `http_hooks.cpp` probes `0x12F7060` then `0x133EEA0` and disables the HTTP/Star Tower message logs if neither matches.
+- The 1.15 combat RVA table, the `g_base + RVA` outgoing calls, `LegacyRvaTableMatches()` and the whole AOT install branch were **deleted**; the hotfix attach layer is the only hook path. The table above is kept as the historical audit of why each address moved.
 
 Non-RVA game dependencies that were re-checked:
 
@@ -216,7 +216,7 @@ Non-RVA game dependencies that were re-checked:
 
 ## Known limitations
 
-- **Game gizmos** (`player_gizmo`, `hitbox_gizmo`, …) stay off in hotfix mode: they need the AOT generic singleton `SceneSingleton<AdventureModuleDebugHelper>.get_Instance` plus its engine-patched `MethodInfo` global (`RVA_GET_INSTANCE_IMPL` `0x14830`, `RVA_ADM_GET_INSTANCE_METHODINFO` `0x71F4C18`), neither of which survives into the hotfix image. `GetDebugHelperInstance()` logs this once.
+- **Game gizmos** (`player_gizmo`, `hitbox_gizmo`, …) work in hotfix mode through the singleton's static field, not through an address: `AdventureModuleDebugHelper` is a hotfix class (`Hotfix.decompiled.cs:54145`) whose `SceneSingleton<T>` base is an AOT generic instantiated over it, so `get_Instance` has neither an AOT address nor an interpreted MethodInfo. `GetDebugHelperInstance()` therefore reads `g_instance` out of the declaring class's `static_fields` block (`hybrid::ClassByName` + `hybrid::ReadStaticFieldPtr`) and the flag offsets are resolved by field name from the runtime class in `EnableAllDebugGizmos()` — the 1.15 offsets (`0x28`…) are stale because 2.0.0 inserted `IndicatorsRoot` before the bools.
 - **Dummy mode / call suppression** is unchanged in scope: the legacy `monster_dummy_mode` path only rewrites data read from configuration, it never suppressed an engine call. Redirecting or suppressing interpreted calls from the frame hook is not possible (see above), so no suppression was attempted.
 - `GetMonster`'s dummy skin on the interpreted → interpreted path mutates the row returned by the duplicate call; if the game's `GetMonster` ever returns a fresh object per call, the mutation would not be seen by the engine (the native path is exact). Blitz-only feature, marked uncertain.
 - A deferred body reads the caller's memory through the argument snapshot; `out`/`ref` pointers may have been overwritten by the caller before the flush runs. `CalculateNormalDamage` is immune (the duplicate call rewrites them); the other `after` targets read object fields and identities, not `out` parameters.

@@ -226,20 +226,23 @@ void BuildResetJson();
 std::string GetLocalAppDataPath();
 void InitializeLogger();
 
-// Gizmo flag table: {offset within AdventureModuleDebugHelper, LogConfig flag}.
-// Defined in logging.cpp; shared by EnableAllDebugGizmos (writes the flag bytes)
-// and GetDebugHelperInstance in proxy.cpp ("any gizmo enabled" early-out).
-struct GizmoFlag { uintptr_t offset; bool LogConfig::* enabled; };
+// Gizmo flag table: {field name on AdventureModuleDebugHelper, LogConfig flag}.
+// Defined in logging.cpp; shared by EnableAllDebugGizmos (resolves the offset
+// from the runtime class and writes the flag bytes) and GetDebugHelperInstance
+// in proxy.cpp ("any gizmo enabled" early-out).  Names are resolved at runtime
+// because 2.0.0's helper is a hotfix class and gained an `IndicatorsRoot` field
+// in front of the bools, so the 1.15 offsets no longer apply.
+struct GizmoFlag { const char* field; bool LogConfig::* enabled; };
 extern const std::vector<GizmoFlag> g_GizmoFlags;
 
 // HITTED_ADDITIONAL_ATTR_FIX (effectType 45) applied tracking.
 // These effects persist in the actor's effectsDict but only mutate the shared
 // per-hit static fromAdditionalAttrInfo when their Execute actually runs during
 // a hit. So "present in the dict" != "stat applied". The game calls
-// HittedAdditionalAttriFix_Execute (RVA 0x114A730) right before
-// CalculateNormalDamage folds that snapshot into damage, so we hook it and
-// record which configIds were actually applied for the in-flight hit, then
-// filter the logged AttackerEffects list to only those.
+// HittedAdditionalAttriFix.Execute right before CalculateNormalDamage folds that
+// snapshot into damage, so we hook it and record which configIds were actually
+// applied for the in-flight hit, then filter the logged AttackerEffects list to
+// only those.
 //   MarkHittedAdditionalAttrFixApplied(configId)  — called from the Execute hook
 //   TakeAppliedHittedAttrFixSnapshot()             — copy-and-clear (start of a hit)
 void MarkHittedAdditionalAttrFixApplied(int32_t configId);
@@ -271,11 +274,14 @@ void MaybeEmitOriginCatalog(AdventureActor_o* fromActor, AdventureActor_o* toAct
 // catalog and by dummy.cpp's ScoreBoss test entry.
 std::string RunLuaDoString(const char* chunk, const char* label);
 
-// Resolve the AdventureModuleDebugHelper singleton (SceneSingleton<T>.
-// get_Instance chain — defined in proxy.cpp).  Used by EnableAllDebugGizmos
+// Resolve the AdventureModuleDebugHelper singleton (defined in proxy.cpp: reads
+// the SceneSingleton<T>.g_instance static field).  Used by EnableAllDebugGizmos
 // to write the gizmo flag bytes onto the same instance the engine reads.
 void* GetDebugHelperInstance();
 
 bool InstallHook(uintptr_t target, void* hook, void** original, const char* name);
 
-bool EnableAllDebugGizmos(uintptr_t moduleBase);
+// Re-apply the configured gizmo flags onto the live helper (called every logic
+// tick — the engine clears the fields between frames).  No-op until the helper
+// exists; returns false in that case.
+bool EnableAllDebugGizmos();

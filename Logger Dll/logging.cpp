@@ -514,40 +514,41 @@ json logAdventureActorSpecialAttrsJson(AdventureActor_o* actor) {
 // =============================================================================
 //  Debug Gizmos
 // =============================================================================
-// AdventureModuleDebugHelper boolean fields, by offset. One table feeds both
-// the flag writes here and the "any gizmo enabled" guard in GetDebugHelperInstance
-// (proxy.cpp).
+// AdventureModuleDebugHelper boolean fields, by name. One table feeds both the
+// flag writes here and the "any gizmo enabled" guard in GetDebugHelperInstance
+// (proxy.cpp).  Offsets are resolved from the runtime class because the helper
+// is hotfix code in 2.0.0 and its layout differs from the 1.15 dump
+// (Hotfix.decompiled.cs:54145: IndicatorsRoot, then the 12 bools).
 const std::vector<GizmoFlag> g_GizmoFlags = {
-    { 0x28, &LogConfig::player_gizmo             },
-    { 0x29, &LogConfig::monster_gizmo            },
-    { 0x2A, &LogConfig::bullet_gizmo             },
-    { 0x2B, &LogConfig::hitbox_gizmo             },
-    { 0x2C, &LogConfig::hearing_gizmo_for_player },
-    { 0x2D, &LogConfig::hearing_gizmo_for_monster},
-    { 0x2E, &LogConfig::vision_gizmo_for_player  },
-    { 0x2F, &LogConfig::vision_gizmo_for_monster },
-    { 0x30, &LogConfig::input_and_vision_gizmo   },
-    { 0x31, &LogConfig::monster_path_gizmo       },
-    { 0x32, &LogConfig::player_path_gizmo        },
-    { 0x33, &LogConfig::camera_gizmo             },
+    { "PlayerGizmo",             &LogConfig::player_gizmo             },
+    { "MonsterGizmo",            &LogConfig::monster_gizmo            },
+    { "BulletGizmo",             &LogConfig::bullet_gizmo             },
+    { "HitboxGizmo",             &LogConfig::hitbox_gizmo             },
+    { "HearingGizmoForPlayer",   &LogConfig::hearing_gizmo_for_player },
+    { "HearingGizmoForMonster",  &LogConfig::hearing_gizmo_for_monster},
+    { "VisionGizmoForPlayer",    &LogConfig::vision_gizmo_for_player  },
+    { "VisionGizmoForMonster",   &LogConfig::vision_gizmo_for_monster },
+    { "InputAndVisionGizmo",     &LogConfig::input_and_vision_gizmo   },
+    { "MonsterPathGizmo",        &LogConfig::monster_path_gizmo       },
+    { "PlayerPathGizmo",         &LogConfig::player_path_gizmo        },
+    { "CameraGizmo",             &LogConfig::camera_gizmo             },
 };
 
-bool EnableAllDebugGizmos(uintptr_t moduleBase)
+bool EnableAllDebugGizmos()
 {
-    if (!moduleBase) return false;
-
-    // Resolve the AdventureModuleDebugHelper singleton the same way the engine
-    // does (SceneSingleton<T>.get_Instance chain — see GetDebugHelperInstance
-    // in proxy.cpp).  Returns null until the instance exists; the caller re-runs
-    // this every logic tick so it takes effect as soon as the helper is up.
     void* helper = GetDebugHelperInstance();
     if (!helper) return false;
-    uintptr_t obj = reinterpret_cast<uintptr_t>(helper);
 
-    for (const auto& g : g_GizmoFlags)
-        *reinterpret_cast<char*>(obj + g.offset) = g_Cfg.*(g.enabled) ? 1 : 0;
-
-    return true;
+    bool anyWritten = false;
+    for (const auto& g : g_GizmoFlags) {
+        // Per-object field lookup walks the runtime class chain (hotfix layout).
+        int32_t off = hybrid::FieldOffsetInObject(helper, g.field);
+        if (off < 0) continue;             // -1 bad object, -2 no such field
+        *reinterpret_cast<char*>(reinterpret_cast<uint8_t*>(helper) + off) =
+            g_Cfg.*(g.enabled) ? 1 : 0;
+        anyWritten = true;
+    }
+    return anyWritten;
 }
 
 // =============================================================================
@@ -1279,9 +1280,9 @@ void BuildSkillCastJson(int32_t skillId) {
 // =============================================================================
 // Reads the live game state through the game's own Lua code:
 //   LuaManager (MonoSingleton, g_instance @static 0x0) → luaEnv @0x20
-//   → xlua.LuaEnv.DoString (RVA 0x140F710, dump.cs:207654) with a chunk that
-//   mirrors PlayerCharData.lua:CalCharacterAttrBattle (line 1690) / the tower
-//   variant StarTowerLevelData.lua:1132, using the game's own accessors.
+//   → xlua.LuaEnv.DoString (found by il2cpp reflection, not by address) with a
+//   chunk that mirrors PlayerCharData.lua:CalCharacterAttrBattle (line 1690) /
+//   the tower variant StarTowerLevelData.lua:1132, using the game's own accessors.
 // Field offsets from dump.cs:188464 (LuaManager) — static g_instance @0x0,
 // luaEnv backing field @0x20.
 

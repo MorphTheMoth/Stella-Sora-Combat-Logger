@@ -650,7 +650,8 @@ static bool FieldNameMatches(const char* runtimeName, const char* want) {
 // *own* fields, so inherited fields (e.g. MonsterSummonInfo._Entity, declared on
 // LogicComponent) require walking the base chain; inherited fields keep the same
 // offset in the derived instance.
-static bool FieldOffsetOf(void* klassPtr, const char* fieldName, int32_t* out) {
+static bool FieldOffsetOf(void* klassPtr, const char* fieldName, int32_t* out,
+                           void** declaring = nullptr) {
     auto* klass = reinterpret_cast<Il2CppClass*>(klassPtr);
     for (int depth = 0; klass && depth < 16; depth++) {
         int count = klass->_2.field_count;
@@ -663,6 +664,7 @@ static bool FieldOffsetOf(void* klassPtr, const char* fieldName, int32_t* out) {
                 if (!PlausibleName(n)) break;
                 if (!FieldNameMatches(n, fieldName)) continue;
                 *out = *reinterpret_cast<int32_t*>(reinterpret_cast<uint8_t*>(fi) + 0x18);
+                if (declaring) *declaring = klass;
                 return true;
             }
         }
@@ -681,6 +683,43 @@ int32_t FieldOffsetInObject(const void* obj, const char* fieldName) {
     int32_t off = 0;
     if (!FieldOffsetOf(klass, fieldName, &off)) return -2;
     return off;
+}
+
+void* ClassByName(const char* klassName) {
+    if (!klassName) return nullptr;
+    std::lock_guard<std::mutex> lk(g_klassMutex);
+    auto it = g_klassByName.find(klassName);
+    return it == g_klassByName.end() ? nullptr : it->second;
+}
+
+void* ReadStaticFieldPtr(void* klassPtr, const char* fieldName,
+                         const char** declaringName) {
+    if (!PlausiblePtr(klassPtr) || !fieldName) return nullptr;
+
+    // The field may be declared on a base class (SceneSingleton<T>.g_instance),
+    // and a static field's offset is relative to *that* class's static block.
+    void* declaring = nullptr;
+    int32_t off = 0;
+    if (!FieldOffsetOf(klassPtr, fieldName, &off, &declaring)) return nullptr;
+
+    auto* klass = reinterpret_cast<Il2CppClass*>(declaring);
+    if (declaringName) {
+        const char* n = klass->_1.name;
+        *declaringName = PlausibleName(n) ? n : "?";
+    }
+    if (off < 0) return nullptr;                 // instance field, not static
+    if (!klass->static_fields) return nullptr;    // class not initialized yet
+    const uint32_t size = klass->_2.static_fields_size;
+    if (size != 0 && (uint32_t)off + (uint32_t)sizeof(void*) > size) {
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            log("[gizmo] %s.%s: offset +0x%X outside static_fields (size 0x%X) — "
+                "ignoring", klass->_1.name, fieldName, off, size);
+        }
+        return nullptr;
+    }
+    return *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(klass->static_fields) + off);
 }
 
 static void DumpClassLayout(void* klassPtr) {
