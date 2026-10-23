@@ -18,11 +18,14 @@
 //      InterpFrame* InterpFrameGroup::EnterFrameFromInterpreter(
 //                        InterpFrameGroup* this, const MethodInfo* method,
 //                        StackObject* argBase)
-//  (the frame-retire path `LeaveFrame` is inlined and cannot be hooked, so the
-//  "after the call" bodies are run from the next interpreter event, see
-//  `hybrid::Mode::After` below).
+//  and each of them retiring through the interpreter's only return event
+//      InterpFrame* InterpFrameGroup::LeaveFrame(InterpFrameGroup* this)
+//  (called from every `ret` / unwind handler in Execute right before the callee
+//  frame is popped).  "After the call" bodies are flushed from LeaveFrame, while
+//  the caller frame — and therefore the caller's `out`/`ref` slots — is still
+//  alive; see `hybrid::Mode::After` below.
 //
-//  This layer locates those two functions at load time, installs MinHook
+//  This layer locates those three functions at load time, installs MinHook
 //  detours on them, resolves the hooked methods by metadata name and hands the
 //  raw argument slots to proxy.cpp's existing hook bodies.  It also provides the
 //  outgoing calls the backend still needs (`GameDataController`,
@@ -57,11 +60,13 @@ enum class Mode {
     // forwarded after the body ran (so the AOT behaviour of "hook runs first,
     // then the original" is preserved).
     Entry,
-    // After the call returned.  For interpreted -> interpreted calls there is
-    // no return event (LeaveFrame is inlined), so the body is queued and run
-    // from the next interpreter event that observes the caller's stack again;
-    // the argument slots are snapshotted at entry, and the body's original-call
-    // adapters are no-ops (the engine call already ran).
+    // After the call returned.  Interpreted -> interpreted calls are retired
+    // through `InterpFrameGroup::LeaveFrame`, which the layer hooks: the body is
+    // queued with a snapshot of the argument slots and flushed when that frame
+    // is popped, i.e. while the caller frame (which owns the `out`/`ref`
+    // targets) is still alive.  On the native entry path the body simply runs
+    // after forward(…) returned.  The original-call adapters are no-ops except
+    // for `needsRealOrig` targets, which re-ask the engine call.
     After,
 };
 
@@ -74,7 +79,10 @@ struct TargetDesc {
     // The hook body needs the engine call's result or post state through its
     // `g_OrigX` slot.  In the interpreted->interpreted path that is answered by
     // a second (duplicate) call through the interpreter, so this must only be
-    // set for verified-idempotent getters/calculators.
+    // set for verified-idempotent getters/calculators.  The duplicate call is
+    // made from the callee's LeaveFrame, i.e. with the caller still on the
+    // stack, so the caller's `out`/`ref` slots are valid (a later duplicate can
+    // land on top of them and overwrite the call's own arguments).
     bool        needsRealOrig;
     // Receives the arguments.  `argOffsets[k]` is the slot index of metadata
     // argument k (0 = `this` for instance methods); `ret` points at the return
@@ -151,7 +159,10 @@ int64_t  CurrentRetValue();
 // Re-run the currently-running method through the interpreter with freshly
 // built argument values (`args[k]` = metadata argument k, one uint64 per slot).
 // Used by bodies whose original-call result is required but which were entered
-// through the interpreted->interpreted path.  Only for idempotent methods.
+// through the interpreted->interpreted path.  Only for idempotent methods.  Call
+// sites must hold the caller frame alive: the arguments include the caller's
+// `out`/`ref` pointers, and a duplicate call made after the caller returned can
+// allocate its own frame on top of them and overwrite its own arguments.
 int64_t  DupCall(const uint64_t* args, int argCount);
 
 // True when the hotfix attach layer is active (detected and enabled by config).

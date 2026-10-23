@@ -14,6 +14,12 @@
 //        (+0x58), imi->maxStackSize (+0x2C) and imi->argStackObjectSize (+0x20),
 //        writes {method, argBase} into the new frame (frame+0x00 / frame+0x08)
 //        and calls MachineState::AllocStackSlot / PushFrame.
+//    InterpFrameGroup::LeaveFrame(this) -> InterpFrame*
+//        RVA 0x662410 (185 bytes) — the interpreter's return event: every
+//        `ret`/unwind handler in Execute reads frame->ret (+0x18) and calls it
+//        with the frame group; it restores MachineState::_stackTopIdx from
+//        frame+0x10, pops the frame (_frameTopIdx at +0x20) and returns the new
+//        top frame (null when the outermost Execute frame left).
 //
 //  Layout facts used here (all verified against the 2.0.0 image, see
 //  docs/ghidra.md §6 and decompilation/versions/2.0.0/README.md):
@@ -65,7 +71,9 @@ static constexpr int kOffImiRetStackObjSize   = 0x24;
 static constexpr int kOffImiMaxStackSize      = 0x2C;
 static constexpr int kOffImiArgCount          = 0x30;
 
-static constexpr int kOffMsFrameTopIdx = 0x20;
+static constexpr int kOffMsFrameTopIdx = 0x20;   // _frameTopIdx (frame count)
+static constexpr int kOffMsFrameBase   = 0x18;   // _frameBase
+static constexpr int kFrameStride      = 0x40;   // sizeof(InterpFrame)
 
 static constexpr int kMaxArgs    = 32;   // metadata args we accept (incl. `this`)
 static constexpr int kMaxSlots   = 40;   // slots a call may occupy
@@ -73,6 +81,7 @@ static constexpr int kMaxPending = 8;
 
 static constexpr uintptr_t kRvaExecuteFallback = 0x64E270;   // 2.0.0
 static constexpr uintptr_t kRvaEnterFallback   = 0x64E1C0;   // 2.0.0
+static constexpr uintptr_t kRvaLeaveFallback   = 0x662410;   // 2.0.0
 
 // ---------------------------------------------------------------------------
 //  Module / PE helpers
@@ -80,6 +89,7 @@ static constexpr uintptr_t kRvaEnterFallback   = 0x64E1C0;   // 2.0.0
 static uintptr_t g_base = 0;
 static uintptr_t g_execAddr = 0;
 static uintptr_t g_enterAddr = 0;
+static uintptr_t g_leaveAddr = 0;
 static bool      g_installed = false;
 static bool      g_detected = false;
 
@@ -365,6 +375,64 @@ static bool FindEnterFrame(uintptr_t execBeg, uintptr_t execEnd, uintptr_t* out)
     return false;
 }
 
+// Locate `InterpFrameGroup::LeaveFrame` — the interpreter's only return event.
+// Every `ret`/unwind handler in Execute has the same shape:
+//
+//     49 8B 7F 18     mov  rdi, [r15+0x18]   ; _curRet = frame->ret
+//     48 8D 4D 50     lea  rcx, [rbp+0x50]   ; &interpFrameGroup
+//     E8 rel32        call LeaveFrame
+//
+// (r15 is the current InterpFrame, rbp the Execute frame).  Nine handlers carry
+// that shape in 2.0.0 and all of them call the same function, so a vote is
+// unambiguous; the shape is only a locator — the target is still validated
+// against .pdata as a function start of plausible size.
+static bool FindLeaveFrame(uintptr_t execBeg, uintptr_t execEnd, uintptr_t* out) {
+    std::vector<RuntimeFunc> table;
+    LoadFunctionTable(table);
+
+    static const uint8_t kPat[] = { 0x49, 0x8B, 0x7F, 0x18, 0x48, 0x8D, 0x4D, 0x50, 0xE8 };
+    constexpr size_t kPatLen = sizeof(kPat);
+
+    std::unordered_map<uintptr_t, int> votes;
+    auto* code = reinterpret_cast<const uint8_t*>(execBeg);
+    for (uintptr_t p = execBeg; p + kPatLen + 4 <= execEnd; p++) {
+        if (std::memcmp(code + (p - execBeg), kPat, kPatLen) != 0) continue;
+        int32_t rel;
+        std::memcpy(&rel, code + (p - execBeg) + kPatLen, 4);
+        uintptr_t target = p + kPatLen + 4 + (int64_t)rel;
+        if (target < g_base || target >= g_base + 0x10000000) continue;
+        votes[target]++;
+    }
+
+    uintptr_t best = 0;
+    int bestVotes = 0;
+    for (auto& kv : votes) {
+        uintptr_t fbeg, fend;
+        if (!FuncBounds(table, kv.first, &fbeg, &fend)) continue;
+        if (kv.first != fbeg) continue;
+        size_t size = (size_t)(fend - fbeg);
+        if (size < 0x40 || size > 0x400) continue;
+        if (kv.second > bestVotes) { bestVotes = kv.second; best = kv.first; }
+    }
+    if (best && bestVotes >= 2) {
+        log("[hybrid] LeaveFrame @ 0x%llX (%d ret-handler calls, %d candidate(s))",
+            (unsigned long long)best, bestVotes, (int)votes.size());
+        *out = best;
+        return true;
+    }
+
+    uintptr_t cand = g_base + kRvaLeaveFallback;
+    uintptr_t fbeg, fend;
+    if (FuncBounds(table, cand, &fbeg, &fend) && cand == fbeg &&
+        (fend - fbeg) >= 0x40 && (fend - fbeg) <= 0x400) {
+        log("[hybrid] LeaveFrame @ 0x%llX (version-table RVA 0x%llX)",
+            (unsigned long long)cand, (unsigned long long)kRvaLeaveFallback);
+        *out = cand;
+        return true;
+    }
+    return false;
+}
+
 bool Detect(uintptr_t gameBase) {
     if (g_detected) return g_execAddr != 0;
     g_base = gameBase;
@@ -386,6 +454,13 @@ bool Detect(uintptr_t gameBase) {
         // are not observable.
         log("[hybrid] EnterFrameFromInterpreter not identified — "
             "interpreted->interpreted hooks disabled (native entries still hooked)");
+    }
+    if (!FindLeaveFrame(fbeg, fend, &g_leaveAddr)) {
+        // Not fatal, but deferred After bodies then fall back to the next
+        // interpreter event, which is only safe while the caller frame is
+        // still on the stack (FlushPending drops them otherwise).
+        log("[hybrid] LeaveFrame not identified — deferred bodies use the "
+            "next interpreter event (bodies whose caller already returned are dropped)");
     }
     g_detected = true;
     return true;
@@ -890,7 +965,7 @@ static inline CacheRec* Lookup(const void* method) {
 struct Pending {
     const CacheRec* rec;
     int             slotCount;
-    int             depth;
+    int             depth;      // frame index the callee frame occupies
     StackObject     slots[kMaxSlots];
 };
 
@@ -900,6 +975,7 @@ static __thread void*    tls_machineState = nullptr;
 static __thread const void* tls_curMethod = nullptr;
 static __thread bool     tls_retValid = false;
 static __thread int64_t  tls_retValue = 0;
+static std::atomic<int>  g_droppedBodies{0};   // deferred bodies dropped as unsafe
 
 static inline int32_t FrameDepth() {
     if (!tls_machineState) return -1;
@@ -915,9 +991,11 @@ int64_t CurrentRetValue()  { return tls_retValue; }
 // ---------------------------------------------------------------------------
 using FnExecute    = void  (__fastcall*)(const void* method, StackObject* args, void* ret);
 using FnEnterFrame = void* (__fastcall*)(void* frameGroup, const void* method, StackObject* argBase);
+using FnLeaveFrame = void* (__fastcall*)(void* frameGroup);
 
 static FnExecute    g_origExecute    = nullptr;
 static FnEnterFrame g_origEnterFrame = nullptr;
+static FnLeaveFrame g_origLeaveFrame = nullptr;
 
 static void RunBody(const CacheRec* rec, const StackObject* slots, void* ret) {
     // Fail safe: if a struct the bodies read has moved in this game build
@@ -934,21 +1012,47 @@ static void RunBody(const CacheRec* rec, const StackObject* slots, void* ret) {
     tls_retValue = prevValue;
 }
 
+// Run one queued After body.  The entry is copied out first: the body may call
+// back into the interpreter, which queues new entries into the slot this one
+// occupied.
+static void RunPending(const Pending& p) {
+    const CacheRec* rec = p.rec;
+    StackObject slots[kMaxSlots];
+    const int n = p.slotCount;
+    std::memcpy(slots, p.slots, sizeof(StackObject) * (n > 0 ? n : 0));
+    if (!rec || rec->target < 0) return;
+    bool prevValid = tls_retValid;
+    int64_t prevValue = tls_retValue;
+    tls_retValid = false;      // deferred: the body's original-call adapter must re-ask
+    tls_retValue = 0;
+    RunBody(rec, slots, nullptr);
+    tls_retValid = prevValid;
+    tls_retValue = prevValue;
+}
+
 static void FlushPending(int32_t depth) {
     // Pop first, run after: a body can call back into the interpreter and queue
     // new entries, which must not disturb this loop.
     while (tls_pendN > 0) {
         Pending& p = tls_pend[tls_pendN - 1];
         if (depth >= 0 && depth > p.depth) break;      // callee still on the stack
-        const CacheRec* rec = p.rec;
-        StackObject slots[kMaxSlots];
-        const int n = p.slotCount;
-        std::memcpy(slots, p.slots, sizeof(StackObject) * (n > 0 ? n : 0));
-        tls_pendN--;
-        if (rec && rec->target >= 0) {
-            tls_retValid = false;
-            RunBody(rec, slots, nullptr);
+        if (depth >= 0 && depth < p.depth) {
+            // The caller frame is gone as well, so the caller's locals — the
+            // body's `out`/`ref` targets — have been released and may already
+            // belong to a newer frame.  Replaying the call against them is what
+            // corrupts the duplicate call's own arguments (deadout targets can
+            // land on its argument slots).  LeaveFrame normally flushes these
+            // in time; if one slipped through, drop it instead of running it
+            // against stale pointers.
+            if (g_droppedBodies.fetch_add(1) == 0) {
+                log("[hybrid] dropped a deferred body whose caller frame had already returned (%s)",
+                    p.rec && PlausibleName(MethodName(p.rec->method)) ? MethodName(p.rec->method) : "?");
+            }
+            tls_pendN--;
+            continue;
         }
+        tls_pendN--;
+        RunPending(p);
     }
 }
 
@@ -962,6 +1066,86 @@ static void QueueAfter(const CacheRec* rec, const StackObject* slots, int32_t de
     p.slotCount = rec->slotCount;
     p.depth = depth;
     std::memcpy(p.slots, slots, sizeof(StackObject) * rec->slotCount);
+}
+
+// `LeaveFrame` is the interpreter's only return event (it is called from every
+// `ret`/unwind handler right before the callee frame is popped).  Flushing a
+// queued After body here — instead of from the next interpreter event — keeps
+// the caller frame, and therefore the caller's `out`/`ref` slots, alive while
+// the body runs.
+//
+// The body must run *before* the original LeaveFrame, i.e. with the callee frame
+// still pushed: the machine stack top then already sits above that frame, so the
+// replay (and everything it calls) can only allocate above it.  Running it after
+// the pop would let the replay frame land on the callee's own eval stack and
+// overwrite the return value that `SET_RET_AND_LEAVE_FRAME` copies out one
+// instruction later (CalculateNormalDamage's return slot is at
+// `argBase + evalStackBaseOffset`, well inside the region a replay allocates).
+//
+// Deferring past the caller's own return is what used to crash the duplicate
+// call: `CalculateNormalDamage`'s 16 `out FDP` targets live in the caller's
+// frame, and once that frame was released the duplicate call's own frame could
+// be allocated right on top of them.  The body then wrote `defAmend` (0.5652)
+// over its own `toActor` argument, and the next
+// `ClampAttributeSetWithLimit(..., toActor, ...)` executed
+// `isinst PlayerAdventureActor` on that FDP, faulting in `Object::IsInst`.
+static void* __fastcall Hook_LeaveFrame(void* frameGroup) {
+    void* ms = frameGroup ? *reinterpret_cast<void**>(frameGroup) : nullptr;
+    if (ms) tls_machineState = ms;
+
+    int32_t leaving = -1;
+    if (ms) {
+        const int32_t top = *reinterpret_cast<int32_t*>(
+            reinterpret_cast<uintptr_t>(ms) + kOffMsFrameTopIdx);
+        leaving = top - 1;
+    }
+
+    const CacheRec* rec = nullptr;
+    StackObject slots[kMaxSlots];
+    if (leaving >= 0) {
+        // Any queued frame above the one being popped is already gone; drop it.
+        while (tls_pendN > 0 && tls_pend[tls_pendN - 1].depth > leaving) {
+            tls_pendN--;
+        }
+        if (tls_pendN > 0) {
+            Pending& p = tls_pend[tls_pendN - 1];
+            // Match both the frame index and the frame's method: the index alone
+            // would also match a frame that reused the slot in a later call
+            // chain, whose caller memory is unrelated to the snapshotted slots.
+            const void* frameMethod = nullptr;
+            if (auto* base = *reinterpret_cast<void**>(
+                    reinterpret_cast<uintptr_t>(ms) + kOffMsFrameBase)) {
+                auto* frame = reinterpret_cast<uint8_t*>(base) + (size_t)leaving * kFrameStride;
+                frameMethod = *reinterpret_cast<void**>(frame);
+            }
+            if (p.depth == leaving && p.rec && frameMethod == p.rec->method) {
+                rec = p.rec;
+                const int n = p.slotCount;
+                std::memcpy(slots, p.slots, sizeof(StackObject) * (n > 0 ? n : 0));
+                tls_pendN--;
+            } else if (p.depth == leaving) {
+                // Same slot, different method: the queued callee was already
+                // popped without us seeing it.  Run nothing.
+                if (g_droppedBodies.fetch_add(1) == 0) {
+                    log("[hybrid] dropped a deferred body whose callee frame was not the one leaving (%s)",
+                        p.rec && PlausibleName(MethodName(p.rec->method)) ? MethodName(p.rec->method) : "?");
+                }
+                tls_pendN--;
+            }
+        }
+    }
+
+    if (rec && rec->target >= 0) {
+        bool prevValid = tls_retValid;
+        int64_t prevValue = tls_retValue;
+        tls_retValid = false;
+        tls_retValue = 0;
+        RunBody(rec, slots, nullptr);
+        tls_retValid = prevValid;
+        tls_retValue = prevValue;
+    }
+
+    return g_origLeaveFrame(frameGroup);
 }
 
 static void* __fastcall Hook_EnterFrame(void* frameGroup, const void* method,
@@ -1311,6 +1495,21 @@ bool InstallAll(const TargetDesc* targets, int count) {
             g_enterAddr = 0;
         } else {
             log("[hybrid] hooked EnterFrameFromInterpreter @ 0x%llX", (unsigned long long)g_enterAddr);
+        }
+    }
+
+    if (g_leaveAddr) {
+        s = MH_CreateHook(reinterpret_cast<void*>(g_leaveAddr),
+                          reinterpret_cast<void*>(&Hook_LeaveFrame),
+                          reinterpret_cast<void**>(&g_origLeaveFrame));
+        if (s == MH_OK) s = MH_EnableHook(reinterpret_cast<void*>(g_leaveAddr));
+        if (s != MH_OK) {
+            log("[hybrid] MH_CreateHook(LeaveFrame) failed: %d — deferred bodies fall "
+                "back to the next interpreter event", (int)s);
+            g_leaveAddr = 0;
+            g_origLeaveFrame = nullptr;
+        } else {
+            log("[hybrid] hooked LeaveFrame @ 0x%llX", (unsigned long long)g_leaveAddr);
         }
     }
 
