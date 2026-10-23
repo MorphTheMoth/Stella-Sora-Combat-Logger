@@ -46,13 +46,8 @@ struct StackObject { uint64_t v; };
 // meaningful).
 inline int32_t I32 (const StackObject* s, int off) { return (int32_t)(uint32_t)s[off].v; }
 inline int64_t I64 (const StackObject* s, int off) { return (int64_t)s[off].v; }
-inline uint8_t U8  (const StackObject* s, int off) { return (uint8_t)s[off].v; }
-inline int8_t  I8  (const StackObject* s, int off) { return (int8_t)s[off].v; }
-inline int16_t I16 (const StackObject* s, int off) { return (int16_t)s[off].v; }
 inline bool    Bool(const StackObject* s, int off) { return (uint8_t)s[off].v != 0; }
 inline void*   Ptr (const StackObject* s, int off) { return (void*)s[off].v; }
-inline float   F32 (const StackObject* s, int off) { float f; uint32_t u = (uint32_t)s[off].v; __builtin_memcpy(&f, &u, 4); return f; }
-inline double  F64 (const StackObject* s, int off) { double d; __builtin_memcpy(&d, &s[off].v, 8); return d; }
 
 // When the body of a hooked method runs.
 enum class Mode {
@@ -74,11 +69,10 @@ struct TargetDesc {
     const char* klass;        // metadata class name (simple name, no namespace)
     const char* method;       // metadata method name
     int         argCount;     // expected imi->argCount, `this` included when instance
-    bool        isStatic;     // false => argOffsets[0] is `this`
     Mode        mode;
     // The hook body needs the engine call's result or post state through its
-    // `g_OrigX` slot.  On the interpreted→interpreted path this is answered by
-    // repeating the call through the interpreter, so only set it for verified-
+    // `HyOrig_*` adapter.  On the interpreted→interpreted path this is answered
+    // by repeating the call through the interpreter, so only set it for verified-
     // idempotent getters/calculators.  The duplicate runs from LeaveFrame, i.e.
     // while the caller frame (which owns the `out`/`ref` targets) is still live.
     bool        needsRealOrig;
@@ -146,9 +140,6 @@ void* ReadStaticFieldPtr(void* klassPtr, const char* fieldName,
 // ---------------------------------------------------------------------------
 //  Called from the hook bodies (proxy.cpp)
 // ---------------------------------------------------------------------------
-// The MethodInfo of the call whose body is running on this thread (nullptr
-// outside a body).
-void*    CurrentMethod();
 // Native-entry duplicate-call support: when the hooked call arrived through
 // Interpreter::Execute the engine call already produced its result and the
 // body's original-call adapter returns it instead of re-running the method.
@@ -157,10 +148,9 @@ int64_t  CurrentRetValue();
 // Re-run the currently-running method through the interpreter with freshly
 // built argument values (`args[k]` = metadata argument k, one uint64 per slot).
 // Used by bodies whose original-call result is required but which were entered
-// through the interpreted->interpreted path.  Only for idempotent methods.  Call
-// sites must hold the caller frame alive: the arguments include the caller's
-// `out`/`ref` pointers, and a duplicate call made after the caller returned can
-// allocate its own frame on top of them and overwrite its own arguments.
+// through the interpreted->interpreted path.  Only for idempotent methods; the
+// caller frame must still be alive because the arguments include its `out`/`ref`
+// pointers.
 int64_t  DupCall(const uint64_t* args, int argCount);
 
 // True when the hotfix attach layer is active (detected and enabled by config).

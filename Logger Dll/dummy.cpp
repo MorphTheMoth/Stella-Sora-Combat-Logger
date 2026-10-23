@@ -213,24 +213,7 @@ local ok, res = pcall(function()
   if not SB.isGetScInfo then
     error('Blitz season info not loaded (open Boss Blitz once first)')
   end
-  local build = 0
-  if type(__SSL_RESOLVE_BUILD) == 'function' then
-    build = tonumber(__SSL_RESOLVE_BUILD(LEVEL)) or 0
-  else
-    -- Legacy fallback (resolver chunk failed to install).
-    build = tonumber(SB.entryBuild) or 0
-    if build == 0 then
-      for _, b in pairs(SB.tabCachedBuildId or {}) do
-        if tonumber(b) ~= 0 then build = tonumber(b) break end
-      end
-    end
-    if build == 0 and SB.OpenLevelGroup then
-      for _, lid in ipairs(SB.OpenLevelGroup) do
-        local lv = SB.tabScoreBossLevel and SB.tabScoreBossLevel[lid]
-        if lv and tonumber(lv.BuildId) ~= 0 then build = tonumber(lv.BuildId) break end
-      end
-    end
-  end
+  local build = tonumber(__SSL_RESOLVE_BUILD(LEVEL)) or 0
   if build == 0 then
     error('no formation build (set a team on any Blitz floor first)')
   end
@@ -342,24 +325,7 @@ __SSL_TB.enter = function()
     if SB.curLevel ~= nil then error('already inside a level (quit to menu first)') end
     if not SB.isGetScInfo then error('Blitz season info not loaded (open Boss Blitz once first)') end
     local lvl = __SSL_TB.selLevel()
-    local build = 0
-    if type(__SSL_RESOLVE_BUILD) == 'function' then
-      build = tonumber(__SSL_RESOLVE_BUILD(lvl)) or 0
-    else
-      -- Legacy fallback (resolver chunk failed to install).
-      build = tonumber(SB.entryBuild) or 0
-      if build == 0 then
-        for _, b in pairs(SB.tabCachedBuildId or {}) do
-          if tonumber(b) ~= 0 then build = tonumber(b) break end
-        end
-      end
-      if build == 0 and SB.OpenLevelGroup then
-        for _, lid in ipairs(SB.OpenLevelGroup) do
-          local lv = SB.tabScoreBossLevel and SB.tabScoreBossLevel[lid]
-          if lv and tonumber(lv.BuildId) ~= 0 then build = tonumber(lv.BuildId) break end
-        end
-      end
-    end
+    local build = tonumber(__SSL_RESOLVE_BUILD(lvl)) or 0
     if build == 0 then error('no formation build (set a team on any Blitz floor first)') end
     -- Mirror SendEnterScoreBossApplyReq's msgCallback (PlayerScoreBossData.lua):
     -- the server apply response zeroes the run score state, which

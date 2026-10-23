@@ -5,13 +5,13 @@
 #include <windows.h>
 #include <cstdint>
 #include <cstdio>
-#include <cstdarg>
 #include <ctime>
 #include <mutex>
 #include <string>
 #include <vector>
 #include "json.hpp"
 #include "game_structs.h"
+#include "proto_reader.h"
 #include "star_tower_hooks.h"
 
 using json = nlohmann::json;
@@ -38,116 +38,12 @@ void ShutdownStarTowerLogger() {
     if (g_StarLog) { fclose(g_StarLog); g_StarLog = nullptr; }
 }
 
-static void LogStarTower(const char* fmt, ...) {
-    if (!g_StarLog) return;
-    std::lock_guard<std::mutex> lk(g_StarMtx);
-    va_list args;
-    va_start(args, fmt);
-    vfprintf(g_StarLog, fmt, args);
-    va_end(args);
-    fputc('\n', g_StarLog);
-    fflush(g_StarLog);
-}
-
 static void LogStarJson(const char* prefix, const json& j) {
     if (!g_StarLog) return;
     std::lock_guard<std::mutex> lk(g_StarMtx);
     std::string s = j.dump(-1, ' ', false, json::error_handler_t::replace);
     fprintf(g_StarLog, "%s %s\n", prefix, s.c_str());
     fflush(g_StarLog);
-}
-
-// =============================================================================
-//  ProtoReader
-// =============================================================================
-struct ProtoReader {
-    const uint8_t* p;
-    const uint8_t* end;
-
-    bool ok() const { return p < end; }
-
-    uint64_t varint() {
-        uint64_t v = 0; int s = 0;
-        while (p < end) {
-            uint8_t b = *p++;
-            v |= (uint64_t)(b & 0x7F) << s;
-            if (!(b & 0x80)) break;
-            s += 7;
-        }
-        return v;
-    }
-
-    bool tag(int& field, int& wire) {
-        if (p >= end) return false;
-        uint64_t t = varint();
-        if (t == 0) return false;
-        field = (int)(t >> 3);
-        wire  = (int)(t & 0x7);
-        return true;
-    }
-
-    void skip(int wire) {
-        if      (wire == 0) varint();
-        else if (wire == 2) { uint64_t n = varint(); p += n; }
-        else if (wire == 1) p += 8;
-        else if (wire == 5) p += 4;
-    }
-
-    uint32_t fixed32() {
-        uint32_t v = 0;
-        if (p + 4 <= end) {
-            v = (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
-                ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
-            p += 4;
-        }
-        return v;
-    }
-
-    uint64_t fixed64() {
-        uint64_t v = 0;
-        if (p + 8 <= end) {
-            v = (uint64_t)p[0] | ((uint64_t)p[1] << 8) |
-                ((uint64_t)p[2] << 16) | ((uint64_t)p[3] << 24) |
-                ((uint64_t)p[4] << 32) | ((uint64_t)p[5] << 40) |
-                ((uint64_t)p[6] << 48) | ((uint64_t)p[7] << 56);
-            p += 8;
-        }
-        return v;
-    }
-
-    ProtoReader sub() {
-        uint64_t n = varint();
-        ProtoReader s{ p, p + n };
-        p += n;
-        return s;
-    }
-
-    std::string str() {
-        uint64_t n = varint();
-        std::string s(reinterpret_cast<const char*>(p), n);
-        p += n;
-        return s;
-    }
-
-    std::vector<uint32_t> packed_uint32() {
-        auto s = sub();
-        std::vector<uint32_t> v;
-        while (s.ok()) v.push_back((uint32_t)s.varint());
-        return v;
-    }
-
-    std::vector<uint64_t> packed_uint64() {
-        auto s = sub();
-        std::vector<uint64_t> v;
-        while (s.ok()) v.push_back(s.varint());
-        return v;
-    }
-};
-
-static ProtoReader MakeReader(System_Byte_array* body) {
-    if (!body || body->max_length == 0) return { nullptr, nullptr };
-    auto* p = reinterpret_cast<const uint8_t*>(body->m_Items);
-    return { p, p + body->max_length };
 }
 
 // =============================================================================
@@ -162,7 +58,6 @@ static json ParseChangeInfo(ProtoReader r) {
         if (field == 1 && wire == 2) {
             // repeated Any props
             auto sub = r.sub();
-            json prop = json::object();
             int pf, pw;
             std::string typeUrl;
             while (sub.tag(pf, pw)) {
@@ -630,7 +525,7 @@ static json ParseStrengthenMachineCase(ProtoReader r) {
     return j;
 }
 
-static json ParseSyncHPCase(ProtoReader r) {
+static json ParseSyncHPCase() {
     json j = json::object(); j["caseType"] = 13;
     return j;
 }
@@ -658,7 +553,7 @@ static json ParseOneRoomCase(ProtoReader r) {
                 case 10: caseData = ParseRecoveryHPCase(r.sub(), 9);           break;
                 case 11: caseData = ParseHawkerCase(r.sub());                  break;
                 case 12: caseData = ParseStrengthenMachineCase(r.sub());       break;
-                case 15: caseData = ParseSyncHPCase(r.sub());                  break;
+                case 15: r.skip(wire); caseData = ParseSyncHPCase();          break;
                 default: r.skip(wire); break;
             }
         } else {

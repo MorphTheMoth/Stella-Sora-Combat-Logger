@@ -42,7 +42,6 @@ struct LogConfig {
     bool monster_path_gizmo;
     bool player_path_gizmo;
     bool camera_gizmo;
-    bool monster_dummy_mode;
     // Hook the HybridCLR interpreter instead of the (2.0.0-removed) AOT combat
     // methods — see include/hybrid_hooks.h.  Ignored when the interpreter is not
     // present in this game build.
@@ -57,11 +56,8 @@ struct LogConfig {
 
 extern FILE*                g_Log;
 extern FILE*                g_JsonLog;
-extern std::mutex           g_Mutex;
 extern LogConfig            g_Cfg;
-extern std::atomic<int64_t>            g_CombatStartTimeFP;
 extern std::atomic<int64_t>            g_GameTimeFP;
-extern std::atomic<int64_t>            g_CombatStartWallMs; // wall-clock fallback baseline (GetTickCount64), 0 = unused
 
 // Basic logging
 void log(const char* fmt, ...);
@@ -87,7 +83,8 @@ void OnResetTime();
 //     countdown start it re-bases the meter clock on the in-game countdown
 //     (elapsed == limit - remaining) and emits "Timer Start" + a Record.
 //   LuaClockNotifyRoomEnter: called from the native EnterScoreBossFloor hook;
-//     seeds the pre-fight clock and emits Reset + the first Record.
+//     seeds the pre-fight clock and emits Reset (the first Record follows from
+//     the poll once the async build data is ready).
 //   LuaClockOwnsResetLog: true while a Blitz session is alive (room entry or
 //     countdown event within a 10 min window) — gates Hook_ModuleClearData's
 //     Reset/Record emission and the OnBattleStart re-seed.
@@ -96,11 +93,10 @@ void OnResetTime();
 void PollLuaClock();
 bool LuaClockOwnsResetLog();
 void ResetHitSnapshots();
-void LuaClockNotifyRoomEnter();   // called from Hook_EnterScoreBossFloor — immediate room-enter processing
+void LuaClockNotifyRoomEnter();
 
 // String helpers
 std::string Il2CppStringToStd(System_String_o* strObj);
-const char* AttrName(int i);
 
 // Actor logging
 std::string adventureActorId(AdventureActor_o* actor);
@@ -135,7 +131,6 @@ struct InstanceSnapInfo {
     int32_t valueConfigId;
     int64_t damage;
     std::string ownerId;
-    std::string fromActorId;
 };
 void StoreInstanceSnapInfo(int32_t instanceId, const InstanceSnapInfo& info);
 bool GetInstanceSnapInfo(int32_t instanceId, const std::string& actorId, InstanceSnapInfo& out);
@@ -145,7 +140,6 @@ extern int32_t g_CurrentDamageTypeTemp;  // set before BuildHitJson
 
 // Player effect snapshot for minion inherited effects
 struct PlayerEffectEntry {
-    int32_t instanceId;
     int32_t configId;
     int32_t valueConfigId;
     int32_t sourceType;
@@ -158,8 +152,6 @@ struct PlayerEffectEntry {
 };
 struct PlayerEffectSnapshot {
     std::vector<PlayerEffectEntry> entries;
-    std::vector<double> pctValues;
-    std::vector<double> baseValues;
     std::string time;
 };
 struct MinionLink {

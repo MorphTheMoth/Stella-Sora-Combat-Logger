@@ -25,11 +25,11 @@
 // =============================================================================
 FILE*               g_Log     = nullptr;
 FILE*               g_JsonLog = nullptr;
-std::mutex          g_Mutex;
+static std::mutex   g_Mutex;
 LogConfig           g_Cfg;
-std::atomic<int64_t>          g_CombatStartTimeFP{0};
 std::atomic<int64_t>          g_GameTimeFP{0};
-std::atomic<int64_t>          g_CombatStartWallMs{0};
+static std::atomic<int64_t>   g_CombatStartTimeFP{0};
+static std::atomic<int64_t>   g_CombatStartWallMs{0}; // wall-clock fallback baseline (GetTickCount64), 0 = unused
 static std::atomic<int64_t>   g_LastLogicTickWallMs{0};
 
 // Level map: configId → {levelTypeData, levelData, allValueConfigIds}
@@ -132,7 +132,6 @@ void OnResetTime() {
 }
 
 static inline double Round(double v, int decimals = 6) {
-    if (decimals < 0) return v;
     double mult = std::pow(10.0, decimals);
     return std::round(v * mult) / mult;
 }
@@ -275,7 +274,6 @@ static const CfgKey kCfgKeys[] = {
     { "monster_path_gizmo",             &LogConfig::monster_path_gizmo,             false },
     { "player_path_gizmo",              &LogConfig::player_path_gizmo,              false },
     { "camera_gizmo",                   &LogConfig::camera_gizmo,                   false },
-    { "monster_dummy_mode",             &LogConfig::monster_dummy_mode,             false },
     { "hotfix_hooks",                   &LogConfig::hotfix_hooks,                   true },
     { "hotfix_layout_probe",            &LogConfig::hotfix_layout_probe,            false },
 };
@@ -330,12 +328,12 @@ void loadConfig(const std::string& dir) {
         log("[config] Loaded log_config.json");
         log("[config] Gizmo flags: player=%d monster=%d bullet=%d hitbox=%d "
             "hearing_p=%d hearing_m=%d vision_p=%d vision_m=%d "
-            "input_vision=%d monster_path=%d player_path=%d camera=%d dummy=%d",
+            "input_vision=%d monster_path=%d player_path=%d camera=%d",
             g_Cfg.player_gizmo, g_Cfg.monster_gizmo, g_Cfg.bullet_gizmo, g_Cfg.hitbox_gizmo,
             g_Cfg.hearing_gizmo_for_player, g_Cfg.hearing_gizmo_for_monster,
             g_Cfg.vision_gizmo_for_player, g_Cfg.vision_gizmo_for_monster,
             g_Cfg.input_and_vision_gizmo, g_Cfg.monster_path_gizmo,
-            g_Cfg.player_path_gizmo, g_Cfg.camera_gizmo, g_Cfg.monster_dummy_mode);
+            g_Cfg.player_path_gizmo, g_Cfg.camera_gizmo);
     } catch (...) {
         ApplyConfigDefaults();
         log("[config] Failed to parse log_config.json — using defaults");
@@ -355,30 +353,6 @@ std::string Il2CppStringToStd(System_String_o* strObj) {
     std::string out(sz, '\0');
     WideCharToMultiByte(CP_UTF8, 0, chars, len, out.data(), sz, nullptr, nullptr);
     return out;
-}
-
-const char* AttrName(int i) {
-    static const char* names[] = {
-        "NONE","ATK","DEF","MAXHP","HITRATE","EVD","CRITRATE","CRITRESIST",
-        "CRITPOWER_P","PENETRATE","DEF_IGNORE","WER","FER","SER","AER","LER",
-        "DER","WEE","FEE","SEE","AEE","LEE","DEE","WEP","FEP","SEP","AEP",
-        "LEP","DEP","WEI","FEI","SEI","AEI","LEI","DEI","WEERCD","FEERCD",
-        "SEERCD","AEERCD","LEERCD","DEERCD","WEIGHT","TOUGHNESS_MAX",
-        "TOUGHNESS_DAMAGE_ADJUST","SHIELD_MAX","[45]","MOVESPEED","ATKSPD_P",
-        "INTENSITY","GENDMG","DMGPLUS","FINALDMG","FINALDMGPLUS","GENDMGRCD",
-        "DMGPLUSRCD","SUPPRESS","NORMALDMG","SKILLDMG","ULTRADMG","OTHERDMG",
-        "RCDNORMALDMG","RCDSKILLDMG","RCDULTRADMG","RCDOTHERDMG","MARKDMG",
-        "RCDMARKDMG","SUMMONDMG","RCDSUMMONDMG","PROJECTILEDMG","RCDPROJECTILEDMG",
-        "NORMALCRITRATE","SKILLCRITRATE","ULTRACRITRATE","MARKCRITRATE",
-        "SUMMONCRITRATE","PROJECTILECRITRATE","OTHERCRITRATE","NORMALCRITPOWER",
-        "SKILLCRITPOWER","ULTRACRITPOWER","MARKCRITPOWER","SUMMONCRITPOWER",
-        "PROJECTILECRITPOWER","OTHERCRITPOWER","ENERGY_MAX","SKILL_INTENSITY",
-        "TOUGHNESS_BROKEN_DMG","ADD_SHIELD_STRENGTHEN","BE_ADD_SHIELD_STRENGTHEN",
-        "NORMAL_SUPPRESS","SKILL_SUPPRESS","ULTRA_SUPPRESS","MARK_SUPPRESS",
-        "SUMMON_SUPPRESS","PROJECTILE_SUPPRESS","OTHER_SUPPRESS","ENV_AMEND","MAX"
-    };
-    if (i < 0 || i >= (int)(sizeof(names)/sizeof(names[0]))) return "?";
-    return names[i];
 }
 
 // =============================================================================
@@ -726,6 +700,31 @@ static json EnumerateValueConfigIds(const std::unordered_set<int32_t>& keys, int
     return options;
 }
 
+// Emit one JSON row per payload currently pushed on the effect's stack.
+// Returns true when at least one row was emitted.
+static bool AppendEffectRows(json& out, AdventureEffect_o* effect, int32_t baseConfigId) {
+    auto* stack = effect->fields._effectStack;
+    if (!stack || !stack->fields._array) return false;
+    auto* array = stack->fields._array;
+    bool any = false;
+    for (int s = 0; s < stack->fields._size; ++s) {
+        AdventureEffectBase_o* base = array->m_Items[s];
+        if (!base) continue;
+        AdventureEffect_o* parent = base->fields._effect;
+        auto* valueCfg = parent->fields._effectValueConfig_k__BackingField;
+        json row;
+        row["configId"] = baseConfigId;
+        row["valueConfigId"] = valueCfg ? valueCfg->fields.id_ : 0;
+        row["sourceType"] = parent->fields.sourceType;
+        row["damage"] = static_cast<int64_t>(parent->fields.Damage);
+        if (parent->fields._owner)
+            row["owner"] = adventureActorId(parent->fields._owner);
+        out.push_back(row);
+        any = true;
+    }
+    return any;
+}
+
 // Build a JSON object listing all active AdventureEffects on an actor.
 json BuildEffectListJson(ActorEffectManage_o* effectManage,
                           GameDataController_o* gdc,
@@ -797,7 +796,6 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage,
                 je["fromOwnerSnapshot"] = true;
                 if (!e.ownerId.empty())
                     je["owner"] = e.ownerId;
-                json allValueOptions = json::array();
                 WriteLevelMapEntry(e.configId, 0, 0, EnumerateValueConfigIds(effectValueKeys, e.configId));
                 effects.push_back(je);
             }
@@ -824,7 +822,7 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage,
             json je;
             // Try live effect first
             bool usedLive = false;
-            if (dictIds.count(instId) && entriesArr && slotCount > 0) {
+            if (dictIds.count(instId)) {
                 for (int i = 0; i < slotCount; ++i) {
                     const auto& e = entriesArr->m_Items[i].fields;
                     if (e.hashCode < 0) continue;
@@ -854,25 +852,8 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage,
                     int32_t ltd = effectCfg ? effectCfg->fields.levelTypeData_ : 0;
                     int32_t ld = effectCfg ? effectCfg->fields.levelData_ : 0;
                     WriteLevelMapEntry(baseConfigId, ltd, ld, EnumerateValueConfigIds(effectValueKeys, baseConfigId));
-                    auto* stack = effect->fields._effectStack;
-                    if (stack && stack->fields._array) {
-                        auto* array = stack->fields._array;
-                        int size = stack->fields._size;
-                        for (int s = 0; s < size; ++s) {
-                            AdventureEffectBase_o* base = array->m_Items[s];
-                            if (!base) continue;
-                            AdventureEffect_o* parentEffect = base->fields._effect;
-                            auto* ValueCfgPtr = parentEffect->fields._effectValueConfig_k__BackingField;
-                            je["configId"] = baseConfigId;
-                            je["valueConfigId"] = ValueCfgPtr ? ValueCfgPtr->fields.id_ : 0;
-                            je["sourceType"] = parentEffect->fields.sourceType;
-                            je["damage"] = static_cast<int64_t>(parentEffect->fields.Damage);
-                            if (parentEffect->fields._owner)
-                                je["owner"] = adventureActorId(parentEffect->fields._owner);
-                            effects.push_back(je);
-                            usedLive = true;
-                        }
-                    }
+                    if (AppendEffectRows(effects, effect, baseConfigId))
+                        usedLive = true;
                     break;
                 }
             }
@@ -921,32 +902,7 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage,
             int32_t levelData = effectCfg ? effectCfg->fields.levelData_ : 0;
 
             WriteLevelMapEntry(baseConfigId, levelTypeData, levelData, EnumerateValueConfigIds(effectValueKeys, baseConfigId));
-
-            auto* stack = effect->fields._effectStack; // System_Collections_Generic_Stack_AdventureEffectBase__o*
-            if (stack && stack->fields._array) {
-                auto* array = stack->fields._array;     // AdventureEffectBase_array*
-                int size = stack->fields._size;         // number of items currently in stack
-
-                for (int s = 0; s < size; ++s) {
-
-                    json je;
-                    AdventureEffectBase_o* base = array->m_Items[s];
-                    if (!base) continue;
-
-                    AdventureEffect_o* parentEffect = base->fields._effect;
-
-                    auto* ValueCfgPtr = parentEffect->fields._effectValueConfig_k__BackingField;
-                    je["configId"] = baseConfigId;
-                    je["valueConfigId"] = ValueCfgPtr ? ValueCfgPtr->fields.id_ : 0;
-                    je["sourceType"] = parentEffect->fields.sourceType;
-                    je["damage"]     = static_cast<int64_t>(parentEffect->fields.Damage);
-
-                    if (parentEffect->fields._owner)
-                        je["owner"] = adventureActorId(parentEffect->fields._owner);
-
-                    effects.push_back(je);
-                }
-            }
+            AppendEffectRows(effects, effect, baseConfigId);
         }
     }
 
@@ -966,7 +922,6 @@ json BuildEffectListJson(ActorEffectManage_o* effectManage,
                 if (!effect) continue;
                 auto* trigCfg = effect->fields._effectConfig_k__BackingField;
                 if (trigCfg && (trigCfg->fields.trigger_ == 3 || trigCfg->fields.trigger_ == 5)) continue;
-                if (effectSnapshot && !effectSnapshot->count(effect->fields.id)) continue;
                 if (!EffectStackAlive(effect)) continue; // not currently applied — skip
                 json te;
                 te["id"]         = effect->fields.id;   // unique effect id (key in effectsDict)
@@ -1784,22 +1739,18 @@ void RefreshOriginCatalog() {
     log("[origin] catalog refreshed: chars=%zu team=%zu",
         g_OriginByChar.size(), (size_t)team.size());
 
-    // Emit immediately for team-aware modes (e.g. Star Tower): one entry right
-    // after the Reset — room enter — without waiting for the first damage event
-    // (logJson takes g_Mutex; g_OriginMutex is never taken while holding it, so
-    // this nesting has no inversion).
-    if (!team.empty()) {
-        if (LuaClockOwnsResetLog()) {
-            // Lua-clock mode (Boss Blitz): the Record belongs at room enter / timer
-            // start — LuaClockRunStart re-refreshes the catalog here and emits it
-            // via EmitOriginCatalogRecord; g_OriginPending is still true here.
-        } else {
-            json out = g_OriginCatalog;
-            out["Type"] = "Record";
-            out["Time"] = gameTime();
-            g_OriginPending = false;
-            logJson(out);
-        }
+    // Emit immediately when the chunk reported a team (Boss Blitz): one entry
+    // right after the Reset — room enter — without waiting for the first damage
+    // event (logJson takes g_Mutex; g_OriginMutex is never taken while holding
+    // it, so this nesting has no inversion).  In Lua-clock mode the Record
+    // belongs at room enter / timer start instead: the poll emits it via
+    // EmitOriginCatalogRecord, so leave g_OriginPending set.
+    if (!team.empty() && !LuaClockOwnsResetLog()) {
+        json out = g_OriginCatalog;
+        out["Type"] = "Record";
+        out["Time"] = gameTime();
+        g_OriginPending = false;
+        logJson(out);
     }
 }
 
@@ -1820,8 +1771,8 @@ void MaybeEmitOriginCatalog(AdventureActor_o* fromActor, AdventureActor_o* toAct
 
         auto team = g_OriginCatalog.value("team", json::array());
         if (!team.empty()) {
-            // Tower (or any mode that reported its deployed team): emit the whole
-            // batch once, on the first damage event after the reset.
+            // A mode that reported its deployed team: emit the whole batch once,
+            // on the first damage event after the reset.
             out = g_OriginCatalog;
             g_OriginPending = false;
         } else {
@@ -1897,7 +1848,6 @@ return tostring(__SSL_CLOCK.seq)..','..tostring(__SSL_CLOCK.remaining)
 static std::atomic<bool>    g_LuaClockInstalled{false};
 static std::atomic<int64_t> g_LuaClockNextInstallTryMs{0};
 static std::atomic<int64_t> g_LuaClockNextPollMs{0};
-static std::atomic<int64_t> g_LuaClockLastEventWallMs{0};    // last countdown event
 static std::atomic<int64_t> g_LuaClockLastSignalWallMs{0};   // last event OR room enter
 static std::atomic<int>     g_LuaClockSeq{-1};               // -1 = no successful poll yet
 static std::atomic<int>     g_LuaClockRemaining{-1};
@@ -2023,7 +1973,6 @@ static void LuaClockRunStart(int rem, int d) {
 }
 
 static void OnLuaClockAdvance(int prevSeq, int prevRem, int newSeq, int rem) {
-    g_LuaClockLastEventWallMs.store((int64_t)GetTickCount64(), std::memory_order_relaxed);
     g_LuaClockLastSignalWallMs.store((int64_t)GetTickCount64(), std::memory_order_relaxed);
     if (rem < 0) return;                       // malformed payload
 

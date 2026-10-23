@@ -11,15 +11,12 @@
 #include <mutex>
 #include <string>
 #include <vector>
-#include <unordered_map>
 #include "MinHook.h"
 #include "game_structs.h"
 #include "logging.h"
-#include "json.hpp"
 #include "http_hooks.h"
+#include "proto_reader.h"
 #include "star_tower_hooks.h"
-
-using json = nlohmann::json;
 
 // =============================================================================
 //  HTTP log file
@@ -55,64 +52,18 @@ void LogHttp(const char* fmt, ...) {
 }
 
 // =============================================================================
-//  Proto helpers
-// =============================================================================
-struct ProtoReader {
-    const uint8_t* p;
-    const uint8_t* end;
-
-    bool ok() const { return p < end; }
-
-    uint64_t varint() {
-        uint64_t v = 0; int s = 0;
-        while (p < end) {
-            uint8_t b = *p++;
-            v |= (uint64_t)(b & 0x7F) << s;
-            if (!(b & 0x80)) break;
-            s += 7;
-        }
-        return v;
-    }
-
-    bool tag(int& field, int& wire) {
-        if (p >= end) return false;
-        uint64_t t = varint();
-        if (t == 0) return false;
-        field = (int)(t >> 3);
-        wire  = (int)(t & 0x7);
-        return true;
-    }
-
-    void skip(int wire) {
-        if      (wire == 0) varint();
-        else if (wire == 2) { uint64_t n = varint(); p += n; }
-        else if (wire == 1) p += 8;
-        else if (wire == 5) p += 4;
-    }
-
-    ProtoReader sub() {
-        uint64_t n = varint();
-        ProtoReader s{ p, p + n };
-        p += n;
-        return s;
-    }
-
-    std::vector<uint32_t> packed_uint32() {
-        auto s = sub();
-        std::vector<uint32_t> v;
-        while (s.ok()) v.push_back((uint32_t)s.varint());
-        return v;
-    }
-};
-
-static ProtoReader MakeReader(System_Byte_array* body) {
-    auto* p = reinterpret_cast<const uint8_t*>(body->m_Items);
-    return { p, p + body->max_length };
-}
-
-// =============================================================================
 //  CharGemRefresh parsers
 // =============================================================================
+static std::string FormatU32List(const std::vector<uint32_t>& v) {
+    std::string s = "[";
+    for (size_t i = 0; i < v.size(); ++i) {
+        if (i) s += ',';
+        s += std::to_string(v[i]);
+    }
+    s += ']';
+    return s;
+}
+
 static void LogGemRefreshReq(System_Byte_array* body) {
     if (!body || body->max_length == 0) return;
     auto r = MakeReader(body);
@@ -134,16 +85,8 @@ static void LogGemRefreshReq(System_Byte_array* body) {
         }
     }
 
-    char locks[256] = "[]";
-    if (!lockAttrs.empty()) {
-        int pos = snprintf(locks, sizeof(locks), "[");
-        for (size_t i = 0; i < lockAttrs.size(); i++)
-            pos += snprintf(locks + pos, sizeof(locks) - pos,
-                            "%s%u", i ? "," : "", lockAttrs[i]);
-        snprintf(locks + pos, sizeof(locks) - pos, "]");
-    }
-
-    LogHttp("REQ %u %u %u %s", charId, slotId, gemIndex + 1, locks);
+    std::string locks = FormatU32List(lockAttrs);
+    LogHttp("REQ %u %u %u %s", charId, slotId, gemIndex + 1, locks.c_str());
 }
 
 static void LogGemRefreshResp(System_Byte_array* body) {
@@ -169,26 +112,9 @@ static void LogGemRefreshResp(System_Byte_array* body) {
     }
 
     // Raw attr IDs — no label resolution
-    char attrs[1024] = "[]";
-    if (!attributes.empty()) {
-        int pos = snprintf(attrs, sizeof(attrs), "[");
-        for (size_t i = 0; i < attributes.size(); i++)
-            pos += snprintf(attrs + pos, sizeof(attrs) - pos,
-                            "%s%u", i ? "," : "", attributes[i]);
-        snprintf(attrs + pos, sizeof(attrs) - pos, "]");
-    }
-
-    // OverlockCount: one entry per affix slot
-    char olock[256] = "[]";
-    if (!overlockCount.empty()) {
-        int pos = snprintf(olock, sizeof(olock), "[");
-        for (size_t i = 0; i < overlockCount.size(); i++)
-            pos += snprintf(olock + pos, sizeof(olock) - pos,
-                            "%s%u", i ? "," : "", overlockCount[i]);
-        snprintf(olock + pos, sizeof(olock) - pos, "]");
-    }
-
-    LogHttp("RESP %s %s", attrs, olock);
+    std::string attrs = FormatU32List(attributes);
+    std::string olock = FormatU32List(overlockCount);
+    LogHttp("RESP %s %s", attrs.c_str(), olock.c_str());
 }
 
 // =============================================================================
@@ -218,24 +144,20 @@ static void __fastcall Hook_DispatchMsgToLua(
 }
 
 // =============================================================================
-//  RVAs — HTTP layer
+//  RVA — HTTP layer
 // =============================================================================
-// HttpNetworkManager$$DispatchMsgToLua: same method, same signature, same
-// prologue in 1.15 and 2.0.0, only the address moved:
-//     script.json 1.15  RVA 0x133EEA0  (dump.cs 1.15:189387, HttpNetMsg fields unchanged)
+// HttpNetworkManager$$DispatchMsgToLua is the only AOT method the logger still
+// hooks (everything combat-related is HybridCLR-interpreted since 2.0.0).
 //     script.json 2.0.0 RVA 0x12F7060
-// The prologue check picks the right one so a moved table cannot hook garbage.
-static constexpr uintptr_t RVA_NET_DISPATCH_TO_LUA_115 = 0x133EEA0;
-static constexpr uintptr_t RVA_NET_DISPATCH_TO_LUA_200 = 0x12F7060;
+// The prologue check keeps a moved table from hooking garbage.
+static constexpr uintptr_t RVA_NET_DISPATCH_TO_LUA = 0x12F7060;
 static const uint8_t kDispatchHead[8] = { 0x48, 0x89, 0x6C, 0x24, 0x18, 0x56, 0x41, 0x56 };
 
 static uintptr_t FindDispatchMsgToLua(uintptr_t base) {
-    static const uintptr_t kCandidates[] = { RVA_NET_DISPATCH_TO_LUA_200, RVA_NET_DISPATCH_TO_LUA_115 };
-    for (uintptr_t rva : kCandidates) {
-        if (std::memcmp(reinterpret_cast<const void*>(base + rva), kDispatchHead,
-                        sizeof(kDispatchHead)) == 0)
-            return base + rva;
-    }
+    const uintptr_t rva = RVA_NET_DISPATCH_TO_LUA;
+    if (std::memcmp(reinterpret_cast<const void*>(base + rva), kDispatchHead,
+                    sizeof(kDispatchHead)) == 0)
+        return base + rva;
     return 0;
 }
 
@@ -245,8 +167,8 @@ static uintptr_t FindDispatchMsgToLua(uintptr_t base) {
 void InstallHttpHooks(uintptr_t base) {
     const uintptr_t target = FindDispatchMsgToLua(base);
     if (!target) {
-        log("[init] HttpNetworkManager$$DispatchMsgToLua not found at a known address "
-            "(neither 0x133EEA0 nor 0x12F7060 matches) — HTTP/Star Tower message logs disabled");
+        log("[init] HttpNetworkManager$$DispatchMsgToLua not found at 0x12F7060 "
+            "(prologue mismatch) — HTTP/Star Tower message logs disabled");
         return;
     }
     InstallHook(target, reinterpret_cast<void*>(&Hook_DispatchMsgToLua),

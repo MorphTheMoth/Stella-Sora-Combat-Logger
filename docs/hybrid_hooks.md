@@ -1,6 +1,6 @@
 # Hotfix (HybridCLR) attach layer
 
-`Logger Dll/hybrid_hooks.cpp` + `Logger Dll/include/hybrid_hooks.h`, wired into `Logger Dll/proxy.cpp` by `InstallHybridLayer()` / `InstallHybridOrigStubs()` / the `Hy*` adapters.
+`Logger Dll/hybrid_hooks.cpp` + `Logger Dll/include/hybrid_hooks.h`, wired into `Logger Dll/proxy.cpp` by `InstallHybridLayer()` / `InstallHybridOriginals()` / the `Hy*` adapters.
 
 ## Why this exists
 
@@ -43,7 +43,7 @@ Arguments are read/written as raw `StackObject` slots (`union StackObject`, 8 by
 
 Per-argument slot width comes from the descriptors: reference types and by-ref parameters occupy one slot (`passbyValWhenInvoke` true), a value type occupies `stackObjectSize` slots with its bytes stored inline (`TrueSync.FP` = 8 bytes = 1 slot, `TrueSync.TSVector2` = 16 bytes = 2 slots). `ComputeArgOffsets()` walks the descriptors and **validates `sum(slots) == imi->argStackObjectSize`**; a mismatch is logged and the target is disabled rather than misread. The expected `argCount` per target is validated the same way, so a wrong entry in the table degrades to a single log line instead of corrupting a hook body.
 
-Narrow types live in the low byte of the slot (the upper bytes are not guaranteed), so the readers in `hybrid_hooks.h` mask: `Bool()` / `U8()` / `I8()` / `I16()` / `I32()` / `I64()` / `Ptr()` / `F32()` / `F64()`.
+Narrow types live in the low byte of the slot (the upper bytes are not guaranteed), so the readers in `hybrid_hooks.h` mask: `Bool()` / `I32()` / `I64()` / `Ptr()`.
 
 ## Two attach paths, two modes
 
@@ -60,7 +60,7 @@ Ordering detail for the internal path: `Hook_EnterFrame` calls the real `EnterFr
 
 ### Original calls inside the bodies
 
-The engine call itself is performed by the layer, so a body must not call it a second time: `InstallHybridOrigStubs()` points every `g_OrigX` at a matching no-op (that is why the legacy `g_OrigX` globals became adapters). Two targets are exceptions, because their bodies consume the call's result:
+The engine call itself is performed by the layer, so a body must never call it a second time: hook bodies only observe. Two targets are exceptions, because their bodies consume the call's result:
 
 - `CommonHelper.CalculateNormalDamage` — the body logs the damage value and the 16 out parameters.
 - `HotfixDataController.GetMonster` — the body applies the dummy-model skin to the returned table row (Blitz test-stage feature).
@@ -103,7 +103,7 @@ Name comparison uses `MethodNameIs()`, not `PlausibleName()`: the latter insists
 FieldInfo: +0x00 name, +0x08 type, +0x10 parent, +0x18 offset, +0x1C token
 ```
 
-The check list is `g_fieldChecks[]` — the pointer-carrying fields the bodies dereference (`AdventureActor._dataID` / `.attributeList` / `.specialAttributeList` / `.stateAttributeList` / `.actorInfo`, `AreaEffectEntity._owner` / `._fxPlayer`, `MonsterSummonInfo._SummonActor` / `._Entity`, `AdventureWeapon._owner`, `BuffEntity.buffUidLs` / `.fromActors`, `HitDamage.id_`, `Effect.id_`, `EffectValue.id_`, `BuffEffect.id_`), each compared against `offsetof()` of the struct the bodies actually compile against. **Compiler-generated names must be compared in both spellings**: Il2CppDumper writes `<owner>k__BackingField` as `_owner_k__BackingField`, so a naive `strcmp` reports every auto-property as "not found". Outcomes:
+The check list is `g_fieldChecks[]` — the fields the bodies read directly (`AdventureActor._dataID` / `.attributeList` / `.specialAttributeList`, `AreaEffectEntity._owner` / `._fxPlayer`, `MonsterSummonInfo._SummonActor` / `._Entity`, `HitDamage.id_` / `.damageBonusType_`, `Effect.id_`, `EffectValue.id_`, `BuffEffect.id_`, the effect/buff/attribute pointers), each compared against `offsetof()` of the struct the bodies actually compile against. **Compiler-generated names must be compared in both spellings**: Il2CppDumper writes `<owner>k__BackingField` as `_owner_k__BackingField`, so a naive `strcmp` reports every auto-property as "not found". Outcomes:
 
 - `[layout] AdventureActor._dataID_k__BackingField OK (+0x1A8)` — the 1.15 layout still holds, logging proceeds.
 - `[layout] … MISMATCH: game_structs.h +0x1A8, runtime +0x1B0` or `… not found in the runtime class` — a field moved or the class was reshaped. Bodies are suppressed from then on (`RunBody` returns early), so a stale offset degrades to a clear log instead of dereferencing garbage, and the class's runtime layout is dumped.
@@ -130,7 +130,7 @@ Two mitigations, both in place:
 - `game_structs.h` now carries the 2.0.0 order for `ActorAdditionalAttrInfo_Fields`, so any remaining struct-based reads are correct;
 - `ReadObjectFieldPtr(obj, name)` (logging.h) resolves a pointer field's offset from the object's **own runtime class** via `hybrid::FieldOffsetInObject()`, walking the base chain, and returns nullptr when the field does not exist instead of using a stale offset. It is used for the `ActorAdditionalAttrInfo` dictionary + attributeList and for the `GameDataController` maps, because the captured GDC object is a `HotfixDataController` in 2.0.0 (whose `EffectValue_Map` / `OnceAdditionalAttributeValue_Map` are at different offsets).
 
-The check table also covers the pointer fields the hit path dereferences (`ActorAdditionalAttrInfo.*`, `ActorEffectManage.effectsDict/_actor/_timeTriggerEffects`, `AdventureActor.buffComponent/effectManage`, `AdventureEffect._effectConfig/_effectValueConfig/_effectStack/_owner/_fromActor`, `AdventureEffectBase._effect`, `BuffEntity._buffCom/buffConfig`, `BuffCom._BuffList`, `AttributeList.entries`, `AdventureSkill._owner`), so any further reorder disables logging with a dump instead of faulting. On a failed check the class and its base chain are dumped (once), so a version with moved offsets can be repaired from a single run; `hotfix_layout_probe: true` additionally dumps every other interpreted class it sees.
+The check table also covers the pointer fields the hit path dereferences (`ActorAdditionalAttrInfo.*`, `ActorEffectManage.effectsDict/_actor/_timeTriggerEffects`, `AdventureActor.buffComponent/effectManage`, `AdventureEffect._effectConfig/_effectValueConfig/_effectStack/_owner/_fromActor`, `AdventureEffectBase._effect`, `BuffEntity._buffCom/buffConfig`, `BuffCom._BuffList`, `AttributeList.entries`), so any further reorder disables logging with a dump instead of faulting. On a failed check the class and its base chain are dumped (once), so a version with moved offsets can be repaired from a single run; `hotfix_layout_probe: true` additionally dumps every other interpreted class it sees.
 
 Dump format: `[layout]   <offset> (0x<off>) <name> ty=<Il2CppType enum> type=0x<ptr>`, preceded by `[layout] class <Name>: instance_size=0x<N> fields=<n>`. Field names are the raw metadata names, i.e. `<owner>k__BackingField` for auto-properties, which is what pairs them with the C# source for a struct rebuild.
 
@@ -152,7 +152,7 @@ Verified against the 2.0.0 binary/decompile (static):
 Verified in game (2.0.0):
 
 - the discovery finds `Interpreter::Execute` and `EnterFrameFromInterpreter` at load time (the log prints `[hybrid] Interpreter::Execute @ 0x…` and `EnterFrameFromInterpreter @ 0x…`; the version-keyed fallback RVA is used if a shape scan is inconclusive);
-- `[hybrid] target ready: <Class>.<Method> (args N, slots M, entry|after)` for all 23 targets — a missing line means that target was disabled (arg count or layout mismatch) and shows the metadata values to fix the table with;
+- `[hybrid] target ready: <Class>.<Method> (args N, slots M, entry|after)` for all 22 targets — a missing line means that target was disabled (arg count or layout mismatch) and shows the metadata values to fix the table with;
 - deferred (`after`) bodies flush at the expected time (casts, buffs, effects and hits log in the right order);
 - all `[layout] … OK` checks pass, and the outgoing calls (`GetOnceAdditionalAttribute`, `GetOnceAdditionalAttributeValue`, `GetValueConfigIdByLevelType`, `IsUseHitFromSummon`) resolve and return the same values the 1.15 AOT path produced.
 
@@ -175,7 +175,6 @@ Every constant in the legacy `RVA_*` table was re-checked against `versions/2.0.
 | `BuffEffectBase$$OnInit` | `0x16F6B80` | no | `BuffEffectBase.OnInit` |
 | `BuffEntity$$BuffExcute` | `0x16FA360` | no | `BuffEntity.BuffExcute` |
 | `CommonHelper$$CalculateNormalDamage` | `0x11213B0` | no | `CommonHelper.CalculateNormalDamage` |
-| `MonsterActionState$$OnEnter` | `0x1119F30` | no | `MonsterActionState.OnEnter` |
 | `AdventureModuleController$$ClearData` | `0x15DF600` | no | `AdventureModuleController.ClearData` |
 | `AdventureModuleHelper$$EnterScoreBossFloor` | `0x11B46D0` | no | `AdventureModuleHelper.EnterScoreBossFloor` |
 | `AdventureActor$$GetBothAllInfo` | `0x123EDF0` | no | `AdventureActor.GetBothAllInfo` |
@@ -201,7 +200,7 @@ Every constant in the legacy `RVA_*` table was re-checked against `versions/2.0.
 Notes:
 
 - `GameDataController` *as a type* still exists in the AOT image (it is the config loader now) but has none of the combat/cache accessors; the object the logger captures is a `HotfixDataController`, so matching on the old name would never succeed (which is why the table uses the hotfix name).
-- Only one hook still points at AOT code: `HttpNetworkManager$$DispatchMsgToLua`. Same signature and byte-identical prologue (`48 89 6C 24 18 56 41 56`), so `http_hooks.cpp` probes `0x12F7060` then `0x133EEA0` and disables the HTTP/Star Tower message logs if neither matches.
+- Only one hook still points at AOT code: `HttpNetworkManager$$DispatchMsgToLua`. Same signature and byte-identical prologue (`48 89 6C 24 18 56 41 56`), so `http_hooks.cpp` checks for it at `0x12F7060` and disables the HTTP/Star Tower message logs if the prologue does not match.
 - The 1.15 combat RVA table, the `g_base + RVA` outgoing calls, `LegacyRvaTableMatches()` and the whole AOT install branch were **deleted**; the hotfix attach layer is the only hook path. The table above is kept as the historical audit of why each address moved.
 
 Non-RVA game dependencies that were re-checked:
@@ -214,6 +213,6 @@ Non-RVA game dependencies that were re-checked:
 ## Known limitations
 
 - **Game gizmos** (`player_gizmo`, `hitbox_gizmo`, …) work in hotfix mode through the singleton's static field, not through an address: `AdventureModuleDebugHelper` is a hotfix class (`Hotfix.decompiled.cs:54145`) whose `SceneSingleton<T>` base is an AOT generic instantiated over it, so `get_Instance` has neither an AOT address nor an interpreted MethodInfo. `GetDebugHelperInstance()` therefore reads `g_instance` out of the declaring class's `static_fields` block (`hybrid::ClassByName` + `hybrid::ReadStaticFieldPtr`) and the flag offsets are resolved by field name from the runtime class in `EnableAllDebugGizmos()` — the 1.15 offsets (`0x28`…) are stale because 2.0.0 inserted `IndicatorsRoot` before the bools.
-- **Dummy mode / call suppression** is unchanged in scope: the legacy `monster_dummy_mode` path only rewrites data read from configuration, it never suppressed an engine call. Redirecting or suppressing interpreted calls from the frame hook is not possible (see above), so no suppression was attempted.
+- **Call suppression** is not possible: the attach layer always forwards the engine call, so hooks only observe. The legacy `monster_dummy_mode` suppression hook therefore had no effect in 2.0.0 and was removed together with the option.
 - `GetMonster`'s dummy skin on the interpreted → interpreted path mutates the row returned by the duplicate call; if the game's `GetMonster` ever returns a fresh object per call, the mutation would not be seen by the engine (the native path is exact). Blitz-only feature, marked uncertain.
 - A deferred body reads the caller's memory through the argument snapshot; `out`/`ref` pointers are only valid while the caller frame is alive. `LeaveFrame` flushes at the callee's return for that reason, and a queued body whose caller frame has already returned is dropped (one `[hybrid] dropped a deferred body …` line) rather than replayed. `CalculateNormalDamage`'s duplicate call re-writes its out parameters through those pointers, so the logged values are read back consistently.

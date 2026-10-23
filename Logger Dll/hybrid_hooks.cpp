@@ -35,6 +35,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "MinHook.h"
@@ -54,7 +55,6 @@ static constexpr int kOffMiInterpData = 0x58;
 static constexpr int kOffImiArgs              = 0x08;
 static constexpr int kOffImiArgStackObjSize   = 0x20;
 static constexpr int kOffImiRetStackObjSize   = 0x24;
-static constexpr int kOffImiMaxStackSize      = 0x2C;
 static constexpr int kOffImiArgCount          = 0x30;
 
 static constexpr int kOffMsFrameTopIdx = 0x20;   // _frameTopIdx (frame count)
@@ -311,8 +311,6 @@ static bool FindEnterFrame(uintptr_t execBeg, uintptr_t execEnd, uintptr_t* out)
         callCount[target]++;
     }
 
-    uintptr_t best = 0;
-    int bestScore = 0;
     struct Scored { int score; uintptr_t va; int calls; };
     std::vector<Scored> scored;
     for (auto& kv : callCount) {
@@ -334,15 +332,11 @@ static bool FindEnterFrame(uintptr_t execBeg, uintptr_t execEnd, uintptr_t* out)
         if (a.score != b.score) return a.score > b.score;
         return a.va < b.va;
     });
-    for (const Scored& s : scored) {
-        if (s.score > bestScore) { bestScore = s.score; best = s.va; }
-    }
-    if (best) {
-        int calls = 0;
-        for (const Scored& s : scored) if (s.va == best) calls = s.calls;
+    if (!scored.empty()) {
+        const Scored& pick = scored.front();
         log("[hybrid] EnterFrameFromInterpreter @ 0x%llX (score %d, %d calls from Execute, %d candidate(s))",
-            (unsigned long long)best, bestScore, calls, (int)scored.size());
-        *out = best;
+            (unsigned long long)pick.va, pick.score, pick.calls, (int)scored.size());
+        *out = pick.va;
         return true;
     }
 
@@ -582,10 +576,6 @@ static const FieldCheck g_fieldChecks[] = {
       (int32_t)offsetof(AdventureActor_o, fields.attributeList) },
     { "AdventureActor",   "specialAttributeList",
       (int32_t)offsetof(AdventureActor_o, fields.specialAttributeList) },
-    { "AdventureActor",   "stateAttributeList",
-      (int32_t)offsetof(AdventureActor_o, fields.stateAttributeList) },
-    { "AdventureActor",   "actorInfo",
-      (int32_t)offsetof(AdventureActor_o, fields.actorInfo) },
     { "MonsterSummonInfo", "_SummonActor_k__BackingField",
       (int32_t)offsetof(MonsterSummonInfo_o, fields._SummonActor_k__BackingField) },
     { "MonsterSummonInfo", "_Entity_k__BackingField",
@@ -594,12 +584,6 @@ static const FieldCheck g_fieldChecks[] = {
       (int32_t)offsetof(AreaEffectEntity_o, fields._owner_k__BackingField) },
     { "AreaEffectEntity", "_fxPlayer_k__BackingField",
       (int32_t)offsetof(AreaEffectEntity_o, fields._fxPlayer_k__BackingField) },
-    { "AdventureWeapon",  "_owner",
-      (int32_t)offsetof(AdventureWeapon_o, fields._owner) },
-    { "BuffEntity",       "buffUidLs",
-      (int32_t)offsetof(BuffEntity_o, fields.buffUidLs) },
-    { "BuffEntity",       "fromActors",
-      (int32_t)offsetof(BuffEntity_o, fields.fromActors) },
     { "HitDamage",        "id_",
       (int32_t)offsetof(Nova_Client_HitDamage_o, fields.id_) },
     { "HitDamage",        "damageBonusType_",
@@ -678,7 +662,6 @@ static void* ClassFieldEntry(void* klassPtr, int index) {
     }
     if (g_fieldsArePointers == 1) {
         auto* arr = reinterpret_cast<void**>(base);
-        if (index < 0) return nullptr;
         return arr[index];
     }
     return base + (size_t)index * kFieldInfoStride;
@@ -965,7 +948,6 @@ static inline int32_t FrameDepth() {
     return *reinterpret_cast<int32_t*>(reinterpret_cast<uintptr_t>(tls_machineState) + kOffMsFrameTopIdx);
 }
 
-void*   CurrentMethod()    { return const_cast<void*>(tls_curMethod); }
 bool    CurrentRetValid()  { return tls_retValid; }
 int64_t CurrentRetValue()  { return tls_retValue; }
 
@@ -1001,9 +983,7 @@ static void RunBody(const CacheRec* rec, const StackObject* slots, void* ret) {
 static void RunPending(const Pending& p) {
     const CacheRec* rec = p.rec;
     StackObject slots[kMaxSlots];
-    const int n = p.slotCount;
-    std::memcpy(slots, p.slots, sizeof(StackObject) * (n > 0 ? n : 0));
-    if (!rec || rec->target < 0) return;
+    std::memcpy(slots, p.slots, sizeof(StackObject) * p.slotCount);
     bool prevValid = tls_retValid;
     int64_t prevValue = tls_retValue;
     tls_retValid = false;      // deferred: the body's original-call adapter must re-ask
@@ -1090,8 +1070,7 @@ static void* __fastcall Hook_LeaveFrame(void* frameGroup) {
             }
             if (p.depth == leaving && p.rec && frameMethod == p.rec->method) {
                 rec = p.rec;
-                const int n = p.slotCount;
-                std::memcpy(slots, p.slots, sizeof(StackObject) * (n > 0 ? n : 0));
+                std::memcpy(slots, p.slots, sizeof(StackObject) * p.slotCount);
                 tls_pendN--;
             } else if (p.depth == leaving) {
                 // Same slot, different method: the queued callee was already
@@ -1105,7 +1084,7 @@ static void* __fastcall Hook_LeaveFrame(void* frameGroup) {
         }
     }
 
-    if (rec && rec->target >= 0) {
+    if (rec) {
         bool prevValid = tls_retValid;
         int64_t prevValue = tls_retValue;
         tls_retValid = false;
@@ -1178,10 +1157,12 @@ static void __fastcall Hook_Execute(const void* method, StackObject* args, void*
     } else {
         g_origExecute(method, args, ret);
         bool prevValid = tls_retValid;
+        int64_t prevValue = tls_retValue;
         tls_retValid = (ret != nullptr);
         tls_retValue = (ret != nullptr) ? *reinterpret_cast<int64_t*>(ret) : 0;
         RunBody(rec, args, ret);
         tls_retValid = prevValid;
+        tls_retValue = prevValue;
     }
 }
 
@@ -1278,17 +1259,46 @@ static void* LookupLearnedMethod(const char* klassName, const char* methodName) 
     return m;
 }
 
-static void* ResolveGameMethod(const char* klassName, const char* methodName) {
+static std::string MethodKey(const char* klassName, const char* methodName) {
     std::string key;
     key.reserve(64);
     key += klassName;
     key += '.';
     key += methodName;
-    {
-        std::lock_guard<std::mutex> lk(g_klassMutex);
-        auto it = g_methodByName.find(key);
-        if (it != g_methodByName.end()) return it->second;
+    return key;
+}
+
+static void* LookupMethodCache(const std::string& key) {
+    std::lock_guard<std::mutex> lk(g_klassMutex);
+    auto it = g_methodByName.find(key);
+    return it == g_methodByName.end() ? nullptr : it->second;
+}
+
+static bool FirstSighting(std::unordered_set<std::string>& seen, const std::string& key) {
+    static std::mutex mtx;
+    std::lock_guard<std::mutex> lk(mtx);
+    return seen.insert(key).second;
+}
+
+// Shared tail of both resolvers: class-chain scan, learned-name fallback,
+// one-shot miss log, cache the result.
+static void* ResolveMethodInClass(void* klass, const char* klassName,
+                                  const char* methodName, const std::string& key) {
+    void* m = FindMethodInClass(klass, methodName);
+    if (!m) m = LookupLearnedMethod(klassName, methodName);
+    if (!m) {
+        static std::unordered_set<std::string> seen;
+        if (FirstSighting(seen, key)) LogMethodMiss(klass, methodName);
+        return nullptr;
     }
+    std::lock_guard<std::mutex> lk(g_klassMutex);
+    g_methodByName.emplace(key, m);
+    return m;
+}
+
+static void* ResolveGameMethod(const char* klassName, const char* methodName) {
+    const std::string key = MethodKey(klassName, methodName);
+    if (void* m = LookupMethodCache(key)) return m;
 
     void* klass = nullptr;
     {
@@ -1297,30 +1307,12 @@ static void* ResolveGameMethod(const char* klassName, const char* methodName) {
         if (it != g_klassByName.end()) klass = it->second;
     }
     if (!klass) {
-        static std::mutex m;
         static std::unordered_set<std::string> seen;
-        bool first;
-        { std::lock_guard<std::mutex> lk(m); first = seen.insert(key).second; }
-        if (first) log("[hybrid] method lookup: class '%s' not learned yet (%s)", klassName, methodName);
+        if (FirstSighting(seen, key))
+            log("[hybrid] method lookup: class '%s' not learned yet (%s)", klassName, methodName);
         return nullptr;
     }
-
-    void* m = FindMethodInClass(klass, methodName);
-    if (!m) {
-        m = LookupLearnedMethod(klassName, methodName);
-    }
-    if (!m) {
-        static std::mutex m2;
-        static std::unordered_set<std::string> seen;
-        bool first;
-        { std::lock_guard<std::mutex> lk(m2); first = seen.insert(key).second; }
-        if (first) LogMethodMiss(klass, methodName);
-        return nullptr;
-    }
-
-    std::lock_guard<std::mutex> lk(g_klassMutex);
-    g_methodByName.emplace(std::move(key), m);
-    return m;
+    return ResolveMethodInClass(klass, klassName, methodName, key);
 }
 
 // Same lookup, but the class comes straight from the live object, so no class
@@ -1332,33 +1324,9 @@ static void* ResolveMethodOnObject(void* obj, const char* methodName) {
     const char* kn = reinterpret_cast<Il2CppClass*>(klass)->_1.name;
     if (!PlausibleName(kn)) return nullptr;
 
-    std::string key;
-    key.reserve(64);
-    key += kn;
-    key += '.';
-    key += methodName;
-    {
-        std::lock_guard<std::mutex> lk(g_klassMutex);
-        auto it = g_methodByName.find(key);
-        if (it != g_methodByName.end()) return it->second;
-    }
-
-    void* m = FindMethodInClass(klass, methodName);
-    if (!m) {
-        m = LookupLearnedMethod(kn, methodName);
-    }
-    if (!m) {
-        static std::mutex m2;
-        static std::unordered_set<std::string> seen;
-        bool first;
-        { std::lock_guard<std::mutex> lk(m2); first = seen.insert(key).second; }
-        if (first) LogMethodMiss(klass, methodName);
-        return nullptr;
-    }
-
-    std::lock_guard<std::mutex> lk(g_klassMutex);
-    g_methodByName.emplace(std::move(key), m);
-    return m;
+    const std::string key = MethodKey(kn, methodName);
+    if (void* m = LookupMethodCache(key)) return m;
+    return ResolveMethodInClass(klass, kn, methodName, key);
 }
 
 int64_t DupCall(const uint64_t* argValues, int argCount) {

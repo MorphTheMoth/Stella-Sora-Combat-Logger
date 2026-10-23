@@ -70,20 +70,8 @@ static std::unordered_map<uintptr_t, SnapshotEntry> g_WeaponSnapshots;
 //  Snapshot time for GetBothAllInfo (actor hits)
 static std::string g_SnapshotTime;
 
-// =============================================================================
-//  Monster dummy-mode hooks
-// =============================================================================
-using FnMonsterActionStateOnEnter = void(__fastcall*)(void*, void*, void*, void*, void*);
-static FnMonsterActionStateOnEnter g_OrigMonsterActionStateOnEnter = nullptr;
-
-static void __fastcall Hook_MonsterActionStateOnEnter(void* self, void* preStatus, void* onComplete, void* onLeave, void* method) {
-    if (!g_Cfg.monster_dummy_mode) {
-        g_OrigMonsterActionStateOnEnter(self, preStatus, onComplete, onLeave, method);
-    }
-}
-
 // Per-room hit snapshot state, cleared on room change — shared with the Lua
-// clock's timer-zero path (LuaClockRunStart in logging.cpp).
+// clock's run-start path (LuaClockRunStart in logging.cpp).
 void ResetHitSnapshots() {
     g_HaveHitSnapshot = false;
     g_SnapshotTime.clear();
@@ -97,22 +85,15 @@ void ResetHitSnapshots() {
 //  Room-enter processing (clock seed + Reset) runs synchronously here, before the
 //  scene load starts, so it precedes the actor-spawn setup logs; the origin
 //  catalog refresh is deferred to PollLuaClock (Lua VM re-entry not safe from
-//  this call context).
+//  this call context).  The attach layer forwards the engine call itself.
 // =============================================================================
-using FnEnterScoreBossFloor = void(__fastcall*)(int32_t id, void* team, void* method);
-static FnEnterScoreBossFloor g_OrigEnterScoreBossFloor = nullptr;
-
 static void __fastcall Hook_EnterScoreBossFloor(int32_t id, void* team, void* method) {
     LuaClockNotifyRoomEnter();
-    g_OrigEnterScoreBossFloor(id, team, method);
 }
 
 // =============================================================================
 //  Reset-button hook
 // =============================================================================
-using FnVoidVoid = void(__fastcall*)(void*, void*);
-static FnVoidVoid g_OrigModuleClearData = nullptr;
-
 static void __fastcall Hook_ModuleClearData(void* self, void* method) {
     OnResetTime();
     ResetHitSnapshots();
@@ -122,12 +103,11 @@ static void __fastcall Hook_ModuleClearData(void* self, void* method) {
     // Room transition (incl. back to lobby/menu): (re)install the Blitz test
     // button patch + ensure the clone exists. Same main-thread DoString context.
     EnsureScoreBossTestButton();
-    // Lua-clock modes (Boss Blitz): LuaClockRunStart owns the Reset log — it is
-    // emitted when the in-game timer is set back to zero, not here, so a retry
-    // produces exactly one Reset/Record pair, stamped at the run start.
+    // Lua-clock modes (Boss Blitz): LuaClockNotifyRoomEnter already emitted the
+    // Reset at room entry, so skip a duplicate here.  The matching Record is
+    // emitted by the poll once the build data is ready.
     if (!LuaClockOwnsResetLog())
         BuildResetJson();
-    g_OrigModuleClearData(self, method);
 }
 
 // =============================================================================
@@ -176,16 +156,7 @@ static std::atomic<GameDataController_o*> g_gdc{nullptr};
 //  All Get* methods follow (GameDataController_o* __this, int32_t key, MethodInfo*)
 // =============================================================================
 using FnGdcGet = void* (__fastcall*)(GameDataController_o*, int32_t, void*);
-
-struct GdcHook {
-    FnGdcGet original;
-    const char* name;
-};
-
-static GdcHook g_GdcHooks[2] = {
-    { nullptr, "GameDataController$$GetHitDamage" },
-    { nullptr, "GameDataController$$GetMonster" },
-};
+static FnGdcGet g_OrigGdcGetMonster = nullptr;
 
 // Record the GDC singleton the first time any hooked Get* method fires.
 static inline void CaptureGdc(GameDataController_o* __this) {
@@ -207,9 +178,14 @@ static inline void CaptureGdc(GameDataController_o* __this) {
 // =============================================================================
 static std::atomic<int32_t> g_DummyMonsterId{0};   // Nova.Client.Monster.Id to rewrite
 static std::atomic<int32_t> g_DummySkinId{0};      // MonsterSkin.Id to substitute (0 = original)
-static std::atomic<int32_t> g_DummyOrigFAId{0};    // pristine fAId_ of that row
+// Pristine fAId_ per monster row.  The dropdown can retarget to another level
+// (= another Monster row) at any time, and switching back must restore that
+// row's own original model, not the previously selected row's.
+static std::mutex g_DummyOrigMutex;
+static std::unordered_map<int32_t, int32_t> g_DummyOrigFAId;
 
 // Nova.Client.Monster (dump.cs:233375) — one row of the 'Monster' bin table.
+// Only id_/fCId_/fAId_ are read; the other fields keep the offsets right.
 struct Nova_Client_Monster_o {
     void* klass;             // 0x00
     void* monitor;           // 0x08
@@ -248,11 +224,14 @@ static void ApplyDummySkin(void* monster) {
     const int32_t target = g_DummyMonsterId.load(std::memory_order_relaxed);
     if (target == 0) return;
     auto* row = reinterpret_cast<Nova_Client_Monster_o*>(monster);
-    if (row->id_ != target) return;          // only this one row is ever touched
-    int32_t orig = g_DummyOrigFAId.load(std::memory_order_relaxed);
-    if (orig == 0) {
-        orig = row->fAId_;
-        g_DummyOrigFAId.store(orig, std::memory_order_relaxed);
+    if (row->id_ != target) return;          // only the selected row is ever touched
+    int32_t orig;
+    {
+        std::lock_guard<std::mutex> lk(g_DummyOrigMutex);
+        auto it = g_DummyOrigFAId.find(target);
+        if (it == g_DummyOrigFAId.end())
+            it = g_DummyOrigFAId.emplace(target, row->fAId_).first;
+        orig = it->second;
     }
     const int32_t skin = g_DummySkinId.load(std::memory_order_relaxed);
     const int32_t want = (skin > 0) ? skin : orig;
@@ -263,11 +242,11 @@ static void ApplyDummySkin(void* monster) {
 
 static void* __fastcall GdcHook_GetHitDamage(GameDataController_o* __this, int32_t key, void* method) {
     CaptureGdc(__this);
-    return g_GdcHooks[0].original(__this, key, method);
+    return nullptr;
 }
 static void* __fastcall GdcHook_GetMonster(GameDataController_o* __this, int32_t key, void* method) {
     CaptureGdc(__this);
-    void* row = g_GdcHooks[1].original(__this, key, method);
+    void* row = g_OrigGdcGetMonster(__this, key, method);
     ApplyDummySkin(row);
     return row;
 }
@@ -400,9 +379,6 @@ static int64_t __fastcall Hook_CalcNormalDamage(
 // =============================================================================
 //  AreaEffectEntity::CopyBattleData — snapshot effects when area snapshots stats
 // =============================================================================
-using FnCopyBattleData = void(__fastcall*)(void*, bool, void*);
-static FnCopyBattleData g_OrigCopyBattleData = nullptr;
-
 // Resolve the real stats source: if the actor is a summoned entity, use the
 // summoner instead (ActorHelper.IsUseHitFromSummon).
 static AdventureActor_o* ResolveHitSource(AdventureActor_o* source) {
@@ -448,8 +424,6 @@ static EffectSnapshot CollectEffectIds(AdventureActor_o* source, bool requireSta
 
 static void __fastcall Hook_CopyBattleData(void* areaEntity, bool force, void* method)
 {
-    g_OrigCopyBattleData(areaEntity, force, method);
-
     auto* area = reinterpret_cast<AreaEffectEntity_o*>(areaEntity);
 
     // Owner is the game's stats source.  `_fxPlayer` is a real AdventureFXPlayer
@@ -471,15 +445,10 @@ static void __fastcall Hook_CopyBattleData(void* areaEntity, bool force, void* m
 // =============================================================================
 //  AdventureWeapon::Setup — snapshot effects when weapon copies owner stats
 // =============================================================================
-using FnWeaponSetup = void(__fastcall*)(AdventureWeapon_o*, LogicEntity_o*, void*, void*, void*, void*, void*, void*, int32_t, void*);
-static FnWeaponSetup g_OrigWeaponSetup = nullptr;
-
 static void __fastcall Hook_WeaponSetup(AdventureWeapon_o* weapon, LogicEntity_o* owner,
                                          void* pos, void* posY, void* dir, void* target,
                                          void* targetPos, void* targetPosY, int32_t aimType, void* method)
 {
-    g_OrigWeaponSetup(weapon, owner, pos, posY, dir, target, targetPos, targetPosY, aimType, method);
-
     AdventureActor_o* source = ResolveHitSource(reinterpret_cast<AdventureActor_o*>(owner));
     EffectSnapshot snap = CollectEffectIds(source, /*requireStackAlive=*/false);
 
@@ -493,19 +462,12 @@ static void __fastcall Hook_WeaponSetup(AdventureWeapon_o* weapon, LogicEntity_o
 //  Minion/Summon stat initialization hooks
 // =============================================================================
 
-using FnFakeSetAttrInfo = void(__fastcall*)(AdventureActor_o*, int32_t, int64_t, int32_t, void*);
-static FnFakeSetAttrInfo g_OrigFakeSetAttrInfo = nullptr;
-
 static void __fastcall Hook_FakeSetAttrInfo(AdventureActor_o* self, int32_t templeteId,
                                             int64_t attributeId, int32_t factionID, void* method)
 {
-    g_OrigFakeSetAttrInfo(self, templeteId, attributeId, factionID, method);
     log("[MINION] FakeAdventureActor$$SetAttrInfo id=%d attrId=%lld faction=%d time=%s",
         templeteId, (long long)attributeId, factionID, gameTime().c_str());
 }
-
-using FnSetPlayerSummonAttr = void(__fastcall*)(AdventureActor_o*, AdventureActor_o*, int32_t, void*);
-static FnSetPlayerSummonAttr g_OrigSetPlayerSummonAttr = nullptr;
 
 // Captures a player's live attribute base/pct values + active effects.
 // Defined below; both the live-inherit summon hook and the battle-start
@@ -515,8 +477,6 @@ static PlayerEffectSnapshot CapturePlayerEffectSnapshot(AdventureActor_o* player
 static void __fastcall Hook_SetPlayerSummonAttr(AdventureActor_o* self, AdventureActor_o* player,
                                                 int32_t percent, void* method)
 {
-    g_OrigSetPlayerSummonAttr(self, player, percent, method);
-
     // Live-inherit path (summonAttrType=1): the engine copies the player's LIVE
     // attributeList into the minion's .origin at summon time, so capture the
     // player's effects/values right now (not the battle-start snapshot).
@@ -533,14 +493,9 @@ static void __fastcall Hook_SetPlayerSummonAttr(AdventureActor_o* self, Adventur
     }
 }
 
-using FnSetPlayerSummonSnap = void(__fastcall*)(AdventureActor_o*, AdventureActor_o*, int32_t, void*);
-static FnSetPlayerSummonSnap g_OrigSetPlayerSummonSnap = nullptr;
-
 static void __fastcall Hook_SetPlayerSummonSnap(AdventureActor_o* self, AdventureActor_o* player,
                                                 int32_t percent, void* method)
 {
-    g_OrigSetPlayerSummonSnap(self, player, percent, method);
-
     // Store minion→player mapping for inherited effect tracking.
     // Snapshot path (summonAttrType=2): the minion's stats come from the
     // player's battle-start snapshot, so no per-minion capture is stored here —
@@ -560,24 +515,22 @@ static void __fastcall Hook_SetPlayerSummonSnap(AdventureActor_o* self, Adventur
 //  Player snapshot stat capture — shared by the battle-start save hook and the
 //  live-inherit summon hook (SetPlayerSummonAttrInfo).
 // =============================================================================
-using FnSaveSnapshot = void(__fastcall*)(AdventureActor_o*, void*);
-static FnSaveSnapshot g_OrigSaveSnapshot = nullptr;
 
 // Capture a player's live attribute base/pct values plus active effects into a
 // PlayerEffectSnapshot. The caller decides the reference time: battle start for
 // the snapshot path, summon time for the live-inherit path.
 static PlayerEffectSnapshot CapturePlayerEffectSnapshot(AdventureActor_o* player) {
     PlayerEffectSnapshot snap;
+    std::vector<double> baseValues(0x61, 0.0);
+    std::vector<double> pctValues(0x61, 0.0);
 
     // Read origin + baseAmend (total base) AND percentAmend from player's attributeList
     if (auto* sl = player->fields.attributeList) {
         if (auto* entriesArr = sl->fields.entries) {
-            snap.baseValues.resize(0x61, 0.0);
-            snap.pctValues.resize(0x61, 0.0);
             for (int t = 1; t < 0x61; t++) {
                 const auto& e = entriesArr->m_Items[t].fields;
-                snap.baseValues[t] = (double)(e.origin + e.baseAmend) / 16777216.0;
-                snap.pctValues[t] = (double)(e.percentAmend) / 16777216.0;
+                baseValues[t] = (double)(e.origin + e.baseAmend) / 16777216.0;
+                pctValues[t] = (double)(e.percentAmend) / 16777216.0;
             }
         }
     }
@@ -617,7 +570,6 @@ static PlayerEffectSnapshot CapturePlayerEffectSnapshot(AdventureActor_o* player
                         if (configId == 0) continue;
 
                         PlayerEffectEntry pe;
-                        pe.instanceId = parentEffect->fields.id;
                         pe.configId = configId;
                         pe.valueConfigId = valueConfigId;
                         pe.sourceType = parentEffect->fields.sourceType;
@@ -626,8 +578,8 @@ static PlayerEffectSnapshot CapturePlayerEffectSnapshot(AdventureActor_o* player
                         pe.parameterType = paramType;
 
                         if (attrType > 0 && attrType < 0x61) {
-                            pe.baseStatOnSnapshot = snap.baseValues[attrType];
-                            pe.pctStatOnSnapshot = snap.pctValues[attrType];
+                            pe.baseStatOnSnapshot = baseValues[attrType];
+                            pe.pctStatOnSnapshot = pctValues[attrType];
                         } else {
                             pe.baseStatOnSnapshot = 0.0;
                             pe.pctStatOnSnapshot = 0.0;
@@ -648,8 +600,6 @@ static PlayerEffectSnapshot CapturePlayerEffectSnapshot(AdventureActor_o* player
 
 static void __fastcall Hook_SavePlayerSnapshot(AdventureActor_o* player, void* method)
 {
-    g_OrigSaveSnapshot(player, method);
-
     if (!player) { log("[SNAP] SavePlayerSnapshot: player is null"); return; }
 
     PlayerEffectSnapshot snap = CapturePlayerEffectSnapshot(player);
@@ -661,20 +611,13 @@ static void __fastcall Hook_SavePlayerSnapshot(AdventureActor_o* player, void* m
     }
 }
 
-using FnCloneSetAttr = void(__fastcall*)(AdventureActor_o*, AdventureActor_o*, void*);
-static FnCloneSetAttr g_OrigCloneSetAttr = nullptr;
-
 static void __fastcall Hook_CloneSetAttr(AdventureActor_o* self, AdventureActor_o* master, void* method)
 {
-    g_OrigCloneSetAttr(self, master, method);
     log("[MINION] MonsterCloneAdventureActor$$SetAttr master=%s self=%s time=%s",
         master ? adventureActorId(master).c_str() : "null",
         self ? adventureActorId(self).c_str() : "null",
         gameTime().c_str());
 }
-
-using FnParseSummonCfg = void(__fastcall*)(MonsterSummonInfo_o*, SummonCfg_o*, void*, void*);
-static FnParseSummonCfg g_OrigParseSummonCfg = nullptr;
 
 // Player dataID → display name (for summon-owner logging).
 static const char* SummonerName(int32_t dataId) {
@@ -683,7 +626,6 @@ static const char* SummonerName(int32_t dataId) {
 
 static void __fastcall Hook_ParseSummonCfg(MonsterSummonInfo_o* summonInfo, SummonCfg_o* cfgData, void* spawnInfo, void* method)
 {
-    g_OrigParseSummonCfg(summonInfo, cfgData, spawnInfo, method);
     int32_t attrType = -1;
     int32_t perc = 0;
     bool useSummonHit = false;
@@ -715,13 +657,8 @@ static void __fastcall Hook_ParseSummonCfg(MonsterSummonInfo_o* summonInfo, Summ
         attrType, perc, useSummonHit, ownerName, ownerId, gameTime().c_str());
 }
 
-using FnGetBothAllInfo = void(__fastcall*)(AdventureActor_o*, void*);
-static FnGetBothAllInfo g_OrigGetBothAllInfo = nullptr;
-
 static void __fastcall Hook_GetBothAllInfo(AdventureActor_o* actor, void* method)
 {
-    g_OrigGetBothAllInfo(actor, method);
-
     // Snapshot the effects of the actor the hit is computed from (static
     // fromActorTemp on the AdventureActor parent class) with their payload
     // currently pushed (stack > 0).
@@ -741,20 +678,11 @@ static void __fastcall Hook_GetBothAllInfo(AdventureActor_o* actor, void* method
 // =============================================================================
 //  Effect / Buff hooks
 // =============================================================================
-using FnEffectOnInit = void(__fastcall*)( void*, int32_t, int32_t, int32_t,
-    Nova_Client_Effect_o*, Nova_Client_EffectValue_o*, AdventureActor_o*, AdventureActor_o*,
-    bool, int32_t, bool, TrueSync_FP_o, BuffEntity_o*, void*);
-static FnEffectOnInit g_OrigEffectOnInit = nullptr;
-
 static void __fastcall Hook_EffectOnInit(void* self, int32_t effType, int32_t sourceType, int32_t id, Nova_Client_Effect_o* effectConfig,
                                          Nova_Client_EffectValue_o* effectValueConfig, AdventureActor_o* owner, AdventureActor_o* fromActor,
                                          bool shareCD, int32_t takeEffectLimit, bool shareTakeEffectLimit,
                                          TrueSync_FP_o initCD, BuffEntity_o* fromBuff, void* method)
 {
-    g_OrigEffectOnInit(self, effType, sourceType, id, effectConfig, effectValueConfig,
-                       owner, fromActor, shareCD, takeEffectLimit, shareTakeEffectLimit,
-                       initCD, fromBuff, method);
-
     int32_t configId = 0;
     if (effectConfig)
         configId = effectConfig->fields.id_;
@@ -770,7 +698,6 @@ static void __fastcall Hook_EffectOnInit(void* self, int32_t effType, int32_t so
         info.valueConfigId = effectValueConfig ? effectValueConfig->fields.id_ : 0;
         info.damage = 0;
         info.ownerId = adventureActorId(owner);
-        info.fromActorId = adventureActorId(fromActor);
         StoreInstanceSnapInfo(instanceId, info);
     }
 
@@ -779,14 +706,9 @@ static void __fastcall Hook_EffectOnInit(void* self, int32_t effType, int32_t so
     }
 }
 
-using FnBuffEffectOnInit = void(__fastcall*)( void*, AdventureActor_o*, AdventureActor_o*, BuffEntity_o*, Nova_Client_BuffEffect_o*, int32_t, void*);
-static FnBuffEffectOnInit g_OrigBuffEffectOnInit = nullptr;
-
 static void __fastcall Hook_BuffEffectOnInit(void* self, AdventureActor_o* owner, AdventureActor_o* fromActor, BuffEntity_o* buffEntity,
                                              Nova_Client_BuffEffect_o* buffEffectConfig, int32_t buffUid, void* method)
 {
-    g_OrigBuffEffectOnInit(self, owner, fromActor, buffEntity, buffEffectConfig, buffUid, method);
-
     int32_t configId = 0;
     if (buffEffectConfig)
         configId = buffEffectConfig->fields.id_;
@@ -796,14 +718,9 @@ static void __fastcall Hook_BuffEffectOnInit(void* self, AdventureActor_o* owner
     }
 }
 
-using FnBuffEntityExcute = void(__fastcall*)( BuffEntity_o*, int32_t, AdventureActor_o*, void*);
-static FnBuffEntityExcute g_OrigBuffEntityExcute = nullptr;
-
 static void __fastcall Hook_BuffEntityExcute(BuffEntity_o* self, int32_t addType,
                                              AdventureActor_o* fromActor, void* method)
 {
-    g_OrigBuffEntityExcute(self, addType, fromActor, method);
-
     int32_t configId = 0;
     if (self->fields.buffConfig)
         configId = self->fields.buffConfig->fields.id_;
@@ -822,12 +739,8 @@ static void __fastcall Hook_BuffEntityExcute(BuffEntity_o* self, int32_t addType
     }
 }
 
-using FnEffectOnClear = void(__fastcall*)(AdventureEffectBase_o*, void*);
-static FnEffectOnClear g_OrigEffectOnClear = nullptr;
-
 static void __fastcall Hook_EffectOnClear(AdventureEffectBase_o* effectBase, MethodInfo* method)
 {
-
     if (effectBase)
     {
         AdventureEffect_o* effect = effectBase->fields._effect;
@@ -845,16 +758,12 @@ static void __fastcall Hook_EffectOnClear(AdventureEffectBase_o* effectBase, Met
             }
         }
     }
-    g_OrigEffectOnClear(effectBase, method);
 }
 
 // =============================================================================
 //  HittedAdditionalAttriFix::Execute — record that this HITTED effect was applied
 //  to the per-hit fromAdditionalAttrInfo snapshot for the in-flight hit.
 // =============================================================================
-using FnHittedAdditionalAttrFixExecute = void(__fastcall*)(AdventureEffectBase_o*, void*);
-static FnHittedAdditionalAttrFixExecute g_OrigHittedAdditionalAttrFixExecute = nullptr;
-
 static void __fastcall Hook_HittedAdditionalAttrFixExecute(AdventureEffectBase_o* effectBase, void* method)
 {
     if (effectBase && effectBase->fields._effect) {
@@ -862,16 +771,12 @@ static void __fastcall Hook_HittedAdditionalAttrFixExecute(AdventureEffectBase_o
         if (effectCfg)
             MarkHittedAdditionalAttrFixApplied(effectCfg->fields.id_);
     }
-    g_OrigHittedAdditionalAttrFixExecute(effectBase, method);
 }
 
 
 // =============================================================================
 //  Battle start / timer / spawn
 // =============================================================================
-using FnUpdateLogic = void(__fastcall*)( void*, TrueSync_FP_o, void*);
-static FnUpdateLogic g_OrigUpdateLogic = nullptr;
-
 static void __fastcall Hook_UpdateLogic(void* self, TrueSync_FP_o logicDeltaTime, void* method) {
     OnUpdateLogicTick();
     g_GameTimeFP.fetch_add(logicDeltaTime.fields._serializedValue, std::memory_order_relaxed);
@@ -880,8 +785,6 @@ static void __fastcall Hook_UpdateLogic(void* self, TrueSync_FP_o logicDeltaTime
     // Re-apply gizmo flags every tick — the engine clears them between frames,
     // so a one-shot write at DllMain is not enough.
     EnableAllDebugGizmos();
-
-    g_OrigUpdateLogic(self, logicDeltaTime, method);
 }
 
 // The gizmo helper is `SceneSingleton<AdventureModuleDebugHelper>`: the helper is
@@ -920,26 +823,14 @@ void* GetDebugHelperInstance() {
     return inst;
 }
 
-using FnBattleStart = void(__fastcall*)( void*, void*, void*);
-static FnBattleStart g_OrigBattleStart = nullptr;
-
 static void __fastcall Hook_BattleStart(void* self, void* evt, void* method) {
     OnBattleStart();
-    g_OrigBattleStart(self, evt, method);
 }
 
-using FnSpawnSkill = void*(__fastcall*)( void*, int32_t, void*);
-static FnSpawnSkill g_OrigSpawnSkill = nullptr;
-
 static void* __fastcall Hook_SpawnSkill(void* self, int32_t skillId, void* method) {
-    void* result = g_OrigSpawnSkill(self, skillId, method);
-
-    if (skillId < 10000000) return result;
-    if (!g_Cfg.skill_casts) return result;
-
-    BuildSkillCastJson(skillId);
-
-    return result;
+    if (skillId >= 10000000 && g_Cfg.skill_casts)
+        BuildSkillCastJson(skillId);
+    return nullptr;
 }
 
 // =============================================================================
@@ -948,43 +839,15 @@ static void* __fastcall Hook_SpawnSkill(void* self, int32_t skillId, void* metho
 //  2.0.0 moved the combat/AI implementation into the HybridCLR-interpreted
 //  `Hotfix.dll`, so this is the only hook path (the 1.15 RVA table was removed).
 //  Hooks are registered by metadata name (see include/hybrid_hooks.h) and the
-//  attach layer performs the engine call itself:
-//
-//    * `InstallHybridOrigStubs` makes every `g_OrigX` a stub, because calling the
-//      original again inside the body would double-run the method.
-//    * `CalculateNormalDamage` and `HotfixDataController.GetMonster` keep a
-//      working original: their bodies need the result (damage value / table
-//      row), taken from the native entry's return buffer or, for
-//      interpreted→interpreted calls, from a duplicate call.
-//    * the `HyGet*` helpers are the only implementation of the hotfix
-//      GameDataController/CommonHelper/ActorHelper accessors.
+//  attach layer performs the engine call itself, so a body only observes.  Two
+//  targets are exceptions because their bodies consume the call's result:
+//  `CalculateNormalDamage` (damage value + out parameters) and
+//  `HotfixDataController.GetMonster` (dummy-model row).  Their `HyOrig_*`
+//  adapters return what the engine call produced, or repeat the call through the
+//  interpreter when the body runs on the interpreted→interpreted path.
+//  The `HyGet*` helpers are the only implementation of the hotfix
+//  GameDataController/CommonHelper/ActorHelper accessors.
 // =============================================================================
-
-// ── original-call stubs ─────────────────────────────────────────────────────
-static void __fastcall HyOrig_VoidVoid(void*, void*) {}
-static void __fastcall HyOrig_VoidVoidVoid(void*, void*, void*) {}
-static void __fastcall HyOrig_EnterScoreBossFloor(int32_t, void*, void*) {}
-static void __fastcall HyOrig_UpdateLogic(void*, TrueSync_FP_o, void*) {}
-static void __fastcall HyOrig_SaveSnapshot(AdventureActor_o*, void*) {}
-static void __fastcall HyOrig_CloneSetAttr(AdventureActor_o*, AdventureActor_o*, void*) {}
-static void __fastcall HyOrig_ParseSummonCfg(MonsterSummonInfo_o*, SummonCfg_o*, void*, void*) {}
-static void __fastcall HyOrig_GetBothAllInfo(AdventureActor_o*, void*) {}
-static void __fastcall HyOrig_EffectOnClear(AdventureEffectBase_o*, void*) {}
-static void __fastcall HyOrig_HittedFix(AdventureEffectBase_o*, void*) {}
-static void __fastcall HyOrig_CopyBattleData(void*, bool, void*) {}
-static void __fastcall HyOrig_FakeSetAttrInfo(AdventureActor_o*, int32_t, int64_t, int32_t, void*) {}
-static void __fastcall HyOrig_SetPlayerSummonAttr(AdventureActor_o*, AdventureActor_o*, int32_t, void*) {}
-static void __fastcall HyOrig_MonsterActionStateOnEnter(void*, void*, void*, void*, void*) {}
-static void* __fastcall HyOrig_GdcGetHitDamage(GameDataController_o*, int32_t, void*) { return nullptr; }
-static void* __fastcall HyOrig_SpawnSkill(void*, int32_t, void*) { return nullptr; }
-static void __fastcall HyOrig_BuffEntityExcute(BuffEntity_o*, int32_t, AdventureActor_o*, void*) {}
-static void __fastcall HyOrig_WeaponSetup(AdventureWeapon_o*, LogicEntity_o*, void*, void*, void*,
-                                          void*, void*, void*, int32_t, void*) {}
-static void __fastcall HyOrig_BuffEffectOnInit(void*, AdventureActor_o*, AdventureActor_o*,
-                                               BuffEntity_o*, Nova_Client_BuffEffect_o*, int32_t, void*) {}
-static void __fastcall HyOrig_EffectOnInit(void*, int32_t, int32_t, int32_t, Nova_Client_Effect_o*,
-                                           Nova_Client_EffectValue_o*, AdventureActor_o*, AdventureActor_o*,
-                                           bool, int32_t, bool, TrueSync_FP_o, BuffEntity_o*, void*) {}
 
 // GDC table row (dummy-model feature): the engine call already ran, so reuse its
 // result on native entries and otherwise repeat the (side-effect free) lookup.
@@ -1022,30 +885,9 @@ static int64_t __fastcall HyOrig_CalcNormalDamage(
     return hybrid::DupCall(a, 22);
 }
 
-static void InstallHybridOrigStubs() {
-    g_OrigMonsterActionStateOnEnter = &HyOrig_MonsterActionStateOnEnter;
-    g_OrigEnterScoreBossFloor      = &HyOrig_EnterScoreBossFloor;
-    g_OrigModuleClearData          = &HyOrig_VoidVoid;
-    g_OrigCalcNormalDamage         = &HyOrig_CalcNormalDamage;
-    g_OrigCopyBattleData           = &HyOrig_CopyBattleData;
-    g_OrigWeaponSetup              = &HyOrig_WeaponSetup;
-    g_OrigFakeSetAttrInfo          = &HyOrig_FakeSetAttrInfo;
-    g_OrigSetPlayerSummonAttr      = &HyOrig_SetPlayerSummonAttr;
-    g_OrigSetPlayerSummonSnap      = &HyOrig_SetPlayerSummonAttr;
-    g_OrigCloneSetAttr             = &HyOrig_CloneSetAttr;
-    g_OrigParseSummonCfg           = &HyOrig_ParseSummonCfg;
-    g_OrigSaveSnapshot             = &HyOrig_SaveSnapshot;
-    g_OrigGetBothAllInfo           = &HyOrig_GetBothAllInfo;
-    g_OrigEffectOnInit             = &HyOrig_EffectOnInit;
-    g_OrigBuffEffectOnInit         = &HyOrig_BuffEffectOnInit;
-    g_OrigBuffEntityExcute         = &HyOrig_BuffEntityExcute;
-    g_OrigEffectOnClear            = &HyOrig_EffectOnClear;
-    g_OrigHittedAdditionalAttrFixExecute = &HyOrig_HittedFix;
-    g_OrigUpdateLogic              = &HyOrig_UpdateLogic;
-    g_OrigBattleStart              = &HyOrig_VoidVoidVoid;
-    g_OrigSpawnSkill               = &HyOrig_SpawnSkill;
-    g_GdcHooks[0].original         = &HyOrig_GdcGetHitDamage;
-    g_GdcHooks[1].original         = &HyOrig_GdcGetMonster;
+static void InstallHybridOriginals() {
+    g_OrigCalcNormalDamage = &HyOrig_CalcNormalDamage;
+    g_OrigGdcGetMonster    = &HyOrig_GdcGetMonster;
 }
 
 // ── outgoing hotfix calls: see the HyGet* adapters above (next to the
@@ -1054,11 +896,6 @@ static void InstallHybridOrigStubs() {
 // ── argument unpackers + target table ──────────────────────────────────────
 // Each unpacker forwards the metadata arguments to the existing hook body; the
 // engine call itself is performed by the attach layer (see TargetDesc::mode).
-static void HY_MonsterActionStateOnEnter(void* mi, const hybrid::StackObject* s, const int* o, void*) {
-    Hook_MonsterActionStateOnEnter(hybrid::Ptr(s, o[0]), hybrid::Ptr(s, o[1]),
-                                   hybrid::Ptr(s, o[2]), hybrid::Ptr(s, o[3]), mi);
-}
-
 static void HY_EnterScoreBossFloor(void* mi, const hybrid::StackObject* s, const int* o, void*) {
     Hook_EnterScoreBossFloor(hybrid::I32(s, o[0]), hybrid::Ptr(s, o[1]), mi);
 }
@@ -1186,30 +1023,29 @@ static void HY_SpawnSkill(void* mi, const hybrid::StackObject* s, const int* o, 
 }
 
 static const hybrid::TargetDesc g_HybridTargets[] = {
-    // klass,                        method,                          args, sta, mode,               dup, body
-    { "MonsterActionState",          "OnEnter",                          4,  false, hybrid::Mode::Entry, false, HY_MonsterActionStateOnEnter },
-    { "AdventureEffect",             "OnInit",                          13,  false, hybrid::Mode::After, false, HY_EffectOnInit },
-    { "AdventureEffectBase",         "OnClear",                          1,  false, hybrid::Mode::Entry, false, HY_EffectOnClear },
-    { "HittedAdditionalAttriFix",    "Execute",                          1,  false, hybrid::Mode::Entry, false, HY_HittedFixExecute },
-    { "AdventureLevelController",    "UpdateLogic",                      2,  false, hybrid::Mode::Entry, false, HY_UpdateLogic },
-    { "ActorEffectManage",           "OnBattleStart",                    2,  false, hybrid::Mode::Entry, false, HY_BattleStart },
-    { "AdventureLevelController",    "SpawnSkill",                       2,  false, hybrid::Mode::Entry, false, HY_SpawnSkill },
-    { "BuffEffectBase",              "OnInit",                           6,  false, hybrid::Mode::After, false, HY_BuffEffectOnInit },
-    { "BuffEntity",                  "BuffExcute",                       3,  false, hybrid::Mode::After, false, HY_BuffEntityExcute },
-    { "CommonHelper",                "CalculateNormalDamage",           22,  true,  hybrid::Mode::After, true,  HY_CalcNormalDamage },
-    { "AdventureModuleController",   "ClearData",                        1,  false, hybrid::Mode::Entry, false, HY_ModuleClearData },
-    { "AdventureModuleHelper",       "EnterScoreBossFloor",              2,  true,  hybrid::Mode::Entry, false, HY_EnterScoreBossFloor },
-    { "AdventureActor",              "GetBothAllInfo",                   1,  false, hybrid::Mode::After, false, HY_GetBothAllInfo },
-    { "AreaEffectEntity",            "CopyBattleData",                   2,  false, hybrid::Mode::After, false, HY_CopyBattleData },
-    { "AdventureWeapon",             "Setup",                            9,  false, hybrid::Mode::After, false, HY_WeaponSetup },
-    { "FakeAdventureActor",          "SetAttrInfo",                      4,  false, hybrid::Mode::After, false, HY_FakeSetAttrInfo },
-    { "MonsterAdventureActor",       "SetPlayerSummonAttrInfo",          3,  false, hybrid::Mode::After, false, HY_SetPlayerSummonAttr },
-    { "MonsterAdventureActor",       "SetPlayerSummonAttrInfoBySnapshot",3,  false, hybrid::Mode::After, false, HY_SetPlayerSummonSnap },
-    { "MonsterCloneAdventureActor",  "SetAttr",                          2,  false, hybrid::Mode::After, false, HY_CloneSetAttr },
-    { "MonsterSummonInfo",           "ParseSummonCfg",                   3,  false, hybrid::Mode::After, false, HY_ParseSummonCfg },
-    { "PlayerAdventureActor",        "SavePlayerAttributeSnapshot",      1,  false, hybrid::Mode::After, false, HY_SavePlayerSnapshot },
-    { "HotfixDataController",        "GetHitDamage",                     2,  false, hybrid::Mode::Entry, false, HY_GetHitDamage },
-    { "HotfixDataController",        "GetMonster",                       2,  false, hybrid::Mode::After, true,  HY_GetMonster },
+    // klass,                        method,                          args, mode,               dup, body
+    { "AdventureEffect",             "OnInit",                          13,  hybrid::Mode::After, false, HY_EffectOnInit },
+    { "AdventureEffectBase",         "OnClear",                          1,  hybrid::Mode::Entry, false, HY_EffectOnClear },
+    { "HittedAdditionalAttriFix",    "Execute",                          1,  hybrid::Mode::Entry, false, HY_HittedFixExecute },
+    { "AdventureLevelController",    "UpdateLogic",                      2,  hybrid::Mode::Entry, false, HY_UpdateLogic },
+    { "ActorEffectManage",           "OnBattleStart",                    2,  hybrid::Mode::Entry, false, HY_BattleStart },
+    { "AdventureLevelController",    "SpawnSkill",                       2,  hybrid::Mode::Entry, false, HY_SpawnSkill },
+    { "BuffEffectBase",              "OnInit",                           6,  hybrid::Mode::After, false, HY_BuffEffectOnInit },
+    { "BuffEntity",                  "BuffExcute",                       3,  hybrid::Mode::After, false, HY_BuffEntityExcute },
+    { "CommonHelper",                "CalculateNormalDamage",           22,  hybrid::Mode::After, true,  HY_CalcNormalDamage },
+    { "AdventureModuleController",   "ClearData",                        1,  hybrid::Mode::Entry, false, HY_ModuleClearData },
+    { "AdventureModuleHelper",       "EnterScoreBossFloor",              2,  hybrid::Mode::Entry, false, HY_EnterScoreBossFloor },
+    { "AdventureActor",              "GetBothAllInfo",                   1,  hybrid::Mode::After, false, HY_GetBothAllInfo },
+    { "AreaEffectEntity",            "CopyBattleData",                   2,  hybrid::Mode::After, false, HY_CopyBattleData },
+    { "AdventureWeapon",             "Setup",                            9,  hybrid::Mode::After, false, HY_WeaponSetup },
+    { "FakeAdventureActor",          "SetAttrInfo",                      4,  hybrid::Mode::After, false, HY_FakeSetAttrInfo },
+    { "MonsterAdventureActor",       "SetPlayerSummonAttrInfo",          3,  hybrid::Mode::After, false, HY_SetPlayerSummonAttr },
+    { "MonsterAdventureActor",       "SetPlayerSummonAttrInfoBySnapshot",3,  hybrid::Mode::After, false, HY_SetPlayerSummonSnap },
+    { "MonsterCloneAdventureActor",  "SetAttr",                          2,  hybrid::Mode::After, false, HY_CloneSetAttr },
+    { "MonsterSummonInfo",           "ParseSummonCfg",                   3,  hybrid::Mode::After, false, HY_ParseSummonCfg },
+    { "PlayerAdventureActor",        "SavePlayerAttributeSnapshot",      1,  hybrid::Mode::After, false, HY_SavePlayerSnapshot },
+    { "HotfixDataController",        "GetHitDamage",                     2,  hybrid::Mode::Entry, false, HY_GetHitDamage },
+    { "HotfixDataController",        "GetMonster",                       2,  hybrid::Mode::After, true,  HY_GetMonster },
 };
 
 // Install the hotfix attach layer.  Returns true when it is live; without it
@@ -1220,7 +1056,7 @@ static bool InstallHybridLayer() {
             "no combat hooks installed");
         return false;
     }
-    InstallHybridOrigStubs();
+    InstallHybridOriginals();
     const int count = (int)(sizeof(g_HybridTargets) / sizeof(g_HybridTargets[0]));
     hybrid::InstallAll(g_HybridTargets, count);
     if (hybrid::Active()) {
