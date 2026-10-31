@@ -123,7 +123,7 @@ Field iteration also has to be bounded: for hotfix classes `Il2CppClass::field_c
 Moving the code to the hotfix also reordered some data classes, which offsets cannot absorb. `ActorAdditionalAttrInfo` is the current example:
 
 ```csharp
-// 2.0.0 (Hotfix.decompiled.cs:889)
+// 2.0.0/2.0.1 (Hotfix.decompiled.cs:889 in both)
 private Dictionary<int, FDP> attributeWithElementOrDamageTypeDict = new ...;   // now first
 public AttributeList attributeList { get; } = new AttributeList();             // now second
 public bool forceCrit { get; set; }                                            // now third/fourth
@@ -218,7 +218,7 @@ Non-RVA game dependencies that were re-checked:
 
 ## Known limitations
 
-- **Game gizmos** (`player_gizmo`, `hitbox_gizmo`, …) work in hotfix mode through the singleton's static field, not through an address: `AdventureModuleDebugHelper` is a hotfix class (`Hotfix.decompiled.cs:54145`) whose `SceneSingleton<T>` base is an AOT generic instantiated over it, so `get_Instance` has neither an AOT address nor an interpreted MethodInfo. `GetDebugHelperInstance()` therefore reads `g_instance` out of the declaring class's `static_fields` block (`hybrid::ClassByName` + `hybrid::ReadStaticFieldPtr`) and the flag offsets are resolved by field name from the runtime class in `EnableAllDebugGizmos()` — the 1.15 offsets (`0x28`…) are stale because 2.0.0 inserted `IndicatorsRoot` before the bools.
+- **Game gizmos** (`player_gizmo`, `hitbox_gizmo`, …) work in hotfix mode through the singleton's static field, not through an address: `AdventureModuleDebugHelper` is a hotfix class (`Hotfix.decompiled.cs:54180`, 2.0.1; `54145` in 2.0.0) whose `SceneSingleton<T>` base is an AOT generic instantiated over it, so `get_Instance` has neither an AOT address nor an interpreted MethodInfo. `GetDebugHelperInstance()` therefore reads `g_instance` out of the declaring class's `static_fields` block (`hybrid::ClassByName` + `hybrid::ReadStaticFieldPtr`) and the flag offsets are resolved by field name from the runtime class in `EnableAllDebugGizmos()` — the 1.15 offsets (`0x28`…) are stale because 2.0.0 inserted `IndicatorsRoot` before the bools.
 - **Call suppression** is not possible: the attach layer always forwards the engine call, so hooks only observe. The legacy `monster_dummy_mode` suppression hook therefore had no effect in 2.0.0 and was removed together with the option.
 - `GetMonster`'s dummy skin now mutates the row the engine actually returned (the value is read from the callee frame at `LeaveFrame`), so the old "the duplicate call may have returned a different object" caveat no longer applies on the interpreted → interpreted path. The native path was already exact.
 - A deferred body reads the caller's memory through the argument snapshot; `out`/`ref` pointers are only valid while the caller frame is alive. `LeaveFrame` flushes at the callee's return for that reason, and a queued body whose caller frame has already returned is dropped (one `[hybrid] dropped a deferred body …` line) rather than replayed. The `out` values were written by the engine's own call, so the body reads the real ones; the fallback duplicate (when used) re-writes them through the same pointers, keeping the logged values consistent.

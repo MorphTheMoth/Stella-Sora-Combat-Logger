@@ -10,6 +10,8 @@ not reliable; when they disagree, explain how they disagree. When the research
 is done, **do not write a `.md` report per disc** — answer in chat with a
 summary in the format shown at the bottom.
 
+Discs are composed of 3 abilities, the main ability called melody, one or two other abilities called harmonies.
+
 ## Resources
 
 | # | Resource | What it gives you |
