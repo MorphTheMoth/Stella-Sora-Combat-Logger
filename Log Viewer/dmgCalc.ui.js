@@ -124,13 +124,19 @@ function dcCachedHitCalc(ev) {
 
 // Memoized dcCollectAttrFixEffects: valid while dcFiltered is the same array
 // (dcApplyFilters always allocates a new array, so any refilter or newly
-// arrived hit invalidates it). Callers only read the returned entries.
-let _dcCollectCache = { src: null, len: -1, result: null };
+// arrived hit invalidates it) and the calc state version is unchanged (an
+// emblem edit rewrites the record rows without re-filtering). Callers only read
+// the returned entries.
+let _dcCollectCache = { src: null, len: -1, ver: -1, result: null };
 function dcCollectAttrFixEffectsCached() {
-    if (_dcCollectCache.src === dcFiltered && _dcCollectCache.len === dcFiltered.length && _dcCollectCache.result) {
+    if (_dcCollectCache.src === dcFiltered && _dcCollectCache.len === dcFiltered.length
+        && _dcCollectCache.ver === dcStateVersion && _dcCollectCache.result) {
         return _dcCollectCache.result;
     }
-    _dcCollectCache = { src: dcFiltered, len: dcFiltered.length, result: dcCollectAttrFixEffects(dcFiltered) };
+    _dcCollectCache = {
+        src: dcFiltered, len: dcFiltered.length, ver: dcStateVersion,
+        result: dcCollectAttrFixEffects(dcFiltered),
+    };
     return _dcCollectCache.result;
 }
 
@@ -694,6 +700,9 @@ function dcApplyAndRender(changedKeys) {
     dcVL.render();
     dcRefreshEI();
     dcNotifyAnalytics();
+    // The Record tab edits these same level tables — keep its board in sync
+    // whether the change came from this tab or from the sidebar.
+    if (typeof window.RecordRefresh === 'function') window.RecordRefresh();
 }
 
 // Fixture helper for tests/scripts: replace the whole disabled set and bump
@@ -1522,6 +1531,42 @@ window.dcResetPotLevelChange = function(potId) {
     dcApplyAndRender();
 };
 
+// Set a potential's effective level directly (record page stepper). Writes the
+// same `change` the ± sidebar shortcuts and the Max Lvl 6 toggles use, so the
+// row, the record page and the recalculation stay on one model. Clamped to the
+// simulator range in dcPotEffectiveLevel (0..9).
+window.dcSetPotLevel = function(potId, targetLevel) {
+    const st = dcPotLevels.get(Number(potId));
+    if (!st) return;
+    const t = Math.round(Number(targetLevel));
+    if (!Number.isFinite(t)) return;
+    const cur = dcPotEffectiveLevel(st);
+    const next = Math.min(Math.max(t, 0), 9);
+    if (next === cur) return;
+    st.change = (st.change || 0) + (next - cur);
+    dcHideCharDeltas();
+    dcApplyAndRender();
+};
+
+// Clear every simulated level change at once — potentials, skill slots and
+// character levels (record page "Reset all"). The Max Lvl 6 shortcuts keep
+// their remembered previous values, so a second click still reverts cleanly.
+window.dcResetAllLevelChanges = function() {
+    let touched = false;
+    for (const st of dcPotLevels.values()) {
+        if (st.change) { st.change = 0; touched = true; }
+    }
+    for (const st of dcSkillLevels.values()) {
+        if (st.change) { st.change = 0; touched = true; }
+    }
+    for (const st of dcCharLevels.values()) {
+        if (st.change) { st.change = 0; touched = true; }
+    }
+    if (!touched) return;
+    dcHideCharDeltas();
+    dcApplyAndRender();
+};
+
 // ± a character's skill-slot level (Skill Levels section / skill-scaled
 // effect rows). Steps the slot's user `change` — every skill-scaled hit
 // multiplier and effect of that slot moves together.
@@ -2289,6 +2334,24 @@ window.switchTab = function(tab) {
 };
 
 let _dcLastEffectKeys = null;
+// The Record tab shows the shared right sidebar (Totals / Quick Toggles /
+// Effects) but no hit list of its own — entering it or editing a level only
+// needs the hit set and the sidebar blocks refreshed.
+window.dcRefreshRecordSidebar = function() {
+    dcFiltered = dcApplyFilters();
+    // Collect once first: that call is what rebuilds the pot/skill/note/char
+    // level tables from the record, and every block below reads them.
+    dcCollectAttrFixEffectsCached();
+    dcSyncCharEffectKeys();
+    dcSyncQuickToggles();
+    dcBumpCalcVersion();
+    dcRenderTotals();
+    dcRenderCharList();
+    renderEffectsPanel();
+    const st = document.getElementById('stats');
+    if (st) st.textContent = `${dcFiltered.length} hits`;
+};
+
 // Expose a hook so data loading can trigger a refresh when new events arrive.
 // Updates hit list, formula-bar totals, and the effects panel only when
 // the set of unique effects actually changes (no DOM thrashing on every poll).
@@ -2319,14 +2382,22 @@ window.dcRefreshIfVisible = function() {
 
         document.getElementById('stats').textContent = `${dcFiltered.length} hits`;
         dcVL.render();
-    } else if (typeof activeTab !== 'undefined' && (activeTab === 'analytics' || activeTab === 'effectimpact' || activeTab === 'emblemscomp')) {
+    } else if (typeof activeTab !== 'undefined' && (activeTab === 'analytics' || activeTab === 'effectimpact' || activeTab === 'emblemscomp' || activeTab === 'record')) {
         // Keep the shared right sidebar (totals, char list, effects panel) and
         // the effect-source chips fresh while the Dmg Calc panel itself is hidden.
+        // The Record tab shows that sidebar too, so it rides this path.
         dcFiltered = dcApplyFilters();
         fcRenderSelects('hits', false);
         dcBumpCalcVersion();
         dcRenderTotals();
         dcRenderCharList();
+        if (activeTab === 'record') {
+            // Its own list is the record board, not the hit list — keep the
+            // board's numbers in step with the sidebar as events stream in.
+            const st = document.getElementById('stats');
+            if (st) st.textContent = `${dcFiltered.length} hits`;
+            if (typeof window.RecordRefresh === 'function') window.RecordRefresh();
+        }
         const newEffects = dcCollectAttrFixEffectsCached();
         const newKeys = new Set(newEffects.map(e => e.key));
         if (!_dcLastEffectKeys || _dcLastEffectKeys.size !== newKeys.size || ![...newKeys].every(k => _dcLastEffectKeys.has(k))) {

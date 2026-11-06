@@ -155,6 +155,19 @@ function dcLevelRecordMismatch(ev) {
     return ev._levelSig !== dcLevelTablesSig;
 }
 
+// The Record tab's emblem editor rewrites the record's gems in place, which
+// changes dcRecordLevelSig for that record. Drop the memoized signature so
+// every hit stamped with it re-reads the edited build (otherwise the hit keeps
+// treat the old build's levels as its own and skips the recalculation). The
+// level tables' own signature is refreshed too, so a hit compared right after
+// the edit isn't mistaken for one from another battle.
+window.dcInvalidateRecordSig = function (rec) {
+    if (rec) _dcRecordSigCache.delete(rec);
+    const cur = (typeof getOriginRecord === 'function') ? getOriginRecord() : null;
+    if (rec && cur && rec === cur) dcLevelTablesSig = dcRecordLevelSig(rec);
+    dcBumpLevelState();
+};
+
 // Rebuild the level table from the active record (Origin event). User changes
 // survive rebuilds; rows the record doesn't list are dropped (lazy-recreated
 // from logged entries when the ± buttons touch them).
@@ -205,16 +218,29 @@ function dcRebuildPotLevels() {
 function dcPotEffectiveLevel(st, disabledSet) {
     const dis = disabledSet ?? dcEffectsDisabled;
     const bonus = (st.potKey && dis.has(st.potKey)) ? 0 : st.bonus;
-    let lvl = Math.min(Math.max(st.recordLv + bonus + (st.change || 0), 0), 9);
+    // Single-level potentials (indices 1-4 / 21-24) are capped at 1: the game
+    // gives them no levelling row, so the emblem/equipment grant can't push
+    // them past it either (Potential.json MaxLevel 1 for those indices).
+    const cap = (typeof dcPotLevelable === 'function' && !dcPotLevelable(st.potId)) ? 1 : 9;
+    let lvl = Math.min(Math.max(st.recordLv + bonus + (st.change || 0), 0), cap);
     const ceil = dis && dis.potCeil;
     if (ceil > 0 && lvl > ceil) lvl = ceil;
     return lvl;
 }
 
 // Bridge for record.js (separate scope): per-potential level breakdown.
+// `eff` is the level the calculator actually uses (record + enabled bonus +
+// change), so the record board and the recalculation can never disagree —
+// disabling an emblem pot row drops `eff`, not just the displayed split.
 window.dcPotLevelInfo = function (potId) {
     const st = dcPotLevels.get(Number(potId));
-    return st ? { recordLv: st.recordLv, bonus: st.bonus, change: st.change || 0 } : null;
+    return st ? {
+        recordLv: st.recordLv,
+        bonus: st.bonus,
+        change: st.change || 0,
+        eff: dcPotEffectiveLevel(st),
+        levelable: typeof dcPotLevelable === 'function' ? dcPotLevelable(potId) : true,
+    } : null;
 };
 
 // ── Lazy record reconstruction (logs without a record log) ────────────────
@@ -1060,17 +1086,26 @@ function dcEventCharId(ev) {
 }
 
 // Bridges for record.js (separate scope): per-skill level breakdown.
+//   recordMax — the character's own skill cap (GetCharSkillMaxLevel: the
+//               upgrade-ladder length), i.e. where the "N+N" split happens.
+//   max       — the effective cap the ± buttons can reach (dcSkillMaxLevel:
+//               recordMax + adds, never below the ladder cap).
+//   eff       — the level the calculator actually uses (record + enabled adds
+//               + user change), i.e. what the record board's stepper edits.
 window.dcSkillLevelInfo = function (charId, slot) {
     const st = dcSkillLevels.get(`${Number(charId)}:${Number(slot)}`);
     if (!st) return null;
     let bonusTotal = 0;
     for (const [, lv] of (st.bonusByRow || [])) bonusTotal += lv;
+    const recordMax = st.maxLv > 0 ? st.maxLv : 0;
     return {
         recordLv: st.recordLv,
         bonus: bonusTotal,
         change: st.change || 0,
+        recordMax,
+        eff: dcSkillEffectiveLevel(st),
         // extended cap: base max + total adds (emblem + talent)
-        max: st.maxLv > 0 ? st.maxLv + bonusTotal : 99,
+        max: recordMax > 0 ? Math.max(recordMax + bonusTotal, DC_SKILL_LEVEL_CAP) : 99,
     };
 };
 
@@ -1665,7 +1700,12 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides, s
     if (dcIsCharDisabledHit(ev)) {
         return { aStats: origA, dStats: origD, _potentialsDisabled: true };
     }
-    if (dcEffectsDisabled.size === 0 && !(dcEffectLevelOverrides?.size) && dcPotLevels.size === 0 && dcSkillLevels.size === 0 && dcNoteLevels.size === 0 && dcCharLevels.size === 0) return { aStats: origA, dStats: origD };
+    if (dcEffectsDisabled.size === 0 && !(dcEffectLevelOverrides?.size) && dcPotLevels.size === 0 && dcSkillLevels.size === 0 && dcNoteLevels.size === 0 && dcCharLevels.size === 0) {
+        // The Record tab's emblem editor can change the build with no level
+        // table / toggle involved — only skip when there is no gem delta.
+        const emRec = (typeof getOriginRecord === 'function') ? getOriginRecord() : null;
+        if (!emRec?._emblemStatDelta) return { aStats: origA, dStats: origD };
+    }
 
     // Attacker charId — owner of attacker-side skill-scaled effects
     const attackerCharId = dcEventCharId(ev);
@@ -1891,6 +1931,34 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides, s
                 bumpOrigin(1, dcCharEffectiveAtk(st) - st.recordAtk);
                 const effHp = dcCharEffectiveHp(st);
                 if (effHp != null) bumpOrigin(3, effHp - st.recordHp);
+            }
+        }
+    }
+
+    // ── Emblem stat edits (Record tab editor) ────────────────────────────
+    // The logged stat snapshot already contains the record's equipped emblems,
+    // so an emblem edit is applied as the DIFFERENCE between the edited gems
+    // and the logged ones (recomputeRecordEmblemDelta, tableResolver.js): flat
+    // rolls add to the Origin domain, percent rolls to pct. The matching
+    // "(edited)" rows in AttackerRecord only exist so the change is toggleable
+    // — a disabled row drops its entry here, which is what lets the Effect
+    // Impact / Emblems Comparison "no emblems" baselines remove the edit too.
+    // Pot / skill affixes are not part of this: they move the level tables
+    // instead, which the block above handles.
+    if (!recMismatch && attackerCharId != null) {
+        // Per-hit record scoping: a log can hold several records, so the edit
+        // delta must come from the record this hit was parsed with.
+        const emRec = ev._recordRef || ((typeof getOriginRecord === 'function') ? getOriginRecord() : null);
+        const emDelta = emRec?._emblemStatDelta?.get(String(attackerCharId));
+        if (emDelta) {
+            for (const d of emDelta.values()) {
+                if (!d || d.attrType == null || !d.value) continue;
+                if (d.rowKey && dcEffectsDisabled.has(d.rowKey)) continue;
+                let stat = aMap.get(d.attrType);
+                if (!stat) { stat = { origin: 0, base: 0, pct: 0, abs: 0 }; aMap.set(d.attrType, stat); }
+                if (d.subType === 2) stat.pct = (stat.pct || 0) + d.value;
+                else if (d.subType === 3) stat.abs = (stat.abs || 0) + d.value;
+                else stat.origin = (stat.origin || 0) + d.value;
             }
         }
     }

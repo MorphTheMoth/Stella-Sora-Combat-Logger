@@ -602,6 +602,10 @@ window.switchTab = function(tab) {
     // Merged sidebar: one filter section, with per-domain rows shown/hidden.
     const isLogDomain = tab === 'log' || tab === 'record';
     const isHitsDomain = tab === 'dmgcalc' || tab === 'effectimpact' || tab === 'emblemscomp' || tab === 'analytics';
+    // The Record tab edits the same level tables the Dmg Calc right sidebar
+    // reports on, so it shows that sidebar (Totals / Quick Toggles / Effects)
+    // while keeping the left Filters section hidden.
+    const showDcSidebar = isHitsDomain || tab === 'record';
     const sbFilters = document.getElementById('sidebarFilters');
     if (sbFilters) sbFilters.classList.toggle('hidden', tab === 'record');
     const logTypeRow = document.getElementById('logTypeRow');
@@ -615,7 +619,7 @@ window.switchTab = function(tab) {
     const eiZeroGainWrap = document.getElementById('eiZeroGainWrap');
     if (eiZeroGainWrap) eiZeroGainWrap.classList.toggle('hidden', tab !== 'effectimpact');
     const sbDcStats = document.getElementById('sidebarDcStats');
-    if (sbDcStats) sbDcStats.classList.toggle('hidden', !isHitsDomain);
+    if (sbDcStats) sbDcStats.classList.toggle('hidden', !showDcSidebar);
     // The shared selects carry per-domain option lists — re-render them for
     // the newly active domain (a diff no-op when the lists already match,
     // so an open popup survives).
@@ -625,5 +629,10 @@ window.switchTab = function(tab) {
     if (isLogDomain && fcDirtyLog && typeof refilterAndRender === 'function') {
         fcDirtyLog = false;
         refilterAndRender(false, false);
+    }
+    if (tab === 'record' && typeof window.dcRefreshRecordSidebar === 'function') {
+        // Last: the sidebar is a readout of the recalculated hits, and the log
+        // refilter above may have just touched the shared state.
+        window.dcRefreshRecordSidebar();
     }
 };

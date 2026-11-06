@@ -262,6 +262,54 @@ const GEM_EFFECT_IDS = [
     83031, 83032, 83033, 83034,   // Emblem 90, line 3
 ];
 const gemEffectIds = new Set(GEM_EFFECT_IDS);
+// Emblem-roll catalog for the Record tab's emblem editor, built from
+// CharGemAttrValue (same source the Emblems Comparison tab lists):
+//   slot (1 Emblem 70 / 2 Emblem 80 / 3 Emblem 90) -> Map<"slot|line", line>
+// A LINE is what an emblem slot offers: stat rolls (attrType 12, and the
+// energy family 37), skill-levelup affixes (7) and potential-levelup affixes
+// (99). Each line holds every roll tier entry (`entries`: CharGemAttrValue
+// rows sorted by Level) so the editor can offer "— lv —" plus one option per
+// tier, exactly like Nebula's emblem cards.
+//   key    — stable identity of the line ("12:1:2", "7:2", "99:25", "37:1")
+//   name   — display name (attr name / "<slot> Levelup" / potential name)
+//   potId  — potential id for attrType 99 lines (null otherwise)
+//   potIdx — potential index (the "01".."43" suffix) for 99 lines
+const emblemLinesBySlot = new Map();   // slot -> Map<lineKey, line>
+const EMBLEM_SLOT_NAME = { 1: 'Lvl 70', 2: 'Lvl 80', 3: 'Lvl 90' };
+// CharGemAttrValue id -> the entry itself (percent rolls are logged as Effect
+// ids, so the record page needs the reverse lookup to show which line a gem
+// actually rolled).
+const gemAttrValueByEffectId = new Map();
+// Skill-levelup affix slot names (AttrType 7 first subtype = ActionKey)
+const EMBLEM_SKILL_LINE_NAME = { 1: 'AA Levelup', 2: 'Skill Levelup', 3: 'Support Skill Levelup', 4: 'Ultimate Levelup' };
+// Emblem tier that can roll a CharGemAttrValue TypeId (same mapping the
+// Emblems Comparison tab uses — groups 1-4/5-8+11/9+10+12).
+function emblemSlotOfTypeId(typeId) {
+    if (typeId == null) return null;
+    if (typeId <= 34) return 1;
+    if (typeId <= 38) return 2;
+    if (typeId <= 59) return 3;
+    if (typeId <= 93) return 2;
+    return 3;
+}
+function emblemLineKeyOf(gv) {
+    if (!gv) return null;
+    if (gv.attrType === 12 && gv.first != null) return `12:${gv.first}:${gv.second || 1}`;
+    if (gv.attrType === 37) return `37:${gv.first ?? 0}`;
+    if (gv.attrType === 7 && gv.first != null) return `7:${gv.first}`;
+    if (gv.attrType === 99 && gv.first != null) return `99:${gv.first}`;
+    return null;
+}
+// Potential ids 500000 + charId*100 + idx; the two single-level families
+// (idx 1-4 core, 21-24 support core) are fixed at level 1 — they can't be
+// levelled by the player or broadened by an emblem affix.
+function emblemPotIndex(potId) { return Number(potId) % 100; }
+function dcPotLevelable(potId) {
+    const idx = emblemPotIndex(potId);
+    if (!(idx >= 1 && idx <= 43)) return false;
+    if (idx <= 4 || (idx >= 21 && idx <= 24)) return false;
+    return true;
+}
 const potentialById = new Map();
 // potential id -> effect-id family base (Effect.json LevelData link; the
 // effect-id family is NOT always <EffectGroupId> — e.g. Nazuka's potentials
@@ -277,6 +325,11 @@ const potentialNameById = new Map();
 // calc (Hp rides along unused, Def/etc. are constant) — the Dmg Calc's
 // character-level table (dmgCalc.calc.js) resolves deltas through this.
 const charStatLadder = new Map();   // charId -> [{ l, atk }]
+// Character display metadata from the same character.json (element / star /
+// class) — the Record tab's column headers read it. Filled by
+// buildCharStatLadder so no extra fetch is needed.
+const charMeta = new Map();         // charId -> { name, element, star, klass }
+window.charMeta = charMeta;
 const EMBLEM_SLOT_NAMES = { 1: 'Emblem 70', 2: 'Emblem 80', 3: 'Emblem 90' };
 const GEM_SKILL_SLOT_NAMES = { 1: 'Normal Atk', 2: 'Main Skill', 3: 'Support Skill', 4: 'Ultimate' };
 
@@ -438,6 +491,86 @@ function buildRecordBuildEffects(origin) {
     return rows;
 }
 
+// ─── Emblem stat totals (Record tab's emblem editor) ────────────────────────
+// The hit's logged stat snapshot ALREADY contains the emblems the game had
+// equipped, so changing an emblem cannot work by "adding the new row" — the
+// Record tab compares the edited gems against the ones the record logged and
+// the calc applies the difference (origin domain for flat rolls, pct for the
+// percent ones). Pot / skill affixes are not part of this: they drive the
+// potential / skill level tables instead (the record's folded `pots`/`skills`).
+//
+// Returns Map<charId, Map<"attr|sub", {attrType, subType, value}>> for one gem
+// list configuration.
+function emblemStatTotals(chars) {
+    const out = new Map();
+    for (const ch of (chars || [])) {
+        const m = new Map();
+        const add = (attrType, subType, value) => {
+            if (attrType == null || !Number.isFinite(value) || !value) return;
+            const key = `${attrType}|${subType}`;
+            const cur = m.get(key);
+            if (cur) cur.value += value;
+            else m.set(key, { attrType: Number(attrType), subType: Number(subType), value });
+        };
+        for (const g of (ch.gems || [])) {
+            // flat rolls: [CharGemAttrValueId, CfgValue, Value]
+            for (const roll of (g.attrs || [])) {
+                const gv = gemAttrValueById.get(Number(roll && roll[0]));
+                if (!gv || gv.attrType !== 12) continue;   // Type 37 has no numeric attr id
+                add(gv.first, gv.second || 1, gv.value ?? (Number(roll && roll[2]) || 0));
+            }
+            // percent rolls, logged as Effect ids
+            for (const eid of (g.effects || [])) {
+                const ev = effectValueTable.get(Number(eid));
+                if (!ev || ev.attrType == null) continue;
+                add(ev.attrType, ev.subType || 2, ev.value ?? 0);
+            }
+        }
+        out.set(String(ch.charId), m);
+    }
+    return out;
+}
+
+// Snapshot the gems a Record event carries, so the editor can tell an edited
+// emblem from the logged one (and revert it).
+function snapshotRecordGems(rec) {
+    if (!rec) return;
+    rec._gemsOrig = (rec.chars || []).map(c => ({
+        charId: c.charId,
+        gems: JSON.parse(JSON.stringify(c.gems || [])),
+    }));
+    rec._emblemStatDelta = null;
+}
+window.dcSnapshotRecordGems = snapshotRecordGems;
+
+// Recompute the per-character stat delta of the record's emblem edits. Called
+// by the Record tab after every emblem change; dcApplyEffectOverrides adds it
+// on top of the logged stats.
+function recomputeRecordEmblemDelta(rec) {
+    if (!rec) return null;
+    const cur = emblemStatTotals(rec.chars);
+    const orig = rec._gemsOrig ? emblemStatTotals(rec._gemsOrig) : null;
+    if (!orig) { rec._emblemStatDelta = null; return null; }
+    const delta = new Map();
+    for (const [cid, m] of cur) {
+        const o = orig.get(cid) || new Map();
+        const d = new Map();
+        const keys = new Set([...m.keys(), ...o.keys()]);
+        for (const k of keys) {
+            const nv = m.get(k)?.value || 0;
+            const ov = o.get(k)?.value || 0;
+            const diff = nv - ov;
+            if (Math.abs(diff) < 1e-12) continue;
+            const base = m.get(k) || o.get(k);
+            d.set(k, { attrType: base.attrType, subType: base.subType, value: diff });
+        }
+        if (d.size) delta.set(cid, d);
+    }
+    rec._emblemStatDelta = delta.size ? delta : null;
+    return rec._emblemStatDelta;
+}
+window.dcRecomputeRecordEmblemDelta = recomputeRecordEmblemDelta;
+
 // Convert a record char's gems (emblems) into effect-like rows:
 //   flat rolls  — resolved via CharGemAttrValue (Type 12; Type 37 player-attrs
 //                 have no numeric attr id → attrType null)
@@ -466,12 +599,23 @@ function buildRecordEmblemEffects(origin, charId) {
         const rollName = (attrType, idx) =>
             attrType != null && attrName(attrType) !== '?' ? attrName(attrType) : `Stat ${idx}`;
         const potBase = ch.potBase || {};
+        // Stat rolls describe the emblem contribution the LOGGED stat snapshot
+        // already contains, so they must mirror the gems the record logged —
+        // not the possibly edited ones. Edits to stat rolls are applied as an
+        // explicit delta (recomputeRecordEmblemDelta) instead. Pot / skill
+        // affixes come from the LIVE gems: they only drive the level tables.
+        const origCh = (origin._gemsOrig || []).find(c => String(c.charId) === String(charId));
+        const loggedGemFor = (slot) => (origCh && origCh.gems || [])
+            .find(g => Number(g && g.slot) === Number(slot)) || null;
         (ch.gems || []).forEach((g, gi) => {
             const slot = g.slot || (gi + 1);
             const emblemName = EMBLEM_SLOT_NAMES[slot] || `Emblem Slot ${slot}`;
+            // No logged gem in this slot → the record had nothing equipped
+            // there, so the whole emblem is an edit and lives in the delta.
+            const gLogged = origCh ? loggedGemFor(slot) : g;
             let statIdx = 0;
             // flat rolls: [CharGemAttrValueId, CfgValue, rawValue]
-            (g.attrs || []).forEach(roll => {
+            (gLogged?.attrs || []).forEach(roll => {
                 statIdx++;
                 const id = roll[0], raw = roll[2];
                 const gv = gemAttrValueById.get(Number(id));
@@ -495,7 +639,7 @@ function buildRecordEmblemEffects(origin, charId) {
                 });
             });
             // percent rolls: Effect ids → EffectValue (Second=2 PERCENT)
-            (g.effects || []).forEach(eid => {
+            (gLogged.effects || []).forEach(eid => {
                 statIdx++;
                 const ev = effectValueTable.get(Number(eid));
                 rows.push({
@@ -571,6 +715,38 @@ function buildRecordEmblemEffects(origin, charId) {
                 });
             });
         });
+        // ── Edited stat rolls (Record tab emblem editor) ──────────────────
+        // The logged stat snapshot already contains the emblems the game had
+        // equipped, so an edited roll cannot simply replace its row. Emit one
+        // extra row per changed (attr, subType) carrying the DIFFERENCE
+        // between the edited gems and the logged ones: it applies on top of
+        // the logged stats, and disabling it removes exactly the edit — so
+        // the toggles / Effect Impact / Emblems Comparison baselines keep
+        // working (their "no emblems" state really has no emblem stats).
+        const statDelta = origin._emblemStatDelta?.get(String(charId));
+        if (statDelta && statDelta.size) {
+            let di = 0;
+            for (const d of [...statDelta.values()].sort((a, b) =>
+                a.attrType - b.attrType || a.subType - b.subType)) {
+                di++;
+                const nm = attrName(d.attrType);
+                // The calc applies the delta on top of the logged stats; this
+                // row is what makes it toggleable (a disabled row drops its
+                // entry from that add — see dcApplyEffectOverrides).
+                d.rowKey = `attacker:${960000000 + ci * 100000 + di}:0`;
+                rows.push({
+                    configId: 960000000 + ci * 100000 + di,
+                    valueConfigId: 0,
+                    name: `${resolveActorKey('p:' + charId)} Emblems : ${
+                        nm !== '?' ? nm : `Stat ${d.attrType}`}${d.subType === 2 ? ' %' : ''} (edited)`,
+                    attrType: d.attrType, subType: d.subType, value: d.value,
+                    source: emblemSource, effectType: 12, count: 1,
+                    isRecordEffect: true, allValueConfigIds: [],
+                    _charId: Number(charId),
+                    _charName: resolveActorKey('p:' + charId),
+                });
+            }
+        }
     }
     origin._emblemRows[charId] = rows;
     return rows;
@@ -584,9 +760,76 @@ function enrichEvent(ev) {
         case 'Record':          // current name (DLL)
         case 'Origin':          // legacy name in older logs
             originRecord = ev;
+            // Snapshot the gems right away: the Record tab's emblem editor
+            // measures every edit against them (diff applied by the calc).
+            snapshotRecordGems(ev);
+            ev._emblemRows = null;
             break;
     }
 }
+
+function attachRecordEffects(ev, originRecord) {
+    delete ev.AttackerRecord;
+    if (!originRecord?.team?.length) return;
+    const attackerId = parseInt((ev.Attacker || '').split(':')[1], 10);
+    // Team members may be numbers or strings depending on the DLL build.
+    const team = originRecord.team;
+    const onTeam = (id) => id > 0 && (team.includes(id) || team.includes(String(id)));
+    if (onTeam(attackerId)) {
+        // effects: discs + the attacker's OWN build stats and emblems
+        // (calc path — per-hit correct; toggles only touch the attacker's
+        // own contributions).
+        ev.AttackerRecord = { effects: [
+            ...buildRecordDiscEffects(originRecord),
+            ...buildRecordDiscNoteEffects(originRecord),
+            ...buildRecordBuildEffects(originRecord),
+            ...buildRecordEmblemEffects(originRecord, String(attackerId)),
+        ] };
+        return;
+    }
+    // Snapshot-inheriting units (minions etc., SummonAttrType 1/2):
+    // their stat snapshot was taken from the owning player, and the
+    // owner's emblems / discs / build stat changes are ALWAYS part of
+    // that snapshot — baked into the collapsed attrs, never logged as
+    // rows. Attach the OWNER's record rows so the dmg calc's toggles
+    // (and the Effect Impact / Emblems Comparison pipelines) cover
+    // these hits too. Enabled rows are no-ops (the contributions are
+    // already inside the snapshot), so this only adds toggleability
+    // — never a double count; the removal writes to stat.base, which
+    // the product formula (origin+base)·(1+pct)+abs honors even
+    // though the snapshot collapsed everything into origin.
+    const ownerStr = (ev.AttackerEffects?.effects || [])
+        .find(e => e.fromOwnerSnapshot && e.owner)?.owner;
+    const ownerId = ownerStr ? parseInt(ownerStr.split(':')[1], 10) : NaN;
+    if (onTeam(ownerId)) {
+        ev.AttackerRecord = { effects: [
+            ...buildRecordDiscEffects(originRecord),
+            ...buildRecordDiscNoteEffects(originRecord),
+            ...buildRecordBuildEffects(originRecord),
+            ...buildRecordEmblemEffects(originRecord, String(ownerId)),
+        ] };
+    }
+}
+
+// Re-stamp every already-parsed hit of a record after its gems were edited:
+// hits carry their own copy of the record rows (built in enrichHit), so the
+// emblem editor has to rebuild them — relying on the cache alone would keep
+// every parsed hit on the old emblems.
+window.dcRestampRecordEffects = function (rec) {
+    if (!rec || typeof allEvents === 'undefined') return 0;
+    let n = 0;
+    for (const ev of allEvents) {
+        if (ev.Type !== 'Hit') continue;
+        if (ev._recordRef !== rec) continue;
+        attachRecordEffects(ev, rec);
+        // The record's level signature covers its gems, so an emblem edit must
+        // also re-read each hit's own signature — otherwise the hit looks like
+        // it came from a different build and keeps its logged levels.
+        delete ev._levelSig;
+        n++;
+    }
+    return n;
+};
 
 function enrichHit(ev) {
     // Record scoping: remember which Record event was active when this hit was
@@ -624,46 +867,7 @@ function enrichHit(ev) {
     // Record disc stats: if the attacker is one of the record's characters,
     // attach the record's disc effects for the "Attacker Record" section and
     // the effects/effect-impact pipelines.
-    if (originRecord?.team?.length) {
-        const attackerId = parseInt((ev.Attacker || '').split(':')[1], 10);
-        // Team members may be numbers or strings depending on the DLL build.
-        const team = originRecord.team;
-        const onTeam = (id) => id > 0 && (team.includes(id) || team.includes(String(id)));
-        if (onTeam(attackerId)) {
-            // effects: discs + the attacker's OWN build stats and emblems
-            // (calc path — per-hit correct; toggles only touch the attacker's
-            // own contributions).
-            ev.AttackerRecord = { effects: [
-                ...buildRecordDiscEffects(originRecord),
-                ...buildRecordDiscNoteEffects(originRecord),
-                ...buildRecordBuildEffects(originRecord),
-                ...buildRecordEmblemEffects(originRecord, String(attackerId)),
-            ] };
-        } else {
-            // Snapshot-inheriting units (minions etc., SummonAttrType 1/2):
-            // their stat snapshot was taken from the owning player, and the
-            // owner's emblems / discs / build stat changes are ALWAYS part of
-            // that snapshot — baked into the collapsed attrs, never logged as
-            // rows. Attach the OWNER's record rows so the dmg calc's toggles
-            // (and the Effect Impact / Emblems Comparison pipelines) cover
-            // these hits too. Enabled rows are no-ops (the contributions are
-            // already inside the snapshot), so this only adds toggleability
-            // — never a double count; the removal writes to stat.base, which
-            // the product formula (origin+base)·(1+pct)+abs honors even
-            // though the snapshot collapsed everything into origin.
-            const ownerStr = (ev.AttackerEffects?.effects || [])
-                .find(e => e.fromOwnerSnapshot && e.owner)?.owner;
-            const ownerId = ownerStr ? parseInt(ownerStr.split(':')[1], 10) : NaN;
-            if (onTeam(ownerId)) {
-                ev.AttackerRecord = { effects: [
-                    ...buildRecordDiscEffects(originRecord),
-                    ...buildRecordDiscNoteEffects(originRecord),
-                    ...buildRecordBuildEffects(originRecord),
-                    ...buildRecordEmblemEffects(originRecord, String(ownerId)),
-                ] };
-            }
-        }
-    }
+    attachRecordEffects(ev, originRecord);
 
     // Attr name injection
     padStats(ev.AttackerStats?.attrs);
@@ -1818,6 +2022,159 @@ function buildSkillTable(jChar, jSkill, jSkillLang) {
     }
 }
 
+// ─── Emblem line catalog (Record tab's emblem editor) ───────────────────────// One line per thing an emblem slot can offer, with every roll tier as an
+// entry — the same model Nebula-Record-Builder's buildEmblemGroups produces:
+//   * Emblem 70  — 3 stat slots: ATK/DEF/HP flat or %, crit rate/resist/dmg,
+//                  element dmg/pen, AA/Skill/Ult dmg, everyday stats …
+//   * Emblem 80  — stat slots + a skill-levelup affix (+1/+2/+3 to one slot)
+//   * Emblem 90  — stat slots + a potential-levelup affix (+1/+2/+3 to one of
+//                  the character's levellable potentials)
+// Potential affix lines are per character (the potential must belong to that
+// character), so the catalog takes character.json to resolve names.
+// `entries` are the CharGemAttrValue rows of that line, sorted by roll tier.
+function buildEmblemLineCatalog() {
+    emblemLinesBySlot.clear();
+    for (const slot of [1, 2, 3]) emblemLinesBySlot.set(slot, new Map());
+    for (const [, gv] of gemAttrValueById) {
+        const slot = emblemSlotOfTypeId(gv.typeId);
+        if (!slot) continue;
+        const key = emblemLineKeyOf(gv);
+        if (!key) continue;
+        const byKey = emblemLinesBySlot.get(slot);
+        let line = byKey.get(key);
+        if (!line) {
+            line = { key, slot, kinds: gv.attrType, entries: [], potId: null, potIdx: null, name: '' };
+            byKey.set(key, line);
+        }
+        line.entries.push(gv);
+    }
+    const slot1 = emblemLinesBySlot.get(1);
+    const slot2 = emblemLinesBySlot.get(2);
+    const slot3 = emblemLinesBySlot.get(3);
+    for (const line of [...slot1.values(), ...slot2.values(), ...slot3.values()]) {
+        line.entries.sort((a, b) => (a.level ?? 0) - (b.level ?? 0));
+        line.gradeMax = line.entries.reduce((m, e) => Math.max(m, e.rarity ?? 0), 0);
+        if (line.kinds === 12) {
+            const el = line.entries[0]?.first;
+            line.attrType = el;
+            line.subType = line.entries[0]?.second || 1;
+            // "Max Hp" (flat) and "Max Hp %" (the percent roll the game
+            // serializes as an Effect id) are two different lines — keep the
+            // names distinguishable in the emblem editor's stat select.
+            const nm = attrName(el);
+            line.name = line.subType === 2 ? `${nm} %` : nm;
+        } else if (line.kinds === 37) {
+            const charge = line.entries[0]?.first;
+            line.name = `Charge Eff (${charge === 1 ? 'Main' : 'Supp'})`;
+        } else if (line.kinds === 7) {
+            const action = line.entries[0]?.first;
+            line.actionSlot = action;
+            line.name = EMBLEM_SKILL_LINE_NAME[action] || `Skill ${action} Levelup`;
+        } else if (line.kinds === 99) {
+            const idx = line.entries[0]?.first;
+            line.potIdx = idx;
+            // potential ids are per character: 500000 + charId*100 + idx
+            line.name = `Potential ${String(idx).padStart(2, '0')}`;
+        }
+    }
+    // Per-character potential names on the Emblem-90 affix lines are resolved
+    // lazily by emblemLineName() (the catalog is shared by all characters).
+}
+
+// The catalog line a logged CharGemAttrValue row belongs to (null for rows the
+// catalog doesn't model). Used to seed the Record tab's emblem editor from the
+// gems the record logged.
+function emblemLineOfEntry(gv) {
+    if (!gv) return null;
+    const slot = emblemSlotOfTypeId(gv.typeId);
+    const key = emblemLineKeyOf(gv);
+    if (!slot || !key) return null;
+    return emblemLinesBySlot.get(slot)?.get(key) || null;
+}
+
+// Label of one roll tier inside a line: "+2" for the skill / potential levelup
+// affixes (they add levels), a percentage for the fractional stat lines (crit
+// rate, elem dmg, …) and the plain number for flat ATK / DEF / Max Hp.
+function emblemEntryLabel(line, entry) {
+    if (!entry) return '';
+    if (line && (line.kinds === 7 || line.kinds === 99)) return `+${entry.value}`;
+    const v = entry.value;
+    if (v == null || !Number.isFinite(v)) return '—';
+    if (Math.abs(v) < 1) {
+        const pct = v * 100;
+        return `${Math.abs(pct) < 10 ? +pct.toFixed(2) : +pct.toFixed(1)}%`;
+    }
+    return String(v);
+}
+
+// Drop the memoized emblem rows of a record after its gems were edited, and
+// re-stamp the cached effect lists of hits already parsed with them — hits hold
+// their own copy of AttackerRecord.effects (built at enrich time), so clearing
+// only the cache would leave every parsed hit on the old emblems.
+function invalidateRecordEmblemRows(rec) {
+    if (!rec) return;
+    delete rec._emblemRows;
+    if (typeof window.dcInvalidateRecordSig === 'function') window.dcInvalidateRecordSig(rec);
+}
+window.dcInvalidateRecordEmblemRows = invalidateRecordEmblemRows;
+
+// Display name of an emblem line for one character (potential affix lines are
+// named after the character's potential, e.g. "Emblem 90 : Greed Gunfire").
+function emblemLineName(line, charId) {
+    if (!line) return '';
+    if (line.kinds === 99) {
+        const potId = 500000 + Number(charId) * 100 + Number(line.potIdx);
+        return potentialNameById.get(potId) || line.name;
+    }
+    return line.name;
+}
+
+// Emblem lines one char's slot offers, ordered like Nebula: potential affix
+// lines by potential group (1 → 2 → 3), stat lines after them, levelup lines
+// last. Only lines the character can actually use are returned:
+//   * element-typed stat lines (17-28) only for the character's own element
+//   * Emblem 90's potential affix lines only for the potentials the build
+//     carries (the record's own `pots` list)
+// `rec` is the record being edited (defaults to the active Origin event) — the
+// Record tab can render a record other than the live one (multi-battle logs).
+function emblemLinesForChar(charId, slot, rec) {
+    const byKey = emblemLinesBySlot.get(slot);
+    if (!byKey) return [];
+    const meta = charMeta.get(Number(charId));
+    const element = meta?.element || null;
+    const ELEMENTS = ['Aqua', 'Ignis', 'Ventus', 'Terra', 'Lux', 'Umbra'];
+    // element order as the game lists them (Attribute ids 17-22 = Aqua..Umbra)
+    const elIdx = element ? ELEMENTS.indexOf(element) : -1;
+    const src = rec || getOriginRecord();
+    const ch = (src?.chars || []).find(c => String(c.charId) === String(charId));
+    const potIds = new Set((ch?.pots || []).map(p => Number(p[0])));
+    const out = [];
+    for (const line of byKey.values()) {
+        if (line.kinds === 12) {
+            // element Dmg / Pen lines only exist for the character's own
+            // element (Ignis Dmg, Ignis Pen, …)
+            const a = line.attrType;
+            if (a >= 17 && a <= 22 && elIdx >= 0 && a - 17 !== elIdx) continue;
+            if (a >= 23 && a <= 28 && elIdx >= 0 && a - 23 !== elIdx) continue;
+        } else if (line.kinds === 99) {
+            const potId = 500000 + Number(charId) * 100 + Number(line.potIdx);
+            // Emblem 90's potential affix can only raise a potential the build
+            // actually carries — the record's own `pots` list (the same
+            // tbPotentials the game rolls from), nothing else is offered.
+            if (!potIds.has(potId)) continue;
+            if (!dcPotLevelable(potId)) continue;   // level-1 potentials can't take +lv
+        }
+        out.push(line);
+    }
+    // Sort: potential affixes by potential index, then name (stat lines),
+    // levelup affixes last.
+    const kindRank = (l) => (l.kinds === 99 ? 0 : l.kinds === 12 || l.kinds === 37 ? 1 : 2);
+    out.sort((a, b) => kindRank(a) - kindRank(b)
+        || (a.potIdx ?? 0) - (b.potIdx ?? 0)
+        || String(a.name).localeCompare(String(b.name)));
+    return out;
+}
+
 // ─── Character base-stat ladder (character.json `stat`) ────────────────────
 // charId -> [{ l, atk, hp }] in ladder order. The ladder's index IS the upgrade
 // axis: segments [10,11,11,11,11,11,11,11,12] = upgrade tiers 0..8 (the
@@ -1827,9 +2184,18 @@ function buildSkillTable(jChar, jSkill, jSkillLang) {
 // HitDamage.DamageBonusType is MAXHP (3) — currently 162's whole kit.
 function buildCharStatLadder(jChar) {
     charStatLadder.clear();
+    charMeta.clear();
     if (!jChar) return;
     for (const [, cval] of Object.entries(jChar)) {
         const cid = parseInt(cval.id ?? cval.Id, 10);
+        if (cid) {
+            charMeta.set(cid, {
+                name: cval.name || null,
+                element: cval.element || null,
+                star: Number(cval.star) || 0,
+                klass: cval.class || null,
+            });
+        }
         const stats = cval.stat;
         if (!cid || !Array.isArray(stats) || !stats.length) continue;
         const ladder = [];
@@ -1864,8 +2230,8 @@ const EC_DATA_TABLES = [
     buffAttrTypeTable,
     effectLevelMetaFallback, effectMainOrSupport, hitLadderFallback, skillTable,
     discLangNames, discBonusNotesById, subNoteNamesById, subNoteEffectIdByNote,
-    gemAttrValueById, potentialById, potentialEffectFamily, effectIdPot,
-    potEffectIds, potentialNameById, skillRoleOwner, charStatLadder,
+    gemAttrValueById, gemAttrValueByEffectId, potentialById, potentialEffectFamily, effectIdPot,
+    potEffectIds, potentialNameById, skillRoleOwner, charStatLadder, charMeta,
 ];
 
 function ecHashStr(s) {
@@ -1880,7 +2246,8 @@ function ecHashStr(s) {
 function ecCodeHash() {
     return ecHashStr([
         buildEffectValueTable, buildOnceAttrValueTable, buildActorNameMap,
-        buildHitTable, buildEffectTable, buildSkillTable, buildCharStatLadder, initTables,
+        buildHitTable, buildEffectTable, buildSkillTable, buildCharStatLadder,
+        buildEmblemLineCatalog, ecSnapshotRestore, initTables,
     ].map(f => f.toString()).join('\n'));
 }
 
@@ -1918,6 +2285,9 @@ function ecSnapshotRestore(snap) {
         map.clear();
         for (const [k, v] of snap.tables[i]) map.set(k, v);
     }
+    // Derived catalogs aren't snapshot themselves — rebuild them from the
+    // restored tables (the emblem editor's line list).
+    buildEmblemLineCatalog();
     console.log('[tableResolver] built tables restored from cache (' +
         snap.tables.reduce((s, m) => s + m.length, 0) + ' entries) — datamine unchanged (ETags match)');
 }
@@ -2087,11 +2457,13 @@ async function initTables() {
 
     // Emblem parse tables
     gemAttrValueById.clear();
+    gemAttrValueByEffectId.clear();
     if (jGemAttrValue) {
         for (const [k, v] of Object.entries(jGemAttrValue)) {
             const id = parseInt(k, 10);
             if (!id || !v || v.AttrType == null) continue;
-            gemAttrValueById.set(id, {
+            const row = {
+                id,
                 attrType: parseInt(v.AttrType, 10),
                 first:    v.AttrTypeFirstSubtype != null ? parseInt(v.AttrTypeFirstSubtype, 10) : null,
                 second:   v.AttrTypeSecondSubtype != null ? parseInt(v.AttrTypeSecondSubtype, 10) : null,
@@ -2101,7 +2473,13 @@ async function initTables() {
                 typeId:   v.TypeId != null ? parseInt(v.TypeId, 10) : null,
                 level:    v.Level != null ? parseInt(v.Level, 10) : null,
                 rarity:   v.Rarity != null ? 5 - parseInt(v.Rarity, 10) : null,   // Rarity 1 = rainbow (best, L4) … 4 = green → stored as rank 1 green / 2 blue / 3 gold / 4 rainbow
-            });
+                // percent stat lines are logged as Effect ids (the record's
+                // gems "effects" list); the record page maps one back to this
+                // row when it shows which line the emblem actually rolled.
+                effectId: v.EffectId != null ? parseInt(v.EffectId, 10) : null,
+            };
+            gemAttrValueById.set(id, row);
+            if (row.effectId) gemAttrValueByEffectId.set(row.effectId, row);
         }
     }
     potentialById.clear();
@@ -2121,6 +2499,7 @@ async function initTables() {
             if (nm && nm !== '?') potentialNameById.set(id, nm);
         }
     }
+    buildEmblemLineCatalog();
 
     if (!jChar || !jSkill || !jSkillLang) {
         console.error('[tableResolver] Missing required data files — tables not built');
