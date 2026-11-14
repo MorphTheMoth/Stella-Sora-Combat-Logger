@@ -638,8 +638,11 @@ function buildRecordEmblemEffects(origin, charId) {
                     _charName: resolveActorKey('p:' + charId),
                 });
             });
-            // percent rolls: Effect ids → EffectValue (Second=2 PERCENT)
-            (gLogged.effects || []).forEach(eid => {
+            // percent rolls: Effect ids → EffectValue (Second=2 PERCENT).
+            // gLogged is null for a slot the record logged as empty (the whole
+            // emblem is then an edit and lives in the stat delta), so both the
+            // logged flat rolls and the logged percent rolls are optional.
+            (gLogged?.effects || []).forEach(eid => {
                 statIdx++;
                 const ev = effectValueTable.get(Number(eid));
                 rows.push({
