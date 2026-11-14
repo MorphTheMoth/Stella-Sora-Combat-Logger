@@ -2145,8 +2145,11 @@ function emblemLinesForChar(charId, slot, rec) {
     if (!byKey) return [];
     const meta = charMeta.get(Number(charId));
     const element = meta?.element || null;
-    const ELEMENTS = ['Aqua', 'Ignis', 'Ventus', 'Terra', 'Lux', 'Umbra'];
-    // element order as the game lists them (Attribute ids 17-22 = Aqua..Umbra)
+    // Element order as the game numbers the attributes: 17-22 = Aqua, Ignis,
+    // Terra, Ventus, Lux, Umbra (same order for the 23-28 Pen family), matching
+    // ATTR_NAMES / dataLoader's elementTypeNames. Terra is 19 (not 20) — the
+    // order here must follow the attribute ids, not character.json's listing.
+    const ELEMENTS = ['Aqua', 'Ignis', 'Terra', 'Ventus', 'Lux', 'Umbra'];
     const elIdx = element ? ELEMENTS.indexOf(element) : -1;
     const src = rec || getOriginRecord();
     const ch = (src?.chars || []).find(c => String(c.charId) === String(charId));
