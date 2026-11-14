@@ -1038,8 +1038,13 @@
             padding: 5px 6px 6px; min-width: 0;
         }
         .rec-emb-card.is-empty { opacity: 0.75; }
+        /* Fixed height: the "back to the logged emblem" button (.rec-emb-reset,
+           15px) is injected into this row the moment a card is edited, and a
+           row that sized itself to the label would grow by 5px — shifting the
+           whole board below it. Reserve the 15px up front instead. */
         .rec-emb-card-head {
             display: flex; align-items: center; gap: 4px; margin-bottom: 4px;
+            min-height: 15px;
         }
         .rec-emb-card-label {
             font-size: 9px; color: var(--rec-fg-3); text-transform: uppercase;
