@@ -1074,10 +1074,25 @@ const Analytics = (() => {
         });
     }
 
+    // Breakdown source buttons (Att./Def. Buffs, Effects, Attrs): which effect
+    // sources the buff chart counts. Saved per source in localStorage; the
+    // effects/attrs buttons start on, the two buff ones off.
+    const BP_SRC_DEFAULTS = {
+        attackerEffects: true, defenderEffects: true,
+        attackerAttrDict: true, defenderAttrDict: true
+    };
+    const _bpSrcSaved = uiPrefGet('an.bpSrc', {}) || {};
+    function bpSrcOn(src) {
+        return typeof _bpSrcSaved[src] === 'boolean' ? _bpSrcSaved[src] : !!BP_SRC_DEFAULTS[src];
+    }
+
     function onBpSrcToggle(btn) {
         const isOn = btn.dataset.active === '1';
         btn.dataset.active = isOn ? '0' : '1';
         btn.style.opacity = isOn ? '0.45' : '1';
+        // Saved with the tab's other view toggles (dataLoader.js uiPref*).
+        _bpSrcSaved[btn.dataset.src] = !isOn;
+        uiPrefSet('an.bpSrc', _bpSrcSaved);
         updateBuffPickDropdown();
         refreshBuffChart();
     }
@@ -1124,12 +1139,9 @@ const Analytics = (() => {
             return;
         }
 
-        // Accumulate crit distribution stats using logged damage as ground truth.
-        // Old code reconstructed base damage bm = atkMulti*multiplier*… from stats,
-        // which dropped additive terms (dmgPlus/dmgPlusRcd/finalDmgPlus/skillAbs),
-        // ignored floor(), and made "Your total" disagree with the Damage Share
-        // totals. Now we derive the non-crit base from the logged finalDamage so
-        // actualTotal is exact and expected/variance use the same base.
+        // Accumulate crit distribution stats using logged damage as ground truth:
+        // the non-crit base comes off the logged finalDamage so actualTotal is
+        // exact and expected/variance use the same base.
         // One pass builds both the aggregate stats below and the per-hit variance
         // entries consumed by the Monte Carlo simulation further down.
         let totalBaseDmg = 0;      // Σ base_i  (non-crit damage per hit)
@@ -1314,11 +1326,12 @@ const Analytics = (() => {
         container.innerHTML = rowsHtml;
     }
 
-    // Initialize toggle button active states (AE + DE on by default)
+    // Initialize toggle button active states. The four "effects / attrs" buttons
+    // start on and the two "buffs" ones off; whatever the user set last is in
+    // localStorage (dataLoader.js uiPref*), so a reload comes back to the same chart.
     (function initSrcToggles() {
-        const defaults = new Set(['attackerEffects', 'defenderEffects', 'attackerAttrDict', 'defenderAttrDict']);
         document.querySelectorAll('.bp-src-btn').forEach(btn => {
-            const on = defaults.has(btn.dataset.src);
+            const on = bpSrcOn(btn.dataset.src);
             btn.dataset.active = on ? '1' : '0';
             btn.style.opacity = on ? '1' : '0.45';
         });

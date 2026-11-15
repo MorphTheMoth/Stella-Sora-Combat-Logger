@@ -31,6 +31,7 @@ A practical guide for finding what a character's skill / potential / disc actual
 | 9 | `EN/bin/Buff.json` | **Per-buff data**: buff id, tags, icon, whether it's visible/stacking. Buff *values* live in `BuffValue.json`. |
 | 10 | `characterid.json` | **Name → id resolver.** When you say a character's name, look the id up here (e.g. `Amber` → `103`) and use it everywhere below. |
 | 11 | `decompilation/CombatAssetsBundles/` | **Asset-bundle extraction:** `AI.json:FCComboGroup` → actual combo clips / hitbox timing (`activeNormalizedTimeRange`, `hitBoxShape…`, `hitDamageId`) from the install's `StreamingAssets/InstallResource/*.unity3d` (`char_*_combos.unity3d`, `char_*_weapons.unity3d` …). Use `extract_combat_bundles.py` + `summarize_combos.py` to get `extracted/<charId>/` JSON — the authoritative hit schedule, not the `Skill.json` `HitDamage` list alone. |
+| 12 | `EN/bin/Talent.json` | **The five talents of every character**: each one's named passive plus its ten upgrade nodes (see Step 8). Titles live in `EN/language/en_US/Talent.json`. |
 
 
 ---
@@ -224,6 +225,34 @@ Discs are **not** character-specific; research them from the datamine:
   - `tag` / `element` / `star` for set/roll filtering.
 - The effect ids inside a disc's main skill resolve the same way as character skills: `Effect.json` → `EffectValue.json` → `Buff.json`/`BuffValue.json`.
 - There is no `AIScript.Character` namespace for discs — their *generic* skill logic lives in the `AIScript.*` common code in `Hotfix.decompiled.cs` and the engine in `decompiled.c` (see the `SkillSimpleBase` / `AIScript.Skill*` classes).
+
+---
+
+## Step 8 — Talents (the five per character)
+
+Every character has exactly five talents, and the C# kits gate on them with `CheckActorActiveTalentLevel(_actor.dataID, N)` / `CheckTalentLevel` (see `docs/trekker-kit-stability.md`, `docs/karin-1.14-changes.md`). `EN/bin/Talent.json` holds all of them in one table — 55 rows per character (5 talents × 1 named passive + 10 nodes):
+
+```
+"1030101": {"Id": 1030101, "Index": 1, "Title": "Talent.1030101.1", "GroupId": 10301, "Type": 2,
+            "Sort": 1, "EffectId": [10390010], "Desc": "Talent.1030101.2",
+            "Param1": "EffectValue,NoLevel,10390010,EffectTypeParam1,Fixed"}
+"1030116": {"Id": 1030116, "Index": 16, "Title": "Talent.1030116.1", "GroupId": 10301, "Type": 1,
+            "SubType": 1, "Sort": 1, "Nodes": 10, "Desc": "Talent.1030116.2",
+            "Param1": "EffectValue,NoLevel,10396111,EffectTypeParam1,HdPct",
+            "Param2": "BuffValue,NoLevel,10396111,Time,10K",
+            "Param3": "BuffValue,NoLevel,10396111,LaminatedNum,Fixed"}
+```
+
+- `GroupId = <charId><talentIndex>`: `GroupId / 100` → `103` (Amber), `GroupId % 100` → the talent number (1..5). `Id = charId*10000 + talentIndex*100 + node` (`1030101` node 1, `1030116` the passive, `1030217` talent 2 node 17).
+- **`Type 1`** — one row per group: the talent's **named passive**. `Title` is the talent's own name (`A Dance with Bullets`, `Farsight Vision`), `SubType` repeats the talent index, `Nodes: 10` counts the group's nodes, and `ParamN` lists the effects it grants (`EffectValue,NoLevel,<id>,…` for the effect, `BuffValue,NoLevel,<id>,Time|LaminatedNum,…` for its duration/stacks, `OnceAdditionalAttributeValue,NoLevel,<id>,…` for the permanent-stat talents).
+- **`Type 2`** — the ten **upgrade nodes** of that same group (`Sort` 1..10), each with a generic `Title` (`ATK Enhancement`, `DEF Enhancement`, `HP Enhancement`, `Crit DMG Boost`) and its own `EffectId`. `EffectValue.json` shows what a node gives: `10390010` = effect type 12, `FirstSubtype 1` (ATK), `SecondSubtype 1` (base), `Param1 60` → ATK +60; `10390040` = ATK, subtype 2 (pct), `0.015` → ATK +1.5%. Stat ids are per-character: `<charId>90010`…`<charId>90100` for talent 1, `+110` per talent (`10390010`, `10390110`, … `10390500`).
+
+So "Talent N" is the group with `GroupId % 100 === N`; its name is that group's `Type 1` `Title`; its passive effect and all ten stat nodes belong to it. Two consequences for tooling:
+
+- The Effect Impact tab labels every talent-referenced effect id `Talent <N>: <its own title>` (the `Talent.json` pass in `Log Viewer/tableResolver.js`) and folds the rows back into one `Talent N: <group title>` entry per talent, drawn as a normal effect row that unfolds to the talent's own rows; its number is the talent's whole contribution (its rows evaluated together against the baseline, not the sum of the rows' individual percentages).
+- Talent rows are never levellable: no skill-slot scaling, no potential ladder (`dcIsTalentRow` in `Log Viewer/dmgCalc.calc.js`).
+
+A talent's stat nodes only appear as logged effect rows when the game has them attached to the actor — some logs carry the whole set, some none at all; the grouping works either way (a talent with no rows simply has no bar).
 
 ---
 

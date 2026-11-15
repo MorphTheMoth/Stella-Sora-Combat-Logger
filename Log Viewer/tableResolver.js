@@ -95,6 +95,17 @@ const effectMainOrSupport = new Map();
 const _rlmCache = new Map();
 function __resetResolveLevelMapCache() { _rlmCache.clear(); }
 
+// Retrocompat: entries from an older log/data shape carry their level ladder
+// inline (`allValueConfigIds`) instead of in levelMap — fold it in once.
+function seedLevelMapFrom(entry, id) {
+    if (id == null || !entry.allValueConfigIds || levelMap.has(id)) return;
+    levelMap.set(id, {
+        lt: entry.levelTypeData || 0,
+        ld: entry.levelData || 0,
+        vc: entry.allValueConfigIds.map(v => ({ l: v.level, v: v.valueConfigId }))
+    });
+}
+
 function resolveLevelMap(configId) {
     let r = _rlmCache.get(configId);
     if (r !== undefined) return r;
@@ -172,6 +183,19 @@ function attrName(i) {
     return ATTR_NAMES[i] ?? '?';
 }
 
+// The stat an ATTR-family effect writes, for effects none of the name passes
+// resolved (label would stay '?' and every surface then reads "<unit> / ?").
+// `<configId>` is an EffectValue id — the effect's own id at table-build time,
+// the row's valueConfigId in enrichEffectList, because some of these effects
+// carry the attribute only on their value config. '?' when the id names no
+// attr, so callers keep their own fallback.
+function attrEffectLabel(configId) {
+    const ev = effectValueTable.get(Number(configId));
+    if (!ev || !ev.attrType) return '?';
+    const name = attrName(ev.attrType);
+    return (name && name !== '?') ? name : '?';
+}
+
 // ─── Actor key resolution ────────────────────────────────────────────────────
 // C++ now emits "p:<dataId>" for players and "e:<skinId>" for enemies.
 
@@ -240,6 +264,27 @@ const discLangNames = new Map();
 // surfaced as display-only rows (buildRecordDiscNoteEffects) whose disable
 // drops the grant from the note level (dcNoteLevels, dmgCalc.calc.js).
 const discBonusNotesById = new Map();
+
+// ─── Disc editor tables (melody / harmony / Crescendo star) ─────────────────
+// The three things the Record tab's disc editor steps independently, all read
+// off the game's own tables (buildDiscEditorTables):
+//   copies       — Crescendo star 0..5. Melody level = star + 1
+//                  (DiscData.lua:287: mapGroup[nStar + 1]), and every star adds
+//                  the DiscExtraAttribute flat Atk (DiscData.lua:191).
+//   Harmony 1/2  — the SecondarySkill layer 0..5 the build runs. In game the
+//                  layer is the highest one whose NeedSubNoteSkills the squad's
+//                  note totals satisfy (DiscData.lua:407 GetSubSkillLevel); the
+//                  editor sets it directly and keeps the note requirement on
+//                  the layer so a later note↔harmony link has the numbers.
+// Id shapes, all straight from the tables: melody effect = MainSkill.EffectId,
+// harmony effect = SecondarySkill[<groupId*100 + layer>].EffectId.
+const discMelodyById = new Map();      // discId -> { groupId, levels: [{ level, skillId, effectIds, name, params }] }
+const discHarmonyById = new Map();     // discId -> [groupId|null, groupId|null]
+const harmonyLayerByGroup = new Map(); // groupId -> [{ level, id, effectIds, need:{noteId:count}, name }]
+const discStarAtkByGroup = new Map();  // AttrExtraGroupId -> { star: atk }
+const discBaseStatByGroup = new Map(); // AttrBaseGroupId -> [{ break, lvl, row }]  (disc stat ladder)
+const discInfoById = new Map();        // discId -> { attrBaseGroupId, attrExtraGroupId, mainSkillGroupId, subNoteSkillGroupId }
+const discPartByEffectId = new Map();  // effectId -> { discId, part: 'copies'|'harmony', slot }  (reverse index for the UIs)
 // SubNoteSkill id -> display name ("Melody of Burst"), from SubNoteSkill lang
 const subNoteNamesById = new Map();
 // SubNoteSkill id -> first EffectId (e.g. 90013 → 90013001; the per-level
@@ -416,7 +461,9 @@ function buildRecordDiscEffects(origin) {
 }
 
 // Support-disc bonus notes as display-only rows (one per granted note type):
-// "<disc name> : Note <note name>". The rows carry no stat — disabling one
+// "<disc name> : <note name>". The note's own SubNoteSkill title already reads
+// "Melody of …", so no "Note" prefix is put in front of it. The rows carry no
+// stat — disabling one
 // drops the disc's grant from the granted note's level (dcNoteLevels in
 // dmgCalc.calc.js keys the row by configId, same pattern as the emblem skill
 // rows). Only discs from index 3 on (the support discs) grant notes; the
@@ -440,7 +487,7 @@ function buildRecordDiscNoteEffects(origin) {
             rows.push({
                 configId: 960000000 + di * 1000 + ni,   // synthetic, collision-free (dcDiscNoteRowKey)
                 valueConfigId: 0,
-                name: `${discName} : Note ${subNoteName(n.noteId)}`,
+                name: `${discName} : ${subNoteName(n.noteId)}`,
                 attrType: null, subType: null, value: null,
                 source: 'Discs', effectType: null, count: 1,
                 isRecordEffect: true, displayOnly: true, allValueConfigIds: [],
@@ -947,29 +994,27 @@ function enrichEffectList(effectList) {
         if (gemEffectIds.has(Number(e.configId))) continue;
         effects[kept++] = e;
         const ei = effectTable.get(e.configId);
+        const ev = effectValueTable.get(e.valueConfigId);
         if (ei) {
+            let label = ei.label;
+            // An attr effect can carry its attribute only on the row's value
+            // config (no EffectValue for the effect id itself), so the build-time
+            // label is still '?' — resolve it here, where that id is known.
+            if (label === '?' && ev) label = attrEffectLabel(e.valueConfigId);
             e.name = (ei.charName && ei.charName !== '?')
-                ? `${ei.charName} / ${ei.label}`
-                : ei.label;
+                ? `${ei.charName} / ${label}`
+                : label;
             e.source = ei.source ?? 'Unknown';
         } else {
             e.name = `configId=${e.configId} (unknown)`;
         }
-        const ev = effectValueTable.get(e.valueConfigId);
         if (ev) {
             if (ev.attrType != null) e.effectType  = ev.effectType;
             if (ev.attrType != null) e.attrType    = ev.attrType;
             if (ev.subType  != null) e.subType     = ev.subType;
             if (ev.value    != null) e.value       = ev.value;
         }
-        // Retrocompat: extract old-format level data into levelMap
-        if (e.allValueConfigIds && e.configId != null && !levelMap.has(e.configId)) {
-            levelMap.set(e.configId, {
-                lt: e.levelTypeData || 0,
-                ld: e.levelData || 0,
-                vc: e.allValueConfigIds.map(v => ({ l: v.level, v: v.valueConfigId }))
-            });
-        }
+        seedLevelMapFrom(e, e.configId);
     }
     effects.length = kept;
 }
@@ -1019,28 +1064,12 @@ function enrichAttrDictList(attrDictList) {
                     extra._dictEnriched = true;
                     out.push(extra);
                 }
-                // Retrocompat: extract old-format level data into levelMap
-                const cid0 = entry.configId ?? entry.attrId;
-                if (cid0 != null && entry.allValueConfigIds && !levelMap.has(cid0)) {
-                    levelMap.set(cid0, {
-                        lt: entry.levelTypeData || 0,
-                        ld: entry.levelData || 0,
-                        vc: entry.allValueConfigIds.map(v => ({ l: v.level, v: v.valueConfigId }))
-                    });
-                }
+                seedLevelMapFrom(entry, entry.configId ?? entry.attrId);
                 continue;
             }
         }
         entry._dictEnriched = true;
-        // Retrocompat: extract old-format level data into levelMap
-        const cid = entry.configId ?? entry.attrId;
-        if (cid != null && entry.allValueConfigIds && !levelMap.has(cid)) {
-            levelMap.set(cid, {
-                lt: entry.levelTypeData || 0,
-                ld: entry.levelData || 0,
-                vc: entry.allValueConfigIds.map(v => ({ l: v.level, v: v.valueConfigId }))
-            });
-        }
+        seedLevelMapFrom(entry, entry.configId ?? entry.attrId);
         out.push(entry);
     }
     if (out.length !== attrDictList.length) {
@@ -1503,7 +1532,9 @@ function buildEffectTable(dataFiles) {
         for (const [, val] of Object.entries(jSubNote)) {
             const nameKey  = val.Name;                         // e.g. "SubNoteSkill.90020.1"
             const noteName = jSubNoteLang?.[nameKey] ?? nameKey ?? '?';
-            const label    = `Note: ${noteName}`;
+            // The SubNoteSkill title is the note's whole name ("Melody of Burst"),
+            // so the row is labelled with it as-is — no "Note:" prefix.
+            const label    = noteName;
             for (const id of (val.EffectId ?? [])) {
                 subNoteEffectIds.add(id);
                 insertEffect(id, '?', label, -1, false, 'Notes');
@@ -1515,7 +1546,11 @@ function buildEffectTable(dataFiles) {
     const affinityEffectIds = new Set();
     if (jAffinityLevel) {
         for (const [, val] of Object.entries(jAffinityLevel)) {
-            const level = val.AffinityLevel_ ?? '?';
+            // The table field is `AffinityLevel` (C# class is also named
+            // AffinityLevel, so protobuf calls the column `AffinityLevel_`;
+            // accept either spelling). Levels 2000/3000 are the "stage 0"
+            // headers — they carry no Effect array.
+            const level = val.AffinityLevel ?? val.AffinityLevel_ ?? '?';
             const label = `Affinity lvl ${level}`;
             for (const id of (val.Effect ?? [])) {
                 affinityEffectIds.add(id);
@@ -1596,6 +1631,12 @@ function buildEffectTable(dataFiles) {
             } else {
                 src = cname && cname !== '?' ? `${cname} Skills` : 'Skills';
             }
+            // Nothing named it — an ATTR-family effect IS its attribute (the
+            // row's stat cell shows that stat anyway). The ids this catches are
+            // the ones whose LevelData names no Item (`LevelData` = their own id)
+            // and that no Skill lists as a buff param; without it they read
+            // "<unit> / ?" on every surface.
+            if (label === '?') label = attrEffectLabel(configId);
             effectTable.set(configId, { charName: cname, label, levelTypeData: ldt, source: src });
         }
     }
@@ -1702,17 +1743,49 @@ function buildEffectTable(dataFiles) {
     }
 
     // Talent.json pass
+    // One character has five talents. Talent.json stores each of them as a
+    // GroupId = <charId><talentIndex>:
+    //   Type 1 — the named passive: Title is the talent's name, ParamN the
+    //            EffectValue/BuffValue/OnceAdditionalAttribute ids it grants.
+    //   Type 2 — the ten upgrade nodes of that same talent (Sort 1..10, the
+    //            ATK/DEF/HP/CritDMG rows the talent hands out), each with its
+    //            own generic title ("ATK Enhancement", "Crit DMG Boost").
+    // Both kinds are talent rows, so every effect id either kind references is
+    // labelled "Talent <N>: <its own title>" and carries the group's index and
+    // title. The Effect Impact tab folds the rows back together by that index
+    // into one "Talent N: <group title>" entry per talent.
     if (jTalent && jTalentLang) {
-        for (const [tkey, tval] of Object.entries(jTalent)) {
-            const talentTitle = resolveLocKey(tval, 'Title', jTalentLang);
-            if (talentTitle === '?') continue;
-            const charId = Math.trunc(parseInt(tkey, 10) / 10000);
+        const talentGroups = new Map();   // GroupId -> { index, title }
+        for (const tval of Object.values(jTalent)) {
+            if (Number(tval.Type) !== 1) continue;   // the named entry owns the group title
+            const gid = Number(tval.GroupId) || Math.floor((Number(tval.Id) || 0) / 100);
+            const title = resolveLocKey(tval, 'Title', jTalentLang);
+            if (title === '?') continue;
+            talentGroups.set(gid, { index: gid % 100, title });
+        }
+        for (const tval of Object.values(jTalent)) {
+            const ownTitle = resolveLocKey(tval, 'Title', jTalentLang);
+            if (ownTitle === '?') continue;
+            const gid = Number(tval.GroupId) || Math.floor((Number(tval.Id) || 0) / 100);
+            const grp = talentGroups.get(gid);
+            const charId = Math.trunc(gid / 100);
             const cname  = charName(charId);
+            const index  = grp ? grp.index : gid % 100;
+            const talentTitle = grp ? grp.title : ownTitle;
+            const label  = `Talent ${index}: ${ownTitle}`;
             const addTalentTable = (_prefix, effId) => {
                 if (!effId || effectTable.has(effId)) return;
                 const src = cname && cname !== '?' ? `${cname} Talents` : 'Talents';
-                effectTable.set(effId, { charName: cname, label: 'Talent: ' + talentTitle, levelTypeData: 0, source: src });
+                effectTable.set(effId, {
+                    charName: cname, label, levelTypeData: 0, source: src,
+                    talentIndex: index, talentTitle,
+                });
             };
+            // EffectId holds the same ids EffectValue/Effect params do; some
+            // groups carry them only here (no ParamN at all).
+            for (const effId of (Array.isArray(tval.EffectId) ? tval.EffectId : [])) {
+                addTalentTable(null, parseInt(effId, 10) || 0);
+            }
             forEachBuffParam(tval, addTalentTable);
             forEachOnceAdditionalParam(tval, addTalentTable);
         }
@@ -2214,7 +2287,230 @@ function buildCharStatLadder(jChar) {
     }
 }
 
-// ─── Public init ─────────────────────────────────────────────────────────────
+// The attr row an effect resolves to, as the damage calc sees it:
+//   ATTR_FIX / HITTED_ADDITIONAL_ATTR_FIX (and the rest of the ATTR family)
+//   carry attrType/subType/value themselves;
+//   ADDBUFF (6) applies a BuffValue whose first ATTR effect is the real row —
+//   that inner effect id is what the calc keys on, so return it as `id`.
+// Returns null when the chain carries no attr at all (nothing to override).
+function discEffectStat(effId, jEffectValue, jBuffValue) {
+    if (!effId) return null;
+    const ev = jEffectValue?.[String(effId)];
+    if (!ev) return null;
+    const et = parseInt(ev.EffectType, 10) || 0;
+    if (effectTypeHasAttr(et)) {
+        const attrType = ev.EffectTypeFirstSubtype != null ? parseInt(ev.EffectTypeFirstSubtype, 10) : null;
+        if (attrType == null) return null;
+        return {
+            id: Number(effId),
+            attrType,
+            subType: ev.EffectTypeSecondSubtype != null ? parseInt(ev.EffectTypeSecondSubtype, 10) : 1,
+            value: ev.EffectTypeParam1 != null && ev.EffectTypeParam1 !== '' ? parseFloat(ev.EffectTypeParam1) : null,
+        };
+    }
+    if (et === 6) {
+        const bv = jBuffValue?.[String(ev.EffectTypeParam1)];
+        for (const inner of (bv?.Effects || [])) {
+            const s = discEffectStat(inner, jEffectValue, jBuffValue);
+            if (s) return s;
+        }
+    }
+    return null;
+}
+
+function buildDiscEditorTables(jDisc, jMainSkill, jSecondarySkill, jDiscExtraAttr, jAttribute, jSecSkillLang, jMainSkillLang, jEffectValue, jBuffValue) {
+    discMelodyById.clear();
+    discHarmonyById.clear();
+    harmonyLayerByGroup.clear();
+    discStarAtkByGroup.clear();
+    discBaseStatByGroup.clear();
+    discInfoById.clear();
+    discPartByEffectId.clear();
+
+    const melodyByGroup = new Map();
+    if (jMainSkill) {
+        for (const [, row] of Object.entries(jMainSkill)) {
+            const gid = parseInt(row.GroupId, 10);
+            const lvl = Number(row.Level) || 0;
+            if (!gid || !lvl) continue;
+            if (!melodyByGroup.has(gid)) melodyByGroup.set(gid, []);
+            const nParam = [1, 2, 3, 4, 5, 6, 7]
+                .filter(k => row[`Param${k}`] != null && row[`Param${k}`] !== '').length;
+            // The melody's effects are keyed <groupId*1000 + 10*k + level> — one
+            // per Param (e.g. 4061001 Skill Dmg / 4061011 / 4061021 for level 1).
+            // Most rows carry no EffectId at all, so the ids are built from that
+            // layout and resolved; the row's own EffectId list is folded in too.
+            const effIds = [];
+            for (let k = 0; k < Math.max(1, nParam); k++) {
+                const id = gid * 1000 + k * 10 + lvl;
+                if (!effIds.includes(id)) effIds.push(id);
+            }
+            for (const id of (row.EffectId || []).map(Number)) if (id && !effIds.includes(id)) effIds.push(id);
+            const stats = effIds.map(id => discEffectStat(id, jEffectValue, jBuffValue)).filter(Boolean);
+            melodyByGroup.get(gid).push({
+                level: lvl,
+                skillId: parseInt(row.Id, 10) || null,
+                effectIds: effIds,
+                stats,
+                params: ['Param1', 'Param2', 'Param3', 'Param4', 'Param5', 'Param6', 'Param7']
+                    .map(k => row[k]).filter(v => v != null && v !== ''),
+                name: jMainSkillLang?.[row.Name] || null,
+                stat: stats[0] || null,
+            });
+        }
+        for (const levels of melodyByGroup.values()) levels.sort((a, b) => a.level - b.level);
+    }
+
+    if (jSecondarySkill) {
+        for (const [, row] of Object.entries(jSecondarySkill)) {
+            const gid = parseInt(row.GroupId, 10);
+            const lvl = Number(row.Level) || 0;
+            if (!gid || !lvl) continue;
+            let need = {};
+            try { need = JSON.parse(row.NeedSubNoteSkills || '{}') || {}; } catch (e) { need = {}; }
+            const needById = {};
+            for (const [k, v] of Object.entries(need)) {
+                const nid = parseInt(k, 10);
+                if (nid) needById[nid] = parseInt(v, 10) || 0;
+            }
+            if (!harmonyLayerByGroup.has(gid)) harmonyLayerByGroup.set(gid, []);
+            // A harmony layer applies one effect per Param: the layer id itself
+            // (Param1) and `<id>+10` for each further Param — e.g. 4061102
+            // "Skill Dmg 8%" plus 4061112 "Mark DMG 6%" (Param2). All of them
+            // move with the layer, so all of them are tracked.
+            const nParam = [1, 2, 3, 4, 5, 6, 7]
+                .filter(k => row[`Param${k}`] != null && row[`Param${k}`] !== '').length;
+            const layerId = parseInt(row.Id, 10) || null;
+            const cand = layerId ? Array.from({ length: Math.max(1, nParam) }, (_, k) => layerId + k * 10) : [];
+            for (const id of (row.EffectId || []).map(Number)) if (id && !cand.includes(id)) cand.push(id);
+            const stats = cand.map(id => discEffectStat(id, jEffectValue, jBuffValue)).filter(Boolean);
+            harmonyLayerByGroup.get(gid).push({
+                level: lvl,
+                id: layerId,
+                effectIds: (row.EffectId || []).map(Number).filter(Boolean),
+                need: needById,
+                name: jSecSkillLang?.[row.Name] || null,
+                stats,
+                stat: stats[0] || null,
+            });
+        }
+        for (const layers of harmonyLayerByGroup.values()) layers.sort((a, b) => a.level - b.level);
+    }
+
+    if (jDisc) {
+        for (const [, d] of Object.entries(jDisc)) {
+            const discId = parseInt(d.Id, 10);
+            if (!discId) continue;
+            const melodyGroup = parseInt(d.MainSkillGroupId, 10);
+            const levels = melodyGroup ? (melodyByGroup.get(melodyGroup) || []) : [];
+            if (levels.length) discMelodyById.set(discId, { groupId: melodyGroup, levels });
+            const groups = [parseInt(d.SecondarySkillGroupId1, 10) || null,
+                parseInt(d.SecondarySkillGroupId2, 10) || null];
+            if (groups[0] || groups[1]) discHarmonyById.set(discId, groups);
+            discInfoById.set(discId, {
+                mainSkillGroupId: melodyGroup || null,
+                secondaryGroupIds: groups,
+                subNoteSkillGroupId: parseInt(d.SubNoteSkillGroupId, 10) || null,
+                attrBaseGroupId: parseInt(d.AttrBaseGroupId, 10) || null,
+                attrExtraGroupId: parseInt(d.AttrExtraGroupId, 10) || null,
+            });
+            // Reverse index for the UIs: every effect id a disc's melody level or
+            // harmony layer resolves to says which disc/part it belongs to, so the
+            // sidebar and Effect Impact can label it and step the same state the
+            // Record tab's steppers drive.
+            for (const lv of levels) {
+                const ids = [...(lv.effectIds || []), ...((lv.stats || []).map(s => s.id))];
+                for (const effId of ids) {
+                    if (effId && !discPartByEffectId.has(effId)) discPartByEffectId.set(effId, { discId, part: 'copies', slot: 0 });
+                }
+            }
+            groups.forEach((gid, gi) => {
+                if (!gid) return;
+                for (const layer of (harmonyLayerByGroup.get(gid) || [])) {
+                    const ids = [layer.id, ...(layer.effectIds || []), ...((layer.stats || []).map(s => s.id))].filter(Boolean);
+                    for (const effId of ids) {
+                        if (!discPartByEffectId.has(effId)) discPartByEffectId.set(effId, { discId, part: 'harmony', slot: gi + 1 });
+                    }
+                }
+            });
+        }
+    }
+
+    if (jDiscExtraAttr) {
+        for (const [, row] of Object.entries(jDiscExtraAttr)) {
+            const gid = parseInt(row.GroupId, 10);
+            const star = Number(row.Break) || 0;
+            if (!gid || !star) continue;
+            if (!discStarAtkByGroup.has(gid)) discStarAtkByGroup.set(gid, {});
+            discStarAtkByGroup.get(gid)[star] = Number(row.Atk) || 0;
+        }
+    }
+
+    if (jAttribute) {
+        for (const [, row] of Object.entries(jAttribute)) {
+            const gid = parseInt(row.GroupId, 10);
+            if (!gid) continue;
+            if (!discBaseStatByGroup.has(gid)) discBaseStatByGroup.set(gid, []);
+            discBaseStatByGroup.get(gid).push({
+                break: Number(row.Break) || 0,
+                lvl: Number(row.lvl) || 0,
+                row,
+            });
+        }
+    }
+}
+
+// Melody effect id for a Crescendo star (level = star + 1), or null when the
+// disc's melody ladder has no such level.
+function discMelodyEffectFor(discId, copies) {
+    const m = discMelodyById.get(Number(discId));
+    if (!m) return null;
+    const level = Math.max(1, Math.min(Number(copies) || 1, m.levels.length));
+    const row = m.levels[level - 1];
+    return (row && row.effectIds.length) ? row.effectIds[0] : null;
+}
+
+// Flat Atk a disc's Crescendo star adds (DiscExtraAttribute).
+function discStarAtkFor(discId, star) {
+    const d = (typeof discInfoById !== 'undefined') && discInfoById.get(Number(discId));
+    const gid = d && d.attrExtraGroupId;
+    if (!gid) return 0;
+    const tbl = discStarAtkByGroup.get(gid);
+    return (tbl && tbl[Number(star) || 0]) || 0;
+}
+
+// Which (Crescendo star, tier-up phase, level) a logged disc was at, from the
+// stat row the record carries: Attribute[baseGroup, Break=phase, lvl] +
+// DiscExtraAttribute[extraGroup, star]. Atk is the only stat the star moves, so
+// a candidate must match every other logged stat exactly and its base Atk plus
+// the star's flat Atk must equal the logged Atk. Returns null when the disc is
+// not in the tables or nothing matches.
+function discInferBuild(discId, attrs) {
+    const d = (typeof discInfoById !== 'undefined') && discInfoById.get(Number(discId));
+    if (!d || !attrs) return null;
+    const rows = discBaseStatByGroup.get(d.attrBaseGroupId) || [];
+    const starTbl = discStarAtkByGroup.get(d.attrExtraGroupId) || {};
+    const loggedAtk = attrs.Atk;
+    for (const cand of rows) {
+        let ok = true;
+        for (const [k, v] of Object.entries(attrs)) {
+            if (k === 'Atk') continue;
+            if ((cand.row[k] || 0) !== v) { ok = false; break; }
+        }
+        if (!ok) continue;
+        const baseAtk = cand.row.Atk || 0;
+        if (loggedAtk == null || baseAtk === loggedAtk) {
+            return { phase: cand.break, level: cand.lvl, star: 0, baseAtk, row: cand.row };
+        }
+        for (const [star, extra] of Object.entries(starTbl)) {
+            if (baseAtk + extra === loggedAtk) {
+                return { phase: cand.break, level: cand.lvl, star: Number(star), baseAtk, row: cand.row };
+            }
+        }
+    }
+    return null;
+}
+
 
 // ─── Built-table cache (IndexedDB) ───────────────────────────────────────
 // All module-level Maps initTables populates. Values are plain objects /
@@ -2236,6 +2532,8 @@ const EC_DATA_TABLES = [
     buffAttrTypeTable,
     effectLevelMetaFallback, effectMainOrSupport, hitLadderFallback, skillTable,
     discLangNames, discBonusNotesById, subNoteNamesById, subNoteEffectIdByNote,
+    discInfoById, discMelodyById, discHarmonyById, harmonyLayerByGroup,
+    discStarAtkByGroup, discBaseStatByGroup, discPartByEffectId,
     gemAttrValueById, gemAttrValueByEffectId, potentialById, potentialEffectFamily, effectIdPot,
     potEffectIds, potentialNameById, skillRoleOwner, charStatLadder, charMeta,
 ];
@@ -2253,7 +2551,7 @@ function ecCodeHash() {
     return ecHashStr([
         buildEffectValueTable, buildOnceAttrValueTable, buildActorNameMap,
         buildHitTable, buildEffectTable, buildSkillTable, buildCharStatLadder,
-        buildEmblemLineCatalog, ecSnapshotRestore, initTables,
+        buildEmblemLineCatalog, ecSnapshotRestore, initTables, buildDiscEditorTables,
     ].map(f => f.toString()).join('\n'));
 }
 
@@ -2360,6 +2658,10 @@ async function initTables() {
         [`${bin}Potential.json`,                     'potential'],
         [`${bin}MonsterSkin.json`,                   'monsterSkin'],
         [`${lang}SecondarySkill.json`,               'secSkillLang'],
+        [`${bin}SecondarySkill.json`,                'secondarySkill'],
+        [`${bin}MainSkill.json`,                     'mainSkill'],
+        [`${bin}DiscExtraAttribute.json`,            'discExtraAttr'],
+        [`${bin}Attribute.json`,                     'attribute'],
         [`${_dataRoot}blitz.json`,                   'blitz'],
         [`${lang}DiscIP.json`,                       'discIP'],
         [`${bin}CharGemAttrValue.json`,              'gemAttrValue'],
@@ -2397,7 +2699,8 @@ async function initTables() {
         jAffinityLevel, jEffectValue, jAffix, jAffixLang,
         jBuff, jBuffValue, jWord, jWordLang, jTalent, jTalentLang,
         jOnceAttr, jOnceAttrValue, jScoreBoss, jScoreBossLang,
-        jPotential, jMonsterSkin, jSecSkillLang, jBlitz, jDiscIP,
+        jPotential, jMonsterSkin, jSecSkillLang, jSecondarySkill, jMainSkill,
+        jDiscExtraAttr, jAttribute, jBlitz, jDiscIP,
         jGemAttrValue, jDisc, jSubNotePromote, jMonsterManual, jMonsterManualLang,
     ] = await Promise.all(responses.map((res, i) => parseJsonResponse(res, URLS[i][0], URLS[i][1])));
 
@@ -2460,6 +2763,12 @@ async function initTables() {
             if (eid) subNoteEffectIdByNote.set(id, Number(eid));
         }
     }
+
+    // Disc editor tables: melody ladder (star+1), harmony layers with their
+    // note requirement, per-star flat Atk and the disc stat ladder the logged
+    // star is inferred from. The Record tab's disc steppers read these.
+    buildDiscEditorTables(jDisc, jMainSkill, jSecondarySkill, jDiscExtraAttr, jAttribute,
+        jSecSkillLang, null, jEffectValue, jBuffValue);
 
     // Emblem parse tables
     gemAttrValueById.clear();
@@ -2542,3 +2851,74 @@ async function initTables() {
         ecSnapshotPut(codeHash, etags).catch(() => {});
     }
 }
+
+// ─── Disc editor API (Record tab) ───────────────────────────────────────────
+// What the disc editor's steppers step through, read straight off the datamine:
+//   copies       — Crescendo star 0..5, melody level = star + 1
+//   harmony      — the two SecondarySkill groups and every layer's id + note
+//                  requirement (kept so a later note↔harmony link has the
+//                  numbers without re-reading the table)
+//   starAtk      — the flat Atk each star adds
+//   note         — the note's own effect ladder (value = per-level × level)
+// The record's numbers never pass through here; these are the table values the
+// edits resolve against.
+window.dcDiscEditorMeta = function (discId) {
+    const id = Number(discId);
+    const info = discInfoById.get(id) || null;
+    if (!info) return null;
+    const melody = discMelodyById.get(id) || null;
+    const harmonyGroups = (discHarmonyById.get(id) || [])
+        .map((gid, slot) => {
+            if (!gid) return null;
+            return {
+                slot: slot + 1,
+                groupId: gid,
+                layers: (harmonyLayerByGroup.get(gid) || []).slice(),
+            };
+        })
+        .filter(Boolean);
+    const starTbl = discStarAtkByGroup.get(info.attrExtraGroupId) || {};
+    const starAtk = {};
+    for (const [star, atk] of Object.entries(starTbl)) starAtk[Number(star)] = atk;
+    return {
+        discId: id,
+        melody: melody ? { groupId: melody.groupId, levels: melody.levels } : null,
+        melodyMaxLevel: melody ? melody.levels.length : 0,
+        harmonyGroups,
+        starAtk,
+        starMax: Object.keys(starAtk).length ? Math.max(...Object.keys(starAtk).map(Number)) : 0,
+    };
+};
+
+// Melody effect id for a Crescendo star (melody level = star + 1).
+window.dcMelodyEffectFor = discMelodyEffectFor;
+// Flat Atk a disc's Crescendo star adds.
+window.dcDiscStarAtk = discStarAtkFor;
+// (phase, level, star) a logged disc's stat row corresponds to.
+window.dcDiscInferBuild = discInferBuild;
+
+// A note's own effect: attr id + the value one note level is worth. The ladder
+// is EffectValue[<effectId> + level*10], so per-level value = entry at +10.
+window.dcNoteMeta = function (noteId) {
+    const id = Number(noteId);
+    const effId = subNoteEffectIdByNote.get(id);
+    if (!effId) return { noteId: id, name: subNoteNamesById.get(id) || String(id), effectId: null, attrType: null, subType: null, perLevel: null };
+    const per = effectValueTable.get(effId + 10);
+    return {
+        noteId: id,
+        name: subNoteNamesById.get(id) || String(id),
+        effectId: effId,
+        attrType: per?.attrType ?? null,
+        subType: per?.subType ?? 1,
+        perLevel: per?.value ?? null,
+    };
+};
+
+// Which disc part an effect id belongs to (melody level or harmony layer), for
+// any UI that shows a disc effect row: { discId, part: 'copies'|'harmony', slot }.
+// The Record tab's steppers, the Dmg Calc sidebar rows and Effect Impact all
+// step/read the same state through this.
+window.dcDiscPartForEffect = function (effectId) {
+    const hit = discPartByEffectId.get(Number(effectId));
+    return hit ? { ...hit } : null;
+};

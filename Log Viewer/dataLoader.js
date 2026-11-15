@@ -1,3 +1,95 @@
+// ─── Saved UI preferences (localStorage) ──────────────────────────────────────
+// The tabs' view toggles — Effect Impact's Show Pot Img / Show Coverage / Show 0%
+// gain effects, Emblems' rarity, Show 0% / Show colors and gain columns,
+// Analytics' breakdown sources — are read once when their script loads and written
+// on every change, so a tab comes up the way it was left after a reload.
+//
+// What does NOT belong here: the shared filter state (type / character / skill /
+// damage type / defender, search, source chips) and the per-log choices (the
+// Emblems tier radio and each column's Team/Personal scope). Those describe what
+// is being looked at, are wiped by fcResetFilters()/ecResetState() on every log
+// switch, and must not survive one.
+//
+// Keys are namespaced `ui.` and hold JSON, so a boolean comes back as a boolean
+// and an object (the per-character scope map, the column set) round-trips intact.
+// localStorage throws in some private-mode contexts and JSON.parse throws on a
+// corrupt entry — both fall back to the caller's default rather than breaking the
+// tab. Lives in this file (loaded before every tab's script) because the whole
+// `Log Viewer/` folder is gitignored except a per-file whitelist.
+const UI_PREF_PREFIX = 'ui.';
+
+function uiPrefGet(key, dflt) {
+    try {
+        const raw = localStorage.getItem(UI_PREF_PREFIX + key);
+        if (raw === null || raw === undefined) return dflt;
+        const val = JSON.parse(raw);
+        return val === null ? dflt : val;
+    } catch (e) {
+        return dflt;
+    }
+}
+
+function uiPrefSet(key, value) {
+    try {
+        localStorage.setItem(UI_PREF_PREFIX + key, JSON.stringify(value));
+    } catch (e) {
+        /* quota / disabled storage: the toggle still works for this session */
+    }
+}
+
+function uiPrefBool(key, dflt) {
+    const val = uiPrefGet(key, null);
+    return typeof val === 'boolean' ? val : dflt;
+}
+
+function uiPrefNum(key, dflt) {
+    const val = uiPrefGet(key, null);
+    return typeof val === 'number' && isFinite(val) ? val : dflt;
+}
+
+// ─── Quick-swap tab buttons (Emblems / Ascension) ─────────────────────────────
+// The bottom-left links to the Emblems Comparison and the Ascension site are
+// off by default. They are opted into from the browser console:
+//     enableEmblemsTab()      / disableEmblemsTab()
+//     enableAscensionTab()    / disableAscensionTab()
+// The choice lives in a `ui.` pref, so it survives a reload; both are off again
+// only when the matching disable call runs (or localStorage is cleared).
+// `#quickSwap` sits AFTER these scripts in index.html, so the apply pass is
+// deferred to DOMContentLoaded rather than run at parse time.
+const QS_TABS = {
+    emblems:   { pref: 'emblemsTab',   sel: '.qs-btn.emblems' },
+    ascension: { pref: 'ascensionTab', sel: '.qs-btn.ascension' },
+};
+
+function qsApplyTabPrefs() {
+    const wrap = document.getElementById('quickSwap');
+    if (!wrap) return;
+    let any = false;
+    for (const name in QS_TABS) {
+        const on = uiPrefBool(QS_TABS[name].pref, false);
+        const btn = wrap.querySelector(QS_TABS[name].sel);
+        if (btn) btn.classList.toggle('qs-off', !on);
+        if (on) any = true;
+    }
+    wrap.classList.toggle('qs-off', !any);
+}
+
+function qsSetTab(name, on) {
+    const tab = QS_TABS[name];
+    if (!tab) { console.warn(`qsSetTab: unknown tab "${name}" (emblems | ascension)`); return; }
+    uiPrefSet(tab.pref, !!on);
+    qsApplyTabPrefs();
+    console.log(`${name} tab ${on ? 'enabled — button shown' : 'disabled — button hidden'} (saved)`);
+}
+
+window.enableEmblemsTab    = function() { qsSetTab('emblems', true); };
+window.disableEmblemsTab   = function() { qsSetTab('emblems', false); };
+window.enableAscensionTab  = function() { qsSetTab('ascension', true); };
+window.disableAscensionTab = function() { qsSetTab('ascension', false); };
+
+document.addEventListener('DOMContentLoaded', qsApplyTabPrefs);
+if (document.readyState !== 'loading') qsApplyTabPrefs();
+
 // ─── Enum maps ────────────────────
 const damageSourceNames = { 1:'Player',2:'Monster',3:'Trap',4:'Perk',5:'Fatecard' };
 const damageTypeNames = { 0:'None',1:'Auto Attack',2:'Skill',3:'Ultimate',4:'Other',5:'Mark',6:'Projectile',7:'Minion' };
@@ -360,10 +452,11 @@ function startLiveUpdates() {
     const newEs = new EventSource('/events?' + params.join('&'));
     _es = newEs;
 
-    const dot = document.getElementById('liveDot');
+    // No live/connected indicator in the header: index.html has no #liveDot
+    // element, so the connection state is only visible through the events
+    // themselves (an idle live log simply stops growing).
     newEs.onopen = () => {
         if (newEs !== _es) return;
-        if (dot) { dot.style.background = '#4a8a4a'; dot.title = 'live'; }
         if (_esFallbackTimer) { clearTimeout(_esFallbackTimer); _esFallbackTimer = null; }
     };
     // Raw log-line batches. Each message is one frame of raw NDJSON lines; the
@@ -386,7 +479,6 @@ function startLiveUpdates() {
     });
     newEs.onerror = () => {
         if (newEs !== _es) return;
-        if (dot) { dot.style.background = '#6a3a3a'; dot.title = 'disconnected'; }
         try { newEs.close(); } catch (e) {}
         if (newEs === _es) _es = null;
         setTimeout(() => {
@@ -524,6 +616,13 @@ async function fetchLog(incremental = false) {
 
         const t = allEvents.length;
         const res = await fetch(url, { cache: 'no-cache' });
+        // A failed request answers with an error body, not NDJSON — parsing it
+        // would either throw inside parseRawBatch or fold junk "events" into the
+        // list, so stop here and let the next tick retry.
+        if (!res.ok) {
+            console.error('fetch error', res.status, url);
+            return;
+        }
         const text = await res.text();
         if (allEvents.length != t) return; // another append raced the fetch
 

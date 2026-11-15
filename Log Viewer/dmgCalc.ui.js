@@ -260,7 +260,12 @@ if (dcEffectsPanelEl) dcEffectsPanelEl.addEventListener('click', e => {
     const lvlBtn = e.target.closest('.dc-lvl-btn');
     if (lvlBtn) {
         e.stopPropagation();
-        if (lvlBtn.dataset.charid != null) {
+        if (lvlBtn.dataset.disc != null) {
+            // Disc melody (copies) / harmony layer — the same state the Record
+            // tab's steppers drive, so both boards move together.
+            window.dcChangeDiscPart(Number(lvlBtn.dataset.disc), lvlBtn.dataset.part,
+                Number(lvlBtn.dataset.dslot || 0), Number(lvlBtn.dataset.dir));
+        } else if (lvlBtn.dataset.charid != null) {
             if (lvlBtn.dataset.slot != null) {
                 dcChangeSkillLevel(Number(lvlBtn.dataset.charid), Number(lvlBtn.dataset.slot), Number(lvlBtn.dataset.dir));
             } else if (lvlBtn.dataset.charlvl != null) {
@@ -272,8 +277,15 @@ if (dcEffectsPanelEl) dcEffectsPanelEl.addEventListener('click', e => {
         }
         return;
     }
+    // A talent block's header is the talent's on/off switch — the same call the
+    // Record tab's talent row makes, so both boards move together.
+    const thead = e.target.closest('.dc-talent-head');
+    if (thead && thead.dataset.talentUnit != null) {
+        dcToggleTalent(thead.dataset.talentUnit, Number(thead.dataset.talentIndex));
+        return;
+    }
     const row = e.target.closest('.dc-effect-row');
-    if (row && row.dataset.key !== undefined) { dcToggleEffect(row.dataset.key); return; }
+    if (row && row.dataset.key !== undefined) { dcToggleEffectRow(row.dataset.key); return; }
     const sec = e.target.closest('.dc-source-toggle');
     if (sec && sec.dataset.gkey !== undefined) dcToggleSourceSection(sec.dataset.gkey);
 });
@@ -289,7 +301,11 @@ if (dcEffectsPanelEl) dcEffectsPanelEl.addEventListener('change', e => {
     const d = String(inp.value).match(/-?\d+/);
     const v = d ? parseInt(d[0], 10) : NaN;
     if (!Number.isFinite(v)) { renderEffectsPanel(); return; }
-    if (inp.dataset.charid != null) {
+    if (inp.dataset.disc != null) {
+        window.dcSetDiscPart(Number(inp.dataset.disc), inp.dataset.part,
+            Number(inp.dataset.dslot || 0), v);
+        if (dcEffectsPanelEl.contains(inp)) renderEffectsPanel();
+    } else if (inp.dataset.charid != null) {
         if (inp.dataset.slot != null) {
             dcSetSkillLevel(Number(inp.dataset.charid), Number(inp.dataset.slot), v);
         } else if (inp.dataset.charlvl != null) {
@@ -367,7 +383,13 @@ function renderEffectsPanel() {
                 <span class="dc-source-count">${groupEffects.length}</span>
             </div>`;
             if (isOpen) {
-                for (const ef of [...groupEffects].sort((a, b) => String(a.name).localeCompare(String(b.name)))) {
+                // A "<unit> Talents" group folds into one block per talent — a
+                // clickable header that switches the whole talent — and every
+                // other source stays a flat, name-sorted list.
+                for (const item of dcTalentOrderedItems(groupEffects)) {
+                    if (item.talent) { g += dcTalentHeadHtml(item.talent); continue; }
+                    const ef = item.ef;
+                    const nested = !!item.nested;
                     const disabled = dcEffectsDisabled.has(ef.key);
                     let valStr;
                     if (ef.isPotentialsGroup) {
@@ -397,7 +419,15 @@ function renderEffectsPanel() {
                         valStr = `${displayAttrLabel} ${val>=0 ? '+' : ''}${val}${countStr}${overrideMarker}`;
                     }
 
-                    const hasLevels = !ef.isPotentialsGroup && ef.allValueConfigIds && ef.allValueConfigIds.length > 1 && ef.currentLevelIdx >= 0;
+                    // A disc row (melody level / harmony layer) is not a value
+                    // ladder, even when the DLL's level map carries one for its
+                    // effect id: it steps the disc's own level table — the same
+                    // state the Record tab's Copies / Harmony steppers drive — so
+                    // the two surfaces can never disagree. Stat rows have no
+                    // control; they print the live value the copies move.
+                    const discPart = (!ef.isPotentialsGroup && !ef.isPotRow && !ef.displayOnly &&
+                        typeof dcDiscPartInfo === 'function') ? dcDiscPartInfo(ef) : null;
+                    const hasLevels = !discPart && !ef.isPotentialsGroup && ef.allValueConfigIds && ef.allValueConfigIds.length > 1 && ef.currentLevelIdx >= 0;
                     let effectiveLevelIdx = ef.currentLevelIdx;
                     if (hasLevels) {
                         const effOverride = dcGetLevelOverride(ef, ef.side);
@@ -424,9 +454,33 @@ function renderEffectsPanel() {
                                 min="1" max="${maxLvl + 1}" step="1" value="${effectiveLevelIdx + 1}">/ ${maxLvl + 1}</span>
                             <button class="dc-lvl-btn${effectiveLevelIdx >= maxLvl ? ' dc-lvl-disabled' : ''}"
                                 data-dir="1">+</button>`;
+                    } else if (discPart && !discPart.editable && discPart.lead) {
+                        // Not levellable: the record never ran this part, so the
+                        // sidebar states it instead of offering a step. No title —
+                        // dcStripSidebarTitles() removes every tooltip in the
+                        // sidebar; the Record card's row carries the reason.
+                        levelBtns = `<span class="dc-lvl-indicator is-disc is-static">off</span>`;
+                    } else if (discPart && discPart.editable && discPart.lead) {
+                        const lo = discPart.part === 'copies' ? 1 : 0;
+                        const attrs = `data-disc="${discPart.idx}" data-part="${discPart.part}" data-dslot="${discPart.slot || 0}"`;
+                        // Compact form: the levels are typed in the Record tab, so
+                        // the sidebar only needs to step them (the row is already
+                        // sharing its width with a long "<disc>: <part>" name).
+                        levelBtns = `
+                            <button class="dc-lvl-btn${discPart.level <= lo ? ' dc-lvl-disabled' : ''}"
+                                ${attrs} data-dir="-1">−</button>
+                            <span class="dc-lvl-indicator is-disc" title="${esc(discPart.name)} level">${discPart.level}/${discPart.max}</span>
+                            <button class="dc-lvl-btn${discPart.level >= discPart.max ? ' dc-lvl-disabled' : ''}"
+                                ${attrs} data-dir="1">+</button>`;
                     }
 
-                    g += `<div class="dc-effect-row${disabled ? ' disabled' : ''}"
+                    // A potential at level 0 is off — dim it here too, exactly as
+                    // the Record tab dims its row (see dcSetPotOff). The key-based
+                    // disable still dims everything else.
+                    const potId = dcPotIdOfEffect(ef);
+                    const dim = disabled || (potId != null && dcPotIsOff(potId));
+
+                    g += `<div class="dc-effect-row${dim ? ' disabled' : ''}${nested ? ' is-nested' : ''}${discPart ? ' has-disc' : ''}"
                         data-key="${esc(ef.key)}">
                         <span class="dc-effect-row-name">${esc(ef.name)}</span>
                         <span class="dc-effect-row-val">${valStr}</span>
@@ -621,13 +675,171 @@ function dcDiscNameOf(name) {
     return c > 0 ? name.slice(0, c).trim() : null;
 }
 
+// ─── Talents: one group per talent ────────────────────────────────────────────
+// Talent.json stamps every effect id it labels with the talent's own index and
+// the group's title (see the Talent.json pass in tableResolver.js), so a
+// character's rows fold back into one entry per talent: the named passive plus
+// the ten upgrade nodes, all filed under the "<unit> Talents" source. The Effect
+// Impact tab draws the same fold; the sidebar and the Record board read it from
+// here so the three surfaces group identically.
+function dcTalentOfEffect(ef) {
+    const cid = ef?.configId;
+    const ei = (cid != null && typeof effectTable !== 'undefined') ? effectTable.get(Number(cid)) : null;
+    if (ei && ei.talentIndex != null) {
+        return { index: Number(ei.talentIndex), title: ei.talentTitle || null };
+    }
+    // Effect id the table does not know: the label still carries the index.
+    const m = /Talent (\d+): /.exec(String(ef?.name || ''));
+    return m ? { index: Number(m[1]), title: null } : null;
+}
+
+// "<unit> Talents" → "<unit>"; anything else → null.
+function dcTalentUnitOfSource(src) {
+    const suffix = ' Talents';
+    return (typeof src === 'string' && src.endsWith(suffix)) ? src.slice(0, -suffix.length) : null;
+}
+
+// Group key for one talent: the same "<unit>|<n>" shape the Effect Impact tab
+// uses for its fold state, so the key stays readable in dcGroupEffectKeys.
+function dcTalentGroupKey(unit, index) { return `talent:${unit}|${index}`; }
+function dcTalentIsOff(unit, index) { return dcGroupEffectKeys.has(dcTalentGroupKey(unit, index)); }
+
+// The effects one talent owns, straight off the collected table.
+function dcTalentRowsOf(unit, index) {
+    const g = dcTalentGroupsOf(unit).find(t => t.index === Number(index));
+    return g ? g.effects : [];
+}
+
+// Is the talent off *now*? Read from the disable set, not from the group map: a
+// talent can also be off because every one of its rows was switched off
+// individually (or by the bulk "Talents" quick toggle), and the header must not
+// claim "on" over a block of dim rows.
+function dcTalentOffNow(unit, index) {
+    const rows = dcTalentRowsOf(unit, index);
+    if (!rows.length) return dcTalentIsOff(unit, index);
+    return rows.every(r => dcEffectsDisabled.has(r.key));
+}
+
+// Switch one talent on/off: its named passive plus every upgrade node it grants,
+// as one group. Setting (not toggling) makes the direction follow what the user
+// sees, so a talent that is off for any reason comes back on in one click.
+function dcSetTalentOff(unit, index, off) {
+    if (!unit || index == null) return false;
+    const gk = dcTalentGroupKey(unit, index);
+    const keys = dcTalentRowsOf(unit, index).map(ef => ef.key);
+    if (!keys.length && !dcTalentIsOff(unit, index)) return false;
+    if (off) {
+        dcGroupEffectKeys.set(gk, new Set(keys));
+        keys.forEach(k => dcEffectsDisabled.add(k));
+    } else {
+        dcGroupEffectKeys.delete(gk);
+        keys.forEach(k => dcEffectsDisabled.delete(k));
+    }
+    dcApplyAndRender(new Set(keys));
+    return true;
+}
+
+// The Record board's talent row and the sidebar's talent block header both land
+// here, so one click switches the same group wherever it is clicked.
+window.dcToggleTalent = function(unit, index) {
+    return dcSetTalentOff(unit, index, !dcTalentOffNow(unit, index));
+};
+
+// Put every talent back on — the Record tab's "Reset all" treats a talent switch
+// as an edit like a level change or a gem roll, so it goes back to the logged
+// build. Covers the per-talent groups and the bulk "Talents" quick toggle.
+window.dcResetTalentGroups = function() {
+    const hits = [...dcGroupEffectKeys.entries()]
+        .filter(([k]) => k === 'talents' || k.startsWith('talent:'));
+    if (!hits.length) return false;
+    const cleared = new Set();
+    for (const [k, keys] of hits) {
+        keys.forEach(x => { dcEffectsDisabled.delete(x); cleared.add(x); });
+        dcGroupEffectKeys.delete(k);
+    }
+    dcApplyAndRender(cleared);
+    return true;
+};
+
+// One talent's effects, per unit, in talent order: [{ index, title, effects }].
+function dcTalentGroupsOf(unit) {
+    const out = new Map();
+    if (!unit) return [];
+    for (const ef of dcCollectAttrFixEffectsCached()) {
+        if (dcTalentUnitOfSource(ef.source) !== unit) continue;
+        const ti = dcTalentOfEffect(ef);
+        if (!ti) continue;
+        let g = out.get(ti.index);
+        if (!g) { g = { index: ti.index, title: ti.title || null, effects: [] }; out.set(ti.index, g); }
+        if (!g.title && ti.title) g.title = ti.title;
+        g.effects.push(ef);
+    }
+    return [...out.values()].sort((a, b) => a.index - b.index);
+}
+
+// Talents are stored as ONE source group per character holding every talent's
+// rows, so that group's rows are ordered into one block per talent: a header
+// entry (the talent's on/off switch) followed by its rows. Every other source
+// comes back as a flat, name-sorted { ef } list, unchanged.
+function dcTalentOrderedItems(groupEffects) {
+    const byName = (a, b) => String(a.name).localeCompare(String(b.name));
+    // Only a "<unit> Talents" source folds; every other group keeps its flat
+    // name-sorted list (a non-talent row can never gain or lose a header here).
+    const src = groupEffects.length ? groupEffects[0].source : null;
+    if (!dcTalentUnitOfSource(src)) return [...groupEffects].sort(byName).map(ef => ({ ef }));
+    const talents = new Map();
+    const plain = [];
+    for (const ef of groupEffects) {
+        const ti = dcTalentOfEffect(ef);
+        if (!ti) { plain.push(ef); continue; }
+        let b = talents.get(ti.index);
+        if (!b) { b = { index: ti.index, title: ti.title || null, rows: [] }; talents.set(ti.index, b); }
+        if (!b.title && ti.title) b.title = ti.title;
+        b.rows.push(ef);
+    }
+    if (!talents.size) return [...groupEffects].sort(byName).map(ef => ({ ef }));
+    const items = [];
+    for (const b of [...talents.values()].sort((a, b) => a.index - b.index)) {
+        items.push({ talent: b });
+        b.rows.sort(byName).forEach(ef => items.push({ ef, nested: true }));
+    }
+    plain.sort(byName).forEach(ef => items.push({ ef }));
+    return items;
+}
+
+// The block header: clickable, dimmed and struck through while the talent is
+// switched off. It carries the unit/index the delegated click switches, the same
+// call the Record board's talent row makes.
+function dcTalentHeadHtml(b) {
+    const unit = dcTalentUnitOfSource(b.rows.length ? b.rows[0].source : '') || '';
+    const off = unit ? dcTalentOffNow(unit, b.index) : false;
+    const label = b.title ? `Talent ${b.index}: ${b.title}` : `Talent ${b.index}`;
+    return `<div class="dc-talent-head${off ? ' disabled' : ''}"` +
+        ` data-talent-unit="${esc(unit)}" data-talent-index="${b.index}" role="button">` +
+        `<span class="dc-talent-name">${esc(label)}</span>` +
+        `<span class="dc-talent-count">${b.rows.length}</span>` +
+        `</div>`;
+}
+
 // groupKey: 'bossblitz' / 'talents' match by source; 'disc:<name>' matches
 // every Discs-source row belonging to that disc (stat rows + Melody/Harmony
-// buffs + bonus-note rows). Matchers receive (source, name).
+// buffs + bonus-note rows); 'talent:<unit>|<n>' matches one talent of one unit
+// (its source plus the "Talent N: " index its rows carry). Matchers receive
+// (source, name).
 function dcGroupSourceMatcher(groupKey) {
     if (groupKey.startsWith('disc:')) {
         const disc = groupKey.slice(5);
         return (src, name) => src === 'Discs' && dcDiscNameOf(name) === disc;
+    }
+    if (groupKey.startsWith('talent:')) {
+        const rest = groupKey.slice('talent:'.length);
+        const bar = rest.lastIndexOf('|');
+        if (bar < 0) return () => false;
+        const unit = rest.slice(0, bar);
+        const idx = rest.slice(bar + 1);
+        if (!/^\d+$/.test(idx)) return () => false;
+        const re = new RegExp(`Talent ${idx}: `);
+        return (src, name) => src === `${unit} Talents` && re.test(String(name || ''));
     }
     return groupKey === 'bossblitz'
         ? (src) => src === 'Boss Blitz'
@@ -694,6 +906,10 @@ function dcApplyAndRender(changedKeys) {
     // engine baseline's incremental per-hit rebuild.
     dcBumpCalcVersion();
     dcBumpLevelState();
+    // The disc editor's overrides + stat rows are derived from the level tables:
+    // rebuild them now, or the panels below paint the pre-edit values (the calc
+    // refreshes them on the next hit, which is too late for this render).
+    if (typeof dcRefreshDiscOverrides === 'function') dcRefreshDiscOverrides();
     if (typeof ecNoteSharedChange === 'function') ecNoteSharedChange(changedKeys || null);
     renderEffectsPanel();
     renderFormulaBar();
@@ -804,9 +1020,44 @@ const DC_QUICK_TOGGLES = [
 // alphabetical after the record ones. They only appear at all when the log
 // has a record log (an Origin event) — without one there is no equipped-disc
 // order to show and no disc stats to toggle.
+// ─── Average-crit quick toggle ────────────────────────────────────────────────
+// The Dmg Calc formula bar's CritRate field IS a switch: while off, calcDamage
+// skips the per-hit isCrit check and multiplies by the expected value
+// 1 + CR×(CD−1) instead (the critDmg branch in dmgCalc.calc.js). This sidebar
+// row drives that same switch, so both read one state —
+// dcDisabled.has('critRate') — and either click repaints the other
+// (dcToggleField re-renders this list when the formula bar is clicked).
+const DC_CRIT_TOGGLE = {
+    label: 'Average Crit Rate',
+    title: 'Same switch as the CritRate field in the Dmg Calc formula bar',
+    enableStyle: true,
+    strikeWhenActive: false,
+    isActive: () => dcDisabled.has('critRate'),
+    onclick: "dcToggleField('critRate')",
+    // What the total would be if the crit mode flipped. Every hit is affected,
+    // so this is one full calc pass — the same cost as one disc simulation.
+    simulate: () => dcSimulateCritMode(),
+};
+
+function dcSimulateCritMode() {
+    const merged = new Set(dcDisabled);
+    if (merged.has('critRate')) merged.delete('critRate');
+    else merged.add('critRate');
+    let t = 0;
+    for (const ev of dcFiltered) {
+        const f = calcHitFields(ev, null, dcEffectsDisabled, dcEffectLevelOverrides);
+        t += calcDamage(f, dcBonus, merged);
+    }
+    return t;
+}
+
+// The crit row has no section title: it sits between the disc toggles and the
+// static quick toggles, behind a divider on either side.
+const DC_CRIT_SECTION = [DC_CRIT_TOGGLE];
+
 function dcQuickToggleList() {
     const rec = (typeof getOriginRecord === 'function') ? getOriginRecord() : null;
-    if (!rec) return [...DC_QUICK_TOGGLES];   // no record log → no disc toggles
+    if (!rec) return [...DC_CRIT_SECTION, { divider: true }, ...DC_QUICK_TOGGLES];
     const discNames = new Set();
     for (const ef of dcCollectAttrFixEffectsCached()) {
         if (ef.source !== 'Discs') continue;
@@ -835,12 +1086,12 @@ function dcQuickToggleList() {
             dataGroup: true,   // routed through the delegated click handler
         };
     });
-    // Disc toggles first, then a divider, then the static toggles. The
-    // divider marker is skipped by the delta simulation and rendered as a
-    // separator line by dcRenderCharList; with no disc toggles there is no
-    // divider either.
-    if (!discEntries.length) return [...DC_QUICK_TOGGLES];
-    return [...discEntries, { divider: true }, ...DC_QUICK_TOGGLES];
+    // Disc toggles first, then a divider, then the crit section, then another
+    // divider, then the static toggles. The divider marker is skipped by the
+    // delta simulation and rendered as a separator line by dcRenderCharList;
+    // with no disc toggles there is no leading divider either.
+    if (!discEntries.length) return [...DC_CRIT_SECTION, { divider: true }, ...DC_QUICK_TOGGLES];
+    return [...discEntries, { divider: true }, ...DC_CRIT_SECTION, { divider: true }, ...DC_QUICK_TOGGLES];
 }
 
 // Effect keys dcToggleChar would disable for this char: the memoized set if
@@ -1049,13 +1300,15 @@ async function dcComputeCharDeltasPhases(list, prof, wi, deltas, quick, isAborte
     // simulated with an add/remove disabled-set pass, also direct.
     let tQuick = prof ? performance.now() : 0, quickCount = 0, quickNoop = 0;
     for (const tg of dcQuickToggleList()) {
-        if (tg.divider) continue;   // separator marker — not a toggle
+        if (tg.divider || tg.sectionLabel) continue;   // separators — not toggles
         let totalIf;
         if (tg.potsState) {
             const st = tg.potsState();
             totalIf = st.active
                 ? dcSimulatePotsRevert(st, wi)
                 : dcSimulatePotsApply(st, tg.potsOnlyAboveMax, wi);
+        } else if (tg.simulate) {
+            totalIf = tg.simulate();
         } else {
             totalIf = dcSimulateGroupToggle(tg.groupKey, dcGroupEffectKeys.has(tg.groupKey), baseTotal, wi);
         }
@@ -1427,6 +1680,7 @@ function dcRenderCharList() {
     // entries (Pots Max/All Lvl 6, Boss Blitz, Talents).
     html += `<div class="dc-quick-sep"></div>`;
     for (const t of dcQuickToggleList()) {
+        if (t.sectionLabel) { html += `<div class="sidebar-label dc-quick-head">${esc(t.sectionLabel)}</div>`; continue; }
         if (t.divider) { html += `<div class="dc-quick-sep"></div>`; continue; }
         const active = t.isActive();
         const strike = t.strikeWhenActive && active;
@@ -1522,6 +1776,77 @@ window.dcToggleEffect = function(key) {
     dcApplyAndRender(new Set([key]));
 };
 
+// ─── Potentials: one "off" state, shared by this sidebar and the Record tab ───
+// A potential is off when its level is 0: its ladder resolves to 0, its own hits
+// drop out (dcPotOffNames) and every effect it grants falls with it. That is the
+// model record.js writes from its row click (row.edit <= 0 → the row dims), and
+// the sidebar used to have a second, unrelated notion of "off" — a key in
+// dcEffectsDisabled that dimmed its own row and nothing else. Both surfaces now
+// read and write the level: clicking a potential's row in either place switches
+// that potential off/on, and a potential at level 0 draws dim in both.
+const dcPotRestore = new Map();   // potId -> level to come back to when re-enabled
+
+// The potential an effect row belongs to, or null. `levelSource` is what the
+// ±/level field of a pot row step (see dcChangeEffectLevel); linkPotential is
+// the potential's own logged-record row.
+function dcPotIdOfEffect(ef) {
+    if (!ef) return null;
+    if (ef.levelSource != null) return Number(ef.levelSource);
+    if (ef.linkPotential && ef.linkPotential.potId != null) return Number(ef.linkPotential.potId);
+    return null;
+}
+
+function dcPotIsOff(potId) {
+    const st = dcPotLevels.get(Number(potId));
+    return !!st && dcPotEffectiveLevel(st) <= 0;
+}
+
+// The level a switched-off potential comes back to: its logged level (record +
+// emblem/talent grant, cap included), falling back to 1 so an unlevelled
+// potential still comes back "on".
+function dcPotLoggedLevel(potId) {
+    const st = dcPotLevels.get(Number(potId));
+    if (!st) return 0;
+    const cap = (typeof dcPotLevelable === 'function' && !dcPotLevelable(potId)) ? 1 : 9;
+    return Math.min(Math.max(st.recordLv + st.bonus, 0), cap);
+}
+
+function dcSetPotOff(potId, off) {
+    const id = Number(potId);
+    const st = dcPotLevels.get(id);
+    if (!st) return false;
+    const cur = dcPotEffectiveLevel(st);
+    if (off) {
+        if (cur > 0) dcPotRestore.set(id, cur);
+        if (cur !== 0) dcSetPotLevel(id, 0);
+        return true;
+    }
+    const back = dcPotRestore.get(id) || dcPotLoggedLevel(id) || 1;
+    dcPotRestore.delete(id);
+    // A row that was switched off on its own would stay dim under an "on"
+    // potential, so bringing the potential back clears the rows it grants.
+    for (const e of dcCollectAttrFixEffectsCached()) {
+        if (dcPotIdOfEffect(e) === id) dcEffectsDisabled.delete(e.key);
+    }
+    dcSetPotLevel(id, back);
+    return true;
+}
+
+window.dcTogglePotOff = function(potId) {
+    const st = dcPotLevels.get(Number(potId));
+    if (!st) return false;
+    return dcSetPotOff(potId, dcPotEffectiveLevel(st) > 0);
+};
+
+// A row click: potentials switch the whole potential (the same call the Record
+// tab makes), everything else keeps its own per-effect disable.
+window.dcToggleEffectRow = function(key) {
+    const ef = dcCollectAttrFixEffectsCached().find(e => e.key === key);
+    const potId = dcPotIdOfEffect(ef);
+    if (potId != null && dcPotLevels.has(potId)) { dcTogglePotOff(potId); return; }
+    dcToggleEffect(key);
+};
+
 // Reset a potential's user change to 0 (record page click).
 window.dcResetPotLevelChange = function(potId) {
     const st = dcPotLevels.get(Number(potId));
@@ -1551,7 +1876,7 @@ window.dcSetPotLevel = function(potId, targetLevel) {
 // Clear every simulated level change at once — potentials, skill slots and
 // character levels (record page "Reset all"). The Max Lvl 6 shortcuts keep
 // their remembered previous values, so a second click still reverts cleanly.
-window.dcResetAllLevelChanges = function() {
+window.dcResetAllLevelChanges = function () {
     let touched = false;
     for (const st of dcPotLevels.values()) {
         if (st.change) { st.change = 0; touched = true; }
@@ -1562,7 +1887,105 @@ window.dcResetAllLevelChanges = function() {
     for (const st of dcCharLevels.values()) {
         if (st.change) { st.change = 0; touched = true; }
     }
+    for (const st of dcNoteLevels.values()) {
+        if (st.change) { st.change = 0; touched = true; }
+    }
+    for (const st of dcDiscLevels.values()) {
+        if (st.copiesChange) { st.copiesChange = 0; st.copies = st.copiesRec; touched = true; }
+        for (const h of st.harmonies) {
+            if (h && h.change) { h.change = 0; h.level = h.rec; touched = true; }
+        }
+    }
     if (!touched) return;
+    dcHideCharDeltas();
+    dcApplyAndRender();
+};
+
+// ─── Disc editor (Record tab): copies, harmony layers, notes ────────────────
+// Three independent knobs, each writing its own `change`:
+//   copies     — Crescendo star 0..5 (melody level = star + 1)
+//   harmony N  — SecondarySkill layer 0..5 (0 = off)
+//   notes      — the note's quantity (its effect level)
+// The harmony layers are NOT driven by the note totals here — the requirement
+// of every layer stays available (dcDiscEditorMeta → harmony[].layers[].need)
+// so a later pass can clamp them.
+window.dcSetDiscCopies = function (idx, target) {
+    const st = dcDiscLevels.get(Number(idx));
+    if (!st || !st.editable) return;
+    const t = Math.round(Number(target));
+    if (!Number.isFinite(t)) return;
+    const max = dcDiscCopiesMax(st.meta);
+    const next = Math.min(Math.max(t, 1), max);
+    if (next === st.copies) return;
+    st.copiesChange = (st.copiesChange || 0) + (next - st.copies);
+    st.copies = next;
+    dcHideCharDeltas();
+    dcApplyAndRender();
+};
+
+// slot is 1-based, matching the record UI's Harmony 1 / Harmony 2.
+window.dcSetDiscHarmony = function (idx, slot, target) {
+    const st = dcDiscLevels.get(Number(idx));
+    const h = st?.harmonies?.[Number(slot) - 1];
+    // A layer the record never ran is read-only: no logged row to swap and a
+    // trigger the viewer cannot evaluate (see dcRebuildDiscLevels).
+    if (!h || !h.editable) return;
+    const t = Math.round(Number(target));
+    if (!Number.isFinite(t)) return;
+    const next = Math.min(Math.max(t, 0), h.max);
+    if (next === h.level) return;
+    h.change = (h.change || 0) + (next - h.level);
+    h.level = next;
+    dcHideCharDeltas();
+    dcApplyAndRender();
+};
+
+// Reset one disc's copies + both harmony layers.
+window.dcResetDiscChange = function (idx) {
+    const st = dcDiscLevels.get(Number(idx));
+    if (!st) return;
+    let touched = false;
+    if (st.copiesChange) { st.copiesChange = 0; st.copies = st.copiesRec; touched = true; }
+    for (const h of st.harmonies) {
+        if (h && h.change) { h.change = 0; h.level = h.rec; touched = true; }
+    }
+    if (!touched) return;
+    dcHideCharDeltas();
+    dcApplyAndRender();
+};
+
+// A note row's level (record base + disc grants + change), same numbers the
+// note's own effect rows resolve against (dcNoteEffectiveLevel).
+window.dcNoteLevelInfo = function (noteId) {
+    const st = dcNoteLevels.get(Number(noteId));
+    if (!st) return null;
+    return {
+        noteId: st.noteId,
+        recordLv: st.recordLv,
+        bonus: dcNoteRowBonus(st),
+        change: st.change || 0,
+        eff: dcNoteEffectiveLevel(st),
+        max: 99,
+    };
+};
+
+window.dcSetNoteLevel = function (noteId, target) {
+    const st = dcNoteLevels.get(Number(noteId));
+    if (!st) return;
+    const t = Math.round(Number(target));
+    if (!Number.isFinite(t)) return;
+    const next = Math.min(Math.max(t, 0), 99);
+    const cur = dcNoteEffectiveLevel(st);
+    if (next === cur) return;
+    st.change = (st.change || 0) + (next - cur);
+    dcHideCharDeltas();
+    dcApplyAndRender();
+};
+
+window.dcResetNoteLevelChange = function (noteId) {
+    const st = dcNoteLevels.get(Number(noteId));
+    if (!st || !st.change) return;
+    st.change = 0;
     dcHideCharDeltas();
     dcApplyAndRender();
 };
@@ -1800,6 +2223,14 @@ window.dcSetEffectLevel = function(key, targetOneBased) {
     if (!ef || ef.configId == null) return;
     // Talent rows are not levellable: fixed value, no level buttons.
     if (typeof dcIsTalentRow === 'function' && dcIsTalentRow(ef)) return;
+    // Potential rows: 0 is the potential's off state, so a typed 0 goes through
+    // the same switch the row click and the Record tab use instead of landing on
+    // ladder level 1 (the ladder has no index for "off").
+    if (ef.levelSource != null && t <= 0) {
+        const potId = dcPotIdOfEffect(ef);
+        if (potId != null && dcPotLevels.has(potId)) dcSetPotOff(potId, true);
+        return;
+    }
     if (!ef.allValueConfigIds || ef.allValueConfigIds.length < 2) return;
     const newIdx = Math.min(Math.max(t - 1, 0), ef.allValueConfigIds.length - 1);
     const targetVcId = ef.allValueConfigIds[newIdx].valueConfigId;
@@ -2100,6 +2531,9 @@ window.dcToggleField = function(key) {
     dcVL.render();
     dcRefreshEI();
     dcNotifyAnalytics();
+    // The sidebar's Average Crit Rate quick toggle reads the same field state
+    // (dcDisabled.has('critRate')) — repaint it so both switches agree.
+    dcRenderCharList();
 };
 
 window.dcSetBonus = function(key, val) {

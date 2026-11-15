@@ -56,22 +56,30 @@ let ecExpectedCrit = true;
 // Emblem tier filter (radio): 0 = all, or a single emblem tier (70/80/90).
 let ecTierSel = 0;
 // Gain-column visibility (×1/×2/×3 droplist) — ×1 and ×2 by default.
-let ecColsSel = { 1: true, 2: true, 3: false };
+let ecColsSel = (() => {
+    const saved = uiPrefGet('ec.cols', {}) || {};
+    return { 1: saved[1] !== false, 2: saved[2] !== false, 3: saved[3] === true };
+})();
 let ecColsOpen = false;
 // Show the 0%-gain rows (Def/MaxHp, off-element lines…) — hidden by default.
-let ecShowZero = false;
-let ecShowColors = false;   // tier background colors — off by default
+let ecShowZero = uiPrefBool('ec.showZero', false);
+let ecShowColors = uiPrefBool('ec.showColors', false);   // tier background colors — off by default
 // Potential-level reference cap for this tab: every potential is evaluated as
 // if its level were at most 6, so a +3 pot-affix line has room to reach the
 // level-9 cap (a potential already at 9 would otherwise show a 0 gain).
 const EC_POT_REF_CAP = 6;
 // Damage scope per character table: 'team' (gains vs the whole deployed
 // team's damage, default) or 'personal' (gains vs that char's damage).
+// Per-character and NOT saved: a scope choice is tied to what is being looked
+// at, so a new log starts every column back on team damage.
 let ecScopeByChar = {};
 // Minimum emblem-stat rarity to show: 1 green / 2 blue / 3 gold / 4 rainbow
 // (CharGemAttrValue.Rarity — rank 1 = green weakest … 4 = rainbow best).
 // A line is shown when any of its emblem-tier entries reaches the rarity.
-let ecRarityMin = 4;   // rainbow by default
+let ecRarityMin = (() => {
+    const v = uiPrefNum('ec.rarityMin', 4);
+    return (v >= 1 && v <= 4) ? v : 4;   // rainbow by default
+})();
 // Emblem-roll existence data: the CharGemAttrValue ids the game CANNOT roll.
 // STATIC — the only entries never offered in the emblem roll log:
 //   * the flat Lvl-4 "cap" of Max Hp / Atk / Def / Def% / Crit Damage on each
@@ -91,8 +99,10 @@ const EC_UNROLLABLE_IDS = new Set([
 
 function ecResetState() {
     ecLastData = null;
+    // Scope is per-log (a new log's team deserves a fresh Team/Personal choice);
+    // the tier / rarity / columns / show-0% / colours toggles are saved
+    // preferences (dataLoader.js uiPref*) and deliberately survive a new log.
     ecScopeByChar = {};
-    ecRarityMin = 4;
     _ecRenderSeq++;
 }
 
@@ -407,6 +417,9 @@ function ecEntryOps(entry, ovV) {
 // candidate levels only.
 function ecEntryOvValue(entry, L) {
     if (L == null || L === entry.curL) return null;
+    // Plain per-entry override (no ladder): no candidate can move it, so the
+    // baseline override value is the only one there is.
+    if (entry.kind === 'entry') return entry.baseOvV;
     if (entry.kind === 'note') {
         if (L <= 0) return null;                    // note branch: keep logged
         const newVcId = entry.configId + L * 10;
@@ -723,7 +736,7 @@ function ecPreanalyzeHit(b, extDisabled) {
                 const erW = dcResolveLegacyEffectRow(e, attackerCharId, false) || e;
                 const entryW = ecMakeEntry(e, erW, side, false, countMap.get(e.configId) || 1, attackerCharId, elem);
                 if (entryW) {
-                    const baseOvW = dcGetLevelOverride(erW, side, extDisabled, attackerCharId, false);
+                    const baseOvW = dcGetLevelOverride(erW, sideStr(side), extDisabled, attackerCharId, false);
                     entryW.baseOvV = baseOvW ? baseOvW.newValue : null;
                     entryW.baseOvVc = (baseOvW && baseOvW.newValueConfigId) ? baseOvW.newValueConfigId : null;
                     entryW.rowDis = extDisabled.has(sideStr(side) + ':' + e.configId + ':' + (erW.valueConfigId ?? ''));
@@ -762,7 +775,7 @@ function ecPreanalyzeHit(b, extDisabled) {
                     // resolution depends on the level TABLE state
                     // (pot/skill/note keys), not the row's own disabled flag —
                     // the what-if engine needs it for re-enabled rows.
-                    const baseOv = dcGetLevelOverride(er, side, extDisabled, attackerCharId, false);
+                    const baseOv = dcGetLevelOverride(er, sideStr(side), extDisabled, attackerCharId, false);
                     entry.baseOvV = baseOv ? baseOv.newValue : null;
                     entry.rowDis = rowDis;
                     entry.disKey = key;
@@ -797,7 +810,7 @@ function ecPreanalyzeHit(b, extDisabled) {
                 const entry = ecMakeEntry(e, e, side, true, n, attackerCharId, elem);
                 if (!entry) u = null;
                 else {
-                    const baseOv = dcGetLevelOverride(e, side, extDisabled, attackerCharId, true);
+                    const baseOv = dcGetLevelOverride(e, sideStr(side), extDisabled, attackerCharId, true);
                     entry.baseOvV = baseOv ? baseOv.newValue : null;
                     entry.rowDis = rowDis;
                     entry.disKey = key;
@@ -1016,7 +1029,34 @@ function ecMakeEntry(e, er, side, isAttr, n, attackerCharId, elem) {
             return ecFinishEntry(entry, e, er, isAttr);
         }
         const potId = e.levelSource != null ? e.levelSource : dcEffectPot.get(e.configId);
-        if (potId == null) return null;
+        if (potId == null) {
+            // ── plain per-entry override (no ladder of its own) ──
+            // The Record tab's disc editor (Crescendo copies / harmony layers)
+            // writes dcEffectLevelOverrides straight onto the LOGGED row, so the
+            // row belongs to none of the pot/skill/note tables this engine
+            // replays. Dropping the entry made the engine build its baseline
+            // state from the logged value while dcCachedHitCalc applied the
+            // override — the two states then disagreed, so every what-if ratio
+            // moved whenever one disc part was stepped (the disc card totals
+            // shifted for discs nobody had touched). The entry carries no
+            // candidate: no level table can move it, it only has to keep the
+            // override in the baseline ops and in every what-if replay.
+            const ov = (typeof dcEffectLevelOverrides !== 'undefined' && dcEffectLevelOverrides)
+                ? dcEffectLevelOverrides.get(`${sideStr(side)}:${er.configId}:${er.valueConfigId ?? ''}`)
+                : null;
+            if (!ov) return null;
+            entry.kind = 'entry';
+            entry.cand = null;
+            entry.groupKey = null;
+            ecFinishEntry(entry, e, er, isAttr);
+            // The override swaps the value row, and that row can carry a
+            // different attr / subType (a harmony layer moves Skill Dmg, the
+            // next layer Authored Skill Dmg…) — the add op has to land in the
+            // slot the override names, exactly like dcApplyEffectOverrides.
+            if (ov.newAttrType != null) entry.aMeta.attrType = ov.newAttrType;
+            if (ov.newSubType != null) entry.aMeta.subType = ov.newSubType;
+            return entry;
+        }
         const lo = e.configId - (e.configId % 1000);
         if (e.valueConfigId == null || e.valueConfigId <= lo) return null;
         const rel = e.valueConfigId - lo;
@@ -1255,14 +1295,6 @@ function ecHitDamage(b, extDisabled, patchRow, patchAmount) {
     return calcDamage(fields, dcBonus, ecCalcDisabled());
 }
 
-// One character's table: the blank baseline over that char's hits, plus every
-// candidate line patched onto (or levelled into) that character alone.
-// Every row is computed TWICE and both result sets are saved on the row:
-//   gains/bases      — personal domain (this char's hits only)
-//   teamGains/teamBases — team domain (ALL deployed team chars' hits); level
-//     affixes (potentials/skills) scale effects that also ride on teammates'
-//     hits, so their team gains differ from the personal ones. Stat lines are
-//     attacker-side only → same gains, bases shifted to the team baseline.
 // One character's table: the blank baseline over that char's hits, plus every
 // candidate line patched onto (or levelled into) that character alone.
 // Every row saves BOTH result sets:
@@ -2281,22 +2313,44 @@ function ecRender() {
     const seq = ++_ecRenderSeq;
     ecLastData = null;
 
+    // Paint the whole board — top bar plus all three character headers — before
+    // the baseline or any row table is computed. The character ids come from the
+    // record (the same team order ecComputeBase resolves), so nothing has to be
+    // calculated to know the columns; otherwise the board assembled one column
+    // at a time as each table landed, which read as clunky.
+    const pendingTable = (charId) => ({
+        charId,
+        charName: (typeof resolveActorKey === 'function') ? resolveActorKey('p:' + charId) : String(charId),
+        rows: [],
+        loading: true,
+    });
+    const idOf = (v) => (v && typeof v === 'object') ? Number(v.charId) : Number(v);
+    const preIds = ((Array.isArray(rec.team) && rec.team.length) ? rec.team : rec.chars)
+        .map(idOf).filter(Boolean);
+    ecLastData = { tables: preIds.map(pendingTable), teamBaseTotal: 0 };
+    ecRenderTable();
+
     (async () => {
         if (seq !== _ecRenderSeq) return;   // a newer render superseded this one
         // Chunked compute: the shared baseline + preanalysis runs first, then
-        // one character table per task with a yield between each — every table
-        // renders as soon as it is ready, so the panel paints progressively
-        // and the UI thread is never blocked for the whole compute.
+        // one character table per task with a yield between each — the columns
+        // (already on screen) fill in as soon as their rows are ready, so the
+        // UI thread is never blocked for the whole compute.
         const _pf = _perfStart('EC');
         const c = ecComputeBase(_pf);
+        if (seq !== _ecRenderSeq) return;
         if (!c) { ecLastData = null; ecRenderTable(); return; }
-        ecLastData = { tables: [], teamBaseTotal: c.teamBaseTotal };
-        for (const charId of c.teamIds) {
-            if (!charId) continue;
+        const tableIds = c.teamIds.filter(Boolean);
+        const pre = new Map(ecLastData.tables.map(t => [t.charId, t]));
+        ecLastData.teamBaseTotal = c.teamBaseTotal;
+        ecLastData.tables = tableIds.map(id => pre.get(id) || pendingTable(id));
+        ecRenderTable();
+        for (const charId of tableIds) {
             const t = ecComputeCharTable(charId, c);
             t.charName = (typeof resolveActorKey === 'function') ? resolveActorKey('p:' + charId) : String(charId);
             t.teamBase = c.teamBaseTotal;
-            ecLastData.tables.push(t);
+            const idx = ecLastData.tables.findIndex(x => x.charId === charId);
+            if (idx >= 0) ecLastData.tables[idx] = t;
             if (seq !== _ecRenderSeq) return;   // superseded mid-compute
             await new Promise(r => setTimeout(r, 0));   // yield to the UI
             if (seq !== _ecRenderSeq) return;
@@ -2351,8 +2405,10 @@ function ecRenderTable() {
 
 
     let html = `
-    <div class="ei-header-bar">
-        ${[70, 80, 90].map(tier => `<button class="ei-src-chip ei-chip-src ${ecTierSel === tier ? 'ei-chip-active' : ''}" onclick="ecSetTier(${tier})" title="${ecTierSel === tier ? 'Click again to show all emblem tiers' : 'Show only lines from Emblem ' + tier}">${tier}</button>`).join('')}
+    <div class="rec-top">
+        <span class="ec-seg">
+            ${[70, 80, 90].map(tier => `<button type="button" class="rec-btn${ecTierSel === tier ? ' is-on' : ''}" onclick="ecSetTier(${tier})" title="${ecTierSel === tier ? 'Click again to show all emblem tiers' : 'Show only lines from Emblem ' + tier}">${tier}</button>`).join('')}
+        </span>
         <select class="ec-rarity-sel" onchange="ecSetRarity(this.value)" title="Minimum rarity of the emblem stat to show (CharGemAttrValue.Rarity: 1 green, 2 blue, 3 gold, 4 rainbow)">
             <option value="1" ${ecRarityMin <= 1 ? 'selected' : ''}>green+</option>
             <option value="2" ${ecRarityMin === 2 ? 'selected' : ''}>blue+</option>
@@ -2360,13 +2416,12 @@ function ecRenderTable() {
             <option value="4" ${ecRarityMin >= 4 ? 'selected' : ''}>rainbow</option>
         </select>
         <span class="ec-cols-wrap">
-            <button class="ei-src-chip ei-chip-src ${ecShowZero ? 'ei-chip-active' : ''}" onclick="ecToggleShowZero()" title="Also show lines with a 0% gain (Def/MaxHp, off-element lines, display-only stats) and Charge Eff rows (energy regen only, no per-hit damage) — hidden by default">Show 0%</button>
-            <button class="ei-src-chip ei-chip-src ${ecShowColors ? 'ei-chip-active' : ''}" onclick="ecToggleShowColors()" title="Apply the tier background colors (Emblem-80 / Emblem-90 lines) to the table rows">Show colors</button>
-            <button class="ei-src-chip ei-chip-src" onclick="ecToggleColsDropdown(event)" title="Show or hide the gain columns">Columns ▾</button>
+            <button type="button" class="rec-btn${ecShowZero ? ' is-on' : ''}" onclick="ecToggleShowZero()" title="Also show lines with a 0% gain (Def/MaxHp, off-element lines, display-only stats) and Charge Eff rows (energy regen only, no per-hit damage) — hidden by default">Show 0%</button>
+            <button type="button" class="rec-btn${ecShowColors ? ' is-on' : ''}" onclick="ecToggleShowColors()" title="Apply the tier background colors (Emblem-80 / Emblem-90 lines) to the table rows">Show colors</button>
+            <button type="button" class="rec-btn" onclick="ecToggleColsDropdown(event)" title="Show or hide the gain columns">Columns ▾</button>
             <div class="ec-cols-menu" id="ecColsMenu" style="display:${ecColsOpen ? 'block' : 'none'}">
                 ${[1, 2, 3].map(k => `<label><input type="checkbox" ${ecColsSel[k] ? 'checked' : ''} onchange="ecSetCol(${k}, this.checked)"> ×${k}</label>`).join('')}
             </div>
-            <span class="ec-note" title="Potentials are evaluated as if their level were at most ${EC_POT_REF_CAP}, so a +3 pot affix line shows its full ${EC_POT_REF_CAP}→${EC_POT_REF_CAP + 3} value even when the build has the potential maxed at 9">pot ref ≤ lv${EC_POT_REF_CAP}</span>
         </span>
     </div>
     <div class="ei-scroll-wrap"><div class="ec-tables">`;
@@ -2415,12 +2470,20 @@ function ecRenderTable() {
             + visCols.map(k => `<th class="ei-th ei-th-num">×${k}</th>`).join('')
             : `<th class="ei-th ei-th-name" style="width:100%">Effect</th>`;
 
+        const tint = (typeof recCharMeta === 'function' && typeof REC_ELEM_TINT !== 'undefined')
+            ? (REC_ELEM_TINT[(recCharMeta(t.charId) || {}).element] || null) : null;
         html += `
         <div class="ec-table-col">
-            <div class="ec-char-title">
-                <span class="ec-char-name">${esc(t.charName || ('Char ' + t.charId))}</span>
+            <header class="rec-col-head${tint ? ' has-tint' : ''}"${tint ? ` style="--rec-tint:${tint}"` : ''}>
+                <span class="rec-portrait">` +
+                    (typeof recHeadUrl === 'function'
+                        ? `<img src="${recHeadUrl(t.charId)}" alt="" width="60" height="60" onerror="this.classList.add('is-failed')">`
+                        : '') +
+                    `<span class="rec-portrait-fb" aria-hidden="true">${esc(typeof recInitials === 'function' ? recInitials(t.charName || '') : '')}</span>` +
+                `</span>
+                <span class="rec-col-id"><span class="rec-col-name"><span class="rec-col-name-t">${esc(t.charName || ('Char ' + t.charId))}</span></span></span>
                 <button class="ec-scope-btn" onclick="ecToggleScope(${t.charId})" title="Click to switch — Team dmg: gains measured against the whole deployed team's damage · Personal dmg: against this character's damage only">${useTeam ? 'Team dmg' : 'Personal dmg'}</button>
-            </div>
+            </header>
             <table class="ei-table ec-table">
                 <thead>
                     <tr>${ths}</tr>
@@ -2476,7 +2539,8 @@ function ecRenderTable() {
         }
 
         if (rows.length === 0) {
-            html += `<tr><td colspan="${1 + visCols.length}" class="ei-empty-row">No emblem lines match the current search.</td></tr>`;
+            html += `<tr><td colspan="${1 + visCols.length}" class="ei-empty-row">${
+                t.loading ? 'Computing…' : 'No emblem lines match the current search.'}</td></tr>`;
         }
 
         html += `</tbody></table></div>`;
@@ -2489,6 +2553,7 @@ function ecRenderTable() {
 window.ecSetRarity = function(val) {
     const n = parseInt(val, 10);
     ecRarityMin = (n >= 1 && n <= 4) ? n : 1;
+    uiPrefSet('ec.rarityMin', ecRarityMin);
     ecRenderTable();
 };
 
@@ -2501,6 +2566,7 @@ window.ecSetTier = function(tier) {
 
 window.ecSetCol = function(k, on) {
     ecColsSel[k] = !!on;
+    uiPrefSet('ec.cols', ecColsSel);
     ecColsOpen = true;   // keep the dropdown open while toggling
     ecRenderTable();
 };
@@ -2531,11 +2597,13 @@ window.ecToggleScope = function(charId) {
 
 window.ecToggleShowZero = function() {
     ecShowZero = !ecShowZero;
+    uiPrefSet('ec.showZero', ecShowZero);
     ecRenderTable();
 };
 
 window.ecToggleShowColors = function() {
     ecShowColors = !ecShowColors;
+    uiPrefSet('ec.showColors', ecShowColors);
     ecRenderTable();
 };
 

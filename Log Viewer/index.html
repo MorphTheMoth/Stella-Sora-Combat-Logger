@@ -161,6 +161,14 @@
             border-top: 1px solid #2c2c2c;
             margin: 6px 0;
         }
+        /* Label of a quick-toggle section inside #dcCharsList (sectionLabel
+           entries; none are used at the moment — Crit Mode's title was
+           dropped): same 10px/.06em label as "Quick Toggles", aligned with
+           the rows. */
+        #dcCharsList .dc-quick-head {
+            margin: 0;
+            padding: 0 8px 2px;
+        }
         .sidebar .dc-effects-body {
             padding: 4px 0;
         }
@@ -669,6 +677,49 @@
             font-size: 10px;
         }
         .dc-effect-row.disabled .dc-effect-row-val { color: #4a6a4a; }
+        /* Disc rows carry a "<Disc>: <part>" name plus a level control, so they
+           stack: the full name on its own line, the value and the ± below it.
+           One line truncated the disc name to two characters. */
+        .dc-effect-row.has-disc {
+            display: grid; grid-template-columns: minmax(0, 1fr) auto;
+            grid-template-areas: "name name" "val lvl"; row-gap: 2px;
+        }
+        .dc-effect-row.has-disc .dc-effect-row-name {
+            grid-area: name; white-space: normal; line-height: 1.25;
+        }
+        .dc-effect-row.has-disc .dc-effect-row-val {
+            grid-area: val; width: auto; align-self: center;
+        }
+        .dc-effect-row.has-disc .dc-effect-row-lvl { grid-area: lvl; align-self: center; }
+        /* One talent's block inside a "<unit> Talents" source group: the header
+           is the talent's on/off switch (it carries the group key the Record tab
+           toggles too), its rows sit indented under it. Off reads like every
+           other disabled row in this sidebar. */
+        .dc-talent-head {
+            display: flex; align-items: center; gap: 6px;
+            padding: 4px 8px; margin-top: 3px;
+            background: rgba(255,255,255,0.03);
+            border-left: 2px solid #3f3f3f;
+            border-radius: 2px;
+            font-size: 10px; font-weight: bold;
+            text-transform: uppercase; letter-spacing: 0.5px;
+            color: #7a7a7a; cursor: pointer; user-select: none;
+        }
+        .dc-talent-head:first-child { margin-top: 0; }
+        .dc-talent-head:hover { background: rgba(255,255,255,0.07); color: #aaa; }
+        .dc-talent-head.disabled {
+            opacity: 0.5; color: #555; text-decoration: line-through;
+            border-left-color: #2a2a2a;
+        }
+        .dc-talent-name {
+            flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .dc-talent-count {
+            flex-shrink: 0; font-size: 9px; font-weight: normal;
+            letter-spacing: 0; color: #555; font-variant-numeric: tabular-nums;
+        }
+        .dc-effect-row.is-nested { padding-left: 18px; }
         .dc-effect-row-lvl {
             display: flex; align-items: center; justify-content: center; gap: 1px;
             width: 64px; flex-shrink: 0; white-space: nowrap;
@@ -691,6 +742,15 @@
         .dc-lvl-indicator {
             color: #777; font-size: 11px; margin: 0 1px; vertical-align: middle;
         }
+        /* Disc rows: the level is a readout between the ± (typing lives in the
+           Record tab), so it stays narrow next to the long "<disc>: <part>" name. */
+        .dc-lvl-indicator.is-disc {
+            min-width: 24px; text-align: center; font-size: 10px;
+            font-variant-numeric: tabular-nums;
+        }
+        /* A part the record never ran is a readout, not a control: no ±, no
+           field, just the state word (the Record tab prints the same). */
+        .dc-lvl-indicator.is-disc.is-static { color: var(--rec-fg-3, #666); }
         /* Level number fields: identical text to the "/n" next to them, so the
            pair reads as one unit; only an underline marks the field. */
         .dc-lvl-input {
@@ -719,9 +779,9 @@
            record-wide discs and build. Type comes from the app's body font —
            this page does not override it; only colour, hairlines and 2px
            corners are local to the panel. */
-        #recordPanel {
-            display: none; flex: 1; flex-direction: column; overflow: hidden;
-            background: #1a1a1a;
+        /* Palette shared by the tabular tabs (Record, Emblems): one set of
+           greys, hairlines and corner radii so the tabs read as one app. */
+        #recordPanel, #ecPanel, #eiPanel {
             --rec-head: #1f1f1f;
             --rec-row: #202020;
             --rec-line: #333333;
@@ -737,26 +797,48 @@
             --rec-edit-line: #6a6a6a;
             --rec-edit-edge: #9a9a9a;
             --rec-focus: #6a9fd8;
+            /* One green and one red for every gain/penalty number in every
+               tab: Record's granted-bonus green is the reference, so Effect
+               Impact and Emblems Comparison paint their percentages with the
+               same two values instead of four near-identical greens. */
+            --rec-pos: #7fbf7f;
+            --rec-neg: #c08484;
             /* Space a row reserves after its stepper for the reset button:
                the column header's stepper reserves the same amount so every
                +/- group in a column lines up on one vertical edge. */
             --rec-row-gap: 7px;
             --rec-row-reset: 16px;
         }
+        #recordPanel {
+            display: none; flex: 1; flex-direction: column; overflow: hidden;
+            background: #1a1a1a;
+        }
         #recordPanel.visible { display: flex; }
 
         /* Shared with the dmg-calc sidebar. */
-        .rec-bonus { color: #7fbf7f; }
+        .rec-bonus { color: var(--rec-pos); }
 
-        /* ── Topbar ── */
+        /* ── Topbar ──
+           One fixed height for every tab that has one (Record, Emblems,
+           Effect Impact): a bar of .rec-btn controls sets 43px, so a tab whose
+           bar only holds text would shrink and the board below it would jump
+           when switching tabs. min-height pins all three to the same line. */
         .rec-top {
             display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+            min-height: 43px; box-sizing: border-box;
             padding: 9px 14px; background: var(--rec-head);
             border-bottom: 1px solid var(--rec-line);
             flex-wrap: wrap;
         }
         .rec-top-note { font-size: 10px; color: var(--rec-fg-3); font-style: italic; }
-        .rec-top-actions { display: flex; align-items: center; margin-left: auto; }
+        /* The bar's controls sit in the flow next to each other — no group is
+           pushed to the right edge any more (Record's Reset all, Effect
+           Impact's row options, Emblems' column menu all read left to right). */
+        .rec-top-actions { display: flex; align-items: center; gap: 6px; }
+        /* The bar's buttons and selects keep their own case: they are labels,
+           not the uppercase micro-headings the boards use. */
+        .rec-top .rec-btn,
+        .rec-top .ec-rarity-sel { text-transform: none; letter-spacing: 0; }
 
         .rec-btn {
             height: 24px; padding: 0 10px;
@@ -842,9 +924,17 @@
             display: flex; align-items: center; gap: 6px; width: 100%;
             padding: 7px 8px; background: #1e1e1e;
             border-bottom: 1px solid var(--rec-line-soft);
+            /* The 2px inset edge that marks a subsection title: it started on the
+               Effect Impact cards' sections and every other subsection bar in the
+               app now carries it (Record's column sections, Emblems' table head,
+               Effect Impact's team-wide buckets). */
+            box-shadow: inset 2px 0 0 #3f3f3f;
             color: var(--rec-fg-3); font-family: inherit;
             font-size: 10px; font-weight: bold; text-transform: uppercase;
-            letter-spacing: 2px; text-align: left;
+            /* 0.5px, not 2px: at 10px the wide track reads as spread-out letters.
+               The Effect Impact cards use the same value so every section head
+               in the app tracks identically. */
+            letter-spacing: 0.5px; text-align: left;
         }
         .rec-sec-title { flex-shrink: 0; }
         .rec-sec-empty {
@@ -873,6 +963,31 @@
         }
         /* Keep the recessed skills block's own shade, only brightened. */
         .rec-sec-skills .rec-row.is-changed { background: #343434; }
+
+        /* ── Potentials: the whole row is the off switch ──
+           A potential at level 0 is disabled: its level ladder resolves to 0,
+           so every effect it grants drops out of the calculation. The row dims,
+           the name is struck through, and a click anywhere on it toggles back —
+           the ± buttons, the level field and the ↺ keep their own handlers. */
+        .rec-row.is-toggle { cursor: pointer; }
+        .rec-row.is-toggle:hover { background: #262626; }
+        .rec-row.is-disabled { background: #1b1b1b; }
+        .rec-row.is-disabled:hover { background: #222222; }
+        .rec-row.is-changed.is-disabled { background: #232323; }
+        .rec-row.is-disabled .rec-row-name,
+        /* an edited row lifts its name to --rec-fg, so the disabled colour has
+           to out-specify that rule (both are 3 classes) */
+        .rec-row.is-changed.is-disabled .rec-row-name {
+            color: #6d6d6d;
+            text-decoration: line-through;
+            text-decoration-color: #7a7a7a;
+            text-decoration-thickness: 1px;
+        }
+        .rec-row.is-disabled .rec-art-wrap { opacity: 0.4; }
+        .rec-row.is-disabled .rec-art { filter: grayscale(1); }
+        .rec-row.is-disabled .rec-step { opacity: 0.55; }
+        .rec-row.is-disabled .rec-step-val,
+        .rec-row.is-disabled .rec-step.is-changed .rec-step-val { color: #8a8a8a; }
         .rec-art-wrap {
             position: relative; flex-shrink: 0; width: 20px; height: 26px;
             border-radius: 1px; background: #2a2a2a; overflow: hidden;
@@ -939,7 +1054,7 @@
         .rec-block-title {
             display: flex; align-items: center; gap: 6px; margin: 0 0 8px;
             font-size: 10px; font-weight: bold; color: var(--rec-fg-3);
-            text-transform: uppercase; letter-spacing: 2px;
+            text-transform: uppercase; letter-spacing: 0.5px;
         }
         .rec-block-sub {
             font-size: 9px; color: var(--rec-fg-3); text-transform: uppercase;
@@ -1004,6 +1119,40 @@
         }
         .rec-disc-note img.is-failed { display: none; }
         .rec-disc-note b { font-weight: normal; color: var(--rec-fg-3); }
+
+        /* Disc editor: Crescendo copies + the two harmony layers, one compact
+           stepper each. Same stepper the character rows use, with a narrower
+           value box so three of them fit a third-of-the-board card. */
+        .rec-disc-levels {
+            display: flex; flex-direction: column; gap: 2px; margin-top: 3px;
+            padding-top: 4px; border-top: 1px solid #262626;
+        }
+        .rec-disc-lvl {
+            display: flex; align-items: center; gap: 4px;
+            font-size: 10px; color: var(--rec-fg-3);
+        }
+        .rec-disc-lvl-name {
+            flex: 1; min-width: 0; overflow: hidden;
+            text-overflow: ellipsis; white-space: nowrap;
+        }
+        .rec-disc-lvl .rec-step-val { width: 30px; }
+        .rec-disc-lvl .rec-step-btn { width: 16px; font-size: 11px; }
+        /* Locked part (the record never ran that harmony layer): states "off" in
+           the slot the stepper would occupy, right-aligned like the value. */
+        .rec-disc-lvl-off {
+            margin-left: auto; color: var(--rec-fg-3); font-size: 10px;
+            font-variant-numeric: tabular-nums;
+        }
+        .rec-disc-lvl.is-changed .rec-disc-lvl-name { color: var(--rec-fg-2); }
+        .rec-disc-stat.is-changed b { color: var(--rec-edit); }
+
+        /* Notes: record-wide rows in a record block. A row per note (icon,
+           name, stepper) packed into columns so the value stays next to the
+           name instead of sitting at the far edge of a full-width block. */
+        .rec-notes-body {
+            display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 0 14px; margin: 0 -12px -12px;
+        }
 
         .rec-build-grid {
             display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1103,7 +1252,6 @@
             border-bottom: 1px solid #2c2c2c;
         }
         .ei-title { font-size: 12px; font-weight: 600; color: #bbb; letter-spacing: 0.04em; text-transform: uppercase; }
-        .ei-subtitle { font-size: 11px; color: #555; }
 
         /* Filter chip bar */
         .ei-filter-bar {
@@ -1185,7 +1333,7 @@
         .ei-src-chip.ei-chip-src.ei-chip-active { border-color: #4a5a70; }
         .ei-added-badge {
             display: inline-block; font-size: 9px; font-weight: 700;
-            background: #1a3020; color: #4abf7a; border: 1px solid #2a5a3a;
+            background: #1a3020; color: var(--rec-pos); border: 1px solid #2a5a3a;
             border-radius: 3px; padding: 0 4px; margin-left: 5px;
             vertical-align: middle; letter-spacing: 0.04em;
         }
@@ -1201,24 +1349,41 @@
             background: #301a1a; color: #bf5a4a; border: 1px solid #5a2a2a;
         }
 
-        .ei-side-badge {
-            display: inline-block; padding: 1px 5px; border-radius: 3px;
-            font-size: 10px; font-weight: 600; letter-spacing: 0.04em;
-        }
-        .ei-side-atk { background: #282828; color: #959595; border: 1px solid #4d4d4d; }
-        .ei-side-def { background: #282828; color: #959595; border: 1px solid #4d4d4d; }
         .ei-attr { color: #aaa; margin-right: 4px; }
-        .ei-val { color: #6a9f6a; font-size: 11px; }
-        .ei-stacks {
-            color: #ababab; font-size: 10px; font-weight: 600;
-            background: #1f1f1f; border: 1px solid #383838;
-            border-radius: 3px; padding: 0 4px; margin-left: 3px;
+        .ei-val { color: var(--rec-pos); font-size: 11px; }
+        /* A disc part's live level ("Copies 4/6", "Harmony 1 2/5") rides after the
+           stat line as plain dim text, the same reading the Record tab's stepper
+           shows — a reading, not a control (the steppers live in Record and the
+           Dmg Calc sidebar). */
+        .ei-lvl-chip {
+            display: inline-block; margin-left: 5px; padding: 0 4px;
+            font-size: 9px; line-height: 13px; letter-spacing: 0.04em;
+            color: var(--rec-fg-3); background: #242424;
+            border: 1px solid #2f2f2f; border-radius: 3px;
+            font-variant-numeric: tabular-nums;
         }
-        .ei-pos  { color: #6abf7a; }
-        .ei-neg  { color: #bf6a6a; }
-        .ei-neutral { color: #666; }
+        #eiPanel .ei-disc-lvls {
+            display: flex; flex-wrap: wrap; gap: 3px; margin-top: 3px;
+        }
+        #eiPanel .ei-disc-lvls .ei-lvl-chip { margin-left: 0; }
+        /* The disc head stacks its name over the level chips (the shared column
+           head is a row; on a disc card the chips would eat the name). */
+        #eiPanel .ei-disc-card .rec-col-id {
+            display: flex; flex-direction: column; align-items: flex-start;
+            justify-content: center; gap: 2px;
+        }
+        /* Stack count: plain dim text after the value ("Atk +60 base ×3"), no
+           chip — it is a reading, not a control. */
+        .ei-stacks {
+            color: var(--rec-fg-3); font-size: 9px;
+            margin-left: 3px; font-variant-numeric: tabular-nums;
+        }
+        /* Gain colours: one pair for the whole app (Record's bonus green). */
+        .ei-pos  { color: var(--rec-pos); }
+        .ei-neg  { color: var(--rec-neg); }
+        .ei-neutral { color: var(--rec-fg-3); }
         .ei-bold { font-weight: 600; }
-        .ei-muted { color: #555; font-size: 11px; }
+        .ei-muted { color: var(--rec-fg-3); font-size: 10px; }
         .ei-cov-wrap { display: flex; flex-direction: column; gap: 2px; align-items: flex-end; }
         .ei-cov-hits { color: #555; font-size: 10px; }
         .ei-cov-bar-bg {
@@ -1227,83 +1392,296 @@
         .ei-cov-bar-fill { height: 100%; background: #4a7a5a; border-radius: 2px; }
         .ei-empty-row { text-align: center; color: #555; padding: 20px; font-style: italic; }
 
-        /* ── Emblems Comparison panel ── */
+
+        /* ── Effect Impact: unit cards ──
+           One card per unit (character, or a team-wide bucket), the same
+           .rec-col-head header the Record tab uses, and one block per granting
+           section (Potentials / Skills / Talents / Emblems) inside it. */
+        #eiPanel .ei-cards { flex: 1; overflow-y: auto; padding: 12px 14px 20px;
+            /* Width of every row's gain column (left of the name) and the
+               potential icon slot between them — the icon fills the row's
+               content height (33px row − 2 × 4px padding). */
+            --ei-gain-w: 54px;
+            --ei-icon-w: 24px;
+            --ei-icon-h: 24px; }
+        /* The row-options bar is part of the board, not a header above it: it
+           lives inside .ei-cards and bleeds out to the panel's edges with a
+           negative margin (the scroller's own 12px/14px padding), so it scrolls
+           up with the cards instead of hovering over them. At scrollTop 0 it
+           still lands on the shared 43px bar line every tab uses (top 32). */
+        #eiPanel .ei-cards > .rec-top { margin: -12px -14px 12px; }
+        #eiPanel .ei-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 10px; align-items: start; }
+        #eiPanel .ei-card { background: #1c1c1c; border: 1px solid var(--rec-line-soft);
+            border-radius: 2px; overflow: hidden; }
+        #eiPanel .ei-fam + .ei-fam { border-top: 6px solid #151515; }
+        /* Disc card head: the disc's whole share, on the head's right edge where
+           Record puts its level stepper, in the row-value size and weight. */
+        #eiPanel .ei-disc-sum {
+            margin-left: auto; flex-shrink: 0;
+            font-size: 11px; font-weight: bold; letter-spacing: 0;
+            text-transform: none; font-variant-numeric: tabular-nums;
+        }
+        /* Rows are Record's rows: 30px minimum, 4px/8px, laid out as a grid —
+           gain over coverage, the potential's icon, then name over the stat
+           line — so the numbers keep one column down the card. Rows with no
+           potential (skills, discs, talents) drop the icon column entirely
+           (.is-flat), so their names start right after the gain. */
+        #eiPanel .ei-urow {
+            padding: 4px 8px; min-height: 30px; border-bottom: 1px solid #262626; background: var(--rec-row);
+            display: grid;
+            grid-template-columns: var(--ei-gain-w) var(--ei-icon-w) minmax(0, 1fr);
+            column-gap: var(--rec-row-gap); row-gap: 1px; align-items: baseline;
+        }
+        #eiPanel .ei-urow.is-flat { grid-template-columns: var(--ei-gain-w) minmax(0, 1fr); }
+        #eiPanel .ei-urow.is-flat .ei-uname,
+        #eiPanel .ei-urow.is-flat .ei-ustat { grid-column: 2; }
+        /* "Show Coverage" off: the gain has no second line beside it any more,
+           so it centres across the whole row instead of riding the name's line. */
+        #eiPanel .ei-urow.no-cov .ei-ugain { grid-row: 1 / span 2; align-self: center; }
+        #eiPanel .ei-urow:last-child { border-bottom: none; }
+        #eiPanel .ei-urow:hover { background: #262626; }
+        /* Gain (line 1, left) and its coverage (line 2, left) share the column;
+           the name and the stat line share the wide one. */
+        #eiPanel .ei-ugain { grid-column: 1; text-align: right;
+            font-size: 11px; font-weight: bold; font-variant-numeric: tabular-nums; }
+        #eiPanel .ei-ucov { grid-column: 1; text-align: right;
+            font-size: 9px; color: var(--rec-fg-3); opacity: 0.55;
+            font-variant-numeric: tabular-nums; }
+        /* Potential icon slot: centred across both lines and sized to the row's
+           own content height. The art is portrait (180×230), so the image is
+           scaled to FIT the slot (max-width/max-height, no object-fit: cover) —
+           never cropped, letterboxed inside the slot instead. */
+        #eiPanel .ei-icon {
+            grid-column: 2; grid-row: 1 / span 2; align-self: center;
+            width: var(--ei-icon-w); height: var(--ei-icon-h);
+            display: flex; align-items: center; justify-content: center;
+        }
+        #eiPanel .ei-icon img {
+            display: block; max-width: 100%; max-height: 100%; width: auto; height: auto;
+            border-radius: 1px; background: #2a2a2a;
+        }
+        #eiPanel .ei-icon img.is-failed { opacity: 0; }
+        #eiPanel .ei-uname { grid-column: 3; min-width: 0; font-size: 11px; color: var(--rec-fg-2);
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        #eiPanel .ei-ustat { grid-column: 3; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+            white-space: nowrap; font-size: 10px; color: var(--rec-fg-3);
+            /* Support text, not a second row: one dimmer step than the name so
+               the eye lands on gain and name. */
+            opacity: 0.75; }
+        #eiPanel .ei-ustat b { color: var(--rec-fg-2); font-weight: normal; font-variant-numeric: tabular-nums; }
+        #eiPanel .ei-unit { font-size: 9px; color: var(--rec-fg-3); }
+        #eiPanel .ei-uempty { padding: 14px 10px; text-align: center; font-size: 10px;
+            font-style: italic; color: var(--rec-fg-3); }
+        /* Sub-header bars are 26px in all three tabs: Record's .rec-sec-head,
+           the Emblems table's .ei-th and both of Effect Impact's levels. The
+           team divider carried its own 14px+6px padding and ran 32px — the one
+           sub-header that broke the line — so the gap above it is a margin now
+           and the bar itself is the usual 26px. */
+        #eiPanel .ei-team-h { display: flex; align-items: center; gap: 8px; margin: 14px 0 10px;
+            padding: 7px 8px; min-height: 26px; box-sizing: border-box;
+            font-size: 10px; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px;
+            color: var(--rec-fg-3); border-bottom: 1px solid var(--rec-line-soft); }
+        /* Packed grids (disc cards, team-wide buckets): three columns packed
+           shortest-first by eiPackColumns(), so a tall card does not leave a
+           hole beside it the way a row-bound grid does. The grid here only lays
+           the columns out; the cards themselves live inside .ei-pack-col. */
+        #eiPanel .ei-pack {
+            display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 10px; align-items: start;
+        }
+        #eiPanel .ei-pack-col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+        #eiPanel .ei-disc-card .rec-col-head { gap: 10px; }
+        /* Talent fold (Effect Impact): the talent's header is one more row of
+           the card's list, not a section bar — same 30px row, same 11px name
+           and right-aligned gain, same second line — so a character's talents
+           read like the effects around them. Only the caret (leading) and the
+           body's one-level step mark the fold. */
+        #eiPanel .ei-talent-head {
+            position: relative;
+            width: 100%; margin: 0; padding: 4px 8px;
+            text-align: left; font: inherit; color: inherit;
+            -webkit-appearance: none; appearance: none;
+            border: 0; border-bottom: 1px solid #262626;
+            cursor: pointer;
+        }
+        #eiPanel .ei-talent-head:hover { background: #262626; }
+        #eiPanel .ei-talent-head:focus-visible { outline: 1px solid #555; outline-offset: -1px; }
+        #eiPanel .ei-talent.is-open > .ei-talent-head { background: #232323; }
+        /* Open fold: the header's own percentage steps aside — the rows it
+           unfolds carry the per-effect numbers, and the talent's whole share is
+           what the closed header summarises. Its coverage goes with it for the
+           same reason. Both hidden by visibility, not display, so the columns
+           keep their width and the open header stays in line with every row.
+           Pure CSS, so the click handler needs no extra bookkeeping. */
+        #eiPanel .ei-talent.is-open > .ei-talent-head .ei-ugain,
+        #eiPanel .ei-talent.is-open > .ei-talent-head .ei-ucov { visibility: hidden; }
+        /* The caret sits in the row's left gutter, so the header's gain and name
+           keep exactly the columns every other row uses. */
+        #eiPanel .ei-talent-chev {
+            position: absolute; left: 0; top: 10px;
+            width: 7px; text-align: center;
+            font-size: 8px; line-height: 1; color: var(--rec-fg-3);
+        }
+        #eiPanel .ei-talent-body { display: none; }
+        #eiPanel .ei-talent.is-open .ei-talent-body { display: block; }
+        /* The talent's own rows step in one level under their header — a step
+           past the header's name (8px row padding + 8px caret + the 7px gap),
+           so the child list reads as nested. */
+        #eiPanel .ei-talent-body .ei-urow { padding-left: 26px; }
+        #eiPanel .ei-talent-body .ei-urow:last-child { border-bottom: 1px solid #262626; }
+
+        /* ── Emblems Comparison panel ──
+           Same board language as the Record tab: three character columns on
+           #1c1c1c with 2px corners, a single 24px control bar, 9-10px uppercase
+           micro-labels and hairline rows. The comparison stays a table (so the
+           ×1/×2/×3 gain columns keep one right edge) and keeps every row it had
+           — only the chrome changed. */
         #ecPanel {
             display: none; flex: 1; flex-direction: column; overflow: hidden;
             background: #1a1a1a;
         }
         #ecPanel.visible { display: flex; }
-        .ec-note { font-size: 11px; color: #555; font-style: italic; }
-        .ec-scope-sel {
-            margin-left: auto; background: #262626; color: #bbb;
-            border: 1px solid #3a3a3a; border-radius: 4px;
-            font-size: 10px; padding: 2px 4px; outline: none; cursor: pointer;
-        }
-        .ec-scope-sel:hover { border-color: #555; }
-        /* Emblems tab: gray theme for the header chips (no blue) */
-        #ecPanel .ei-src-chip.ei-chip-src {
-            background: #242424; color: #999; border-color: #3a3a3a;
-            opacity: 0.65;
-        }
-        #ecPanel .ei-src-chip.ei-chip-src.ei-chip-active {
-            background: #2e2e2e; color: #ccc; border-color: #5a5a5a;
-            opacity: 1;
-        }
-        #ecPanel .ei-src-chip:hover { opacity: 1; }
-        .ec-scope-btn {
-            margin-left: auto; background: #262626; color: #bbb;
-            border: 1px solid #3a3a3a; border-radius: 4px;
-            font-size: 10px; padding: 2px 8px; outline: none; cursor: pointer;
-            white-space: nowrap;
-        }
-        .ec-scope-btn:hover { border-color: #5a5a5a; color: #ddd; }
+        .ec-note { font-size: 10px; color: var(--rec-fg-3); font-style: italic; }
+
+        /* Tier picker: a segmented group of the topbar's own buttons. */
+        .ec-seg { display: inline-flex; flex-shrink: 0; }
+        .ec-seg .rec-btn { border-radius: 0; margin-left: -1px; padding: 0 9px; }
+        .ec-seg .rec-btn:first-child { border-radius: 2px 0 0 2px; margin-left: 0; }
+        .ec-seg .rec-btn:last-child { border-radius: 0 2px 2px 0; }
+        .ec-seg .rec-btn.is-on { position: relative; z-index: 1; }
+
+        /* Rarity dropdown, sized to match .rec-btn. */
         .ec-rarity-sel {
-            background: #262626; color: #bbb; border: 1px solid #3a3a3a;
-            border-radius: 4px; font-size: 11px; padding: 3px 6px;
-            outline: none; cursor: pointer;
+            height: 24px; padding: 0 6px; flex-shrink: 0;
+            background: #222; color: var(--rec-fg-2);
+            border: 1px solid var(--rec-line); border-radius: 2px;
+            font-family: inherit; font-size: 10px; text-transform: uppercase;
+            letter-spacing: 1px; outline: none; cursor: pointer;
         }
-        .ec-rarity-sel:hover { border-color: #555; }
-        .ec-cols-wrap { position: relative; margin-left: auto; }
+        .ec-rarity-sel:hover { background: #2a2a2a; border-color: #555; color: var(--rec-fg); }
+        .ec-rarity-sel option { background: #242424; color: #ddd; }
+
+        /* Row options follow the tier/rarity controls in the flow; the menu is
+           anchored to this group, not to the bar's right edge. */
+        .ec-cols-wrap { position: relative; display: flex; align-items: center; gap: 8px; }
         .ec-cols-menu {
-            position: absolute; right: 0; top: 100%; z-index: 50;
-            background: #262626; border: 1px solid #3a3a3a; border-radius: 4px;
-            padding: 6px 10px; display: none; min-width: 90px;
-            box-shadow: 0 4px 14px rgba(0,0,0,.5);
+            position: absolute; right: 0; top: calc(100% + 4px); z-index: 50;
+            background: #242424; border: 1px solid var(--rec-line); border-radius: 2px;
+            padding: 6px 10px; display: none; min-width: 92px;
+            box-shadow: 0 6px 18px rgba(0,0,0,.55);
         }
         .ec-cols-menu label {
             display: flex; align-items: center; gap: 6px;
-            font-size: 11px; color: #bbb; padding: 3px 0; cursor: pointer; white-space: nowrap;
+            font-size: 10px; color: var(--rec-fg-2); padding: 3px 0;
+            cursor: pointer; white-space: nowrap; letter-spacing: 0.5px;
         }
+        .ec-cols-menu input[type=checkbox] { accent-color: #6a9fd8; }
+
         .ec-tables {
-            display: flex; gap: 8px; align-items: flex-start;
-            padding: 6px 8px 14px;
+            display: flex; gap: 10px; align-items: flex-start;
+            padding: 12px 14px 20px;
         }
         .ec-table-col {
-            flex: 1 1 0; min-width: 300px;
+            flex: 1 1 0; min-width: 280px;
             display: flex; flex-direction: column;
-            background: #1d1d1d; border: 1px solid #2a2a2a; border-radius: 6px;
-            overflow: hidden;
+            background: #1c1c1c; border: 1px solid var(--rec-line-soft);
+            border-radius: 2px; overflow: hidden;
         }
-        .ec-char-title {
-            display: flex; align-items: baseline; gap: 8px;
-            padding: 9px 10px; background: #222;
-            border-bottom: 1px solid #2c2c2c;
+
+        /* Column head is the Record tab's own .rec-col-head (portrait 60px,
+           13px bold name, element tint) so every tab shows an identical header.
+           The scope control takes the slot Record's header stepper fills — the
+           column's right edge inside the head padding — so both tabs' controls
+           end on the same vertical line. */
+        .ec-scope-btn {
+            margin-left: auto; flex-shrink: 0; height: 24px; padding: 0 10px;
+            background: #222; border: 1px solid var(--rec-line); border-radius: 2px;
+            color: var(--rec-fg-2); font-family: inherit; font-size: 10px;
+            text-transform: uppercase; letter-spacing: 1px;
+            outline: none; cursor: pointer; white-space: nowrap;
+            transition: background 0.1s, color 0.1s, border-color 0.1s;
         }
-        .ec-char-name { font-size: 13px; font-weight: 700; color: #ddd; letter-spacing: 0.02em; }
-        .ec-char-sub { font-size: 10px; color: #555; margin-left: auto; white-space: nowrap; }
-        .ec-table-col .ei-table { font-size: 11px; min-width: 0; table-layout: auto; }
-        .ec-table-col .ei-td { padding: 5px 6px; overflow-wrap: break-word; }
-        .ec-table-col .ei-th { padding: 6px; text-align: center; }
-        .ec-table-col .ei-th-name, .ec-table-col .ei-th-num { text-align: center; }
-        .ec-table-col .ei-th-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .ec-table-col .ei-td-name { white-space: normal; }   /* long effect names wrap */
-        .ec-table-col .ei-th-name { width: 100%; }
-        .ec-table-col .ei-th-num { white-space: nowrap; }
-        .ec-table-col .ei-td-num { text-align: center; font-variant-numeric: tabular-nums; white-space: nowrap; }
-        /* subtle bg tint by the line's lowest emblem tier (90 closest to base) */
-        .ec-table-col tr.ec-tier-80 { background: #202727; }
-        .ec-table-col tr.ec-tier-90 { background: #252525; }
-        .ec-table-col tr.ec-tier-80:hover, .ec-table-col tr.ec-tier-90:hover { background: #262626; }
+        .ec-scope-btn:hover { background: #2a2a2a; border-color: #555; color: var(--rec-fg); }
+        .ec-scope-btn:focus-visible { outline: 2px solid var(--rec-focus); outline-offset: 1px; }
+
+        /* Table: micro-label header bar, hairline rows, numbers on one edge. */
+        .ec-table-col .ei-table {
+            width: 100%; font-size: 11px; min-width: 0;
+            table-layout: auto; border-spacing: 0;
+            /* Separate borders, not collapsed: with border-collapse the shared
+               hairline is halved, so the header bar painted 25.5px and every row
+               under it sat half a pixel above Record's. Here the header's own
+               1px border is inside its box and the bar is exactly Record's 26px,
+               rows start at the same y. The row hairlines move to the cells
+               (a `tr` border does not paint in separate mode). */
+            border-collapse: separate;
+            /* The global `table { margin-top: 4px }` (index.html:256, for the
+               analytics tables) put a 4px strip of column background between the
+               character head and this table's header, so Emblems' sub-header and
+               every row under it sat 4px lower than Record's. */
+            margin-top: 0;
+        }
+        .ec-table-col thead { position: sticky; top: 0; z-index: 2; }
+        /* Header bar is Record's section head: 10px/700, 0.5px tracking, 7px 8px
+           padding. No line-height or height override — inside a collapsed table
+           border the cell then paints 25px of background plus the shared 1px
+           hairline, which is exactly Record's 26px bar (an 11.5px line box made
+           it paint 26px + border and pushed every row down 1px). */
+        .ec-table-col .ei-th {
+            padding: 7px 8px; text-align: right;
+            background: #1e1e1e; border-bottom: 1px solid var(--rec-line-soft);
+            color: var(--rec-fg-3); font-size: 10px; font-weight: bold;
+            text-transform: uppercase; letter-spacing: 0.5px;
+        }
+        .ec-table-col .ei-th-name { text-align: left; width: 100%; }
+        /* The subsection title edge, same as .rec-sec-head's: only on the first
+           cell, so it reads as one bar rather than a line before each column. */
+        .ec-table-col .ei-th:first-child { box-shadow: inset 2px 0 0 #3f3f3f; }
+        .ec-table-col .ei-th-num { white-space: nowrap; width: 46px; }
+        .ec-table-col .ei-row {
+            background: var(--rec-row);
+            transition: background 0.08s;
+        }
+        .ec-table-col .ei-row:hover { background: #262626; }
+        /* Rows are tight: one 11px line with 5px of air above and below (24px
+           with the hairline) against the header's 26px block. The header is
+           left alone — it is the label row, not a data row. */
+        .ec-table-col .ei-td {
+            padding: 5px 8px; vertical-align: middle;
+            color: var(--rec-fg-2); overflow-wrap: break-word;
+            border-bottom: 1px solid #262626;
+        }
+        .ec-table-col .ei-row:last-child .ei-td { border-bottom: none; }
+        .ec-table-col .ei-td-name { white-space: normal; }
+        .ec-table-col .ei-td-num {
+            text-align: right; white-space: nowrap; color: var(--rec-fg);
+            font-weight: bold; font-variant-numeric: tabular-nums;
+        }
+        /* Value after the effect name: Record's granted-bonus green. */
+        .ec-table-col .ei-val {
+            color: var(--rec-pos); font-size: 10px;
+            font-variant-numeric: tabular-nums;
+        }
+        .ec-table-col .ei-empty-row {
+            padding: 14px 10px; text-align: center; color: var(--rec-fg-3);
+            font-size: 10px; font-style: italic;
+        }
+        /* Faint bg tint by the line's lowest emblem tier (90 closest to base) */
+        /* Tier wash (Show colors): the tint is keyed off the *lowest* tier a
+           line can roll on, so a 70/80/90 line is untinted, an 80+90 line
+           reads as 80, and only 90-exclusive lines get the 90 tint. Give the
+           two tiers different weight — a cool wash plus a 2px left edge marker
+           for 80 (the same edge idiom the Record tab uses), a faint neutral
+           lift for 90 — so the two are actually tellable apart at a glance. */
+        .ec-table-col tr.ec-tier-80 {
+            background: #222c2d; box-shadow: inset 2px 0 0 #4d7d7d;
+        }
+        .ec-table-col tr.ec-tier-90 {
+            background: #262626; box-shadow: inset 2px 0 0 #3d3d3d;
+        }
+        .ec-table-col tr.ec-tier-80:hover { background: #2a3637; }
+        .ec-table-col tr.ec-tier-90:hover { background: #2c2c2c; }
         .ec-table-col .ei-td-stat { text-align: center; }
 
         /* ── Crit Distribution card ── */
@@ -1373,6 +1751,9 @@
             white-space: nowrap; text-align: center; text-decoration: none;
         }
         .qs-btn:hover { background: #222; color: #888; border-color: #444; }
+        /* Both tab buttons off (the default) hides the whole stack; the console
+           helpers enableEmblemsTab() / enableAscensionTab() flip these. */
+        .qs-btn.qs-off, #quickSwap.qs-off { display: none; }
     </style>
 </head>
 <body>

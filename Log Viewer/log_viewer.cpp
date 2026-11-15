@@ -855,7 +855,6 @@ static std::string SavedLogsDir() {
     return base + "saved logs";
 }
 
-// Ensures the "saved logs" folder exists. Returns true on success.
 static bool EnsureSavedLogsDir() {
     std::string dir = SavedLogsDir();
 #ifdef _WIN32
@@ -871,7 +870,6 @@ static bool EnsureSavedLogsDir() {
 #endif
 }
 
-// Returns the full path for a saved log file given a plain name.
 static std::string SavedLogPath(const std::string& name) {
 #ifdef _WIN32
     return SavedLogsDir() + "\\" + name + ".txt";
@@ -880,7 +878,6 @@ static std::string SavedLogPath(const std::string& name) {
 #endif
 }
 
-// Returns the path to the live levelMap.txt (same directory as LOG_FILE).
 static std::string LevelMapPath() {
 #ifdef _WIN32
     size_t sep = LOG_FILE.find_last_of("\\/");
@@ -891,7 +888,6 @@ static std::string LevelMapPath() {
     return dir + "levelMap.txt";
 }
 
-// Returns the path to the shared saved logs levelMap.txt.
 static std::string SavedLevelMapPath() {
     return SavedLogsDir() + "/levelMap.txt";
 }

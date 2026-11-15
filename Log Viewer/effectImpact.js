@@ -6,18 +6,20 @@
 let eiSortCol   = 'pctImpact'; // 'name' | 'pctImpact' | 'hitCoverage'
 let eiSortDir   = -1;           // -1 = descending, 1 = ascending
 let eiLastData  = [];           // cached row data for re-sort without recompute
-// Which source groups are hidden (filter-checkboxes); some sources start hidden
-// (see eiSourceHiddenByDefault below)
+// Which source groups are hidden (filter-checkboxes); a few sources start
+// hidden (see eiSourceHiddenByDefault below)
 const eiHiddenSources = new Set();
-// Sources hidden by default: Affinity, every "<char> Emblems", every
-// "<char> Talents" (or "Talents"), Discs (stat rows + Melody/Harmony buffs +
-// bonus-note rows), Notes (SubNoteSkill effects) and Record Stats.
-// Emblem/Talent sources are per-character, so they're matched by suffix/substring.
+// Talent bars the user has opened, keyed "<unit>|<talentIndex>". A character's
+// arrows carry up to eleven talent rows each (the named passive + ten stat
+// nodes), so they render folded into one bar per talent, closed by default.
+const eiOpenTalents = new Set();
+// Sources hidden by default: the per-character Emblems only. Everything else —
+// potentials, skills, talents, discs, notes, record stats, affinity — is shown
+// on tab entry, so the impact list starts as the whole picture and the user
+// narrows it with the chips.
 function eiSourceHiddenByDefault(srcKey) {
     if (typeof srcKey !== 'string') return false;
-    return srcKey === 'Affinity' || srcKey.endsWith(' Emblems')
-        || srcKey.includes('Talents') || srcKey === 'Discs'
-        || srcKey === 'Notes' || srcKey === 'Record Stats';
+    return srcKey.endsWith('Emblems');
 }
 // User override for default-hidden sources: a chip click on one of them
 // records it here so it stays visible even though the default says hidden.
@@ -32,9 +34,38 @@ function eiIsSourceHidden(srcKey) {
 // name — SHARED with the Dmg Calc sidebar search (fcSearchQuery in
 // filterCore.js; the same #eiSearchInput drives both domains).
 // When true, effects whose dmg gain is exactly 0% are hidden from the table.
-// Default true = the "Show 0% gain effects" chip in the Filters sidebar starts
-// off (dimmed), so zero-gain effects are hidden until the chip is enabled.
-let eiHideZeroGain = true;
+// The "Show 0% gain effects" chip in the Filters sidebar is the visible switch
+// (chip lit = zero-gain effects shown). Saved in localStorage, like the two row
+// options below: these are view preferences, not state of the opened log.
+let eiHideZeroGain = uiPrefBool('ei.hideZeroGain', true);
+// Top-bar row options: the potential's icon column and the per-row hit
+// coverage (affected / total). Both on by default; with the coverage off the
+// gain is centred across the row instead of riding the name's baseline.
+let eiShowPotImg = uiPrefBool('ei.showPotImg', true);
+let eiShowCoverage = uiPrefBool('ei.showCoverage', true);
+
+// Paint the sidebar chip from the flag. Called at load (the chip lives in
+// index.html, not in a render) and again whenever the flag moves.
+function eiSyncZeroGainChip() {
+    const btn = document.getElementById('eiZeroGainBtn');
+    if (btn) btn.classList.toggle('ei-chip-active', !eiHideZeroGain);
+}
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', eiSyncZeroGainChip);
+} else {
+    eiSyncZeroGainChip();
+}
+
+window.eiTogglePotImg = function() {
+    eiShowPotImg = !eiShowPotImg;
+    uiPrefSet('ei.showPotImg', eiShowPotImg);
+    eiRenderTable();
+};
+window.eiToggleCoverage = function() {
+    eiShowCoverage = !eiShowCoverage;
+    uiPrefSet('ei.showCoverage', eiShowCoverage);
+    eiRenderTable();
+};
 
 // ─── Core computation ─────────────────────────────────────────────────────────
 
@@ -540,24 +571,37 @@ function eiRender() {
 
 function eiRenderTable() {
     const panel = document.getElementById('eiPanel');
-    if (!panel) return;
+    if (!panel || !eiLastData) return;
 
     let rows = [...eiLastData];
 
-    // Apply free-text search filter (matches effect name, case-insensitive)
-    const q = fcSearchQuery.trim().toLowerCase();
-    if (q) {
-        rows = rows.filter(r => (r.ef.name || '').toLowerCase().includes(q));
-    }
+    // Free-text search (same domain as the Dmg Calc sidebar search). A talent
+    // bar matches by its own title too, and then keeps ALL of that talent's
+    // rows: the request is the talent ("bullets"), not one of its stat nodes,
+    // so the bar opens on the whole talent.
+    const q = (typeof fcSearchQuery === 'string' ? fcSearchQuery : '').trim().toLowerCase();
+    if (q) rows = rows.filter(r => {
+        if ((r.ef.name || '').toLowerCase().includes(q)) return true;
+        const t = eiTalentInfoOf(r.ef);
+        return !!(t && t.title && `talent ${t.index}: ${t.title}`.toLowerCase().includes(q));
+    });
 
-    // Hide effects that contribute exactly 0% damage gain when toggled off.
-    // (+∞ and negative gains are always kept; baseVal=0 rows resolve to 0 here.)
-    if (eiHideZeroGain) {
-        rows = rows.filter(r => r.pctImpact !== 0);
-    }
+    // 0%-gain rows are hidden unless the chip in the sidebar is on.
+    if (eiHideZeroGain) rows = rows.filter(r => !isFinite(r.pctImpact) || r.pctImpact !== 0);
 
+    // Source chips live in the left sidebar; a hidden source drops its rows.
+    const allSourceKeys = eiCollectSourceKeys(rows.map(r => r.ef));
+    const chipsEl = document.getElementById('eiFilterChips');
+    if (chipsEl) chipsEl.innerHTML = eiSourceChipsHtml(allSourceKeys);
+    rows = rows.filter(r => !eiIsSourceHidden(r.ef.source ?? 'Unknown'));
+
+    // Level-override badge: shows when a level table moved this effect off the
+    // level the log recorded (same rules as the flat table had).
     const efLvlBadge = (ef) => {
         if (ef.isPotentialsGroup || !ef.allValueConfigIds || ef.currentLevelIdx < 0) return '';
+        // Disc parts carry their own level chip (Copies / Harmony n) — the ladder
+        // badge would guess from valueConfigId arithmetic and disagree with it.
+        if (typeof dcDiscPartInfo === 'function' && dcDiscPartInfo(ef)) return '';
         const override = dcGetLevelOverride(ef, ef.side);
         if (!override) return '';
         let diff;
@@ -565,7 +609,6 @@ function eiRenderTable() {
         if (overriddenIdx >= 0) {
             diff = overriddenIdx - ef.currentLevelIdx;
         } else if (override.newValueConfigId != null && ef.configId != null) {
-            // potential-ladder fallback: decode levels from "<gid><P><L><V>"
             const lo = ef.configId - (ef.configId % 1000);
             const relCur = ef.valueConfigId > lo ? ef.valueConfigId - lo : 0;
             const relNew = override.newValueConfigId > lo ? override.newValueConfigId - lo : 0;
@@ -580,259 +623,648 @@ function eiRenderTable() {
         return ` <span class="ei-lvl-badge ${cls}" title="Level overridden: original Lv.${ef.currentLevelIdx + 1} → Lv.${overriddenIdx + 1}">lvl ${diff > 0 ? '+' : ''}${diff}</span>`;
     };
 
-    // Collect all unique source keys (source name only — groups attacker+defender together)
-    const allSourceKeys = eiCollectSourceKeys(rows.map(r => r.ef));
-
-    // ── Sibling grouping (Potentials + Discs) ────────────────────────────────
-    // Rows belonging to the same "chain" are sorted as one unit: forced
-    // adjacent, ranked by the summed gain% when the sort column is gain%, or
-    // by the member values otherwise.
-    //   Potentials: same name + same source (one potential ladder).
-    //   Discs:      all rows of one disc — its "<disc> : Stat n" stat rows
-    //               (tableResolver.js buildRecordDiscEffects), its
-    //               "<disc>: Melody|Harmony N - ..." effect rows (disc-buff
-    //               decoder) and its "<disc> : Note <name>" bonus-note rows
-    //               (buildRecordDiscNoteEffects) — chained by the disc name
-    //               before the first ':'.
-    const siblingGroups = new Map(); // key `${source}\u0000${chainName}` -> rows[]
-    const unitOf = new Map();        // row -> its sibling group (if any)
-    const addToSiblingGroup = (key, r) => {
-        let g = siblingGroups.get(key);
-        if (!g) { g = []; siblingGroups.set(key, g); }
-        g.push(r);
-        unitOf.set(r, g);
-    };
-    for (const r of rows) {
-        if (r.ef.isPotentialsGroup) continue;
-        const src = r.ef.source ?? '';
-        if (dcIsPotentialsSource(src)) {
-            addToSiblingGroup(`${src}\u0000${r.ef.name}`, r);
-        } else if (src === 'Discs') {
-            const nm = r.ef.name ?? '';
-            const c = nm.indexOf(':');
-            if (c > 0) addToSiblingGroup(`${src}\u0000${nm.slice(0, c).trim()}`, r);
+    // Stat sub-line: what the effect changes, in the same shapes the table used.
+    // `row` is the computed impact row: the observed stack count lives there
+    // (eiComputeEffect's maxStacks), not on the effect entry, so the ×N badge
+    // has to read it from the row.
+    const statCell = (ef, row) => {
+        if (ef.isPotRow) {
+            return `<span class="ei-val">${ef.linkPotential.addLv < 0 ? '' : '+'}${ef.linkPotential.addLv} lv</span>`;
         }
-    }
-
-    const unitSortVal = (unit) => {
-        if (eiSortCol === 'pctImpact') {
-            let sum = 0, hasInf = false;
-            for (const r of unit) {
-                if (!isFinite(r.pctImpact)) hasInf = true;
-                else sum += r.pctImpact;
+        if (ef.displayOnly) {
+            if (ef._noteAdd != null) {
+                const st = (typeof discNoteStatOf === 'function') ? discNoteStatOf(ef) : null;
+                const notes = `${ef._noteAdd < 0 ? '' : '+'}${ef._noteAdd} note${ef._noteAdd !== 1 && ef._noteAdd !== -1 ? 's' : ''}`;
+                return st ? `${esc(st.attr ?? '')} <b>${String(st.val).startsWith('-') ? '' : '+'}${st.val}</b> | ${notes}`
+                          : `<b>${notes}</b>`;
             }
-            return hasInf ? Infinity : sum;
+            return `<b>+${ef._skillAddLv || 0} lv</b>`;
         }
-        let v = -Infinity;
-        for (const r of unit) {
-            let x = r[eiSortCol] ?? 0;
-            if (!isFinite(x)) x = 1e18;
-            if (x > v) v = x;
+        if (ef.isPotentialsGroup) {
+            const nums = [...ef.value].sort((a, b) => a - b);
+            const lo = nums[0], hi = nums[nums.length - 1];
+            const body = nums.length <= 5 ? nums.map(n => n + '%').join(', ')
+                                          : `${lo}% – ${hi}% (${nums.length} hits)`;
+            return `Hit Damage <b>${lo === hi ? lo + '%' : body}</b>`;
         }
-        return v;
+        const override = dcGetLevelOverride(ef, ef.side);
+        const eiSubTypeLabel = (subType, effectType) => {
+            if (effectType === ELEMENTTYPE_ATTR_FIX) return 'base';
+            if (effectType === ELEMENTTYPE_ATTR_PERCENT_FIX) return 'pct';
+            if (subType === 1) return 'base';
+            if (subType === 2) return 'pct';
+            if (subType === 3) return 'abs';
+            return '?';
+        };
+        const raw = override ? override.newValue : ef.value;
+        const overrideSubType = override ? override.newSubType : ef.subType;
+        const overrideAttrType = override ? override.newAttrType : ef.attrType;
+        let subLabel = ef.isRecordEffect
+            ? (overrideSubType === 1 ? 'Origin' : eiSubTypeLabel(overrideSubType, null))
+            : eiSubTypeLabel(overrideSubType, ef.effectType);
+        if (ef._gemLevel) subLabel = `${subLabel} +${ef._gemLevel}`;
+        const attrLabel = attrName(overrideAttrType != null ? overrideAttrType : ef.attrType);
+        const isSmall = raw != null && Math.abs(raw) < 15;
+        const valStr = raw != null ? (isSmall ? (raw * 100).toFixed(2) + '%' : String(raw)) : '?';
+        const sign = raw != null && raw < 0 ? '' : '+';
+        const stacks = (row && row.maxStacks) || ef.maxStacks || 1;
+        // The disc's level is on the card head (Copies / H1 / H2), so the rows
+        // stay a reading of the effect: value, unit, stacks.
+        return `${esc(attrLabel)} <b>${sign}${valStr}</b> <span class="ei-unit">${subLabel}</span>` +
+            (stacks > 1 ? ` <span class="ei-stacks" title="Max stacks observed">×${stacks}</span>` : '');
     };
 
-    // Collapse sibling groups into units, then flatten back into rows for render.
-    const units = [];
-    const used = new Set();
+    const pct = r => isFinite(r.pctImpact) ? r.pctImpact : 0;
+    const fPct = v => (v >= 0 ? '+' : '') + v.toFixed(2) + '%';
+    const cls = v => v > 0.5 ? 'ei-pos' : v < -0.5 ? 'ei-neg' : 'ei-neutral';
+    const sumOf = arr => arr.reduce((a, r) => a + pct(r), 0);
+
+    // ── Grouping: unit → section (Potentials / Skills / Talents / Emblems) ──
+    const rec = (typeof getOriginRecord === 'function') ? getOriginRecord() : null;
+    const nameToId = new Map();
+    if (rec && rec.chars) for (const c of rec.chars) {
+        const nm = (typeof resolveActorKey === 'function') ? resolveActorKey('p:' + c.charId) : null;
+        if (nm) nameToId.set(String(nm).toLowerCase(), c.charId);
+    }
+    const TEAM = /^(Affinity|Discs|Notes|Record Stats|Boss Blitz|Unknown)$/;
+    const unitOf = (r) => {
+        const src = String(r.ef.source || 'Unknown');
+        return TEAM.test(src) ? src : src.replace(/\s+(Emblems|Talents|Potentials|Skills)$/, '');
+    };
+    const subOf = (r) => {
+        const m = String(r.ef.source || '').match(/\s+(Potentials|Skills|Talents|Emblems)$/);
+        return m ? m[1] : 'Other';
+    };
+    const SUB_ORDER = ['Potentials', 'Skills', 'Talents', 'Emblems', 'Other'];
+
+    /* "<unit>|<potential name>" -> potId, from the Record's own per-character
+       potential list. Rows that do not carry their pot id (a potential's hit
+       group, a fixed unlevelled effect) still belong to a named potential, so
+       the icon can be resolved by the name the card shows. */
+    const potIdByName = new Map();
+    if (rec && Array.isArray(rec.chars) && typeof potentialNameById !== 'undefined') {
+        for (const c of rec.chars) {
+            const unit = (typeof resolveActorKey === 'function') ? resolveActorKey('p:' + c.charId) : null;
+            if (!unit) continue;
+            for (const p of (c.pots || [])) {
+                const potId = Number(p && p[0]);
+                const nm = potentialNameById.get(potId);
+                if (!potId || !nm) continue;
+                potIdByName.set(`${unit}|${String(nm).toLowerCase()}`, potId);
+            }
+        }
+    }
+
+    const units = new Map();
     for (const r of rows) {
-        if (used.has(r)) continue;
-        const g = unitOf.get(r);
-        if (g) {
-            for (const m of g) used.add(m);
-            units.push(g);
-        } else {
-            units.push([r]);
+        const u = unitOf(r);
+        if (!units.has(u)) units.set(u, { name: u, rows: [], subs: new Map() });
+        const g = units.get(u);
+        g.rows.push(r);
+        const s = subOf(r);
+        if (!g.subs.has(s)) g.subs.set(s, []);
+        g.subs.get(s).push(r);
+    }
+    const list = [...units.values()];
+    const chars = list.filter(g => nameToId.has(g.name.toLowerCase()));
+    const team = list.filter(g => !nameToId.has(g.name.toLowerCase()));
+    const byGain = (a, b) => sumOf(b.rows) - sumOf(a.rows);
+    /* Character cards follow the Record board's deployment order (rec.team,
+       then any rec.chars it misses) — the same sequence the Record columns and
+       the Emblems Comparison columns use. Ranking the cards by their summed
+       gain put the same unit in a different column on every tab. */
+    const deployOrder = (rec && Array.isArray(rec.team) && rec.team.length)
+        ? rec.team.map(Number)
+        : (rec && Array.isArray(rec.chars) ? rec.chars.map(c => Number(c.charId)) : []);
+    const slotOf = (g) => {
+        const idx = deployOrder.indexOf(nameToId.get(g.name.toLowerCase()));
+        return idx < 0 ? deployOrder.length : idx;
+    };
+    const charsOrdered = [...chars].sort((a, b) => slotOf(a) - slotOf(b));
+
+    /* Every talent's full row set (before the tab's row filters), keyed
+       "<unit>|<index>". The talent header describes the TALENT — its main
+       effect and the hits it covers — so it reads the unfiltered rows: the
+       "0% gain" chip must not blank the main effect of a talent whose passive
+       happens not to move damage in this log. */
+    const talentAll = new Map();
+    for (const r of eiLastData) {
+        if (subOf(r) !== 'Talents') continue;
+        const info = eiTalentInfoOf(r.ef);
+        if (!info) continue;
+        const k = `${unitOf(r)}|${info.index}`;
+        if (!talentAll.has(k)) talentAll.set(k, []);
+        talentAll.get(k).push(r);
+    }
+
+    /* Potential icon for a row: the potential that owns the effect — its own
+       row (linkPotential), the level source the collector resolved for it
+       (dcEffectPot), or the Record's potential of that name for the rows that
+       carry neither. Rows that belong to no potential (skills, discs, talents)
+       get no icon slot at all: their name starts right after the gain column. */
+    const potIdOfRow = (ef, unit, displayName) => {
+        let potId = ef?.linkPotential?.potId ?? ef?.levelSource ?? null;
+        if (potId == null && displayName) {
+            potId = potIdByName.get(`${unit}|${String(displayName).toLowerCase()}`) ?? null;
+        }
+        return potId;
+    };
+    const potIconHtml = (potId) => (potId == null || typeof recPotUrl !== 'function') ? '' :
+        `<span class="ei-icon"><img src="${recPotUrl(potId)}" alt="" loading="lazy"` +
+        ` onerror="this.classList.add('is-failed')"></span>`;
+
+    /* One row of the impact list — shared by the unit cards and the disc cards.
+       Gain on the left in its own column, the potential's icon beside it (when
+       there is one), the effect's name to its right. nameOverride replaces the
+       row's table name (talent rows drop the "<char> / Talent N: " prefix their
+       bar shows). */
+    const rowHtml = (r, nameOverride, unit) => {
+        const added = r.isAdded
+            ? ` <span class="ei-added-badge" title="Toggled OFF in Dmg Calc — this is what adding it back contributes">+added</span>`
+            : '';
+        const shown = nameOverride ?? r.ef.name;
+        const icon = eiShowPotImg ? potIconHtml(potIdOfRow(r.ef, unit ?? unitOf(r), shown)) : '';
+        const cov = eiShowCoverage ? `<span class="ei-ucov">${r.affectedHits}/${r.hitCount}</span>` : '';
+        return `<div class="ei-urow${icon ? '' : ' is-flat'}${eiShowCoverage ? '' : ' no-cov'}">` +
+            `<span class="ei-ugain ${cls(pct(r))}">${fPct(pct(r))}</span>` +
+            icon +
+            `<span class="ei-uname">${esc(shown)}${added}${efLvlBadge(r.ef)}</span>` +
+            cov +
+            `<span class="ei-ustat">${statCell(r.ef, r)}</span>` +
+            `</div>`;
+    };
+
+    /* ── Talents: one foldable row per talent ──
+       Every effect a talent grants lives under the same "<char> Talents" source
+       and carries the talent's index, so a character's five talents produced up
+       to 55 flat rows (5 named passives + 10 stat nodes each). Fold the rows by
+       that index: the talent's header is ONE MORE ROW of the card's list — the
+       same name/gain/two-line layout as the effect rows it contains, with the
+       talent's own name in the name slot, its stats summarised on the second
+       line and its whole impact on the right — and the body lists the
+       individual rows one level in. Collapsed by default: five rows per
+       character instead of the wall of rows. Open state lives in eiOpenTalents,
+       so a re-render keeps it. */
+    const talentBlock = (unit, t) => {
+        const key = `${unit}|${t.index}`;
+        const open = eiOpenTalents.has(key);
+        const all  = talentAll.get(key) || t.rows;
+        const whole = eiTalentGroupPct(unit, t.index, all);
+        const total = whole != null ? whole : sumOf(all);
+        const label = t.title ? `Talent ${t.index}: ${t.title}` : `Talent ${t.index}`;
+        /* Second line: the talent's MAIN effect only — the named passive that
+           gives the talent its title. The stat nodes underneath it are the
+           sub-rows, listed when the fold is open; summarising them here too
+           would repeat the body. */
+        const main = t.title
+            ? all.find(r => rowName(r, unit).toLowerCase() === String(t.title).toLowerCase()) || null
+            : null;
+        const statLine = main ? statCell(main.ef, main) : '';
+        const covHits = main ? (main.affectedHits || 0)
+            : all.reduce((m, r) => Math.max(m, r.affectedHits || 0), 0);
+        const covAll  = all.length ? (all[0].hitCount || 0) : 0;
+        return `<div class="ei-talent${open ? ' is-open' : ''}" data-ei-talent="${esc(key)}">` +
+            `<button type="button" class="ei-urow is-flat ei-talent-head${eiShowCoverage ? '' : ' no-cov'}" title="${esc(label)}" aria-expanded="${open ? 'true' : 'false'}">` +
+                `<span class="ei-talent-chev" aria-hidden="true">${open ? '▾' : '▸'}</span>` +
+                `<span class="ei-ugain ${cls(total)}">${fPct(total)}</span>` +
+                // A talent owns no potential: no icon slot, the name sits right
+                // after the gain column like any other icon-less row.
+                `<span class="ei-uname">${esc(label)}</span>` +
+                (eiShowCoverage ? `<span class="ei-ucov">${covHits}/${covAll}</span>` : '') +
+                `<span class="ei-ustat">${statLine}</span>` +
+            `</button>` +
+            `<div class="ei-talent-body">` +
+                [...t.rows].sort((a, b) => pct(b) - pct(a))
+                    .map(r => rowHtml(r, rowName(r, unit), unit)).join('') +
+            `</div>` +
+        `</div>`;
+    };
+
+    /* Split a character's Talents rows by talent. Rows without a resolvable
+       talent index keep the old flat treatment under their own bar. */
+    const talentRows = (rowsIn) => {
+        const byIndex = new Map();
+        const rest = [];
+        for (const r of rowsIn) {
+            const info = eiTalentInfoOf(r.ef);
+            if (!info) { rest.push(r); continue; }
+            if (!byIndex.has(info.index)) byIndex.set(info.index, { index: info.index, title: info.title, rows: [] });
+            byIndex.get(info.index).rows.push(r);
+        }
+        return { groups: [...byIndex.values()].sort((a, b) => a.index - b.index), rest };
+    };
+
+    /* Rows repeat what the card already says: the unit name in a "<Unit> / "
+       prefix, and for talents the talent number ("Talent 3: …" — the folded bar
+       names it). Strip both here, for this tab only. Only strips when the text
+       before the slash is the card's own unit, so a name with a slash of its own
+       is left alone. */
+    const stripUnitName = (nm, unit) => {
+        const s = String(nm || '');
+        const i = s.indexOf('/');
+        if (i <= 0) return s;
+        if (s.slice(0, i).trim().toLowerCase() !== String(unit || '').trim().toLowerCase()) return s;
+        return s.slice(i + 1).trim() || s;
+    };
+    const rowName = (r, unit) => eiTalentRowName({ name: stripUnitName(r.ef.name, unit) }) + eiNoteLevelTag(r.ef);
+
+    const card = (g, isTeam) => {
+        const cid = nameToId.get(g.name.toLowerCase()) || null;
+        const meta = cid != null && typeof recCharMeta === 'function' ? recCharMeta(cid) : null;
+        const tint = meta && typeof REC_ELEM_TINT !== 'undefined' ? (REC_ELEM_TINT[meta.element] || null) : null;
+        /* A team-wide bucket has no character behind it, so it is a subsection —
+           the app's 10px title bar with its 2px edge — not a column head. */
+        const head = isTeam
+            ? `<div class="rec-sec-head"><span class="rec-sec-title">${esc(g.name)}</span></div>`
+            : `<header class="rec-col-head${tint ? ' has-tint' : ''}"` +
+                (tint ? ` style="--rec-tint:${tint}"` : '') + `>` +
+                `<span class="rec-portrait">` +
+                    (cid != null && typeof recHeadUrl === 'function'
+                        ? `<img src="${recHeadUrl(cid)}" alt="" width="60" height="60" onerror="this.classList.add('is-failed')">`
+                        : '') +
+                    `<span class="rec-portrait-fb" aria-hidden="true">${esc(typeof recInitials === 'function' ? recInitials(g.name) : '')}</span>` +
+                `</span>` +
+                `<span class="rec-col-id"><span class="rec-col-name"><span class="rec-col-name-t">${esc(g.name)}</span></span></span>` +
+                `</header>`;
+        const onlyOther = g.subs.size === 1 && g.subs.has('Other');
+        /* Every sub is one .ei-fam block. Talents become one block of foldable
+           rows — the talent headers read as rows of the same list, so they stay
+           inside one .ei-fam (the 6px .ei-fam separator between them would cut
+           the list into five sections again). */
+        const parts = [];
+        for (const s of SUB_ORDER.filter(s => g.subs.has(s))) {
+            const subRows = [...g.subs.get(s)].sort((a, b) => pct(b) - pct(a));
+            if (s === 'Talents') {
+                const { groups, rest } = talentRows(subRows);
+                // Same section bar Potentials / Skills / Emblems carry above them.
+                const subHead = onlyOther ? '' :
+                    `<div class="rec-sec-head"><span class="rec-sec-title">Talents</span></div>`;
+                let inner = groups.map(t => talentBlock(g.name, t)).join('');
+                // Rows whose talent the table cannot resolve stay plain rows.
+                inner += rest.map(r => rowHtml(r, rowName(r, g.name), g.name)).join('');
+                parts.push(`<div class="ei-fam">${subHead}${inner}</div>`);
+                continue;
+            }
+            const subHead = onlyOther ? '' :
+                `<div class="rec-sec-head"><span class="rec-sec-title">${s}</span></div>`;
+            parts.push(`<div class="ei-fam">` + subHead + subRows.map(r => rowHtml(r, rowName(r, g.name), g.name)).join('') + `</div>`);
+        }
+        const body = parts.join('');
+        return `<section class="ei-card">${head}${body}</section>`;
+    };
+
+    /* ── Discs get their own section, one card per equipped disc ──
+       The Discs bucket is 30+ rows on a normal run and made one column of the
+       team-wide grid three times taller than the others. Split it by disc (the
+       bucket names each row `<Disc>: <effect>`, or `<Disc> : <stat>` for the
+       plain stat halves) and give every disc a card headed like a unit — disc
+       art in the portrait slot, disc name beside it — so the section reads as a
+       row of discs instead of a wall of text. Card order is equip order from the
+       origin record, the same order the Record tab lists them in. */
+    const discUnit = list.find(g => /^Discs$/i.test(g.name)) || null;
+    const discIdByName = new Map();
+    const discSlotByName = new Map();
+    if (rec && Array.isArray(rec.discStats)) {
+        rec.discStats.forEach((d, i) => {
+            const nm = typeof resolveRecordDiscName === 'function' ? resolveRecordDiscName(d.id) : null;
+            if (!nm) return;
+            const k = String(nm).toLowerCase();
+            if (!discIdByName.has(k)) { discIdByName.set(k, d.id); discSlotByName.set(k, i); }
+        });
+    }
+    const discGroups = new Map();
+    if (discUnit) for (const r of discUnit.rows) {
+        const nm = String(r.ef.name || '').split(':')[0].trim() || 'Disc';
+        const k = nm.toLowerCase();
+        if (!discGroups.has(k)) discGroups.set(k, { name: nm, rows: [] });
+        discGroups.get(k).rows.push(r);
+    }
+    const discSlot = (d) => discSlotByName.has(d.name.toLowerCase())
+        ? discSlotByName.get(d.name.toLowerCase()) : 999;
+    const discList = [...discGroups.values()]
+        .sort((a, b) => discSlot(a) - discSlot(b) || a.name.localeCompare(b.name));
+    /* The card head already names the disc, so drop the "<Disc> : " prefix the
+       effect rows carry ("Soaring Blue : Stat 1" → "Stat 1"). */
+    const stripDiscPrefix = (r) => {
+        const nm = String(r.ef.name || '');
+        const i = nm.indexOf(':');
+        if (i < 0) return r;
+        const rest = nm.slice(i + 1).trim();
+        return rest ? { ...r, ef: { ...r.ef, name: rest } } : r;
+    };
+    /* Row order inside a disc card is the disc's own parts, not gain: the two
+       stats, then the melody, then harmony 1, harmony 2, and the granted notes.
+       Ties (two rows of the same part) keep the strongest first. */
+    const discRowRank = (name) => {
+        const n = String(name || '');
+        if (/^Stat\s*1\b/i.test(n)) return 0;
+        if (/^Stat\s*2\b/i.test(n)) return 1;
+        /* A disc's granted notes carry the SubNoteSkill title, which itself
+           starts with "Melody of …" (older builds prefixed "Note "), so they
+           have to be recognised before the disc's own "Melody" part. */
+        if (/^Note\b/i.test(n) || /^Melody of\b/i.test(n)) return 5;
+        if (/^Melody\b/i.test(n)) return 2;
+        if (/^Harmony\s*1\b/i.test(n)) return 3;
+        if (/^Harmony\s*2\b/i.test(n)) return 4;
+        return 6;
+    };
+    /* A disc part that owns more than one effect (a melody or harmony applies one
+       row per Param: Skill Dmg + Rcd Skill Dmg + Rcd Mark Dmg) folds into one
+       header row exactly like a talent bar — same `.ei-talent` wrapper, same
+       caret, same one-level step for the body — so the card lists its parts, not
+       its rows. Single-effect parts stay plain rows; the stats and the granted
+       notes are never folded. */
+    const discPartFold = (d, g) => {
+        const label = g.rows[0].ef.name;
+        const key = `discpart:${d.name}|${label}`;
+        const open = eiOpenTalents.has(key);
+        const whole = eiRowGroupPct(key, g.rows);
+        const total = whole != null ? whole : sumOf(g.rows);
+        const top = [...g.rows].sort((a, b) => pct(b) - pct(a))[0];
+        const statLine = top ? statCell(top.ef, top) : '';
+        const covHits = g.rows.reduce((m, r) => Math.max(m, r.affectedHits || 0), 0);
+        const covAll = g.rows[0].hitCount || 0;
+        return `<div class="ei-talent${open ? ' is-open' : ''}" data-ei-talent="${esc(key)}">` +
+            `<button type="button" class="ei-urow is-flat ei-talent-head${eiShowCoverage ? '' : ' no-cov'}"` +
+                ` title="${esc(label)}" aria-expanded="${open ? 'true' : 'false'}">` +
+                `<span class="ei-talent-chev" aria-hidden="true">${open ? '▾' : '▸'}</span>` +
+                `<span class="ei-ugain ${cls(total)}">${fPct(total)}</span>` +
+                `<span class="ei-uname">${esc(label)}</span>` +
+                (eiShowCoverage ? `<span class="ei-ucov">${covHits}/${covAll}</span>` : '') +
+                `<span class="ei-ustat">${statLine}</span>` +
+            `</button>` +
+            `<div class="ei-talent-body">${[...g.rows].sort((a, b) => pct(b) - pct(a))
+                .map(r => rowHtml(r)).join('')}</div>` +
+        `</div>`;
+    };
+    const discCard = (d) => {
+        const did = discIdByName.has(d.name.toLowerCase()) ? discIdByName.get(d.name.toLowerCase()) : null;
+        /* The head's number is the disc's own toggle in the Quick Toggles
+           sidebar: every effect of this disc off at once (stat rows + buffs +
+           bonus notes + the level moves they cause), so both read the same. */
+        const whole = eiDiscWholePct(d.name);
+        const total = whole != null ? whole : sumOf(d.rows);
+        const art = did != null && typeof recDiscUrl === 'function'
+            ? `<img src="${recDiscUrl(did)}" alt="" width="60" height="60" onerror="this.classList.add('is-failed')">`
+            : '';
+        const fbTag = did != null && typeof recDiscTag === 'function'
+            ? recDiscTag(did) : d.name.replace(/[^A-Za-z]/g, '').slice(0, 2).toUpperCase();
+        /* The disc's levels, read from the same table the Record tab's steppers
+           and the Dmg Calc sidebar edit: copies (Crescendo star) plus the two
+           harmony layers. Chips, not controls — the editor lives in Record. */
+        const recNow = (typeof getOriginRecord === 'function') ? getOriginRecord() : null;
+        const lvlIdx = did != null ? (recNow?.discStats || []).findIndex(x => String(x.id) === String(did)) : -1;
+        const lvlInfo = (lvlIdx >= 0 && typeof dcDiscLevelInfo === 'function') ? dcDiscLevelInfo(lvlIdx) : null;
+        let lvlChips = '';
+        if (lvlInfo) {
+            const parts = [`Copies ${lvlInfo.copies}/${lvlInfo.copiesMax}`];
+            (lvlInfo.harmony || []).forEach((h, i) => {
+                // A layer the record did not run is not levellable (Record's
+                // stepper is a readout too) — the chip says so instead of 0/5.
+                if (h) parts.push(h.editable === false ? `H${i + 1} off` : `H${i + 1} ${h.level}/${h.max}`);
+            });
+            lvlChips = `<span class="ei-disc-lvls">` + parts.map(t =>
+                `<span class="ei-lvl-chip">${esc(t)}</span>`).join('') + `</span>`;
+        }
+        return `<section class="ei-card ei-disc-card">` +
+            `<header class="rec-col-head">` +
+                `<span class="rec-portrait">` + art +
+                    `<span class="rec-portrait-fb" aria-hidden="true">${esc(fbTag)}</span>` +
+                `</span>` +
+                `<span class="rec-col-id"><span class="rec-col-name"><span class="rec-col-name-t">${esc(d.name)}</span></span>` +
+                    lvlChips + `</span>` +
+                `<span class="ei-disc-sum ${cls(total)}">${fPct(total)}</span>` +
+            `</header>` +
+            `<div class="ei-fam">${(() => {
+                const ordered = [...d.rows].map(stripDiscPrefix)
+                    .sort((a, b) => discRowRank(a.ef.name) - discRowRank(b.ef.name) || pct(b) - pct(a));
+                const groups = [];
+                for (const r of ordered) {
+                    const rank = discRowRank(r.ef.name);
+                    const last = groups[groups.length - 1];
+                    if (last && last.rank === rank) last.rows.push(r);
+                    else groups.push({ rank, rows: [r] });
+                }
+                return groups.map(g => (g.rows.length > 1 && g.rank >= 2 && g.rank <= 4)
+                    ? discPartFold(d, g)
+                    : g.rows.map(r => rowHtml(r)).join('')).join('');
+            })()}</div>` +
+            `</section>`;
+    };
+
+    /* The row options scroll with the board: the bar lives inside the scroll
+       container (and bleeds out to the panel's edges with a negative margin) so
+       it goes up with the cards instead of hovering over them. */
+    let html = `<div class="ei-cards">` +
+        `<div class="rec-top">` +
+        `<span class="rec-top-actions">` +
+            `<button type="button" class="rec-btn${eiShowPotImg ? ' is-on' : ''}" onclick="eiTogglePotImg()"` +
+            ` title="Show each row's potential icon (rows that belong to no potential have none)">Show Pot Img</button>` +
+            `<button type="button" class="rec-btn${eiShowCoverage ? ' is-on' : ''}" onclick="eiToggleCoverage()"` +
+            ` title="Show how many hits each effect affected (affected / total)">Show Coverage</button>` +
+        `</span>` +
+        `</div>`;
+    if (!rows.length) {
+        html += `<div class="ei-uempty">No effects found in current filter.</div>`;
+    } else {
+        if (chars.length) {
+            html += `<div class="ei-grid">${charsOrdered.map(g => card(g, false)).join('')}</div>`;
+        }
+        /* The separator is the Team-wide one, with no total on it: the per-disc
+           totals live on the cards below. */
+        if (discList.length) {
+            html += `<div class="ei-team-h">Discs</div>` +
+                    `<div class="ei-pack" data-ei-pack>${discList.map(discCard).join('')}</div>`;
+        }
+        const others = team.filter(g => g !== discUnit);
+        if (others.length) {
+            /* The remaining team-wide buckets are not one-per-column: they are
+               packed into three columns shortest-column-first by eiPackColumns(). */
+            html += `<div class="ei-team-h">Team-wide</div>` +
+                    `<div class="ei-pack" data-ei-pack>${[...others].sort(byGain).map(g => card(g, true)).join('')}</div>`;
         }
     }
-
-    // Sort units: source → chosen column (side/ATK-DEF is ignored for ordering)
-    units.sort((a, b) => {
-        const rA = a[0], rB = b[0];
-        const srcA = rA.ef.source ?? 'Unknown';
-        const srcB = rB.ef.source ?? 'Unknown';
-        if (srcA !== srcB) return srcA.localeCompare(srcB);
-        if (eiSortCol === 'name') {
-            return eiSortDir * rA.ef.name.localeCompare(rB.ef.name);
-        }
-        let va = unitSortVal(a);
-        let vb = unitSortVal(b);
-        if (!isFinite(va)) va = 1e18;
-        if (!isFinite(vb)) vb = 1e18;
-        // eiSortDir=-1 means descending (largest gain first), so negate:
-        // -(-1) * (vb - va) = vb - va → bigger values sort first.
-        return -eiSortDir * (vb - va);
-    });
-
-    const sortedRows = [];
-    for (const unit of units) sortedRows.push(...unit);
-    rows = sortedRows;
-
-    const hitCountSample = rows[0]?.hitCount ?? 0;
-
-    function sortArrow(col) {
-        if (eiSortCol !== col) return `<span class="ei-sort-arrow ei-sort-inactive">↕</span>`;
-        return `<span class="ei-sort-arrow">${eiSortDir === -1 ? '↓' : '↑'}</span>`;
-    }
-    function thClick(col) {
-        return `onclick="eiSetSort('${col}')"`;
-    }
-
-    // Render source filter chips into sidebar
-    const chipsEl = document.getElementById('eiFilterChips');
-    if (chipsEl) chipsEl.innerHTML = eiSourceChipsHtml(allSourceKeys);
-
-    let html = `
-    <div class="ei-header-bar">
-        <span class="ei-subtitle">${hitCountSample} hits · ${rows.length} unique effects</span>
-    </div>
-    <div class="ei-scroll-wrap">
-    <table class="ei-table">
-        <thead>
-            <tr>
-                <th class="ei-th ei-th-source">Source</th>
-                <th class="ei-th ei-th-side"></th>
-                <th class="ei-th ei-th-num" ${thClick('pctImpact')}>Gain% ${sortArrow('pctImpact')}</th>
-                <th class="ei-th ei-th-name" ${thClick('name')}>Effect ${sortArrow('name')}</th>
-                <th class="ei-th ei-th-stat">Stat</th>
-                <th class="ei-th ei-th-num" ${thClick('hitCoverage')}>Coverage ${sortArrow('hitCoverage')}</th>
-                <th class="ei-th ei-th-num">w/ Effect</th>
-                <th class="ei-th ei-th-num">w/o Effect</th>
-            </tr>
-        </thead>
-        <tbody>`;
-
-    // Render rows, grouped for source column spanning
-    let i = 0;
-    while (i < rows.length) {
-        const row = rows[i];
-        const srcKey = row.ef.source ?? 'Unknown';
-
-        // Skip entire source group if filtered out
-        if (eiIsSourceHidden(srcKey)) {
-            i++;
-            while (i < rows.length && (rows[i].ef.source ?? 'Unknown') === srcKey) i++;
-            continue;
-        }
-
-        // Count rows in this source group
-        let groupEnd = i + 1;
-        while (groupEnd < rows.length && (rows[groupEnd].ef.source ?? 'Unknown') === srcKey) groupEnd++;
-        const groupSize = groupEnd - i;
-
-        // Render each row in the group
-        for (let j = i; j < groupEnd; j++) {
-            const { ef, totalWith, totalWithout, dmgDelta, pctImpact, hitCoverage, affectedHits, hitCount, maxStacks, isAdded } = rows[j];
-
-            const sideLabel = ef.side === 'attacker' ? 'ATK' : ef.side === 'defender' ? 'DEF' : 'POT';
-            const sideClass = ef.side === 'attacker' ? 'ei-side-atk' : ef.side === 'defender' ? 'ei-side-def' : 'ei-side-pot';
-
-            const statCellContent = ef.isPotRow
-                // the actual change the emblem grants (record gems "pots": [[potIdx, +levels]])
-                ? `<span class="ei-attr"></span><span class="ei-val">${ef.linkPotential.addLv < 0 ? '' : '+'}${ef.linkPotential.addLv} lv</span>`
-                : ef.displayOnly
-                ? (ef._noteAdd != null
-                    // disc bonus-note row: the note effect's stat × grant, in the
-                    // same white-attr + value form as the stat entries, with the
-                    // notes kept as a suffix ("Ult Dmg  +3.22% | +7 notes")
-                    ? (() => {
-                        const st = (typeof discNoteStatOf === 'function') ? discNoteStatOf(ef) : null;
-                        const notes = `${ef._noteAdd < 0 ? '' : '+'}${ef._noteAdd} note${ef._noteAdd !== 1 && ef._noteAdd !== -1 ? 's' : ''}`;
-                        const valPart = st ? `${String(st.val).startsWith('-') ? '' : '+'}${st.val} | ${notes}` : notes;
-                        return `<span class="ei-attr">${esc(st?.attr ?? '')}</span><span class="ei-val">${valPart}</span>`;
-                    })()
-                    : `<span class="ei-attr"></span><span class="ei-val">${(ef._skillAddLv || 0) < 0 ? '' : '+'}${ef._skillAddLv || 0} lv</span>`)
-                : ef.isPotentialsGroup
-                ? (() => {
-                    // One entry per unique logged amend; multi-hit groups
-                    // (e.g. Chitose's 9 Mirror Image strikes) would render a
-                    // very long comma list — sort it and collapse to a range
-                    // with the full list kept in the tooltip.
-                    const nums = [...ef.value].sort((a, b) => a - b);
-                    const fmt = n => `${n}%`;
-                    const full = nums.map(fmt).join(', ');
-                    const body = nums.length <= 5
-                        ? full
-                        : `<span title="${full}">${fmt(nums[0])} – ${fmt(nums[nums.length - 1])} (${nums.length} hits)</span>`;
-                    return `<span class="ei-attr">Hit Damage</span><span class="ei-val">${body}</span>`;
-                })()
-                : (() => {
-                    const override = dcGetLevelOverride(ef, ef.side);
-                    // For ATTR_FIX effects subType is 1/2/3 (base/pct/abs); for
-                    // ELEMENTTYPE_*_FIX effects subType is the element id, so the
-                    // base/pct split is determined by effectType instead.
-                    const eiSubTypeLabel = (subType, effectType) => {
-                        if (effectType === ELEMENTTYPE_ATTR_FIX) return 'base';
-                        if (effectType === ELEMENTTYPE_ATTR_PERCENT_FIX) return 'pct';
-                        if (subType === 1) return 'base';
-                        if (subType === 2) return 'pct';
-                        if (subType === 3) return 'abs';
-                        return '?';
-                    };
-                    const attrLabel = ef.attrType != null ? attrName(ef.attrType) : '?';
-                    const raw = override ? override.newValue : ef.value;
-                    const overrideSubType = override ? override.newSubType : ef.subType;
-                    const overrideAttrType = override ? override.newAttrType : ef.attrType;
-                    // Emblem stat rolls show their tier (+1/+2/+3) from
-                    // CharGemAttrValue.Level
-                    let displaySubLabel = ef.isRecordEffect
-                        ? (overrideSubType === 1 ? 'Origin' : eiSubTypeLabel(overrideSubType, null))
-                        : eiSubTypeLabel(overrideSubType, ef.effectType);
-                    if (ef._gemLevel) displaySubLabel = `${displaySubLabel} +${ef._gemLevel}`;
-                    const displayAttrLabel = overrideAttrType != null ? attrName(overrideAttrType) : attrName(ef.attrType);
-                    const isSmall = raw != null && Math.abs(raw) < 15;
-                    const valStr = raw != null ? (isSmall ? (raw * 100).toFixed(2) + '%' : String(raw)) : '?';
-                    const sign = raw != null && raw < 0 ? '' : '+';
-                    const maxStacksStr = maxStacks > 1 ? ` <span class="ei-stacks" title="Max stacks observed">×${maxStacks}</span>` : '';
-                    const overrideMarker = override ? ' *' : '';
-                    return `<span class="ei-attr">${esc(displayAttrLabel)}</span><span class="ei-val">${sign}${valStr} [${displaySubLabel}]${maxStacksStr}${overrideMarker}</span>`;
-                })();
-
-            const pctStr  = isFinite(pctImpact) ? (pctImpact >= 0 ? '+' : '') + pctImpact.toFixed(2) + '%' : '+∞%';
-            const pctClass = pctImpact > 0.5 ? 'ei-pos' : pctImpact < -0.5 ? 'ei-neg' : 'ei-neutral';
-
-            const covBar = Math.round(hitCoverage);
-
-            // For added effects: totalWith = baseline (effect off), totalWithout = w/ effect summed in.
-            const colBase  = isAdded ? totalWithout : totalWith;
-            const colAdded = isAdded ? totalWith    : totalWithout;
-
-            const addedBadge = isAdded
-                ? ` <span class="ei-added-badge" title="This effect is toggled OFF in Dmg Calc — showing what adding it back contributes">+added</span>`
-                : '';
-
-            // First row in group gets the rowspan source cell
-            const sourceCellHtml = j === i
-                ? `<td class="ei-td ei-td-source" rowspan="${groupSize}" data-ei-src="${esc(srcKey)}"><span class="ei-source-name">${esc(ef.source ?? 'Unknown')}</span></td>`
-                : '';
-
-            html += `<tr class="ei-row">
-                ${sourceCellHtml}
-                <td class="ei-td ei-td-side"><span class="ei-side-badge ${sideClass}">${sideLabel}</span></td>
-                <td class="ei-td ei-td-num"><span class="${pctClass} ei-bold">${pctStr}</span></td>
-                <td class="ei-td ei-td-name" title="configId=${ef.configId}">${esc(ef.name)}${addedBadge}${efLvlBadge(ef)}</td>
-                <td class="ei-td ei-td-stat">
-                    ${statCellContent}
-                </td>
-                <td class="ei-td ei-td-num">
-                    <div class="ei-cov-wrap">
-                        <span class="ei-cov-hits">${affectedHits}/${hitCount}</span></span>
-                        <div class="ei-cov-bar-bg"><div class="ei-cov-bar-fill" style="width:${covBar}%"></div></div>
-                    </div>
-                </td>
-                <td class="ei-td ei-td-num ei-muted">${Math.round(colBase).toLocaleString()}</td>
-                <td class="ei-td ei-td-num ei-muted">${Math.round(colAdded).toLocaleString()}</td>
-            </tr>`;
-        }
-        i = groupEnd;
-    }
-
-    if (rows.length === 0) {
-        html += `<tr><td colspan="8" class="ei-empty-row">No effects found in current filter.</td></tr>`;
-    }
-
-    html += `</tbody></table></div>`;
+    html += `</div>`;
     panel.innerHTML = html;
+    eiPackColumns(panel);
+}
+
+/* Whole-group what-if totals, memoized per filter and state version.
+   The number on a disc card has to be the one the Quick Toggles row for that
+   disc shows. That toggle disables the whole group in a single what-if pass —
+   stat rows, melody/harmony buffs, bonus notes and the level-table moves those
+   imply — so the arithmetic sum of the individual row percentages (what the
+   section bars used to print) lands on a different, larger number.
+   The talent bars use the same measure: "talent:<unit>|<n>" is the group key
+   that disables one talent (its passive and all of its stat nodes) in one pass,
+   so the bar's number answers "what does this talent give me" the way the disc
+   cards do. */
+let _eiGroupWhole = { filt: null, ver: null, base: 0, wi: null, map: new Map() };
+function eiGroupWholePct(groupKey) {
+    if (typeof dcFiltered === 'undefined' || !dcFiltered) return null;
+    if (typeof dcCachedHitCalc !== 'function' || typeof dcSimulateGroupToggle !== 'function'
+        || typeof ecGetSharedBaseline !== 'function') return null;
+    const ver = typeof dcStateVersion !== 'undefined' ? dcStateVersion : 0;
+    if (_eiGroupWhole.filt !== dcFiltered || _eiGroupWhole.ver !== ver) {
+        let base = 0;
+        for (const ev of dcFiltered) base += dcCachedHitCalc(ev).d;
+        _eiGroupWhole = { filt: dcFiltered, ver, base, wi: ecGetSharedBaseline(), map: new Map() };
+    }
+    const st = _eiGroupWhole;
+    if (!st.wi || !(st.base > 0)) return null;
+    if (st.map.has(groupKey)) return st.map.get(groupKey);
+    const totalIf = dcSimulateGroupToggle(groupKey, false, st.base, st.wi);
+    const pct = totalIf > 0 ? ((st.base / totalIf) - 1) * 100 : null;
+    st.map.set(groupKey, pct);
+    return pct;
+}
+function eiDiscWholePct(name) {
+    return eiGroupWholePct('disc:' + name);
+}
+
+/* A talent's whole impact, in one analytic pass over the shared baseline.
+   Same closed form eiComputeEffect applies to a single row, but every row of
+   the talent goes into the same per-hit op list, so rows that write the same
+   stat interact inside one evaluation (the talent's real contribution, not the
+   sum of its rows' marginals). Running the group-toggle simulation instead
+   would re-evaluate every hit of the character once per talent — with five
+   talents per character that is far more than the tab's whole row compute.
+   Returns null when a row needs an evaluation this pass does not model (pot /
+   snapshot / display-only rows — a talent never has one) or the engine is
+   unavailable; the caller then falls back to summing the rows. */
+let _eiTalentTotals = { sig: null, filt: null, map: new Map() };
+/* Generic form: any set of rows that share one row-key namespace can be priced
+   as a group. The talent bars use `<unit>|<index>`; a disc card's Melody /
+   Harmony fold uses `discpart:<disc>|<part>`. Same analytic pass, same cache. */
+function eiRowGroupPct(key, rows) {
+    if (typeof eiGetBaseline !== 'function' || typeof ecAnalyticDamage !== 'function'
+        || typeof ecOpSlot !== 'function') return null;
+    const sig = (typeof ecSharedBaselineSig === 'function') ? ecSharedBaselineSig() : null;
+    if (_eiTalentTotals.sig !== sig || _eiTalentTotals.filt !== dcFiltered) {
+        _eiTalentTotals = { sig, filt: dcFiltered, map: new Map() };
+    }
+    if (_eiTalentTotals.map.has(key)) return _eiTalentTotals.map.get(key);
+
+    const baseline = eiGetBaseline(null);
+    let totalWith = 0, totalWithout = 0;
+    for (let i = 0; i < baseline.length; i++) {
+        const b = baseline[i];
+        totalWith += b.withDmg;
+        if (b.zeroed) { totalWithout += b.withDmg; continue; }
+        const dlist = [];
+        let unmodelled = false;
+        for (const r of rows) {
+            const ef = r.ef;
+            // A row switched off in Dmg Calc contributes nothing right now, so
+            // it is not part of what this talent gives.
+            if (r.isAdded) continue;
+            if (ef.isPotentialsGroup || ef.fromOwnerSnapshot || ef.isPotRow || ef.displayOnly) {
+                unmodelled = true; break;
+            }
+            const sideNum = ef.side === 'attacker' ? 0 : 1;
+            const deltaKey = ef.fromAttrDict
+                ? ef.side + ':dict:' + ef.configId + ':' + (ef.valueConfigId ?? '') + ':' + (ef.slotNum ?? 0)
+                : ef.side + ':' + ef.configId;
+            const delta = b.deltaIdx.get(deltaKey);
+            if (!delta) continue;
+            const slot = ecOpSlot({
+                attrType: delta.attrType, subType: delta.subType, effectType: ef.effectType,
+                isRecord: ef.isRecordEffect, bySubType: !!ef.fromAttrDict,
+            }, b.view.el);
+            if (!slot) continue;
+            dlist.push([sideNum, slot[0], slot[1], -delta.amount]);
+        }
+        if (unmodelled) { _eiTalentTotals.map.set(key, null); return null; }
+        if (!dlist.length) { totalWithout += b.withDmg; continue; }
+        totalWithout += ecAnalyticDamage(b.view, dlist, null);
+    }
+    const pct = totalWithout > 0 ? ((totalWith / totalWithout) - 1) * 100 : null;
+    _eiTalentTotals.map.set(key, pct);
+    return pct;
+}
+
+/* A talent bar's number: the same generic pass, keyed `<unit>|<index>`. */
+function eiTalentGroupPct(unit, index, rows) {
+    return eiRowGroupPct(`${unit}|${index}`, rows);
+}
+
+/* Which talent a row belongs to. The Talent.json pass stamps `talentIndex`
+   (1..5) and the talent's own title on every effect id it labels — the named
+   passive and the ten stat nodes of the same talent share both — so the rows
+   fold back into one entry per talent. Rows whose effect id the table does not
+   know fall back to the index in their label; with no index either, the row
+   stays a plain Talents row. */
+function eiTalentInfoOf(ef) {
+    // One fold, three surfaces: dmgCalc.ui.js owns the talent grouping (the
+    // sidebar's talent blocks and the Record tab's talent rows read it too).
+    if (typeof dcTalentOfEffect === 'function') return dcTalentOfEffect(ef);
+    const cid = ef?.configId;
+    const ei = (cid != null && typeof effectTable !== 'undefined')
+        ? effectTable.get(Number(cid)) : null;
+    if (ei && ei.talentIndex != null) {
+        return { index: Number(ei.talentIndex), title: ei.talentTitle || null };
+    }
+    const m = /Talent (\d+): /.exec(String(ef?.name || ''));
+    return m ? { index: Number(m[1]), title: null } : null;
+}
+
+/* Row label inside a talent bar: the bar already names the talent, so drop the
+   "<char> / Talent N: " prefix every row of it carries ("ATK Enhancement"). */
+function eiTalentRowName(ef) {
+    const nm = String(ef?.name || '');
+    const m = /^(?:.*? \/ )?Talent \d+: /.exec(nm);
+    return m ? nm.slice(m[0].length) : nm;
+}
+
+/* Note rows (SubNoteSkill effects, levelTypeData 5, levelData = note id)
+   scale with the note's level table, so the row's value says nothing without
+   the level it resolved at: a "Melody of Burst" row reads the same at x12 and
+   x40. The suffix is written as the note's multiplier ("x40"), not "Lv 40" —
+   the level IS the note's total quantity, and the effect value is the
+   per-note value times it; this tab has no level control (unlike the Dmg
+   Calc's n/m), so the number rides in the name. It is the same one the Record
+   tab's note stepper shows (record total + enabled disc grants + edits,
+   dcNoteLevels). Rows with no level-table entry (no record, note never seen)
+   stay plain. */
+function eiNoteLevelTag(ef) {
+    if (!ef || ef.levelTypeData !== 5 || ef.levelData == null) return '';
+    if (typeof dcNoteLevels === 'undefined' || typeof dcNoteEffectiveLevel !== 'function') return '';
+    const st = dcNoteLevels.get(Number(ef.levelData));
+    return st ? ` x${dcNoteEffectiveLevel(st)}` : '';
+}
+
+/* Three columns, shortest-column-first: drop the next card into whichever
+   column currently ends highest up, so a long card does not leave a hole beside
+   it the way a 3-column grid's row-bound layout does. Every [data-ei-pack] grid
+   (the disc cards, the team-wide buckets) is packed. The cards are measured
+   while still in the grid cells — that is their real column width — then
+   re-parented into the columns, all in the same task, so only the balanced
+   layout is ever painted. */
+function eiPackColumns(panel) {
+    if (!panel || !panel.querySelectorAll) return;
+    for (const wrap of panel.querySelectorAll('[data-ei-pack]')) {
+        const cards = [...wrap.children].filter(el => el.classList.contains('ei-card'));
+        if (!cards.length) continue;
+        const GAP = 10;
+        const heights = cards.map(c => c.getBoundingClientRect().height);
+        // A hidden panel measures 0 for everything: round-robin instead of greeding.
+        const measured = heights.every(h => h > 0);
+
+        const cols = [0, 1, 2].map(() => {
+            const d = document.createElement('div');
+            d.className = 'ei-pack-col';
+            return d;
+        });
+        wrap.textContent = '';
+        cols.forEach(c => wrap.appendChild(c));
+
+        const acc = [0, 0, 0];
+        cards.forEach((c, i) => {
+            const k = measured ? acc.indexOf(Math.min(acc[0], acc[1], acc[2])) : i % 3;
+            cols[k].appendChild(c);
+            acc[k] += heights[i] + GAP;
+        });
+    }
 }
 
 window.eiToggleSourceFilter = function(srcKey) {
@@ -849,8 +1281,19 @@ window.eiToggleSourceFilter = function(srcKey) {
 };
 
 window.eiShowAllSources = function() {
+    // "All" really means all: a source that is hidden by default (the character
+    // Emblems) has to be opted back in explicitly, so every key in play is
+    // recorded as shown instead of just clearing the hides.
     eiHiddenSources.clear();
+    const keys = new Set(eiShownSources);
+    if (typeof dcCollectAttrFixEffectsCached === 'function') {
+        for (const ef of dcCollectAttrFixEffectsCached()) keys.add(ef.source ?? 'Unknown');
+    }
+    for (const el of document.querySelectorAll('#eiFilterChips [data-ei-src]')) {
+        if (el.dataset.eiSrc) keys.add(el.dataset.eiSrc);
+    }
     eiShownSources.clear();
+    for (const k of keys) eiShownSources.add(k);
     eiRenderTable();
 };
 
@@ -859,15 +1302,47 @@ window.eiShowAllSources = function() {
 // table using the cached eiLastData — no recompute needed.
 window.eiToggleZeroGain = function() {
     eiHideZeroGain = !eiHideZeroGain;
-    const btn = document.getElementById('eiZeroGainBtn');
-    if (btn) btn.classList.toggle('ei-chip-active', !eiHideZeroGain);
+    uiPrefSet('ei.hideZeroGain', eiHideZeroGain);
+    eiSyncZeroGainChip();
     const panel = document.getElementById('eiPanel');
     if (panel && panel.classList.contains('visible') && eiLastData.length) eiRenderTable();
 };
 
 // ─── Source filter chips (shared by the EI table and the Analytics sidebar) ──
-// Unique source keys in sorted order (source name only — attacker+defender
-// grouped together).
+// Chip order is the board's order, not the alphabet: a character's four
+// sources together first (characters in deployment order, their sources in the
+// order the cards list them — Potentials, Skills, Talents, Emblems), then
+// Discs, then the team-wide buckets (Affinity, Notes, Record Stats, Boss Blitz,
+// Talents, Unknown). Scanning the list therefore walks the team, then the gear,
+// then everything that is not owned by one unit.
+const EI_CHIP_SUB_RANK = { Potentials: 0, Skills: 1, Talents: 2, Emblems: 3 };
+const EI_CHIP_SRC_RE = /^(.*) (Potentials|Skills|Talents|Emblems)$/;
+
+// "Amber Potentials" -> { tier: 0, unit: 'Amber', sub: 'Potentials' }; anything
+// that is not a per-character source (Discs, Notes, Affinity, …) -> { tier: 2 }.
+function eiChipSourceKind(srcKey) {
+    const m = EI_CHIP_SRC_RE.exec(srcKey);
+    if (!m) return { tier: 2, unit: null };
+    return { tier: 0, unit: m[1], sub: m[2] };
+}
+// Character slot order for the chips: the Record's deployment order, then any
+// record characters it misses (same sequence the cards and the Record/Emblems
+// columns use). Names the record does not know sort after the ones it does.
+function eiCharSlotOrder() {
+    const rec = (typeof getOriginRecord === 'function') ? getOriginRecord() : null;
+    const order = new Map();
+    let i = 0;
+    const add = (charId) => {
+        const nm = (typeof resolveActorKey === 'function') ? resolveActorKey('p:' + charId) : null;
+        if (nm && !order.has(String(nm))) order.set(String(nm), i++);
+    };
+    if (rec && Array.isArray(rec.team) && rec.team.length) for (const id of rec.team) add(Number(id));
+    if (rec && Array.isArray(rec.chars)) for (const c of rec.chars) add(Number(c.charId));
+    return order;
+}
+
+// Unique source keys in the tab's own order (source name only — attacker and
+// defender grouped together).
 function eiCollectSourceKeys(efs) {
     const seen = new Set();
     const allSourceKeys = [];
@@ -875,7 +1350,27 @@ function eiCollectSourceKeys(efs) {
         const srcKey = ef.source ?? 'Unknown';
         if (!seen.has(srcKey)) { seen.add(srcKey); allSourceKeys.push({ srcKey, source: ef.source ?? 'Unknown' }); }
     }
-    allSourceKeys.sort((a, b) => a.srcKey.localeCompare(b.srcKey));
+    const slots = eiCharSlotOrder();
+    const kindOf = new Map();
+    const kind = (k) => {
+        if (!kindOf.has(k)) kindOf.set(k, eiChipSourceKind(k));
+        return kindOf.get(k);
+    };
+    // 0 = a character's own sources, 1 = Discs, 2 = the team-wide buckets.
+    const tierOf = (srcKey, k) => (k.tier === 0 ? 0 : (srcKey === 'Discs' ? 1 : 2));
+    allSourceKeys.sort((a, b) => {
+        const ka = kind(a.srcKey), kb = kind(b.srcKey);
+        const ta = tierOf(a.srcKey, ka), tb = tierOf(b.srcKey, kb);
+        if (ta !== tb) return ta - tb;
+        if (ta === 0) {
+            const sa = slots.has(ka.unit) ? slots.get(ka.unit) : 9999;
+            const sb = slots.has(kb.unit) ? slots.get(kb.unit) : 9999;
+            if (sa !== sb) return sa - sb;
+            if (ka.unit !== kb.unit) return ka.unit.localeCompare(kb.unit);
+            return EI_CHIP_SUB_RANK[ka.sub] - EI_CHIP_SUB_RANK[kb.sub];
+        }
+        return a.srcKey.localeCompare(b.srcKey);
+    });
     return allSourceKeys;
 }
 
@@ -894,6 +1389,23 @@ function eiSourceChipsHtml(sourceKeys) {
 document.addEventListener('click', e => {
     const el = e.target.closest('[data-ei-src]');
     if (el) eiToggleSourceFilter(el.dataset.eiSrc);
+});
+
+// Talent bars (Effect Impact) expand/collapse in place: the rows are already in
+// the DOM, only the body's visibility flips, so no re-render and no recompute.
+// The caret is the app's own ▸/▾ pair (the same glyphs the Dmg Calc source
+// groups use), swapped here to keep the closed/open state readable.
+document.addEventListener('click', e => {
+    const head = e.target.closest('.ei-talent-head');
+    const wrap = head && head.closest('.ei-talent');
+    if (!wrap) return;
+    const open = !wrap.classList.contains('is-open');
+    wrap.classList.toggle('is-open', open);
+    head.setAttribute('aria-expanded', open ? 'true' : 'false');
+    const chev = head.querySelector('.ei-talent-chev');
+    if (chev) chev.textContent = open ? '▾' : '▸';
+    const key = wrap.dataset.eiTalent || '';
+    if (open) eiOpenTalents.add(key); else eiOpenTalents.delete(key);
 });
 
 // Render the effect-source filter chips into the left sidebar (used by the

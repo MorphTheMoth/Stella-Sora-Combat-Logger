@@ -100,20 +100,24 @@ const dcEffectPot = new Map();   // effect configId -> potential id (exact level
 const dcSkillScaled = new Map();
 
 // ─── Talent rows are not levellable ─────────────────────────────────────────
-// Effects marked as Talent (effectTable label 'Talent: …', source
+// Effects marked as Talent (effectTable label 'Talent <N>: …', source
 // '<char> Talents' / 'Talents') never scale with any level table in game —
 // no skill-slot scaling, no potential ladder, no per-entry value ladder.
 // Central predicate so the collector, the level-override resolver and the
 // synthetic record all agree on which rows are fixed.
+// The label carries the talent index ('Talent 3: ATK Enhancement'); older
+// effectTable entries and logs built before the index existed read
+// 'Talent: …', so both forms are accepted.
+const DC_TALENT_LABEL = /^Talent (?:\d+: )?/;
 function dcIsTalentRow(e) {
     if (!e) return false;
     const src = e.source;
     if (typeof src === 'string' && src.includes('Talents')) return true;
     const nm = e.name;
-    if (typeof nm === 'string' && (nm.startsWith('Talent: ') || nm.includes(' / Talent: '))) return true;
+    if (typeof nm === 'string' && (DC_TALENT_LABEL.test(nm) || / \/ Talent (?:\d+: )?/.test(nm))) return true;
     if (e.configId != null && typeof effectTable !== 'undefined') {
         const ei = effectTable.get(Number(e.configId));
-        if (ei && typeof ei.label === 'string' && ei.label.startsWith('Talent: ')) return true;
+        if (ei && typeof ei.label === 'string' && DC_TALENT_LABEL.test(ei.label)) return true;
     }
     return false;
 }
@@ -243,6 +247,44 @@ window.dcPotLevelInfo = function (potId) {
     } : null;
 };
 
+// ── Potentials whose own hits belong to a switched-off potential ───────────
+// Level 0 means the potential is not in play, and that has to cover its own
+// hits ("Multi Sweep", "Unleashed Arrow", …) as well as its effect rows.
+// Effect rows fall out through the level override; the hits carry no pot id at
+// all — only the potential's name as HitConfig.skillTitle — so they are matched
+// by name here. This is what makes the fixed-level potentials (indices 1-4 /
+// 21-24, Potential.json MaxLevel 1) switchable at all: they grant no levelled
+// rows, so a level move has nothing to clamp, and their whole contribution is
+// the hits themselves (Multi Sweep alone is 119 hits on allie skill.txt).
+// Cached on dcLevelStateVersion — it walks the whole pot table.
+let dcPotOffNamesVersion = -1;
+const dcPotOffNamesSet = new Set();
+function dcPotOffNames() {
+    if (dcPotOffNamesVersion === dcLevelStateVersion) return dcPotOffNamesSet;
+    dcPotOffNamesSet.clear();
+    if (dcPotLevels.size && typeof potentialNameById !== 'undefined' && potentialNameById.get) {
+        for (const st of dcPotLevels.values()) {
+            if (dcPotEffectiveLevel(st) > 0) continue;
+            const nm = potentialNameById.get(st.potId);
+            if (nm) dcPotOffNamesSet.add(String(nm));
+        }
+    }
+    dcPotOffNamesVersion = dcLevelStateVersion;
+    return dcPotOffNamesSet;
+}
+
+// A Potentials hit belongs to a switched-off potential when its title is that
+// potential's name, or the name plus a variant suffix ("Prismatic Bubbles
+// (red)" for potential "Prismatic Bubbles").
+function dcPotHitOff(skillTitle) {
+    const off = dcPotOffNames();
+    if (!off.size) return false;
+    const t = String(skillTitle);
+    if (off.has(t)) return true;
+    for (const nm of off) if (t.startsWith(nm + ' (')) return true;
+    return false;
+}
+
 // ── Lazy record reconstruction (logs without a record log) ────────────────
 // Old logs carry no Origin event, so the level tables start empty and the ±
 // buttons have nothing to step. The first time a row whose level scales with
@@ -289,7 +331,13 @@ window.dcResetSimState = function () {
     dcSkillLevels.clear();
     dcNoteLevels.clear();
     dcCharLevels.clear();
+    dcDiscLevels.clear();
     dcLevelTablesSig = null;
+    for (const k of dcDiscOverrideKeys) {
+        if (typeof dcEffectLevelOverrides !== 'undefined') dcEffectLevelOverrides.delete(k);
+    }
+    dcDiscOverrideKeys.clear();
+    dcDiscOverrideVersion = -1;
     if (typeof dcEffectsDisabled !== 'undefined') dcEffectsDisabled.clear();
     if (typeof dcEffectLevelOverrides !== 'undefined') dcEffectLevelOverrides.clear();
     dcInferredRoles.clear();          // role evidence belongs to the opened log
@@ -383,7 +431,9 @@ function dcGetLevelOverride(e, side, disabledSet, charId, fromAttrDict) {
     // no-arg callers resolve through the dcEffectsDisabled-keyed memo.
     const memoSet = (disabledSet && typeof disabledSet === 'object') ? disabledSet : dcEffectsDisabled;
     let m = _dcGloMemo.get(memoSet);
-    if (!m) { m = new Map(); _dcGloMemo.set(disabledSet, m); }
+    // Key the memo by the set actually used above: a 2-arg call passes no
+    // disabledSet, and WeakMap.set(undefined, …) throws.
+    if (!m) { m = new Map(); _dcGloMemo.set(memoSet, m); }
     // Key on BOTH state counters: dcStateVersion covers in-place mutations of
     // a persistent disabled set (dcEffectsDisabled is mutated in place and
     // every mutation site bumps it), dcLevelStateVersion covers the level
@@ -905,6 +955,370 @@ function dcNoteEffectiveLevel(st, disabledSet) {
     return Math.min(Math.max(st.recordLv + dcNoteRowBonus(st, disabledSet) + (st.change || 0), 0), 99);
 }
 
+// ─── Disc level table (Crescendo copies + harmony layers) ───────────────────
+// The Record tab steps three disc knobs independently:
+//   copies     — Crescendo star 0..5. Melody level = star + 1, so the melody
+//                row's effect id swaps along the disc's MainSkill ladder
+//                (DiscData.lua:287 UpdateMainSkillData: mapGroup[nStar + 1]),
+//                and the disc's flat Atk moves by the DiscExtraAttribute
+//                difference (DiscData.lua:191 UpdateAttr).
+//   harmony1/2 — SecondarySkill layer 0..5 (0 = off). Each layer is a different
+//                effect id in the same group, so the row's value swaps. In game
+//                the layer is derived from the squad's note totals
+//                (DiscData.lua:407 GetSubSkillLevel); here it is set directly,
+//                and every layer keeps its note requirement (available through
+//                window.dcDiscEditorMeta) for a later note↔harmony link.
+//                A layer the record did NOT have active is read-only: see
+//                dcRebuildDiscLevels.
+// Both land in dcEffectLevelOverrides under the logged row's own key
+// (`attacker:<configId>:<valueConfigId>`), which dcGetLevelOverride checks
+// first — the same map the Dmg Calc's enable-style buttons write. Copies also
+// rewrite the disc's synthetic Atk stat row (buildRecordDiscEffects), which is
+// what the logged stat snapshot carries.
+const dcDiscLevels = new Map();       // idx -> { idx, discId, copies, copiesRec, harmonies[], baseAtk, editable }
+const dcDiscOverrideKeys = new Set(); // override keys this table owns
+let dcDiscOverrideVersion = -1;       // dcLevelStateVersion the overrides were built for
+
+// Logged harmony layer of one group: the record lists the active SecondarySkill
+// ids (`secondarySkills`), whose <groupId*100 + layer> shape gives both.
+function dcLoggedHarmonyLayer(rec, groupId) {
+    for (const id of (rec?.secondarySkills || [])) {
+        const n = Number(id);
+        if (!n) continue;
+        if (Math.floor(n / 100) === Number(groupId)) return n % 100;
+    }
+    return 0;
+}
+
+// Crescendo copies run 1..starMax+1 (star 0..5, DiscData.lua:287). starMax is
+// the highest star DiscExtraAttribute carries for the disc's group, and 0 means
+// the disc has no ladder in the tables at all — not "only star 0" — so the
+// game's six stars still apply there. `(starMax || 5) + 1`, not
+// `starMax + 1 || 6`: the latter is `1 || 6` for starMax 0 and pinned the stepper
+// at 1/1.
+function dcDiscCopiesMax(meta) {
+    const starMax = Number(meta?.starMax);
+    return (starMax > 0 ? starMax : 5) + 1;
+}
+
+// Rebuild the disc table from the active record. User changes survive a rebuild
+// (like the pot/skill/note tables); discs the record no longer carries drop.
+function dcRebuildDiscLevels() {
+    const prev = new Map(dcDiscLevels);
+    dcDiscLevels.clear();
+    const rec = (typeof getOriginRecord === 'function') ? getOriginRecord() : null;
+    (rec?.discStats || []).forEach((d, idx) => {
+        const discId = Number(d.id ?? d.discId ?? 0);
+        if (!discId) return;
+        const meta = (typeof window.dcDiscEditorMeta === 'function') ? window.dcDiscEditorMeta(discId) : null;
+        const build = (typeof window.dcDiscInferBuild === 'function')
+            ? window.dcDiscInferBuild(discId, d.attrs || {}) : null;
+        const copiesRec = build
+            ? Math.min(Math.max(build.star + 1, 1), dcDiscCopiesMax(meta))
+            : 1;
+        // Only the first three discs are real: StarTowerLevelData:ResetDiscInfo
+        // sends GetDiscInfo (melody + harmony skillInfos) for
+        // `table.indexof(tbDisc, nDiscId) <= 3` and nothing for the support
+        // slots, and a saved log's `secondarySkills` carries exactly the main
+        // discs' groups. A support disc's copies still move its flat Atk (that
+        // path is the attribute row, not the skill info), but its melody and
+        // harmony apply to nothing, so they get no level state at all.
+        const isMain = idx < 3;
+        const harmonies = isMain ? [0, 1].map(slot => {
+            const grp = meta?.harmonyGroups?.[slot] || null;
+            if (!grp) return null;
+            const recL = Math.min(Math.max(dcLoggedHarmonyLayer(rec, grp.groupId), 0), grp.layers.length);
+            return {
+                slot: grp.slot,
+                groupId: grp.groupId,
+                layers: grp.layers,
+                max: grp.layers.length,
+                rec: recL,
+                change: 0,
+                // A layer the record never had active is read-only: its Effect
+                // row is trigger/condition-gated (Trigger HITTING / TRIGGER_MARK,
+                // TargetCondition, TakeEffectCondition), the viewer cannot
+                // evaluate those against a fight that never ran it, and the note
+                // totals may not even reach the layer. Raising it would invent
+                // damage as an unattributed team-wide stat.
+                editable: recL > 0,
+            };
+        }) : [null, null];
+        const old = prev.get(idx);
+        // Only carry a change over when it addresses the same disc (records can
+        // reorder slots between rooms).
+        const same = old && old.discId === discId;
+        if (same) {
+            harmonies.forEach((h, i) => {
+                // A part the record no longer ran drops its edit: it is not
+                // levellable any more, so a carried-over change would be a
+                // level nothing can display, step or reset.
+                if (h && h.editable && old.harmonies[i]) h.change = old.harmonies[i].change || 0;
+            });
+        }
+        dcDiscLevels.set(idx, {
+            idx, discId, meta, copiesRec, copies: copiesRec,
+            isMain,
+            copiesChange: same ? (old.copiesChange || 0) : 0,
+            harmonies,
+            baseAtk: build ? build.baseAtk : null,
+            editable: !!meta && !!build,
+        });
+    });
+    for (const [idx, st] of dcDiscLevels) {
+        st.copies = Math.min(Math.max(st.copiesRec + st.copiesChange, 1), dcDiscCopiesMax(st.meta));
+        for (const h of st.harmonies) {
+            if (!h) continue;
+            if (!h.editable) { h.change = 0; h.level = 0; continue; }
+            h.level = Math.min(Math.max(h.rec + h.change, 0), h.max);
+        }
+    }
+    dcDiscOverrideVersion = -1;   // force the override rebuild
+    dcBumpLevelState();
+}
+
+// Effective (copies, harmony levels) of one disc, plus the record baseline.
+function dcDiscLevelInfo(idx) {
+    const st = dcDiscLevels.get(Number(idx));
+    if (!st) return null;
+    return {
+        idx: st.idx,
+        discId: st.discId,
+        isMain: !!st.isMain,
+        copies: st.copies,
+        copiesRec: st.copiesRec,
+        copiesChange: st.copiesChange,
+        copiesMax: dcDiscCopiesMax(st.meta),
+        baseAtk: st.baseAtk,
+        melody: st.meta?.melody || null,
+        harmony: st.harmonies.map(h => h ? {
+            slot: h.slot,
+            groupId: h.groupId,
+            level: h.level,
+            rec: h.rec,
+            change: h.change,
+            max: h.max,
+            layers: h.layers,
+            // false = the record never ran this layer → not levellable (see
+            // dcRebuildDiscLevels). Every surface renders it as a readout.
+            editable: !!h.editable,
+        } : null),
+        editable: st.editable,
+    };
+}
+
+// The stat value of the melody level / harmony layer the disc runs at, resolved
+// from the datamine ladder (null when that level carries no direct attr row —
+// e.g. an effect that only exists as a script).
+function dcDiscMelodyStats(st) {
+    if (!st?.meta?.melody) return [];
+    const level = Math.min(Math.max(st.copies, 1), st.meta.melody.levels.length);
+    const row = st.meta.melody.levels[level - 1];
+    if (!row) return [];
+    return (row.stats && row.stats.length) ? row.stats : (row.stat ? [row.stat] : []);
+}
+
+// Which disc part an effect row drives, resolved to the live level state. One
+// lookup shared by every surface that shows discs: the Record tab's steppers,
+// the Dmg Calc sidebar rows and Effect Impact's rows all name and step the same
+// numbers (the row's own effect id → disc part via the datamine reverse index).
+function dcDiscPartInfo(row) {
+    const configId = Number(row?.configId);
+    if (!configId) return null;
+    // Synthetic record stat rows: 920000000 + discIdx*1000 + statIdx.
+    if (configId >= 920000000 && configId < 930000000) {
+        const idx = Math.floor((configId - 920000000) / 1000);
+        const info = dcDiscLevelInfo(idx);
+        if (!info) return null;
+        return { idx, discId: info.discId, part: 'stat', level: info.copies, max: info.copiesMax, editable: false };
+    }
+    const hit = (typeof window.dcDiscPartForEffect === 'function')
+        ? window.dcDiscPartForEffect(configId) : null;
+    if (!hit) return null;
+    let idx = null;
+    for (const st of dcDiscLevels.values()) if (st.discId === hit.discId) { idx = st.idx; break; }
+    if (idx == null) return null;
+    const info = dcDiscLevelInfo(idx);
+    if (!info) return null;
+    if (hit.part === 'copies') {
+        const lvlRow = info.melody?.levels?.[Math.max(0, Math.min(info.copies, info.melody.levels.length) - 1)];
+        const recRow = info.melody?.levels?.[Math.max(0, Math.min(info.copiesRec, info.melody.levels.length) - 1)];
+        // The row the record carries is the LOGGED level's first effect.
+        const leadId = recRow?.stats?.[0]?.id ?? lvlRow?.stats?.[0]?.id ?? null;
+        return {
+            idx, discId: hit.discId, part: 'copies',
+            level: info.copies, rec: info.copiesRec, max: info.copiesMax,
+            editable: !!info.editable, name: 'Copies',
+            // Only the part's leading effect row carries the control / chip; its
+            // companion rows (one per Param) are the same part.
+            lead: leadId == null || Number(configId) === Number(leadId),
+        };
+    }
+    const slot = hit.slot || 1;
+    const h = info.harmony[slot - 1];
+    if (!h) return null;
+    const layer = h.level > 0 ? h.layers[h.level - 1] : h.layers[Math.max(0, h.rec - 1)];
+    const recLayer = h.rec > 0 ? h.layers[h.rec - 1] : null;
+    // The row the record carries is the LOGGED layer's first effect, so the
+    // control/chip stays on that row even after the layer moves.
+    const leadId = recLayer?.stats?.[0]?.id ?? layer?.stats?.[0]?.id ?? null;
+    return {
+        idx, discId: hit.discId, part: 'harmony', slot,
+        level: h.level, rec: h.rec, max: h.max,
+        // A layer the record did not run has no ladder to step (its trigger was
+        // never evaluated) — the sidebar prints a readout instead of −/+/field.
+        editable: !!h.editable, name: `Harmony ${slot}`,
+        lead: leadId == null || Number(configId) === Number(leadId),
+    };
+}
+window.dcDiscPartInfo = dcDiscPartInfo;
+
+// Step one disc part the way every ± in the app does (dir = +1/-1), clamped to
+// that part's own range.
+window.dcChangeDiscPart = function (idx, part, slot, dir) {
+    const info = dcDiscLevelInfo(idx);
+    if (!info) return;
+    const cur = part === 'copies' ? info.copies : (info.harmony[(slot || 1) - 1]?.level ?? 0);
+    const max = part === 'copies' ? info.copiesMax : (info.harmony[(slot || 1) - 1]?.max ?? 0);
+    const next = Math.min(Math.max(cur + (dir > 0 ? 1 : -1), part === 'copies' ? 1 : 0), max);
+    if (next === cur) return;
+    if (part === 'copies' && typeof window.dcSetDiscCopies === 'function') window.dcSetDiscCopies(idx, next);
+    else if (part === 'harmony' && typeof window.dcSetDiscHarmony === 'function') window.dcSetDiscHarmony(idx, slot || 1, next);
+};
+
+// Set one disc part's level directly (the sidebar's level fields, and any other
+// surface that types a number instead of stepping).
+window.dcSetDiscPart = function (idx, part, slot, level) {
+    if (part === 'copies') {
+        if (typeof window.dcSetDiscCopies === 'function') window.dcSetDiscCopies(idx, level);
+    } else if (typeof window.dcSetDiscHarmony === 'function') {
+        window.dcSetDiscHarmony(idx, slot || 1, level);
+    }
+};
+
+// True when any disc level differs from what the record logged. The calc's fast
+// paths skip the override loop when nothing is edited, so they consult this.
+function dcDiscHasEdits() {
+    for (const st of dcDiscLevels.values()) {
+        if (st.copies !== st.copiesRec) return true;
+        for (const h of st.harmonies) if (h && h.level !== h.rec) return true;
+    }
+    return false;
+}
+
+// Rebuild the level overrides from the current level table. Idempotent; driven
+// by dcLevelStateVersion so a what-if path that never touched a disc costs one
+// integer compare per hit.
+//
+// One route only: an override on the logged row's own id. Every part the editor
+// offers is a part the record RAN (see dcRebuildDiscLevels — a layer the record
+// did not have active is not levellable), so there is always a logged row to
+// swap the value on, and the logged rows are the ground truth for what the part
+// was worth. A part with no logged row used to be applied as an unattributed
+// stat delta; that invented damage for effects the game only grants under a
+// trigger (a harmony's Effect row carries Trigger/TargetCondition/
+// TakeEffectCondition — HITTING, TRIGGER_MARK, …), which the viewer cannot
+// evaluate, so the deltas are gone.
+function dcRefreshDiscOverrides() {
+    if (dcDiscOverrideVersion === dcLevelStateVersion) return;
+    dcDiscOverrideVersion = dcLevelStateVersion;
+    for (const k of dcDiscOverrideKeys) dcEffectLevelOverrides.delete(k);
+    dcDiscOverrideKeys.clear();
+
+    const push = (rowId, next) => {
+        if (rowId == null) return;
+        // The same disc effect can be logged on either side (a melody's "Rcd"
+        // params land on the defender), so both keys are registered — the one
+        // whose row exists is the one the calc reads.
+        const ov = (next && next.value != null)
+            ? {
+                newValueConfigId: next.id ?? rowId,
+                newValue: next.value,
+                newAttrType: next.attrType,
+                newSubType: next.subType,
+            }
+            // level 0 = the harmony is off: keep the row's attr but zero it.
+            : { newValueConfigId: rowId, newValue: 0 };
+        for (const side of ['attacker', 'defender']) {
+            const key = `${side}:${rowId}:${rowId}`;
+            dcEffectLevelOverrides.set(key, ov);
+            dcDiscOverrideKeys.add(key);
+        }
+    };
+    // A disc part (melody level, harmony layer) is several effect rows at once —
+    // one per Param, e.g. Skill Dmg + Mark DMG. Both id families end in the
+    // level digit (<groupId*1000 + 10*k + level> for the melody, <layerId + 10*k>
+    // and layerId = group*100 + level for a harmony layer), so a logged row maps
+    // to the target level by shifting its last digit — no index pairing, which
+    // would misalign as soon as one level misses a Param.
+    const pushLevelMapped = (curStats, nextStats, fromLevel, toLevel) => {
+        const byId = new Map(nextStats.map(s => [s.id, s]));
+        for (const cur of curStats) {
+            const target = byId.get(cur.id - fromLevel + toLevel);
+            if (target) push(cur.id, target);
+        }
+    };
+
+    for (const st of dcDiscLevels.values()) {
+        if (!st.editable) continue;
+        // ── melody (Crescendo copies) ───────────────────────────────────
+        // Only a main-slot disc's melody reaches the engine; on a support disc
+        // the star is still worth its flat Atk (handled below) and nothing else.
+        if (st.isMain && st.copies !== st.copiesRec) {
+            pushLevelMapped(dcDiscMelodyStats({ ...st, copies: st.copiesRec }), dcDiscMelodyStats(st),
+                st.copiesRec, st.copies);
+        }
+        // ── harmony layers ──────────────────────────────────────────────
+        // Only a layer the record ran can move (dcRebuildDiscLevels locks the
+        // rest), so `h.rec > 0` always holds and there is always a logged row
+        // set to swap values on.
+        for (const h of st.harmonies) {
+            if (!h || !h.editable || h.level === h.rec) continue;
+            const curStats = h.layers[h.rec - 1]?.stats || [];
+            if (h.level > 0) {
+                pushLevelMapped(curStats, h.layers[h.level - 1]?.stats || [], h.rec, h.level);
+            } else {
+                // Level 0 = the harmony is off: zero the rows it applied.
+                curStats.forEach(cur => push(cur.id, null));
+            }
+        }
+    }
+
+    // ── copies also move the disc's flat Atk ────────────────────────────
+    // The logged stat snapshot already contains the Crescendo star's Atk, so the
+    // edit is applied on the disc's own synthetic Atk row as a level override:
+    // the calc swaps the row's value for logged+delta (equivalent to a delta on
+    // the stat map) and every UI that prints that row — Dmg Calc, Effect Impact,
+    // the Record card — shows the live number with its "overridden" marker.
+    const rec = (typeof getOriginRecord === 'function') ? getOriginRecord() : null;
+    if (rec && typeof buildRecordDiscEffects === 'function') {
+        const rows = buildRecordDiscEffects(rec);
+        for (const st of dcDiscLevels.values()) {
+            // The logged stat row already carries its own star, so the edit only
+            // needs the star table — not an inferred build (baseAtk), which is
+            // null whenever the record's stat dict doesn't match a table row.
+            if (!st.editable || st.copies === st.copiesRec) continue;
+            if (typeof window.dcDiscStarAtk !== 'function') continue;
+            const logged = window.dcDiscStarAtk(st.discId, st.copiesRec - 1) || 0;
+            const next = window.dcDiscStarAtk(st.discId, st.copies - 1) || 0;
+            const atkDelta = next - logged;
+            if (!atkDelta) continue;
+            const lo = 920000000 + st.idx * 1000;
+            const atkRow = rows.find(r => r.configId >= lo && r.configId < lo + 1000 && r.attrType === 1);
+            if (!atkRow || atkRow.value == null) continue;
+            const key = `attacker:${atkRow.configId}:0`;
+            dcEffectLevelOverrides.set(key, {
+                newValueConfigId: atkRow.configId,
+                newValue: atkRow.value + atkDelta,
+                newAttrType: atkRow.attrType,
+                newSubType: atkRow.subType,
+            });
+            dcDiscOverrideKeys.add(key);
+        }
+    }
+}
+
+
 // Which tracked skill-slot state does a levelTypeData-3 config scale with?
 // ActionKey 2 (B) is a SHARED slot: the caster's slot dict is role-adjusted
 // at battle setup — PlayerCharData:CalCharacterAttrBattle (lua:1704) removes
@@ -1265,6 +1679,7 @@ function dcCollectAttrFixEffects(dcFiltered) {
     dcRebuildSkillLevels(); // rebuild the skill level table from the record
     dcRebuildNoteLevels();  // rebuild the note level table from the record
     dcRebuildCharLevels();  // rebuild the character level table from the record
+    dcRebuildDiscLevels();  // rebuild the disc table (copies / harmony layers)
     dcEnsureHitLevels();    // lazy record reconstruction from the hits themselves
     for (const ev of dcFiltered) {
         const evCharId = dcEventCharId(ev);   // attacker charId (skill-level owner)
@@ -1691,6 +2106,10 @@ function dcApplyEffectValue(statMap, eff, value, sign, hitElementType, overrideV
 // baseline state it patches candidate level deltas onto.
 // Returns { aStats, dStats } (clones with modifications applied).
 function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides, skipLevelOverrides) {
+    // The disc editor's overrides (melody level from Crescendo copies, harmony
+    // layers) are derived state: refresh them before anything reads the map.
+    // Memoized on dcLevelStateVersion, so this is one integer compare per hit.
+    if (typeof dcRefreshDiscOverrides === 'function') dcRefreshDiscOverrides();
     const origA = ev.AttackerStats?.attrs || [];
     const origD = ev.DefenderStats?.attrs || [];
     // ── Disabled character ──────────────────────────────────────────────
@@ -1711,12 +2130,14 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides, s
     const attackerCharId = dcEventCharId(ev);
 
     // ── Potentials group disable ──────────────────────────────────────────────
-    // If this hit belongs to a disabled Potentials group, zero all its stats so
-    // calcDamage produces 0 for this hit.
+    // If this hit belongs to a disabled Potentials group — the sidebar group
+    // toggle, or a potential switched off in the Record tab (level 0, matched
+    // by name: see dcPotHitOff) — zero all its stats so calcDamage produces 0
+    // for this hit.
     const evSrc = ev.source ?? ev.HitConfig?.source ?? '';
     if (dcIsPotentialsSource(evSrc)) {
         const skillTitle = ev.HitConfig?.skillTitle ?? 'Unknown';
-        if (dcEffectsDisabled.has(`potentials:${skillTitle}`)) {
+        if (dcEffectsDisabled.has(`potentials:${skillTitle}`) || dcPotHitOff(skillTitle)) {
             return { aStats: origA, dStats: origD, _potentialsDisabled: true };
         }
     }

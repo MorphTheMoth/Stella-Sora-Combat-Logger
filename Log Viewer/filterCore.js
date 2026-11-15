@@ -1,13 +1,7 @@
 // ─── filterCore.js ────────────────────────────────────────────────────────────
 // Single shared filter state + dropdown engine for the left sidebar.
 //
-// Previously the Log tab (log.js) and the hit-based tabs (dmgCalc.ui.js) each
-// kept a private copy of the same four filters plus their own rebuild logic,
-// which is where the "sidebar list doesn't update properly" bugs lived: two
-// option-set caches, two reset paths (only one of which cleared the state),
-// and a streaming hook that maintained only half of the Dmg Calc dropdowns.
-//
-// Both "domains" now derive their filtered lists and dropdown options from
+// Both "domains" derive their filtered lists and dropdown options from
 // the SAME state via per-domain predicates:
 //   - 'log'  — every event (Hits / Buffs / Effects / Skill Casts; Reset and
 //              Record entries always pass). Character matching includes buff
@@ -428,7 +422,7 @@ function fcResetFilters() {
     // Effect Impact state belongs to the opened log too.
     if (typeof eiHiddenSources !== 'undefined') eiHiddenSources.clear();
     if (typeof eiShownSources !== 'undefined') eiShownSources.clear();
-    if (typeof eiHideZeroGain !== 'undefined') eiHideZeroGain = true;
-    const zb = document.getElementById('eiZeroGainBtn');
-    if (zb) zb.classList.remove('ei-chip-active');
+    // eiHideZeroGain is NOT reset here: "hide 0% gain effects" is a saved view
+    // preference (dataLoader.js uiPref*), not state of the log. Repaint the chip from it.
+    if (typeof eiSyncZeroGainChip === 'function') eiSyncZeroGainChip();
 }

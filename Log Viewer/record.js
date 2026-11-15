@@ -41,6 +41,25 @@ window.RecordRefresh = function() {
     recordRender();
 };
 
+// A row's floor: the character level and a disc's copies start at 1 —
+// potentials and skill slots step down to 0, and for a potential 0 is its
+// disabled state (a harmony layer at 0 means the harmony is off). Every place
+// that clamps or draws a stepper goes through this, so the − button's "at the
+// limit" look can never disagree with what a click actually does.
+function recRowMin(row) {
+    if (row.kind === 'char' || row.kind === 'copies') return 1;
+    return 0;
+}
+
+// How far one ± click (or an arrow key in the level field) moves a row. Notes
+// are the one family counted in quantity — the level IS the note's total note
+// points, and the ladder runs 0..99 — so single steps meant dozens of clicks to
+// cross it; they move 5 at a time. Typing in the field still lands on any exact
+// value (recSetLevel), so an off-grid level is still reachable.
+function recRowStep(row) {
+    return (row && row.kind === 'note') ? 5 : 1;
+}
+
 // Re-read every rendered stepper from the level tables and update its markup
 // without touching the DOM structure (focus, caret and scroll survive).
 function recPatchAll(panel) {
@@ -54,20 +73,30 @@ function recPatchAll(panel) {
         const step = inp.closest('.rec-step');
         if (step) {
             step.classList.toggle('is-changed', row.change !== 0);
-            const min = row.kind === 'skill' ? 0 : 1;
+            const min = recRowMin(row);
             const dec = step.querySelector('[data-act="dec"]');
             const inc = step.querySelector('[data-act="inc"]');
             if (dec) dec.classList.toggle('is-limit', row.edit <= min);
             if (inc) inc.classList.toggle('is-limit', row.edit >= row.max);
         }
-        const holder = inp.closest('.rec-row');
+        const holder = inp.closest('.rec-row, .rec-disc-lvl');
         if (holder) recPatchRowEl(holder, row);
+    }
+    // Rows without a stepper (fixed-level potentials — editable === false) are
+    // not visited above, but their disabled wash has to follow a row click
+    // too, so every rendered row is patched once more.
+    for (const holder of panel.querySelectorAll('.rec-row[data-row]')) {
+        const row = recFindRow(holder.dataset.row);
+        if (row) recPatchRowEl(holder, row);
     }
     if (recView.rec && (recView.rec.chars || []).some(ch =>
         recEmblemIsEdited(recView.rec, ch, 1) || recEmblemIsEdited(recView.rec, ch, 2)
         || recEmblemIsEdited(recView.rec, ch, 3))) {
         edited += 1;
     }
+    // A talent switched off is an edit like any other: "Reset all" has to be
+    // live so the board can put it back (dcResetTalentGroups).
+    if ([...dcGroupEffectKeys.keys()].some(k => k === 'talents' || k.startsWith('talent:'))) edited += 1;
     const all = panel.querySelector('[data-act="resetall"]');
     if (all) {
         all.classList.toggle('is-empty', !edited);
@@ -78,6 +107,23 @@ function recPatchAll(panel) {
         }
     }
     recPatchEmblems(panel);
+    recPatchDiscCards(panel);
+}
+
+// The disc cards' stat lines only depend on the level tables, but a focused
+// stepper means the board is patched instead of rebuilt — so the card's Atk has
+// to be repainted here or it keeps the pre-edit number until focus moves.
+function recPatchDiscCards(panel) {
+    const rec = recView.rec;
+    if (!rec || !(rec.discStats || []).length) return;
+    const cards = panel.querySelectorAll('.rec-disc');
+    cards.forEach((el, i) => {
+        const d = rec.discStats[i];
+        if (!d) return;
+        const holder = el.querySelector('.rec-disc-stats');
+        const html = recDiscStatsHtml(d, i);
+        if (holder && holder.innerHTML !== html) holder.innerHTML = html;
+    });
 }
 
 // Keep the emblem cards' per-row edited state in step without re-rendering (the
@@ -124,6 +170,7 @@ function recPatchEmblems(panel) {
 function recPatchRowEl(el, row) {
     const changed = row.change !== 0;
     el.classList.toggle('is-changed', changed);
+    el.classList.toggle('is-disabled', recRowOff(row));
     el.title = recRowTitle(row);
     let reset = el.querySelector('.rec-row-reset');
     if (changed) {
@@ -137,7 +184,12 @@ function recPatchRowEl(el, row) {
             btn.setAttribute('aria-label', `Reset ${row.name}`);
             btn.textContent = '↺';
             if (reset) reset.replaceWith(btn);
-            else el.appendChild(btn);
+            else {
+                // Rows carry the reset slot before the stepper; a row patched in
+                // place without one goes in at the same place, not at the end.
+                const step = el.querySelector('.rec-step');
+                if (step) el.insertBefore(btn, step); else el.appendChild(btn);
+            }
         }
     } else if (reset && !reset.classList.contains('is-empty')) {
         const span = document.createElement('span');
@@ -256,6 +308,9 @@ function recPotRows(ch) {
         // Split at the ladder top: the level itself (1..6), then the bonus
         // level on top of it (+1, +2, …).
         const base = Math.min(edit, REC_POT_BASE);
+        // Level a disabled potential comes back to: the record's own effective
+        // level (ladder + emblem/talent grant), with the user change left out.
+        const logged = Math.min(Math.max(recordLv + grant, 0), REC_POT_MAX);
         // Single-level potentials (indices 1-4 / 21-24 — Potential.json says
         // MaxLevel 1) have no levelling row in the game: the emblem affix can't
         // raise them either, so the board shows them read-only.
@@ -274,12 +329,52 @@ function recPotRows(ch) {
             // level) — part of `edit`, surfaced in the tooltip only.
             grant,
             change,
-            max: levelable ? REC_POT_MAX : edit,
+            logged,
+            max: levelable ? REC_POT_MAX : 1,
             editable: levelable,
             icon: recPotUrl(potId),
         });
     }
     return rows;
+}
+
+// ─── Talents ─────────────────────────────────────────────────────────────────
+// One row per talent, not one per effect: a character's five talents own up to
+// eleven rows each (the named passive + the ten upgrade nodes), and they are all
+// filed under the single "<unit> Talents" source. The fold is the same one the
+// Effect Impact tab draws and the sidebar's talent blocks switch — the group key
+// is "talent:<unit>|<n>" (dcTalentGroupKey), so a click here and a click there
+// are the same switch. A talent has no level: the row is on/off only, which is
+// why it carries no stepper (editable === false).
+function recTalentRows(ch) {
+    const unit = String(ch.charId) === '0' ? null : resolveActorKey('p:' + ch.charId);
+    if (!unit || typeof dcTalentGroupsOf !== 'function') return [];
+    return dcTalentGroupsOf(unit).map(g => {
+        const off = typeof dcTalentOffNow === 'function' ? dcTalentOffNow(unit, g.index) : false;
+        return {
+            key: `talent-${ch.charId}-${g.index}`,
+            kind: 'talent',
+            mode: 'toggle',
+            unit,
+            index: g.index,
+            title: g.title || null,
+            name: g.title ? `Talent ${g.index}: ${g.title}` : `Talent ${g.index}`,
+            count: g.effects.length,
+            off,
+            edit: 0, base: 0, bonus: 0, change: 0, logged: 0, max: 0,
+            editable: false,
+            icon: null,
+        };
+    });
+}
+
+// Is this row in its "off" state? The one rule the board and the sidebar share:
+// a potential is off at level 0, a talent is off while its group is switched off.
+function recRowOff(row) {
+    if (!row) return false;
+    if (row.kind === 'pot') return row.edit <= 0;
+    if (row.kind === 'talent') return !!row.off;
+    return false;
 }
 
 function recSkillRows(ch) {
@@ -344,6 +439,141 @@ function recCharLevelRow(ch) {
     };
 }
 
+// ─── Disc editor rows (copies / harmony layers) ──────────────────────────────
+// Three independent knobs per equipped disc, one stepper each:
+//   copies    — Crescendo star 0..5; melody level = star + 1, plus the disc's
+//               flat Atk (DiscExtraAttribute) per star
+//   Harmony 1 — SecondarySkill group 1, layer 0..5 (0 = off)
+//   Harmony 2 — group 2, same (5★ discs only; 4★ have one, 3★ none)
+// Where each lands in the calculation is the disc level table in
+// dmgCalc.calc.js; the layer's note requirement is carried in the tooltip and
+// stays available through window.dcDiscEditorMeta for a later note↔harmony link.
+function recDiscLevelRows(index) {
+    const info = window.dcDiscLevelInfo ? window.dcDiscLevelInfo(index) : null;
+    if (!info) return [];
+    const rows = [];
+    const starAtk = (typeof window.dcDiscStarAtk === 'function')
+        ? window.dcDiscStarAtk(info.discId, info.copies - 1) : 0;
+    const melodyName = info.melody?.levels?.[Math.max(0, Math.min(info.copies, info.melody.levels.length) - 1)]?.name
+        || info.melody?.levels?.[0]?.name || 'Melody';
+    rows.push({
+        key: `disc-${index}-copies`,
+        kind: 'copies',
+        discIdx: index,
+        name: 'Copies',
+        label: 'Copies',
+        edit: info.copies,
+        base: info.copies,
+        bonus: 0,
+        change: info.copiesChange || 0,
+        max: info.copiesMax,
+        editable: !!info.editable,
+        title: `Crescendo copies ${info.copies}/${info.copiesMax} (logged ${info.copiesRec})` +
+            (info.isMain === false
+                ? ' · support slot: melody does not apply'
+                : ` · ${melodyName} lv ${info.copies}`) +
+            (starAtk ? ` · +${starAtk} Atk` : ''),
+    });
+    (info.harmony || []).forEach((h, i) => {
+        if (!h) return;
+        const layer = h.level > 0 ? h.layers[h.level - 1] : null;
+        const need = layer?.need || {};
+        const needTxt = Object.entries(need)
+            .map(([nid, n]) => `${subNoteName(Number(nid))} ${n}`)
+            .join(', ');
+        const layerTxt = h.level > 0 ? (layer?.name || `layer ${h.level}`) : 'off';
+        // A layer the record never had active is a readout, not a stepper: its
+        // Effect row is trigger/condition-gated (HITTING, TRIGGER_MARK, a target
+        // condition…), the viewer cannot evaluate that against a fight that never
+        // ran it, and raising it would invent damage as an unattributed
+        // team-wide stat. The note needs stay in the tooltip either way.
+        const locked = !h.editable;
+        rows.push({
+            key: `disc-${index}-h${i + 1}`,
+            kind: 'harmony',
+            discIdx: index,
+            slot: i + 1,
+            name: `Harmony ${i + 1}`,
+            label: `Harmony ${i + 1}`,
+            edit: h.level,
+            base: h.level,
+            bonus: 0,
+            change: h.change || 0,
+            max: h.max,
+            editable: !locked,
+            lockedNote: locked ? 'not active in this record — cannot be levelled' : null,
+            // recRowTitle appends lockedNote, so the title itself carries only
+            // what the row knows (the lock reason is stated once).
+            title: locked
+                ? `Harmony ${i + 1}` + (needTxt ? ` · needs ${needTxt}` : '')
+                : `Harmony ${i + 1} · ${layerTxt} lv ${h.level}/${h.max}` +
+                  ` (record: lv ${h.rec})` +
+                  (needTxt ? ` · needs ${needTxt}` : ''),
+        });
+    });
+    return rows;
+}
+
+// One compact disc-card control line: label, reset slot, stepper. The disc card
+// is a third of the board wide, so these rows are the same stepper as the
+// character rows with a narrower value box (`.rec-step.is-compact`).
+function recDiscLevelLine(row) {
+    const reset = row.change !== 0
+        ? `<button type="button" class="rec-row-reset" data-act="reset" data-row="${row.key}"` +
+          ` title="Back to the logged level" aria-label="Reset ${esc2(row.name)}">↺</button>`
+        : '<span class="rec-row-reset is-empty" aria-hidden="true"></span>';
+    // A locked part carries no stepper (recStepper returns '' when
+    // editable === false), so it prints its state where the value would sit.
+    const body = row.editable === false
+        ? `<span class="rec-disc-lvl-off">off</span>`
+        : reset + recStepper(row);
+    return `<span class="rec-disc-lvl" data-row="${row.key}" title="${esc2(recRowTitle(row))}">` +
+        `<span class="rec-disc-lvl-name">${esc2(row.label)}</span>` +
+        body +
+        `</span>`;
+}
+
+// Note rows: the build's note totals, one stepper each. The level IS the
+// quantity (Item.<note>.2: "increases … based on its total quantity") and each
+// level is the next EffectValue ladder row (configId + level*10), so a step
+// moves every effect of that note across the log.
+function recNoteRows(rec) {
+    const out = [];
+    const ids = [];
+    for (const entry of (rec?.notes || [])) {
+        const noteId = Number(Array.isArray(entry) ? entry[0] : entry?.noteId);
+        if (noteId && !ids.includes(noteId)) ids.push(noteId);
+    }
+    ids.sort((a, b) => a - b);
+    for (const noteId of ids) {
+        if (typeof window.dcNoteLevelInfo !== 'function') break;
+        let info = window.dcNoteLevelInfo(noteId);
+        if (!info && typeof dcEnsureNoteLevel === 'function') {
+            const qty = Number((rec.notes.find(e => Number(Array.isArray(e) ? e[0] : e?.noteId) === noteId) || [])[1]) || 0;
+            if (dcEnsureNoteLevel(noteId, qty)) info = window.dcNoteLevelInfo(noteId);
+        }
+        if (!info) continue;
+        out.push({
+            key: `note-${noteId}`,
+            kind: 'note',
+            noteId,
+            name: subNoteName(noteId),
+            edit: info.eff,
+            base: info.eff,
+            bonus: 0,
+            change: info.change || 0,
+            max: info.max,
+            editable: true,
+            icon: recNoteUrl(noteId),
+            title: `${subNoteName(noteId)} lv ${info.eff}` +
+                (info.bonus ? ` (${info.recordLv} + ${info.bonus} from discs)` : '') +
+                (info.change ? ` · ${info.change > 0 ? '+' : ''}${info.change} edited` : ''),
+        });
+    }
+    return out;
+}
+
+
 // ─── Controls ────────────────────────────────────────────────────────────────
 // Idle shows the split form: the row's own ladder cap, then the bonus levels
 // on top ("6+2" for a potential at 8, "10+1" for a skill at 11). Focusing the
@@ -366,7 +596,9 @@ function recStepper(row) {
     const changed = row.change !== 0;
     const cls = 'rec-step' + (changed ? ' is-changed' : '');
     const what = row.kind === 'char' ? `${row.name} level` : row.name;
-    const min = row.kind === 'skill' ? 0 : 1;
+    // Potentials and skills may step down to 0 — for a potential that is its
+    // disabled state; only the character level has a floor of 1.
+    const min = recRowMin(row);
     const atMin = row.edit <= min;
     const atMax = row.edit >= row.max;
     // Fixed-level rows (potential indices 1-4 / 21-24 — Potential.json says
@@ -386,15 +618,31 @@ function recStepper(row) {
 }
 
 function recRowTitle(row) {
-    let t = row.name;
+    // Disc and note rows carry their own title (melody name, harmony layer, note
+    // requirement…), so the generic suffixes are appended to that.
+    let t = row.title || row.name;
     if (row.bonus > 0) t += ` · lv ${row.base} + ${row.bonus} bonus level${row.bonus === 1 ? '' : 's'}`;
-    if (row.editable === false) t += ' · no levelling row in the game';
+    if (row.kind === 'note') t += ` · ±${recRowStep(row)} per step (type an exact level)`;
+    if (row.editable === false) t += row.lockedNote ? ` · ${row.lockedNote}` : ' · no levelling row in the game';
     else if (row.change !== 0) t += ` · ${row.change > 0 ? '+' : ''}${row.change} edited`;
+    if (row.kind === 'pot') {
+        t += row.edit <= 0 ? ' · disabled — click to enable' : ' · click to disable';
+    } else if (row.kind === 'talent') {
+        t += ` · ${row.count} effect${row.count === 1 ? '' : 's'}`
+            + (row.off ? ' · disabled — click to enable' : ' · click to disable');
+    }
     return t;
 }
 
 function recRow(row) {
     const changed = row.change !== 0;
+    // A potential at level 0 and a talent whose group is off are both the
+    // row's disabled state: the row dims, the name is struck through, and a
+    // click anywhere on it toggles it back.
+    const disabled = recRowOff(row);
+    const cls = 'rec-row' + (changed ? ' is-changed' : '') +
+        ((row.kind === 'pot' || row.kind === 'talent') ? ' is-toggle' : '') +
+        (disabled ? ' is-disabled' : '');
     // Only potentials have art. Skill rows are named in full, so they carry no
     // icon tile at all — the name simply starts at the row's left edge.
     const art = row.icon
@@ -407,12 +655,14 @@ function recRow(row) {
         ? `<button type="button" class="rec-row-reset" data-act="reset" data-row="${row.key}"` +
           ` title="Back to the logged level" aria-label="Reset ${esc2(row.name)}">↺</button>`
         : '<span class="rec-row-reset is-empty" aria-hidden="true"></span>';
-    return `<div class="rec-row${changed ? ' is-changed' : ''}" data-row="${row.key}"` +
+    return `<div class="${cls}" data-row="${row.key}"` +
         ` title="${esc2(recRowTitle(row))}">` +
         art +
         `<span class="rec-row-name">${esc2(row.name)}</span>` +
-        recStepper(row) +
+        // The ↺ sits on the stepper's left: the +/- group owns the row's right
+        // edge, so the column's steppers line up with the header's.
         reset +
+        recStepper(row) +
         `</div>`;
 }
 
@@ -441,6 +691,7 @@ function recColumn(ch) {
     const lvl = recCharLevelRow(ch);
     const skills = recSkillRows(ch);
     const pots = recPotRows(ch);
+    const talents = recTalentRows(ch);
 
     const head = `<header class="rec-col-head${tint ? ' has-tint' : ''}"` +
         (tint ? ` style="--rec-tint:${tint}"` : '') + `>` +
@@ -454,10 +705,10 @@ function recColumn(ch) {
                 `<span class="rec-col-name-t">${esc2(name)}</span>` +
             `</span>` +
         `</span>` +
-        `<span class="rec-col-lvl">` + recStepper(lvl) +
-            // Same tail the rows reserve for their reset button, so this
+        `<span class="rec-col-lvl">` +
+            // Same lead the rows reserve for their reset button, so this
             // stepper's +/− sit on the same vertical edge as the rows' below.
-            `<span class="rec-row-reset is-empty" aria-hidden="true"></span>` +
+            `<span class="rec-row-reset is-empty" aria-hidden="true"></span>` + recStepper(lvl) +
         `</span>` +
         `</header>`;
 
@@ -466,6 +717,9 @@ function recColumn(ch) {
         `<div class="rec-col-body">` +
             recSection('Skills', skills, 'rec-sec-skills') +
             recSection('Potentials', pots, 'rec-sec-pots') +
+            // No talents in the record → no section at all: most characters have
+            // none, and an empty "None in this record." line per column is noise.
+            (talents.length ? recSection('Talents', talents, 'rec-sec-talents') : '') +
         `</div>` +
         `</div>`;
 }
@@ -485,11 +739,52 @@ function fmtDiscStat(v) {
     return String(n);
 }
 
+// Stat naming/formatting for the record, hoisted out of renderBoard so the
+// in-place patch path (a focused stepper keeps the board from re-rendering)
+// prints the same text the full render would.
+function recStatLabel(k) {
+    const idx = typeof RECORD_SKEY_TO_ATTR !== 'undefined' ? RECORD_SKEY_TO_ATTR[k] : null;
+    return idx != null ? attrName(idx) : k;
+}
+
+function recFmtStatValue(rec, k, v) {
+    const ifp = rec?.ifp || 1e-4;
+    const isPct = !!(rec?.pct || {})[k];
+    const n = isPct && Math.abs(v) > 2 ? v * ifp : v;
+    return typeof n === 'number' && !Number.isInteger(n) ? +n.toPrecision(8) : n;
+}
+
+// The flat Atk a disc carries at `copies`, from the logged row: the logged value
+// already contains the star it was logged at, and DiscExtraAttribute is an
+// Atk-only per-star table, so the edit is the difference between the two stars.
+// (Max Hp and the rest come from the phase/level Attribute row and do not move
+// with copies.) Returns null when the star table does not know the disc.
+function recDiscAtkAt(d, index, copies) {
+    const logged = Number((d?.attrs || {}).Atk);
+    const info = window.dcDiscLevelInfo ? window.dcDiscLevelInfo(index) : null;
+    if (!Number.isFinite(logged) || !info || typeof window.dcDiscStarAtk !== 'function') return null;
+    const atk = c => window.dcDiscStarAtk(info.discId, Math.max(0, (c || 1) - 1)) || 0;
+    return logged + (atk(copies ?? info.copies) - atk(info.copiesRec));
+}
+
+// One disc card's stat lines — the same markup for the first render and for the
+// patch after a copies edit.
+function recDiscStatsHtml(d, index) {
+    const rec = recView.rec || (typeof getOriginRecord === 'function' ? getOriginRecord() : null);
+    const atk = recDiscAtkAt(d, index);
+    const loggedAtk = Number((d?.attrs || {}).Atk);
+    return Object.entries(d?.attrs || {}).map(([k, v]) => {
+        const isAtk = k === 'Atk';
+        const val = (isAtk && atk != null) ? atk : fmtDiscStat(recFmtStatValue(rec, k, v));
+        const changed = isAtk && atk != null && atk !== loggedAtk;
+        return `<span class="rec-disc-stat${changed ? ' is-changed' : ''}">` +
+            `<span>${esc2(recStatLabel(k))}</span><b>${esc2(val)}</b></span>`;
+    }).join('');
+}
+
 function recDiscCard(d, index, statName, fmtVal) {
     const name = resolveRecordDiscName(d.id);
-    const stats = Object.entries(d.attrs || {})
-        .map(([k, v]) => `<span class="rec-disc-stat"><span>${esc2(statName(k))}</span>` +
-            `<b>${esc2(fmtDiscStat(fmtVal(k, v)))}</b></span>`);
+    const stats = recDiscStatsHtml(d, index);
     const notes = [];
     if (index >= 3 && typeof discBonusNotesFor === 'function') {
         for (const n of discBonusNotesFor(d.id)) {
@@ -500,6 +795,7 @@ function recDiscCard(d, index, statName, fmtVal) {
                 `<b>${n.count}</b></span>`);
         }
     }
+    const levelLines = recDiscLevelRows(index).map(recDiscLevelLine).join('');
     return `<article class="rec-disc">` +
         `<span class="rec-disc-art">` +
             `<img src="${recDiscUrl(d.id)}" alt="" width="56" height="56">` +
@@ -510,7 +806,8 @@ function recDiscCard(d, index, statName, fmtVal) {
                 `<span class="rec-disc-name">${esc2(name)}</span>` +
                 (notes.length ? `<span class="rec-disc-notes">${notes.join('')}</span>` : '') +
             `</span>` +
-            (stats.length ? `<span class="rec-disc-stats">${stats.join('')}</span>` : '') +
+            (stats ? `<span class="rec-disc-stats">${stats}</span>` : '') +
+            (levelLines ? `<span class="rec-disc-levels">${levelLines}</span>` : '') +
         `</span>` +
         `</article>`;
 }
@@ -539,6 +836,21 @@ function recDiscsBlock(rec, statName, fmtVal) {
             ? `<div class="rec-block-sub">Support</div><div class="rec-disc-grid">${
                 support.map((d, i) => card(d, i + 3)).join('')}</div>`
             : '') +
+        `</section>`;
+}
+
+// The build's note totals as an editable block: one row per note the record
+// carries, the same row language the character columns use (icon, name,
+// reset slot, stepper). The level is the quantity — the note's effect rows
+// resolve their value from it (EffectValue: configId + level*10) — so a ± moves
+// every hit that carries that note. Untouched by the harmony layers for now
+// (they are stepped independently in the disc cards).
+function recNotesBlock(rec) {
+    const rows = recNoteRows(rec);
+    if (!rows.length) return '';
+    return `<section class="rec-block">` +
+        `<h3 class="rec-block-title">Notes</h3>` +
+        `<div class="rec-sec-body rec-notes-body">${rows.map(recRow).join('')}</div>` +
         `</section>`;
 }
 
@@ -1065,6 +1377,17 @@ function renderBoard(panel, rec, synthetic) {
             edited += 1;
         }
     }
+    // Disc copies / harmony layers and the note levels are record-wide edits —
+    // they enable the same "Reset all".
+    for (let i = 0; i < (rec.discStats || []).length; i++) {
+        edited += recDiscLevelRows(i).filter(r => r.change !== 0).length;
+    }
+    if (typeof window.dcNoteLevelInfo === 'function') {
+        edited += recNoteRows(rec).filter(r => r.change !== 0).length;
+    }
+    // A talent switched off is an edit like any other: it has to light the same
+    // "Reset all" (dcResetTalentGroups puts it back).
+    if ([...dcGroupEffectKeys.keys()].some(k => k === 'talents' || k.startsWith('talent:'))) edited += 1;
     const builds = [];
     for (const ch of seq) {
         const cid = String(ch.charId);
@@ -1092,6 +1415,8 @@ function renderBoard(panel, rec, synthetic) {
     if (emblems) html.push(emblems);
     const discs = recDiscsBlock(rec, statName, fmtVal);
     if (discs) html.push(discs);
+    const notesBlock = recNotesBlock(rec);
+    if (notesBlock) html.push(notesBlock);
     const build = recBuildBlock(builds);
     if (build) html.push(build);
     html.push('</div>');
@@ -1136,14 +1461,38 @@ function restoreFocus(panel, focus, scrollTop) {
 }
 
 // ─── Interaction ─────────────────────────────────────────────────────────────
+// Disc / note rows are rebuilt from the level tables on every lookup (they carry
+// no per-record state of their own), so a click, the in-place patch and the
+// tooltip all read the same numbers.
+function recDiscRowByKey(key) {
+    const m = /^disc-(\d+)-(copies|h1|h2)$/.exec(String(key));
+    if (!m) return null;
+    const rows = recDiscLevelRows(Number(m[1]));
+    if (m[2] === 'copies') return rows.find(r => r.kind === 'copies') || null;
+    const slot = m[2] === 'h1' ? 1 : 2;
+    return rows.find(r => r.kind === 'harmony' && r.slot === slot) || null;
+}
+
+function recNoteRowByKey(key) {
+    const m = /^note-(\d+)$/.exec(String(key));
+    if (!m) return null;
+    const rec = recView.rec || getOriginRecord();
+    if (!rec) return null;
+    return recNoteRows(rec).find(r => r.noteId === Number(m[1])) || null;
+}
+
 function recFindRow(key) {
+    const discRow = recDiscRowByKey(key);
+    if (discRow) return discRow;
+    const noteRow = recNoteRowByKey(key);
+    if (noteRow) return noteRow;
     // Look the row up in the record the board was rendered from, so a click on
     // a reconstructed board can't be resolved against a different record.
     const rec = recView.rec
         || getOriginRecord()
         || (typeof dcSyntheticRecord === 'function' ? dcSyntheticRecord() : null);
     if (!rec || !rec.chars) return null;
-    const m = /^(pot|skill|char)-(\d+)-?(\d+)?$/.exec(key);
+    const m = /^(pot|skill|talent|char)-(\d+)-?(\d+)?$/.exec(key);
     if (!m) return null;
     const kind = m[1];
     const charId = Number(m[2]);
@@ -1151,16 +1500,20 @@ function recFindRow(key) {
     if (!ch) return null;
     if (kind === 'pot') return recPotRows(ch).find(r => String(r.potId) === m[3]) || null;
     if (kind === 'skill') return recSkillRows(ch).find(r => String(r.slot) === m[3]) || null;
+    if (kind === 'talent') return recTalentRows(ch).find(r => String(r.index) === m[3]) || null;
     return recCharLevelRow(ch);
 }
 
 function recApply(row, offset) {
     if (!row || row.editable === false) return;
-    // Potentials and characters start at level 1; skill slots have a level-0
-    // row, so those may step down to 0. Above the row's own ladder cap a
+    // Potentials and skills may step down to 0 — for a potential that is its
+    // disabled state, for a skill slot the level-0 row the game has. Only the
+    // character level has a floor of 1. Above the row's own ladder cap a
     // potential/skill keeps stepping — the display splits the extra into "N+M".
-    const floor = row.kind === 'skill' ? 0 : 1;
-    const next = Math.min(Math.max(row.edit + offset, floor), row.max);
+    // A note moves recRowStep() per click (5), so a ladder that runs to 99 is
+    // reachable in a few clicks; the clamp still lands exactly on floor / cap.
+    const floor = recRowMin(row);
+    const next = Math.min(Math.max(row.edit + offset * recRowStep(row), floor), row.max);
     if (next === row.edit) return;
     recSetLevel(row, next);
 }
@@ -1170,13 +1523,19 @@ function recApply(row, offset) {
 function recSetLevel(row, targetLevel) {
     let t = Math.round(Number(targetLevel));
     if (!Number.isFinite(t)) return;
-    t = Math.max(t, row.kind === 'skill' ? 0 : 1);
+    t = Math.max(t, recRowMin(row));
     if (row.kind === 'pot' && typeof window.dcSetPotLevel === 'function') {
         window.dcSetPotLevel(row.potId, t);
     } else if (row.kind === 'skill' && typeof window.dcSetSkillLevel === 'function') {
         window.dcSetSkillLevel(row.charId, row.slot, t);
     } else if (row.kind === 'char' && typeof window.dcSetCharLevel === 'function') {
         window.dcSetCharLevel(row.charId, t);
+    } else if (row.kind === 'copies' && typeof window.dcSetDiscCopies === 'function') {
+        window.dcSetDiscCopies(row.discIdx, t);
+    } else if (row.kind === 'harmony' && typeof window.dcSetDiscHarmony === 'function') {
+        window.dcSetDiscHarmony(row.discIdx, row.slot, t);
+    } else if (row.kind === 'note' && typeof window.dcSetNoteLevel === 'function') {
+        window.dcSetNoteLevel(row.noteId, t);
     }
 }
 
@@ -1188,7 +1547,42 @@ function recResetRow(row) {
         dcResetSkillLevelChange(row.charId, row.slot);
     } else if (row.kind === 'char' && typeof dcResetCharLevelChange === 'function') {
         dcResetCharLevelChange(row.charId);
+    } else if ((row.kind === 'copies' || row.kind === 'harmony') &&
+        typeof window.dcResetDiscChange === 'function') {
+        window.dcResetDiscChange(row.discIdx);
+    } else if (row.kind === 'note' && typeof window.dcResetNoteLevelChange === 'function') {
+        window.dcResetNoteLevelChange(row.noteId);
     }
+}
+
+// Row-click dispatch for the toggle rows: a potential switches its level, a
+// talent switches its group (its passive plus every node it grants). Every other
+// row has no row-level toggle.
+function recToggleRow(row) {
+    if (!row) return false;
+    if (row.kind === 'pot') return recTogglePot(row);
+    if (row.kind === 'talent') return recToggleTalent(row);
+    return false;
+}
+
+function recToggleTalent(row) {
+    if (!row || row.kind !== 'talent') return false;
+    if (typeof window.dcToggleTalent !== 'function') return false;
+    return window.dcToggleTalent(row.unit, row.index);
+}
+
+// Row-click toggle for potentials: level 0 is the off state (the potential's
+// level ladder resolves to 0, so every effect it grants drops out), and the
+// level it had before the click is remembered so the second click lands back
+// where the user was instead of on the logged level.
+//
+// The switch itself lives in the Dmg Calc sidebar (dcTogglePotOff): the same
+// call comes back from a sidebar row click, so a potential switched off in
+// either place dims the Record row and the sidebar rows together.
+function recTogglePot(row) {
+    if (!row || row.kind !== 'pot') return false;
+    if (typeof window.dcTogglePotOff === 'function') return window.dcTogglePotOff(row.potId);
+    return false;
 }
 
 // ─── Emblem interaction ──────────────────────────────────────────────────────
@@ -1302,7 +1696,16 @@ function bindRecordPanel(panel) {
 
     panel.addEventListener('click', e => {
         const btn = e.target.closest('[data-act]');
-        if (!btn) return;
+        if (!btn) {
+            // Potentials toggle on a click anywhere on their row (level 0 =
+            // disabled). The stepper's own controls stop here, so ± and the
+            // level field never fall through to the row toggle.
+            if (e.target.closest('.rec-step, .rec-step-val, .rec-row-reset')) return;
+            const holder = e.target.closest('.rec-row[data-row]');
+            if (!holder) return;
+            recToggleRow(recFindRow(holder.dataset.row));
+            return;
+        }
         const act = btn.dataset.act;
 
         if (act === 'dec' || act === 'inc') {
@@ -1335,6 +1738,8 @@ function bindRecordPanel(panel) {
                 return;
             }
             clearTimeout(recView.resetTimer);
+            // A talent switch is an edit like a level change, so it goes back too.
+            if (typeof window.dcResetTalentGroups === 'function') window.dcResetTalentGroups();
             if (typeof window.dcResetAllLevelChanges === 'function') window.dcResetAllLevelChanges();
             // Emblems are part of the build too — put every gem back to the
             // logged one, then re-render once through the emblem path.
