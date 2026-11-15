@@ -122,22 +122,43 @@ function dcCachedHitCalc(ev) {
     return c;
 }
 
-// Memoized dcCollectAttrFixEffects: valid while dcFiltered is the same array
-// (dcApplyFilters always allocates a new array, so any refilter or newly
-// arrived hit invalidates it) and the calc state version is unchanged (an
-// emblem edit rewrites the record rows without re-filtering). Callers only read
-// the returned entries.
+// Memoized row walk of dcCollectAttrFixEffects. The level-table rebuilds are a
+// SIDE EFFECT other tabs depend on (and they drop the pot rows' disable-key
+// wiring, which the walk restores), so they run on every call — cheaply, since
+// dcEnsureLevelTables skips itself when nothing moved. Only the per-hit walk is
+// cached: valid while dcFiltered is the same array (dcApplyFilters always
+// allocates a new array, so any refilter or newly arrived hit invalidates it)
+// and dcStateVersion is unchanged (an emblem edit rewrites the record rows
+// without re-filtering). Callers only read the returned entries.
 let _dcCollectCache = { src: null, len: -1, ver: -1, result: null };
 function dcCollectAttrFixEffectsCached() {
-    if (_dcCollectCache.src === dcFiltered && _dcCollectCache.len === dcFiltered.length
-        && _dcCollectCache.ver === dcStateVersion && _dcCollectCache.result) {
-        return _dcCollectCache.result;
+    dcEnsureLevelTables();
+    const c = _dcCollectCache;
+    if (c.src === dcFiltered && c.len === dcFiltered.length
+        && c.ver === dcStateVersion && c.result) {
+        dcRewirePotKeys(c.result);
+        return c.result;
     }
+    const result = dcCollectAttrFixEffectsRows(dcFiltered);
     _dcCollectCache = {
         src: dcFiltered, len: dcFiltered.length, ver: dcStateVersion,
-        result: dcCollectAttrFixEffects(dcFiltered),
+        result,
     };
-    return _dcCollectCache.result;
+    return result;
+}
+
+// dcRebuildPotLevels recreates every pot state carrying over only `change`, so
+// the walk's pot-row wiring (`stL.potKey = key`, read by dcPotEffectiveLevel to
+// drop the emblem bonus while the row is disabled) is lost on each rebuild.
+// Restore it from the cached rows — the same assignment the walk makes.
+function dcRewirePotKeys(rows) {
+    for (let i = 0; i < rows.length; i++) {
+        const ef = rows[i];
+        if (ef.isPotRow && ef.levelSource != null) {
+            const st = dcPotLevels.get(ef.levelSource);
+            if (st) st.potKey = ef.key;
+        }
+    }
 }
 
 // Player attacker names, cached per allEvents snapshot (new polls grow it).

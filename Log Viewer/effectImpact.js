@@ -474,11 +474,28 @@ function eiComputeEffect(ef, baseline) {
 
 // Build rows for all effects.
 // Baseline is computed once and shared across all eiComputeEffect calls.
+// Result memo: the row list is a pure function of (effect rows, baseline,
+// level tables). The first two are themselves cached objects, so identity
+// checks are enough; dcLevelStateVersion covers the pot / skill / note tables
+// the composite rows read live. Re-opening the tab with nothing changed then
+// costs two pointer compares instead of a full row pass.
+let _eiRowsCache = { effects: null, baseline: null, ver: -1, rows: null };
+
 function eiComputeAll(prof) {
     let t = performance.now();
-    const effects = dcCollectAttrFixEffects(dcFiltered);
+    // The cached collector: the level-table rebuilds it performs are a side
+    // effect this tab needs (eiGetBaseline reads those tables), and they run on
+    // every call; only the per-hit row walk is memoized.
+    const effects = dcCollectAttrFixEffectsCached();
     if (prof) t = prof(`collect effects (${effects.length} rows)`, t);
     const baseline = eiGetBaseline(prof);
+
+    const ver = (typeof dcLevelStateVersion !== 'undefined') ? dcLevelStateVersion : 0;
+    const cached = _eiRowsCache;
+    if (cached.rows && cached.effects === effects && cached.baseline === baseline && cached.ver === ver) {
+        if (prof) prof(`row evals (${cached.rows.length} rows) · cached`);
+        return cached.rows;
+    }
 
     let tRows = 0;
     const top = [];   // [dt, label] — slowest-row report
@@ -505,6 +522,7 @@ function eiComputeAll(prof) {
         top.sort((a, b) => b[0] - a[0]);
         for (const [dt, name] of top.slice(0, 3)) prof.dur(`  slow row: ${name}`, dt);
     }
+    _eiRowsCache = { effects, baseline, ver, rows };
     return rows;
 }
 
@@ -1099,23 +1117,47 @@ function eiRenderTable() {
    that disables one talent (its passive and all of its stat nodes) in one pass,
    so the bar's number answers "what does this talent give me" the way the disc
    cards do. */
-let _eiGroupWhole = { filt: null, ver: null, base: 0, wi: null, map: new Map() };
+let _eiGroupWhole = { filt: null, ver: null, base: 0, map: new Map() };
 function eiGroupWholePct(groupKey) {
     if (typeof dcFiltered === 'undefined' || !dcFiltered) return null;
     if (typeof dcCachedHitCalc !== 'function' || typeof dcSimulateGroupToggle !== 'function'
         || typeof ecGetSharedBaseline !== 'function') return null;
     const ver = typeof dcStateVersion !== 'undefined' ? dcStateVersion : 0;
-    if (_eiGroupWhole.filt !== dcFiltered || _eiGroupWhole.ver !== ver) {
-        let base = 0;
-        for (const ev of dcFiltered) base += dcCachedHitCalc(ev).d;
-        _eiGroupWhole = { filt: dcFiltered, ver, base, wi: ecGetSharedBaseline(), map: new Map() };
+    if (_eiGroupWhole.filt !== dcFiltered) {
+        _eiGroupWhole = { filt: dcFiltered, ver: null, base: 0, map: new Map() };
     }
     const st = _eiGroupWhole;
-    if (!st.wi || !(st.base > 0)) return null;
-    if (st.map.has(groupKey)) return st.map.get(groupKey);
-    const totalIf = dcSimulateGroupToggle(groupKey, false, st.base, st.wi);
+    const wi = ecGetSharedBaseline();
+    if (!wi || !wi.length) return null;
+
+    // ── per-group total cache ──────────────────────────────────────────────
+    // A group's what-if total is a function of the per-hit INTEL objects and
+    // the group's own keys only; the incremental rebuild reuses the unchanged
+    // hits' intel objects, so the sum of their build ids (ecBuildSharedHit
+    // stamps `_eid`) is an exact signature — same signature means the same
+    // total. Without this, toggling ANY row re-priced every disc card in the
+    // panel: six full what-if passes over 2.2k hits per toggle.
+    let sig = wi.length;
+    for (let i = 0; i < wi.length; i++) sig += (wi[i].intel ? (wi[i].intel._eid || 0) : 0);
+    const cached = st.map.get(groupKey);
+    if (cached && cached.sig === sig) return cached.pct;
+
+    // The base total (the current state) is one cached hit-calc pass; it is
+    // re-read whenever the state version moved (the per-hit calc cache is
+    // already warm from the formula bar by the time a panel renders).
+    if (!(st.base > 0) || st.ver !== ver) {
+        let base = 0;
+        for (const ev of dcFiltered) base += dcCachedHitCalc(ev).d;
+        st.base = base;
+        st.ver = ver;
+        // stale per-group entries stay in the map — their `sig` can never match
+        // again, and wiping the map here would drop the entries that are still
+        // valid for groups whose rows this state change did not touch.
+    }
+    if (!(st.base > 0)) return null;
+    const totalIf = dcSimulateGroupToggle(groupKey, false, st.base, wi);
     const pct = totalIf > 0 ? ((st.base / totalIf) - 1) * 100 : null;
-    st.map.set(groupKey, pct);
+    st.map.set(groupKey, { sig, pct });
     return pct;
 }
 function eiDiscWholePct(name) {

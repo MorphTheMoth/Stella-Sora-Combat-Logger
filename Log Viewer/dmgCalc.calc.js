@@ -1673,14 +1673,39 @@ function deriveLevelCandidates(configId, valueConfigId, fromAttrDict) {
 
 // Collect unique effects across all filtered hits.
 // Returns an array of { key, side, configId, valueConfigId, name, attrType, subType, value, count, source, fromAttrDict }
-function dcCollectAttrFixEffects(dcFiltered) {
-    const seen = new Map(); // key -> entry
+
+// The side-effect half of the effect collection: rebuild every level table the
+// rows are resolved against. Split out of the collector so the cached wrapper
+// (dmgCalc.ui.js) can run it unconditionally — EI and the Emblems Comparison
+// both read these tables, and dcRebuildPotLevels drops the pot rows' disable-key
+// wiring that the row walk restores — while the per-hit walk stays cached.
+// Skipped when neither the record nor the level tables moved since the last
+// rebuild: those are the same two keys every level-derived memo here already
+// uses (dcRecordLevelSig / dcLevelStateVersion).
+let _dcLevelTablesStamp = { sig: null, ver: -1 };
+function dcEnsureLevelTables(force) {
+    const rec = (typeof getOriginRecord === 'function') ? getOriginRecord() : null;
+    const sig = (typeof dcRecordLevelSig === 'function') ? dcRecordLevelSig(rec) : null;
+    const st = _dcLevelTablesStamp;
+    if (!force && st.sig === sig && st.ver === dcLevelStateVersion) return;
     dcRebuildPotLevels();   // rebuild the potential level table from the record
     dcRebuildSkillLevels(); // rebuild the skill level table from the record
     dcRebuildNoteLevels();  // rebuild the note level table from the record
     dcRebuildCharLevels();  // rebuild the character level table from the record
     dcRebuildDiscLevels();  // rebuild the disc table (copies / harmony layers)
     dcEnsureHitLevels();    // lazy record reconstruction from the hits themselves
+    _dcLevelTablesStamp = { sig, ver: dcLevelStateVersion };
+}
+
+function dcCollectAttrFixEffects(dcFiltered) {
+    dcEnsureLevelTables();
+    return dcCollectAttrFixEffectsRows(dcFiltered);
+}
+
+// The walk itself (no level-table rebuilds): one entry per distinct
+// (side, configId, valueConfigId) across every filtered hit.
+function dcCollectAttrFixEffectsRows(dcFiltered) {
+    const seen = new Map(); // key -> entry
     for (const ev of dcFiltered) {
         const evCharId = dcEventCharId(ev);   // attacker charId (skill-level owner)
         const sides = [

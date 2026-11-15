@@ -401,12 +401,19 @@ function ecOpSlot(meta, elem) {
 // ordered op list or null (no ops).
 function ecEntryOps(entry, ovV) {
     if (ovV == null) return null;
+    // Ops depend only on (entry, ovV) — the same entry is evaluated once per
+    // (hit × simulated group), so cache the pair on the entry. Callers copy
+    // the elements into their own dlist and never mutate the ops themselves.
+    const c = entry._opsCache;
+    if (c && c.v === ovV) return c.ops;
     const ops = [];
     const rSlot = ecOpSlot(entry.rMeta, entry.elem);
     if (rSlot) ops.push([entry.side, rSlot[0], rSlot[1], -(entry.remVal * entry.n)]);
     const aSlot = ecOpSlot(entry.aMeta, entry.elem);
     if (aSlot) ops.push([entry.side, aSlot[0], aSlot[1], ovV * entry.n]);
-    return ops.length ? ops : null;
+    const out = ops.length ? ops : null;
+    entry._opsCache = { v: ovV, ops: out };
+    return out;
 }
 
 // The value the override machinery applies at effective level L for this
@@ -565,6 +572,14 @@ function ecPreanalyzeHit(b, extDisabled) {
     // object): see the deltaIdx / collectEff notes below.
     let eUnits = _ecEntryUnits.get(extDisabled);
     if (!eUnits) { eUnits = new Map(); _ecEntryUnits.set(extDisabled, eUnits); }
+    // configId-bucketed view of the same cache: the entry-unit key is a
+    // 14-field string, and building it for every (hit x entry) cost ~263k
+    // concatenations per build on a 2.2k-hit log for ~260 unique units. The
+    // bucket holds the same units with their distinguishing scalars, so a hit
+    // that repeats a (row x count x elem) tuple costs a Map get and a dozen
+    // compares; the long key is only built when a bucket misses.
+    let eBuckets = _ecEntryBuckets.get(extDisabled);
+    if (!eBuckets) { eBuckets = new Map(); _ecEntryBuckets.set(extDisabled, eBuckets); }
     const snapByKey = new Map();    // rowKey → [groups]
     const deltaIdx = new Map();     // 'side:configId' / 'side:dict:...' → delta | null
     for (const blk of [
@@ -573,14 +588,13 @@ function ecPreanalyzeHit(b, extDisabled) {
     ]) {
         // ── per-configId delta resolution (eiResolveEffectDelta's exact logic,
         // count/first across the concatenated lists) ──
-        const counts = new Map(), firsts = new Map(), hitKeys = new Set();
+        const counts = new Map(), firsts = new Map();
         for (const list of blk.lists) {
             if (!list?.length) continue;
             for (const e of list) {
                 if (e.configId == null) continue;
                 counts.set(e.configId, (counts.get(e.configId) || 0) + 1);
                 if (!firsts.has(e.configId)) firsts.set(e.configId, e);
-                hitKeys.add(blk.sideStr + ':' + e.configId + ':' + (e.valueConfigId ?? ''));
             }
         }
         // Per-row-resolution unit memo: 152k dcGetLevelOverride calls per
@@ -754,36 +768,63 @@ function ecPreanalyzeHit(b, extDisabled) {
                 continue;
             }
             const er = dcResolveLegacyEffectRow(e, attackerCharId, false) || e;
-            const key = sideStr(side) + ':' + e.configId + ':' + (er.valueConfigId ?? '');
-            const rowDis = extDisabled.has(key);
             const n = countMap.get(e.configId) || 1;
             // Entry unit memo: 115k ecMakeEntry calls per build collapse to
             // ~260 unique (row × count × elem) combos; entries and their
-            // baseline ops are shared read-only across hits.
-            const uKey = dcLevelStateVersion + '|' + attackerCharId + ':' + side + ':' + e.configId + ':'
-                + (er.valueConfigId ?? '') + ':' + (e.slotNum ?? 0) + ':' + (e.levelTypeData ?? '')
-                + ':' + (e.levelData ?? '') + ':' + (e.value ?? '') + ':' + (e.effectType ?? '')
-                + ':' + (e.attrType ?? '') + ':' + (e.subType ?? '') + ':' + n + ':' + elem;
-            let u = eUnits.get(uKey);
-            if (u === undefined) {
-                const entry = ecMakeEntry(e, er, side, false, n, attackerCharId, elem);
-                if (!entry) u = null;
-                else {
-                    // baseline override value under extDisabled (the REAL
-                    // function — bit-exact with what the baseline pass
-                    // applied). Computed for disabled rows too: the override
-                    // resolution depends on the level TABLE state
-                    // (pot/skill/note keys), not the row's own disabled flag —
-                    // the what-if engine needs it for re-enabled rows.
-                    const baseOv = dcGetLevelOverride(er, sideStr(side), extDisabled, attackerCharId, false);
-                    entry.baseOvV = baseOv ? baseOv.newValue : null;
-                    entry.rowDis = rowDis;
-                    entry.disKey = key;
-                    // the baseline state (= zero + level ops of ENABLED rows
-                    // only — the machinery's level block skips disabled rows)
-                    u = { entry, bops: (!rowDis && ecEntryOps(entry, entry.baseOvV)) || null };
+            // baseline ops are shared read-only across hits. The canonical key
+            // is a 14-field string, so the bucket carries the same units next
+            // to their distinguishing scalars: a repeat hit costs a Map get and
+            // a dozen compares, and the string is built only on a bucket miss.
+            const vcid = er.valueConfigId ?? null;
+            const slotNum = e.slotNum ?? 0;
+            const ltd = e.levelTypeData ?? null;
+            const ld = e.levelData ?? null;
+            let bucket = eBuckets.get(e.configId);
+            if (!bucket) { bucket = []; eBuckets.set(e.configId, bucket); }
+            let key = null, rowDis = false, u;
+            for (let bi = 0; bi < bucket.length; bi++) {
+                const c = bucket[bi];
+                if (c.side === side && c.charId === attackerCharId && c.n === n && c.elem === elem
+                    && c.vcid === vcid && c.slotNum === slotNum && c.ltd === ltd && c.ld === ld
+                    && c.value === e.value && c.attrType === e.attrType
+                    && c.subType === e.subType && c.effectType === e.effectType) {
+                    key = c.key;
+                    rowDis = extDisabled.has(key);
+                    u = c.u;
+                    break;
                 }
-                eUnits.set(uKey, u);
+            }
+            if (u === undefined) {
+                key = sideStr(side) + ':' + e.configId + ':' + (er.valueConfigId ?? '');
+                rowDis = extDisabled.has(key);
+                const uKey = dcLevelStateVersion + '|' + attackerCharId + ':' + side + ':' + e.configId + ':'
+                    + (er.valueConfigId ?? '') + ':' + (e.slotNum ?? 0) + ':' + (e.levelTypeData ?? '')
+                    + ':' + (e.levelData ?? '') + ':' + (e.value ?? '') + ':' + (e.effectType ?? '')
+                    + ':' + (e.attrType ?? '') + ':' + (e.subType ?? '') + ':' + n + ':' + elem;
+                u = eUnits.get(uKey);
+                if (u === undefined) {
+                    const entry = ecMakeEntry(e, er, side, false, n, attackerCharId, elem);
+                    if (!entry) u = null;
+                    else {
+                        // baseline override value under extDisabled (the REAL
+                        // function — bit-exact with what the baseline pass
+                        // applied). Computed for disabled rows too: the override
+                        // resolution depends on the level TABLE state
+                        // (pot/skill/note keys), not the row's own disabled flag —
+                        // the what-if engine needs it for re-enabled rows.
+                        const baseOv = dcGetLevelOverride(er, sideStr(side), extDisabled, attackerCharId, false);
+                        entry.baseOvV = baseOv ? baseOv.newValue : null;
+                        entry.rowDis = rowDis;
+                        entry.disKey = key;
+                        // the baseline state (= zero + level ops of ENABLED rows
+                        // only — the machinery's level block skips disabled rows)
+                        u = { entry, bops: (!rowDis && ecEntryOps(entry, entry.baseOvV)) || null };
+                    }
+                    eUnits.set(uKey, u);
+                }
+                bucket.push({ side, charId: attackerCharId, n, elem, vcid, slotNum, ltd, ld,
+                    value: e.value, attrType: e.attrType, subType: e.subType,
+                    effectType: e.effectType, key, u });
             }
             if (!u) continue;
             if (!rowDis && u.bops) pre.baseOps.push(...u.bops);
@@ -1708,6 +1749,7 @@ function ecMultiplierFor(an, Lcand) {
 // entries + their baseline ops; _ecDeltaUnits: resolved per-row deltas.
 const _ecEntryUnits = new WeakMap();
 const _ecDeltaUnits = new WeakMap();
+const _ecEntryBuckets = new WeakMap();   // configId → [entry-unit candidates]
 
 // Shared per-hit engine baseline: built once per (state version, filtered
 // hits, disabled set), consumed by BOTH the Effect Impact tab (eiGetBaseline)
@@ -1728,6 +1770,10 @@ function ecSharedBaselineSig() {
 // level ±, bonuses). Enables the incremental per-hit rebuild below.
 function ecNoteSharedChange(keys) { _ecSharedBase.lastChange = keys; }
 // One hit's engine build (the shared unit of work).
+// Build id for a per-hit intel: the disc cards' whole-impact totals are priced
+// per (hit × intel) state, and an unchanged intel (reused by the incremental
+// rebuild) means an unchanged total — see eiGroupWholePct.
+let _ecIntelSeq = 0;
 function ecBuildSharedHit(ev, setMinusPot, prof, acc) {
     const b = { ev, disOnly: null, dead: false, charId: dcEventCharId(ev), intel: null, dmg: 0, fields: null, statIntel: null };
     let s = (prof && acc) ? performance.now() : 0;
@@ -1738,6 +1784,7 @@ function ecBuildSharedHit(ev, setMinusPot, prof, acc) {
     if (prof && acc) acc.tPre += performance.now() - s;
     if (prof && acc) s = performance.now();
     b.intel = ecBuildIntel(b, pre, dcDisabled, setMinusPot);
+    b.intel._eid = ++_ecIntelSeq;
     if (prof && acc) acc.tIntel += performance.now() - s;
     // Mirrors the machinery's early return (attacker toggled off, or a
     // Potentials hit whose owner is toggled off — see dcIsCharDisabledHit).
@@ -2061,14 +2108,16 @@ function ecWhatIfHitDamage(b, dis, en, lvlLc) {
         // candidate cap when this source moved, else the baseline/logged cap
         // (see ecWbaLevelMove).
         if (entry.configId === WBA_EFFECT_ID && entry.side === 0) {
-            const Lc = lvlLc ? lvlLc.get(entry.kind + ':' + entry.cand) : undefined;
+            const Lc = lvlLc ? lvlLc.get(entry._lk || (entry._lk = entry.kind + ':' + entry.cand)) : undefined;
             const r = ecWbaLevelMove(intel, entry, Lc);
             if (r.changed) changed = true;
             if (r.delta !== 0) dlist.push([0, WBA_DST_ATTR, 1, r.delta]);
             wbaTarget = r.target;
             continue;
         }
-        const Lc = lvlLc ? lvlLc.get(entry.kind + ':' + entry.cand) : undefined;
+        // entry._lk: the 'kind:cand' level-table key, built once per entry
+        // instead of once per (hit × entry × simulated group).
+        const Lc = lvlLc ? lvlLc.get(entry._lk || (entry._lk = entry.kind + ':' + entry.cand)) : undefined;
         const ovV = Lc !== undefined ? ecEntryOvValue(entry, Lc) : entry.baseOvV;
         if (ovV !== entry.baseOvV) changed = true;
         const ops = ecEntryOps(entry, ovV);
