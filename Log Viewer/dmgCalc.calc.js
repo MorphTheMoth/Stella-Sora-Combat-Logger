@@ -2559,7 +2559,7 @@ function calcHitFields(ev, statOverrides, dcEffectsDisabled, dcEffectLevelOverri
     const res = resIdx != null ? statValue(dStats, resIdx) : 0;
 
     // DEF
-    const defIgnore    = statBase(aStats, 10);   // DEF_Ignore = index 10
+    const defIgnore    = statValue(aStats, 10);  // DEF_Ignore = index 10
     const defPenetrate = statValue(aStats, 9);   // DEF_Penetrate = index 9
     const defRaw       = statValue(dStats, 2);   // DEF = index 2
     const effectiveDef = defRaw * (1 - defIgnore) - defPenetrate;

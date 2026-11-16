@@ -1215,8 +1215,8 @@ function ecAnalyticDamage(an, dlist, multRaw) {
                     case EC_OP_RES: res = svOf(1, ELEM_RES_STAT[an.el]) + fb.res; penTouched = true; break;
                     case EC_OP_IGN: ign = svOf(0, ELEM_IGN_STAT[an.el]); penTouched = true; break;
                     case EC_OP_VUL: vul = svOf(0, 55); penTouched = true; break;
-                    case EC_OP_DEF_RAW: defRaw = sbOf(1, 2); defTouched = true; break;
-                    case EC_OP_DEF_IGN: defIg = sbOf(0, 10); defTouched = true; break;
+                    case EC_OP_DEF_RAW: defRaw = svOf(1, 2); defTouched = true; break;
+                    case EC_OP_DEF_IGN: defIg = svOf(0, 10); defTouched = true; break;
                     case EC_OP_DEF_PEN: defPen = svOf(0, 9); defTouched = true; break;
                     case EC_OP_GEN_DMG: genDmg = svOf(0, 49); break;
                     case EC_OP_INTENSITY: intensity = svOf(0, 48); break;
