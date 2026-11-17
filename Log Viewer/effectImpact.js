@@ -38,11 +38,11 @@ function eiIsSourceHidden(srcKey) {
 // (chip lit = zero-gain effects shown). Saved in localStorage, like the two row
 // options below: these are view preferences, not state of the opened log.
 let eiHideZeroGain = uiPrefBool('ei.hideZeroGain', true);
-// Top-bar row options: the potential's icon column and the per-row hit
-// coverage (affected / total). Both on by default; with the coverage off the
-// gain is centred across the row instead of riding the name's baseline.
+// Top-bar row options: the potential's icon column (on by default) and the
+// per-row hit coverage, affected / total (off by default; with the coverage on
+// the gain rides the name's baseline, off it is centred across the row).
 let eiShowPotImg = uiPrefBool('ei.showPotImg', true);
-let eiShowCoverage = uiPrefBool('ei.showCoverage', true);
+let eiShowCoverage = uiPrefBool('ei.showCoverage', false);
 
 // Paint the sidebar chip from the flag. Called at load (the chip lives in
 // index.html, not in a render) and again whenever the flag moves.
