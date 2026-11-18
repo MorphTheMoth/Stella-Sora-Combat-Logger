@@ -43,6 +43,11 @@ let eiHideZeroGain = uiPrefBool('ei.hideZeroGain', true);
 // the gain rides the name's baseline, off it is centred across the row).
 let eiShowPotImg = uiPrefBool('ei.showPotImg', true);
 let eiShowCoverage = uiPrefBool('ei.showCoverage', false);
+// Third row option, off by default: the unit word an effect's value carries
+// (`+8.00% base`, `+3.00% pct`, `abs`, and `Origin` on record rows), which sits
+// between the value and its `×N` stack count. Off, the stat cell is the number
+// alone; on, the word comes back.
+let eiShowUnitWord = uiPrefBool('ei.showUnitWord', false);
 
 // Paint the sidebar chip from the flag. Called at load (the chip lives in
 // index.html, not in a render) and again whenever the flag moves.
@@ -64,6 +69,11 @@ window.eiTogglePotImg = function() {
 window.eiToggleCoverage = function() {
     eiShowCoverage = !eiShowCoverage;
     uiPrefSet('ei.showCoverage', eiShowCoverage);
+    eiRenderTable();
+};
+window.eiToggleUnitWord = function() {
+    eiShowUnitWord = !eiShowUnitWord;
+    uiPrefSet('ei.showUnitWord', eiShowUnitWord);
     eiRenderTable();
 };
 
@@ -677,10 +687,13 @@ function eiRenderTable() {
         const raw = override ? override.newValue : ef.value;
         const overrideSubType = override ? override.newSubType : ef.subType;
         const overrideAttrType = override ? override.newAttrType : ef.attrType;
-        let subLabel = ef.isRecordEffect
+        const unitWord = ef.isRecordEffect
             ? (overrideSubType === 1 ? 'Origin' : eiSubTypeLabel(overrideSubType, null))
             : eiSubTypeLabel(overrideSubType, ef.effectType);
-        if (ef._gemLevel) subLabel = `${subLabel} +${ef._gemLevel}`;
+        // The unit word is the row option "Show Base/Pct": off, the cell is the
+        // value alone. A gem's own +lv is a number, not the word, so it stays.
+        const gemTxt = ef._gemLevel ? `+${ef._gemLevel}` : '';
+        const unitTxt = [eiShowUnitWord ? unitWord : '', gemTxt].filter(Boolean).join(' ');
         const attrLabel = attrName(overrideAttrType != null ? overrideAttrType : ef.attrType);
         const isSmall = raw != null && Math.abs(raw) < 15;
         const valStr = raw != null ? (isSmall ? (raw * 100).toFixed(2) + '%' : String(raw)) : '?';
@@ -688,7 +701,8 @@ function eiRenderTable() {
         const stacks = (row && row.maxStacks) || ef.maxStacks || 1;
         // The disc's level is on the card head (Copies / H1 / H2), so the rows
         // stay a reading of the effect: value, unit, stacks.
-        return `${esc(attrLabel)} <b>${sign}${valStr}</b> <span class="ei-unit">${subLabel}</span>` +
+        return `${esc(attrLabel)} <b>${sign}${valStr}</b>` +
+            (unitTxt ? ` <span class="ei-unit">${unitTxt}</span>` : '') +
             (stacks > 1 ? ` <span class="ei-stacks" title="Max stacks observed">×${stacks}</span>` : '');
     };
 
@@ -886,6 +900,109 @@ function eiRenderTable() {
     };
     const rowName = (r, unit) => eiTalentRowName({ name: stripUnitName(r.ef.name, unit) }) + eiNoteLevelTag(r.ef);
 
+    /* ── Potentials: one foldable row per potential ──
+       A potential reaches the card as several rows, never one: each effect it
+       grants is its own row (same name, one per ladder level / side) and the
+       damage it deals arrives as a Potentials hit group named by the
+       potential's own title. They all resolve to the same potential id — the
+       row's `levelSource`, its `linkPotential`, or the Record's pot of that
+       name — so the section folds them into one bar per potential, the way a
+       character's rows fold per talent and a disc card's per part. */
+    const potKeyOfRow = (r, unit) => {
+        const shown = stripUnitName(r.ef.name, unit) || String(r.ef.name || 'Potential');
+        const potId = potIdOfRow(r.ef, unit, shown);
+        if (potId != null) {
+            const named = (typeof potentialNameById !== 'undefined' && potentialNameById.get)
+                ? potentialNameById.get(Number(potId)) : null;
+            return { key: 'pot:' + potId, potId: Number(potId), label: named || shown };
+        }
+        // A row with no resolvable id (a fixed unlevelled effect, a hit group
+        // whose title the Record does not list) still belongs to the potential
+        // it is named after.
+        return { key: 'potname:' + unit + '|' + shown.toLowerCase(), potId: null, label: shown };
+    };
+
+    /* A fold body row whose name is the fold's OWN title — a potential's effect
+       row, a disc part's effect row — collapses to one line: the header already
+       names the group, so the reading takes the name slot, and what tells these
+       rows apart is the value (a level, a side, a Param), never a title. A row
+       named otherwise keeps the normal two-line shape. */
+    const foldReadingRow = (r, name, label, unit) => {
+        if (String(name).trim().toLowerCase() !== String(label || '').trim().toLowerCase()) {
+            return rowHtml(r, name, unit);
+        }
+        const added = r.isAdded
+            ? ` <span class="ei-added-badge" title="Toggled OFF in Dmg Calc — this is what adding it back contributes">+added</span>`
+            : '';
+        const cov = eiShowCoverage ? `<span class="ei-ucov">${r.affectedHits}/${r.hitCount}</span>` : '';
+        return `<div class="ei-urow is-flat ei-fold-child">` +
+            `<span class="ei-ugain ${cls(pct(r))}">${fPct(pct(r))}</span>` +
+            cov +
+            `<span class="ei-uname">${statCell(r.ef, r)}${added}${efLvlBadge(r.ef)}</span>` +
+        `</div>`;
+    };
+    const potBodyRow = (r, unit, label) => foldReadingRow(r, rowName(r, unit), label, unit);
+
+    /* The fold itself: one bar per potential, shaped exactly like the talent
+       bars (same .ei-talent wrapper, same caret in the gutter, same one-level
+       step for the body) so the two folds read as one mechanism. */
+    const potBlock = (unit, p) => {
+        const open = eiOpenTalents.has(p.key);
+        const total = p.pct != null ? p.pct : sumOf(p.rows);
+        // Second line: the strongest row's stat reading, the same shape a disc
+        // part's fold uses (a potential has no single "main" effect to name).
+        const top = [...p.rows].sort((a, b) => pct(b) - pct(a))[0];
+        const statLine = top ? statCell(top.ef, top) : '';
+        const covHits = p.rows.reduce((m, r) => Math.max(m, r.affectedHits || 0), 0);
+        const covAll = p.rows[0].hitCount || 0;
+        // The potential's own art fills the row's icon column — this header is
+        // the one row that stands for the potential itself.
+        const icon = eiShowPotImg ? potIconHtml(p.potId) : '';
+        return `<div class="ei-talent${open ? ' is-open' : ''}" data-ei-talent="${esc(p.key)}">` +
+            `<button type="button" class="ei-urow ei-talent-head${icon ? '' : ' is-flat'}${eiShowCoverage ? '' : ' no-cov'}"` +
+                ` title="${esc(p.label)}" aria-expanded="${open ? 'true' : 'false'}">` +
+                `<span class="ei-talent-chev" aria-hidden="true">${open ? '▾' : '▸'}</span>` +
+                `<span class="ei-ugain ${cls(total)}">${fPct(total)}</span>` +
+                icon +
+                `<span class="ei-uname">${esc(p.label)}</span>` +
+                (eiShowCoverage ? `<span class="ei-ucov">${covHits}/${covAll}</span>` : '') +
+                `<span class="ei-ustat">${statLine}</span>` +
+            `</button>` +
+            `<div class="ei-talent-body">` +
+                [...p.rows].sort((a, b) => pct(b) - pct(a))
+                    .map(r => potBodyRow(r, unit, p.label)).join('') +
+            `</div>` +
+        `</div>`;
+    };
+
+    /* Split a section's rows by potential. A potential with a single row has
+       nothing to fold, so it keeps the plain row — its gain and stat line stay
+       on the surface. Groups and singles then rank together by their own
+       number: a fold bar takes its place in the gain order among the single
+       rows, the way the flats always ranked, instead of a block of folds with
+       the singles pushed to the bottom. */
+    const potItems = (rowsIn, unit) => {
+        const byKey = new Map();
+        for (const r of rowsIn) {
+            const id = potKeyOfRow(r, unit);
+            if (!byKey.has(id.key)) {
+                byKey.set(id.key, { key: id.key, potId: id.potId, label: id.label, rows: [], pct: null });
+            }
+            byKey.get(id.key).rows.push(r);
+        }
+        const items = [];
+        for (const p of byKey.values()) {
+            if (p.rows.length < 2) {
+                items.push({ row: p.rows[0], gain: pct(p.rows[0]) });
+                continue;
+            }
+            p.pct = eiRowGroupPct(p.key, p.rows);
+            items.push({ group: p, gain: p.pct != null ? p.pct : sumOf(p.rows) });
+        }
+        items.sort((a, b) => b.gain - a.gain);
+        return items;
+    };
+
     const card = (g, isTeam) => {
         const cid = nameToId.get(g.name.toLowerCase()) || null;
         const meta = cid != null && typeof recCharMeta === 'function' ? recCharMeta(cid) : null;
@@ -912,6 +1029,19 @@ function eiRenderTable() {
         const parts = [];
         for (const s of SUB_ORDER.filter(s => g.subs.has(s))) {
             const subRows = [...g.subs.get(s)].sort((a, b) => pct(b) - pct(a));
+            if (s === 'Potentials') {
+                // Potentials fold per potential (see potBlock); a potential with
+                // one row keeps the plain row, so both kinds share one gain-
+                // ranked list.
+                const items = potItems(subRows, g.name);
+                const subHead = onlyOther ? '' :
+                    `<div class="rec-sec-head"><span class="rec-sec-title">Potentials</span></div>`;
+                const inner = items.map(it => it.group
+                    ? potBlock(g.name, it.group)
+                    : rowHtml(it.row, rowName(it.row, g.name), g.name)).join('');
+                parts.push(`<div class="ei-fam">${subHead}${inner}</div>`);
+                continue;
+            }
             if (s === 'Talents') {
                 const { groups, rest } = talentRows(subRows);
                 // Same section bar Potentials / Skills / Emblems carry above them.
@@ -1012,7 +1142,7 @@ function eiRenderTable() {
                 `<span class="ei-ustat">${statLine}</span>` +
             `</button>` +
             `<div class="ei-talent-body">${[...g.rows].sort((a, b) => pct(b) - pct(a))
-                .map(r => rowHtml(r)).join('')}</div>` +
+                .map(r => foldReadingRow(r, r.ef.name, label, null)).join('')}</div>` +
         `</div>`;
     };
     const discCard = (d) => {
@@ -1080,6 +1210,8 @@ function eiRenderTable() {
             ` title="Show each row's potential icon (rows that belong to no potential have none)">Show Pot Img</button>` +
             `<button type="button" class="rec-btn${eiShowCoverage ? ' is-on' : ''}" onclick="eiToggleCoverage()"` +
             ` title="Show how many hits each effect affected (affected / total)">Show Coverage</button>` +
+            `<button type="button" class="rec-btn${eiShowUnitWord ? ' is-on' : ''}" onclick="eiToggleUnitWord()"` +
+            ` title="Show the base / pct / abs word after each effect's value (the one before the ×N stacks)">Show Base/Pct</button>` +
         `</span>` +
         `</div>`;
     if (!rows.length) {

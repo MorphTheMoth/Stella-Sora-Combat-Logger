@@ -1530,6 +1530,17 @@
            so the child list reads as nested. */
         #eiPanel .ei-talent-body .ei-urow { padding-left: 26px; }
         #eiPanel .ei-talent-body .ei-urow:last-child { border-bottom: 1px solid #262626; }
+        /* A fold body row whose title became its reading is ONE line (the fold's
+           header already names the group), so the value keeps the stat line's
+           non-bold tabular treatment in the name slot and the row is not padded
+           out to the two-line height — a nested list of readings sits tighter
+           than the rows above it. */
+        #eiPanel .ei-fold-child { min-height: 24px; }
+        /* With coverage on the row grows to two lines (counter under the gain);
+           the reading stays on the gain's line instead of being pushed below
+           it by the auto-placement cursor. */
+        #eiPanel .ei-fold-child .ei-uname { grid-row: 1; }
+        #eiPanel .ei-fold-child .ei-uname b { font-weight: normal; font-variant-numeric: tabular-nums; }
 
         /* ── Emblems Comparison panel ──
            Same board language as the Record tab: three character columns on

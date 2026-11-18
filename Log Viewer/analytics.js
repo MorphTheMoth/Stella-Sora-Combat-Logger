@@ -127,6 +127,47 @@ const Analytics = (() => {
         return charColorCache[name] || '#888888';
     }
 
+    // ── Damage-type palette ───────────────────────────────────────
+    // Grouping by damage type keys the color by type name (dtName: 'Auto
+    // Attack', 'Skill', …), not by character, so charColor() — which resolves
+    // a character's honor-title art — would return its gray fallback for every
+    // slice. Fixed hues instead, spread far enough apart to stay readable on
+    // the #1a1a1a chart background with the 2px dark slice borders.
+    const dmgTypePalette = {
+        'Auto Attack': '#5ba9e8',   // steel blue
+        'Skill':       '#8b7cf6',   // violet
+        'Ultimate':    '#f5a524',   // amber
+        'Mark':        '#e05fa0',   // magenta
+        'Projectile':  '#2fc4b2',   // teal
+        'Minion':      '#a3c94a',   // lime
+        'Other':       '#7d8590',   // muted slate
+        'None':        '#555c66',   // dim slate
+    };
+
+    function hslToHex(h, s, l) {
+        const a = s * Math.min(l, 1 - l);
+        const f = n => {
+            const k = (n + h / 30) % 12;
+            const c = l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+            return Math.round(c * 255).toString(16).padStart(2, '0');
+        };
+        return '#' + f(0) + f(8) + f(4);
+    }
+
+    // Stable per-name color for a type the palette does not list (a new
+    // damageTypeNames entry), so an unmapped type never renders gray.
+    function dmgTypeColor(name) {
+        if (dmgTypePalette[name]) return dmgTypePalette[name];
+        let hash = 0;
+        for (let i = 0; i < String(name).length; i++) hash = (hash * 31 + String(name).charCodeAt(i)) >>> 0;
+        return hslToHex(hash % 360, 0.62, 0.62);
+    }
+
+    // Base color for a group: character art color, or the type palette.
+    function groupColor(groupBy, groupName) {
+        return groupBy === 'dmgtype' ? dmgTypeColor(groupName) : charColor(groupName);
+    }
+
     let chartDmgShare = null;
     let chartBuff = null;
     let dmgShareVersion = 0;
@@ -220,7 +261,7 @@ const Analytics = (() => {
         let slices = collectHitGroups({ groupBy, granularity, filterChar, filterType, filterDef }).map(g => {
             const total = g.hitList.reduce((sum, ev) => sum + perHit(ev), 0);
             return {
-                groupName: g.groupName, char: g.char, dmgtype: g.dmgtype, skillTitle: g.skillTitle,
+                groupBy, groupName: g.groupName, char: g.char, dmgtype: g.dmgtype, skillTitle: g.skillTitle,
                 label: g.key.split('|').join(' › '),
                 value: averaged && g.hitList.length > 0 ? total / g.hitList.length : total,
             };
@@ -313,9 +354,14 @@ const Analytics = (() => {
             return;
         }
 
+        const groupBy = slices[0].groupBy;
         const uniqueGroups = [...new Set(slices.map(s => s.groupName))];
-        await resolveCharColors(uniqueGroups);
-        if (version !== dmgShareVersion) return;
+        // Character colors come from honor-title art; type names have no art to
+        // sample, so they use the fixed dmgTypePalette and skip the resolve.
+        if (groupBy !== 'dmgtype') {
+            await resolveCharColors(uniqueGroups);
+            if (version !== dmgShareVersion) return;
+        }
 
         if (chartDmgShare) { chartDmgShare.destroy(); chartDmgShare = null; }
 
@@ -325,7 +371,7 @@ const Analytics = (() => {
         const labels = [], values = [], colors = [];
         slices.forEach(s => {
             labels.push(s.label); values.push(s.value);
-            const base = charColor(s.groupName);
+            const base = groupColor(groupBy, s.groupName);
             if (depth === 0) {
                 colors.push(base);
             } else {
@@ -452,7 +498,7 @@ const Analytics = (() => {
             }
             // Convert summed weighted MV to per-second
             values.mvTypePerSec = durationSec > 0 ? values.mvTypePerSec / durationSec : 0;
-            return { key: g.key, groupName: g.groupName, char: g.char, dmgtype: g.dmgtype, skillTitle: g.skillTitle, values };
+            return { key: g.key, groupBy, groupName: g.groupName, char: g.char, dmgtype: g.dmgtype, skillTitle: g.skillTitle, values };
         });
     }
 
@@ -475,7 +521,7 @@ const Analytics = (() => {
         sortRows(rows, metrics);
 
         const uniqueGroups = [...new Set(rows.map(r => r.groupName))];
-        await resolveCharColors(uniqueGroups);
+        if (rows[0].groupBy !== 'dmgtype') await resolveCharColors(uniqueGroups);
 
         const depth = granularity === 'none' ? 0 : granularity === 'skill' ? 1 : 2;
         const groupCounts = {}, groupIdx = {};
@@ -494,7 +540,7 @@ const Analytics = (() => {
         html += '</tr></thead><tbody>';
 
         for (const r of rows) {
-            const base = charColor(r.groupName);
+            const base = groupColor(r.groupBy, r.groupName);
             const color = depth === 0 ? base : (() => {
                 if (groupIdx[r.groupName] === undefined) groupIdx[r.groupName] = 0;
                 return tintCharColor(base, groupIdx[r.groupName]++, groupCounts[r.groupName], depth);
