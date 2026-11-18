@@ -79,10 +79,26 @@ columns and are flagged under the table (162 Alina: stance variants `Ultra_Qing`
 | Laru (158) | 0.86 | 2.33 | 0.65 | -0.82 |
 | Coronis (159) | 2.33 | 2.73 | 0.50 | +0.10 |
 | Willow (160) | 3.70 | 5.50 | 0.75 | -1.05 |
+| Leafia (161) | 3.80 | 3.80 | 0.52 | +0.52 |
 | Alina (162) | 6.73 | 6.73 | 0.50 | +0.00 |
 
-41 characters.
+42 rows: the 41 released characters plus 161 Leafia, who has no `EN/bin/Character.json` entry yet.
+
+161 Leafia has a stub kit only — `ComboClip_161_Skill_Main`, `_Skill_Sup`, `_Ultra_TL`, `_Ultra_NoTL` (12 objects in `char_16101_combos.unity3d`, plus a `_combos_summon` bundle; her normals live on `161_Atk1/2/3`, see `leafia-161-2.0.0-kit.md`) — so her TL and NoTL clips are the same length (3.80 s) and the only delta is the 0.52 s type-10 `FrozenTime` black-out in the short variant. Bundles are dated 2026-11-13, the same patch batch as 162.
+
+163 (Greyhorn), 164 (Shuo) and the still-`***` ids 166 / 168 / 177 have `characterid.json` entries but **no installed bundles** (no `char_163*` / `char_164*` in `InstallResource` or `Persistent_Store/AssetBundles`, and no manifest reference), so there is nothing to measure for them yet; re-run the extraction once the game downloads their packs.
 
 Rows without a full/short split:
 
 - 162 (Alina): no _TL/_NoTL split; both columns = Ultra_Zhong (the default stance), and the Witch freeze applies in both modes, so the clock delta is 0. Stance variants: `Ultra_Zhong` 6.73 s / freeze 0.50 s; `Ultra_Qing` 5.00 s / freeze 0.30 s
+
+## Support slot (assist)
+
+Nothing about the ult path is skipped when the caster sits in the support slot: `UltimateId == AssistUltimateId` for every entry in `EN/bin/Character.json`, so the same skill id runs the same `SkillScript_Ultra` → `PlayTimeline` → `<id>_Ultra_TL` / `_NoTL` clips. The caster is a `PlayerAdventureActor` with `isAssist = true` (`:24138`, `:24774`), which is what the shared code tests.
+
+- **Full animation** — identical: `AdventureSkillTimelinePlayer.Play` sets `_director.timeUpdateMode = UnscaledGameTime`, disables input, hides the HUD and calls `PauseLogic()` (`:184155`), with `EnableInvincible()` on the assist. Whole game and Blitz clock stop for the cinematic.
+- **Short animation / black-out** — `OnFrozenTimeEvent` only checks `_actor is PlayerAdventureActor` (`:4178`), so the assist triggers `EnterWitchTime` too, but `ignoreGlobalLogicTimeScale = true` is set on the **caster**, i.e. the assist (`:17114`). So during a support-slot black-out the assist keeps ticking while **your main character is frozen for the full 0.38–1.83 s** — the opposite of a main-slot ult, where you are the exempt actor. The whole level clock also stops, because `LockStepManager.deltaTime = unscaledDeltaTime * logicTimeScale`.
+- **Highlight / camera pairing** — an assist has no `attackTarget` of its own, so `EnterWitchTime` substitutes `assistWitchTimeTarget` (`:17103`). It is filled when the assist is staged (`:93967`) from `FrozenTimeHighlightUnit` (enum `:169145`): `SelfAndTarget = 2` → the main's current target if alive, else the assist's own, else a 256-layer search; `Self = 1` → stays null, so only the assist is highlighted. `Self` is used by Iris, Chaton, Jinglin, Coronis, Nanoha, Nazuka, Sparkla, Nazuna and Laru; everyone else is `SelfAndTarget`.
+- **Interrupt** — `EnterWitchTime` begins with `EndCurrentWitchTime()` (`:17096`), so an assist ult cancels a witch time the main is currently in (e.g. a perfect-dodge freeze).
+- **158 Laru is the exception in data**: her assist variants are separate clips — `Attack_Ultra_Support` (1.07 s) and `Ultra_Skill_Support` (1.33 s), chosen by `isAssist ? "…_Support" : …` in `SkillScript_NormalAttack_Transfrom` / `SkillScript_Skill_Transfrom` — and neither has a type-10 `FrozenTime` event, so her support-slot ult has **no** black-out, while her main-slot `Ultra_NoTL` does (0.232 × 2.80 = 0.65 s). No other character in the extracted bundles has `_Support` ult clips; they all reuse their normal ult clips in both slots.
+- **Day-once counter** — the `TimeLinePlayType.dayOnce` allowance is keyed `{playerUid}_{actor.dataID}day` (`:52720`), i.e. per character, so a character's main-slot and support-slot ults share the same daily counter.
