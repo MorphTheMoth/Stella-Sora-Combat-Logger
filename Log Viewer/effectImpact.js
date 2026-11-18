@@ -552,6 +552,15 @@ function eiRender() {
     const panel = document.getElementById('eiPanel');
     if (!panel.classList.contains('visible')) return;
 
+    // Crit mode is tab-derived: this tab (like the Emblems tab) prices effects
+    // on the EXPECTED crit multiplier, so crit-rate / crit-damage rows show a
+    // gain — see dcSyncCritModeForTab. Re-assert on every render, so a click on
+    // the sidebar's Average Crit Rate row here cannot leave the tab on logged
+    // per-hit crits while the Emblems tab stays averaged. The tab name is hard
+    // coded: `activeTab` is only assigned by the innermost switchTab, i.e. after
+    // this render ran.
+    if (typeof dcSyncCritModeForTab === 'function') dcSyncCritModeForTab('effectimpact');
+
     if (!dcFiltered.length) {
         // Auto-load: if no filtered hits yet but hit events exist, build the
         // Dmg Calc filter list first (same as opening the Dmg Calc tab).
@@ -1627,6 +1636,10 @@ window.eiSetSort = function(col) {
 // ─── Tab hook ─────────────────────────────────────────────────────────────────
 const _eiOrigSwitchTab = window.switchTab;
 window.switchTab = function(tab) {
+    // Defensive (record.js, the outermost wrapper, already synced it): the
+    // arriving tab owns the crit mode, and this tab must never compute against
+    // the one the tab we just left used.
+    if (typeof dcSyncCritModeForTab === 'function') dcSyncCritModeForTab(tab);
     document.getElementById('tabEffectImpact').classList.toggle('active', tab === 'effectimpact');
     document.getElementById('eiPanel').classList.toggle('visible', tab === 'effectimpact');
     if (tab === 'effectimpact') {

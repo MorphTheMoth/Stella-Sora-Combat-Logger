@@ -2333,6 +2333,12 @@ function ecRender() {
     const panel = document.getElementById('ecPanel');
     if (!panel.classList.contains('visible')) return;
 
+    // Crit mode is tab-derived (averaged here and on Effect Impact — see
+    // dcSyncCritModeForTab); re-assert so the sidebar switch and the shared
+    // baseline agree with what this tab computes. Hard-coded tab name: the
+    // innermost switchTab assigns `activeTab` after this render.
+    if (typeof dcSyncCritModeForTab === 'function') dcSyncCritModeForTab('emblemscomp');
+
     const rec = getOriginRecord();
     if (!rec || !Array.isArray(rec.chars) || !rec.chars.length) {
         panel.innerHTML = `<div class="ei-empty">This log doesn't have a record log — the emblems comparison needs a record (Origin) event.</div>`;
@@ -2666,6 +2672,9 @@ function ecRefreshIfVisible() {
 // ─── Tab hook ─────────────────────────────────────────────────────────────────
 const _ecOrigSwitchTab = window.switchTab;
 window.switchTab = function(tab) {
+    // Defensive (record.js, the outermost wrapper, already synced it): this tab
+    // and Effect Impact are the averaged-crit tabs.
+    if (typeof dcSyncCritModeForTab === 'function') dcSyncCritModeForTab(tab);
     const tabBtn = document.getElementById('tabEmblemsComp');
     const panel = document.getElementById('ecPanel');
     if (tabBtn) tabBtn.classList.toggle('active', tab === 'emblemscomp');

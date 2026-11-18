@@ -13,6 +13,12 @@
 
 const _recordOrigSwitchTab = window.switchTab;
 window.switchTab = function(tab) {
+    // This is the OUTERMOST switchTab wrapper (record.js is the last script in
+    // index.html), so it runs before any other tab hook renders. The crit mode
+    // is tab-derived (averaged on the Effect Impact / Emblems tabs, logged
+    // per-hit crits everywhere else) — settle it first, or the arriving tab
+    // computes against the tab we just left.
+    if (typeof dcSyncCritModeForTab === 'function') dcSyncCritModeForTab(tab);
     document.getElementById('tabRecord').classList.toggle('active', tab === 'record');
     document.getElementById('recordPanel').classList.toggle('visible', tab === 'record');
     // Switch away first: the Dmg Calc hook rebuilds the shared hit set and the

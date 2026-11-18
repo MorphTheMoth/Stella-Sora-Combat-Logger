@@ -1076,6 +1076,42 @@ function dcSimulateCritMode() {
 // static quick toggles, behind a divider on either side.
 const DC_CRIT_SECTION = [DC_CRIT_TOGGLE];
 
+// ─── Tab-scoped crit mode ─────────────────────────────────────────────────────
+// The two "impact" tabs price effects across every filtered hit, so a crit-rate
+// or crit-damage row only moves damage there when the whole evaluation runs on
+// the EXPECTED crit multiplier 1 + CR×(CD−1) (calcDamage's critDmg branch) —
+// the Emblems tab has always worked that way (ecExpectedCrit in
+// emblemsComparison.js). Instead of a second hidden flag, those tabs drive the
+// one switch the tool already has, dcDisabled('critRate'): on while an impact
+// tab is active, off on every other tab, where the logged per-hit crits are
+// what the calc-vs-game diff needs. Called from the switchTab chain (and from
+// eiRender, so a sidebar click inside the tab cannot silently drop it).
+const DC_AVG_CRIT_TABS = new Set(['effectimpact', 'emblemscomp']);
+
+function dcSyncCritModeForTab(tab) {
+    const want = DC_AVG_CRIT_TABS.has(tab);
+    if (want === dcDisabled.has('critRate')) return false;
+    if (want) dcDisabled.add('critRate');
+    else dcDisabled.delete('critRate');
+    dcBumpCalcVersion();   // new hit calc + baseline for the arriving tab
+    renderFormulaBar();
+    dcPaintCritToggleBtn();
+    return true;
+}
+
+// Repaint just the Average Crit Rate row's button — a full dcRenderCharList()
+// would also recompute the per-char deltas, which the tab hooks do themselves.
+function dcPaintCritToggleBtn() {
+    const list = document.getElementById('dcCharsList');
+    if (!list) return;
+    const on = dcDisabled.has('critRate');
+    for (const btn of list.querySelectorAll('button.dc-char-btn')) {
+        if (btn.getAttribute('onclick') !== "dcToggleField('critRate')") continue;
+        btn.classList.toggle('on', on);
+        btn.textContent = on ? 'Disable' : 'Enable';
+    }
+}
+
 function dcQuickToggleList() {
     const rec = (typeof getOriginRecord === 'function') ? getOriginRecord() : null;
     if (!rec) return [...DC_CRIT_SECTION, { divider: true }, ...DC_QUICK_TOGGLES];
