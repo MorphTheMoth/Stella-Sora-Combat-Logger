@@ -1407,7 +1407,14 @@ function renderBoard(panel, rec, synthetic) {
     // mode and team are already evident from the three columns below. ──
     html.push('<div class="rec-top">');
     if (synthetic) html.push('<span class="rec-top-note">reconstructed from combat</span>');
+    // Sum of potential levels in the build: the ladder level only, so a bonus an
+    // emblem affix grants is left out of the total.
+    let potLevelSum = 0;
+    for (const c of cols) {
+        for (const r of c.pots) potLevelSum += Math.max(r.edit - (r.grant || 0), 0);
+    }
     html.push('<span class="rec-top-actions" style="margin-left:auto">');
+    html.push(`<span class="rec-top-count"><strong>${potLevelSum}</strong> potentials</span>`);
     html.push('<button type="button" class="rec-btn" data-act="builder"' +
         ' title="Open this build in the Nebula Record Builder">Record builder</button>');
     html.push('</span>');

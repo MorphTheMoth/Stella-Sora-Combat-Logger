@@ -831,6 +831,15 @@
             flex-wrap: wrap;
         }
         .rec-top-note { font-size: 10px; color: var(--rec-fg-3); font-style: italic; }
+        /* Build totals in the bar: same micro-label as the section heads, the
+           number itself in the row colour so it reads at a glance. */
+        .rec-top-count {
+            font-family: Arial, Helvetica, "Liberation Sans", sans-serif;
+            font-size: 10px; color: var(--rec-fg-2); letter-spacing: 0;
+            margin-right: 6px; white-space: nowrap;
+            font-variant-numeric: tabular-nums;
+        }
+        .rec-top-count strong { color: var(--rec-fg); font-weight: 700; }
         /* The bar's controls sit in the flow next to each other — no group is
            pushed to the right edge any more (Record's Reset all, Effect
            Impact's row options, Emblems' column menu all read left to right). */
@@ -839,6 +848,11 @@
            not the uppercase micro-headings the boards use. */
         .rec-top .rec-btn,
         .rec-top .ec-rarity-sel { text-transform: none; letter-spacing: 0; }
+        /* One family across the bar: its buttons and its totals are the same
+           kind of label, and Arial is what the numeric readouts use. */
+        .rec-top .rec-btn,
+        .rec-top .ec-rarity-sel,
+        .rec-top-count { font-family: Arial, Helvetica, "Liberation Sans", sans-serif; }
 
         .rec-btn {
             height: 24px; padding: 0 10px;
