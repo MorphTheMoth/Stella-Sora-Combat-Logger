@@ -50,8 +50,10 @@ let _ecAutoLoading = false; // guards the dcRefilterAndRender auto-load re-entry
 // Expected-crit mode: crit rate is display-only in the per-hit calc (the hit's
 // isCrit flag decides), so crit-rate lines only gain when the whole comparison
 // is evaluated with the expected multiplier 1 + critRate×(critDmg−1). This tab
-// ALWAYS runs in expected-crit mode (no toggle — crit-rate lines are core
-// emblem lines). Local to this tab (does not touch the global dcDisabled).
+// runs in expected-crit mode by default — the sidebar's Average Crit Rate row
+// is the switch that turns it off (dcSyncCritModeForTab seeds it on, and
+// ecCalcDisabled reads dcDisabled.has('critRate')). Local flag kept for the
+// per-tab fallback only.
 let ecExpectedCrit = true;
 // Emblem tier filter (radio): 0 = all, or a single emblem tier (70/80/90).
 let ecTierSel = 0;
@@ -2333,10 +2335,12 @@ function ecRender() {
     const panel = document.getElementById('ecPanel');
     if (!panel.classList.contains('visible')) return;
 
-    // Crit mode is tab-derived (averaged here and on Effect Impact — see
-    // dcSyncCritModeForTab); re-assert so the sidebar switch and the shared
-    // baseline agree with what this tab computes. Hard-coded tab name: the
-    // innermost switchTab assigns `activeTab` after this render.
+    // Crit mode is tab-derived (averaged here and on Effect Impact / Record —
+    // see dcSyncCritModeForTab); re-assert so the sidebar switch and the shared
+    // baseline agree with what this tab computes. A row the user flips off here
+    // is remembered per tab (dcTabFieldChoices), so the re-assert keeps his
+    // choice instead of undoing it. Hard-coded tab name: the innermost
+    // switchTab assigns `activeTab` after this render.
     if (typeof dcSyncCritModeForTab === 'function') dcSyncCritModeForTab('emblemscomp');
 
     const rec = getOriginRecord();
@@ -2537,7 +2541,7 @@ function ecRenderTable() {
                     `<span class="rec-portrait-fb" aria-hidden="true">${esc(typeof recInitials === 'function' ? recInitials(t.charName || '') : '')}</span>` +
                 `</span>
                 <span class="rec-col-id"><span class="rec-col-name"><span class="rec-col-name-t">${esc(t.charName || ('Char ' + t.charId))}</span></span></span>
-                <button class="ec-scope-btn" onclick="ecToggleScope(${t.charId})" title="Click to switch — Team dmg: gains measured against the whole deployed team's damage · Personal dmg: against this character's damage only">${useTeam ? 'Team dmg' : 'Personal dmg'}</button>
+                <button class="ec-scope-btn" onclick="ecToggleScope(${t.charId})" title="Click to switch — Team dmg: gains measured against the whole deployed team's damage · Personal dmg: against this character's damage only">${useTeam ? 'Team Dmg' : 'Personal Dmg'}</button>
             </header>
             <table class="ei-table ec-table">
                 <thead>

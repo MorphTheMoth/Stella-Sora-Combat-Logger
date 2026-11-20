@@ -552,13 +552,14 @@ function eiRender() {
     const panel = document.getElementById('eiPanel');
     if (!panel.classList.contains('visible')) return;
 
-    // Crit mode is tab-derived: this tab (like the Emblems tab) prices effects
-    // on the EXPECTED crit multiplier, so crit-rate / crit-damage rows show a
-    // gain — see dcSyncCritModeForTab. Re-assert on every render, so a click on
-    // the sidebar's Average Crit Rate row here cannot leave the tab on logged
-    // per-hit crits while the Emblems tab stays averaged. The tab name is hard
-    // coded: `activeTab` is only assigned by the innermost switchTab, i.e. after
-    // this render ran.
+    // Crit mode is tab-derived: this tab (like the Emblems and Record tabs)
+    // prices effects on the EXPECTED crit multiplier, so crit-rate / crit-damage
+    // rows show a gain — see dcSyncCritModeForTab. Re-assert on every render so
+    // the sidebar switch and the shared baseline agree with what this tab
+    // computes; a row the user flips off inside the tab is remembered per tab
+    // (dcTabFieldChoices), so this no longer undoes his click. The tab name is
+    // hard coded: `activeTab` is only assigned by the innermost switchTab, i.e.
+    // after this render ran.
     if (typeof dcSyncCritModeForTab === 'function') dcSyncCritModeForTab('effectimpact');
 
     if (!dcFiltered.length) {

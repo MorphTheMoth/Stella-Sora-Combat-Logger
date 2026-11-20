@@ -1618,15 +1618,17 @@
            13px bold name, element tint) so every tab shows an identical header.
            The scope control takes the slot Record's header stepper fills — the
            column's right edge inside the head padding — so both tabs' controls
-           end on the same vertical line. */
+           end on the same vertical line. Its label is body text, not a
+           micro-label: mixed case, no tracking, the EFFECTS rows' size. */
         .ec-scope-btn {
 
-            margin-left: auto; flex-shrink: 0; height: 24px; padding: 0 7px;
-            text-indent: 1px;
+            margin-left: auto; flex-shrink: 0; height: 20px; padding: 0 6px;
             background: #222; border: 1px solid var(--rec-line); border-radius: 2px;
-            color: var(--rec-fg-2); font-family: inherit; font-size: 10px;
-            font-weight: bold;   /* matches the EFFECTS header bar (.ei-th) */
-            text-transform: uppercase; letter-spacing: 1px;
+            /* Reads as a row label, not a chip: the EFFECTS list's own 11px
+               regular text (.ei-uname), just lifted enough to sit on the tint. */
+            color: #cfcfcf; font-family: inherit; font-size: 11px;
+            font-weight: normal;
+            text-transform: none; letter-spacing: 0;
             outline: none; cursor: pointer; white-space: nowrap;
             transition: background 0.1s, color 0.1s, border-color 0.1s;
         }

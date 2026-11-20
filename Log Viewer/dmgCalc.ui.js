@@ -1041,13 +1041,15 @@ const DC_QUICK_TOGGLES = [
 // alphabetical after the record ones. They only appear at all when the log
 // has a record log (an Origin event) — without one there is no equipped-disc
 // order to show and no disc stats to toggle.
-// ─── Average-crit quick toggle ────────────────────────────────────────────────
-// The Dmg Calc formula bar's CritRate field IS a switch: while off, calcDamage
-// skips the per-hit isCrit check and multiplies by the expected value
-// 1 + CR×(CD−1) instead (the critDmg branch in dmgCalc.calc.js). This sidebar
-// row drives that same switch, so both read one state —
-// dcDisabled.has('critRate') — and either click repaints the other
-// (dcToggleField re-renders this list when the formula bar is clicked).
+// ─── Average Crit Rate / Env Amend quick toggles ─────────────────────────────
+// Both rows mirror a Dmg Calc formula-bar field, so each drives that same
+// switch and either click repaints the other (dcToggleField re-renders this
+// list when the formula bar is clicked).
+//   critRate — while on, calcDamage skips the per-hit isCrit check and
+//     multiplies by the expected value 1 + CR×(CD−1) instead (the critDmg
+//     branch in dmgCalc.calc.js).
+//   envAmend — while on, calcDamage drops the DamageParams envAmendRatio
+//     factor (the environment amendment) from every hit.
 const DC_CRIT_TOGGLE = {
     label: 'Average Crit Rate',
     title: 'Same switch as the CritRate field in the Dmg Calc formula bar',
@@ -1055,15 +1057,30 @@ const DC_CRIT_TOGGLE = {
     strikeWhenActive: false,
     isActive: () => dcDisabled.has('critRate'),
     onclick: "dcToggleField('critRate')",
-    // What the total would be if the crit mode flipped. Every hit is affected,
-    // so this is one full calc pass — the same cost as one disc simulation.
-    simulate: () => dcSimulateCritMode(),
+    // What the total would be if the mode flipped. Every hit is affected, so
+    // this is one full calc pass — the same cost as one disc simulation.
+    simulate: () => dcSimulateFieldToggle('critRate'),
 };
 
-function dcSimulateCritMode() {
+const DC_ENV_AMEND_TOGGLE = {
+    // Verb-named row: the action it performs, not the factor's name — so the
+    // button reads the opposite state (click 'Disable' to disable Env Amend,
+    // 'Enable' to put it back). enableStyle: false gives exactly that.
+    label: 'Disable Env Amend',
+    title: 'Same switch as the EnvAmd field in the Dmg Calc formula bar',
+    enableStyle: false,
+    strikeWhenActive: false,
+    isActive: () => dcDisabled.has('envAmend'),
+    onclick: "dcToggleField('envAmend')",
+    simulate: () => dcSimulateFieldToggle('envAmend'),
+};
+
+// Total Calc with one formula-bar field flipped — the pass both rows above
+// price their toggle with (each of them moves every hit).
+function dcSimulateFieldToggle(key) {
     const merged = new Set(dcDisabled);
-    if (merged.has('critRate')) merged.delete('critRate');
-    else merged.add('critRate');
+    if (merged.has(key)) merged.delete(key);
+    else merged.add(key);
     let t = 0;
     for (const ev of dcFiltered) {
         const f = calcHitFields(ev, null, dcEffectsDisabled, dcEffectLevelOverrides);
@@ -1072,41 +1089,69 @@ function dcSimulateCritMode() {
     return t;
 }
 
-// The crit row has no section title: it sits between the disc toggles and the
+// Neither row has a section title: they sit between the disc toggles and the
 // static quick toggles, behind a divider on either side.
-const DC_CRIT_SECTION = [DC_CRIT_TOGGLE];
+const DC_CRIT_SECTION = [DC_CRIT_TOGGLE, DC_ENV_AMEND_TOGGLE];
 
-// ─── Tab-scoped crit mode ─────────────────────────────────────────────────────
-// The two "impact" tabs price effects across every filtered hit, so a crit-rate
-// or crit-damage row only moves damage there when the whole evaluation runs on
-// the EXPECTED crit multiplier 1 + CR×(CD−1) (calcDamage's critDmg branch) —
-// the Emblems tab has always worked that way (ecExpectedCrit in
-// emblemsComparison.js). Instead of a second hidden flag, those tabs drive the
-// one switch the tool already has, dcDisabled('critRate'): on while an impact
-// tab is active, off on every other tab, where the logged per-hit crits are
-// what the calc-vs-game diff needs. Called from the switchTab chain (and from
-// eiRender, so a sidebar click inside the tab cannot silently drop it).
-const DC_AVG_CRIT_TABS = new Set(['effectimpact', 'emblemscomp']);
+// ─── Tab-scoped calc switches ─────────────────────────────────────────────────
+// The record-driven tabs price effects across every filtered hit, so they start
+// with both rows above switched on:
+//   critRate — a crit-rate or crit-damage row only moves damage there when the
+//     whole evaluation runs on the EXPECTED multiplier 1 + CR×(CD−1)
+//     (calcDamage's critDmg branch); the Emblems tab has always worked that way
+//     (ecExpectedCrit in emblemsComparison.js).
+//   envAmend — the environment amendment is a per-run constant, so leaving it on
+//     hides what the effect actually did.
+// Every other tab needs the logged numbers instead: the per-hit crits the
+// calc-vs-game diff compares against, and the hit's own envAmendRatio.
+//
+// A row is still the user's to flip. dcToggleField records his choice per tab
+// (dcTabFieldChoices) and this sync re-asserts the tab default only while he
+// has not made one; without that memory, eiRender/ecRender re-asserted the
+// default on every render and Average Crit Rate could not be turned off on the
+// Effect Impact tab. Called from the switchTab chain (and from eiRender /
+// ecRender, so a sidebar click inside the tab cannot silently drop it).
+const DC_TAB_FIELD_DEFAULTS = [
+    { key: 'critRate', tabs: ['effectimpact', 'emblemscomp', 'record'] },
+    { key: 'envAmend', tabs: ['effectimpact', 'emblemscomp', 'record'] },
+];
+const dcTabFieldChoices = new Map();   // '<key>@<tab>' → true (on) / false (off)
+
+function dcTabFieldDefaultOn(key, tab) {
+    const d = DC_TAB_FIELD_DEFAULTS.find(f => f.key === key);
+    return !!d && d.tabs.includes(tab);
+}
+
+function dcTabFieldWanted(key, tab) {
+    const choice = dcTabFieldChoices.get(key + '@' + tab);
+    return (choice === undefined) ? dcTabFieldDefaultOn(key, tab) : choice;
+}
 
 function dcSyncCritModeForTab(tab) {
-    const want = DC_AVG_CRIT_TABS.has(tab);
-    if (want === dcDisabled.has('critRate')) return false;
-    if (want) dcDisabled.add('critRate');
-    else dcDisabled.delete('critRate');
+    let changed = false;
+    for (const { key } of DC_TAB_FIELD_DEFAULTS) {
+        const want = dcTabFieldWanted(key, tab);
+        if (want === dcDisabled.has(key)) continue;
+        if (want) dcDisabled.add(key);
+        else dcDisabled.delete(key);
+        changed = true;
+    }
+    if (!changed) return false;
     dcBumpCalcVersion();   // new hit calc + baseline for the arriving tab
     renderFormulaBar();
-    dcPaintCritToggleBtn();
+    dcPaintFieldToggleBtns();
     return true;
 }
 
-// Repaint just the Average Crit Rate row's button — a full dcRenderCharList()
-// would also recompute the per-char deltas, which the tab hooks do themselves.
-function dcPaintCritToggleBtn() {
+// Repaint just those rows' buttons — a full dcRenderCharList() would also
+// recompute the per-char deltas, which the tab hooks do themselves.
+function dcPaintFieldToggleBtns() {
     const list = document.getElementById('dcCharsList');
     if (!list) return;
-    const on = dcDisabled.has('critRate');
     for (const btn of list.querySelectorAll('button.dc-char-btn')) {
-        if (btn.getAttribute('onclick') !== "dcToggleField('critRate')") continue;
+        const m = /^dcToggleField\('([^']+)'\)$/.exec(btn.getAttribute('onclick') || '');
+        if (!m || !DC_TAB_FIELD_DEFAULTS.some(f => f.key === m[1])) continue;
+        const on = dcDisabled.has(m[1]);
         btn.classList.toggle('on', on);
         btn.textContent = on ? 'Disable' : 'Enable';
     }
@@ -1569,15 +1614,22 @@ function dcRefreshCharDeltas() {
     const sig0 = stateSig();
     const isAborted = () => run !== _dcCharDeltaRun || !dcShowCharDeltas || stateSig() !== sig0;
     const _pf = _perfStart('DC');
+    // The Record tab has no Calculate button of its own, so a run that a later
+    // edit (or a level-table rebuild) superseded has to start itself again, or
+    // the % column stays blank until the next tab entry. The settle delay is
+    // there too: a pass costs ~20 s on a 2.2k-hit log, so a burst of ± clicks
+    // should produce one run, not one per click.
+    const onRecord = () => typeof activeTab !== 'undefined' && activeTab === 'record';
+    const restart = () => { if (onRecord() && dcShowCharDeltas) dcRefreshCharDeltas(); };
     setTimeout(async () => {
         _dcCharDeltaPending = false;
-        if (isAborted()) return;
+        if (isAborted()) { restart(); return; }
         const list = dcPlayerCharNames();
         const res = await dcComputeCharDeltasChunked(list, _pf, isAborted);
-        if (res === null || isAborted()) return;   // superseded / hidden mid-run
+        if (res === null || isAborted()) { restart(); return; }   // superseded / hidden mid-run
         _dcCharDeltaCache = { version: dcStateVersion, ...res };
         dcRenderCharList();
-    }, 0);
+    }, onRecord() ? 350 : 0);
 }
 
 // Button: recompute the per-char deltas for the current state.
@@ -1589,8 +1641,13 @@ window.dcCalculateCharDeltas = function() {
 
 // Interaction handlers that change the simulation state call this so the
 // stale per-char % disappear instead of being silently recomputed.
+//
+// The Record tab is the exception: the sidebar is the board's only readout of
+// an edit, so there the deltas stay ON and the repaint that follows the change
+// (dcRenderCharList → dcRefreshCharDeltas) recomputes them. Blanking them made
+// an edit look like it "only cleared".
 window.dcHideCharDeltas = function() {
-    dcShowCharDeltas = false;
+    dcShowCharDeltas = (typeof activeTab !== 'undefined' && activeTab === 'record');
     _dcCharDeltaCache = null;
 };
 
@@ -2434,6 +2491,20 @@ function dcRefreshEI() {
     }
     // Emblems Comparison tab shares the same calc state — refresh it too.
     if (typeof ecRefreshIfVisible === 'function') ecRefreshIfVisible();
+    // The Record tab has no hit list of its own: the shared sidebar is where an
+    // edit shows up, so repaint its blocks from the state that just changed
+    // (every edit path — level ±, disc, emblem, filter — funnels through here).
+    if (typeof activeTab !== 'undefined' && activeTab === 'record') dcRenderSidebarBlocks();
+}
+
+// Repaint the three right-sidebar blocks — Totals, the character rows with the
+// Quick Toggles, and the Effects list — from the current calc state. No
+// refilter and no effect-set resync: the level tables were already rebuilt by
+// whoever called this, and the sets only change with new effects.
+function dcRenderSidebarBlocks() {
+    dcRenderTotals();
+    dcRenderCharList();
+    renderEffectsPanel();
 }
 
 // ── Shared processed hits for Analytics ────────────────────────────────────────
@@ -2582,14 +2653,20 @@ function renderFormulaBar() {
 window.dcToggleField = function(key) {
     if (dcDisabled.has(key)) dcDisabled.delete(key);
     else dcDisabled.add(key);
+    // A tab-default field remembers the click for the tab he is on. The impact
+    // tabs re-run dcSyncCritModeForTab on every render, so without this a row
+    // switched off here snapped straight back on.
+    if (typeof activeTab === 'string' && DC_TAB_FIELD_DEFAULTS.some(f => f.key === key)) {
+        dcTabFieldChoices.set(key + '@' + activeTab, dcDisabled.has(key));
+    }
     dcBumpCalcVersion();
     dcHideCharDeltas();
     renderFormulaBar();
     dcVL.render();
     dcRefreshEI();
     dcNotifyAnalytics();
-    // The sidebar's Average Crit Rate quick toggle reads the same field state
-    // (dcDisabled.has('critRate')) — repaint it so both switches agree.
+    // The sidebar's quick toggles read the same field state — repaint them so
+    // both switches agree.
     dcRenderCharList();
 };
 
@@ -2821,6 +2898,13 @@ window.switchTab = function(tab) {
         dcRenderCharList();
         _pf('char list', t);
     }
+    if (tab === 'record') {
+        // Same reasoning one tab over, and here the sidebar is the board's only
+        // readout: an edit made elsewhere clears the deltas, so entering the
+        // Record tab turns them back on and the board's own refresh
+        // (dcRefreshRecordSidebar → dcRenderCharList) schedules the recompute.
+        dcShowCharDeltas = true;
+    }
     _origSwitchTab(tab);
 };
 
@@ -2836,13 +2920,10 @@ window.dcRefreshRecordSidebar = function() {
     dcSyncCharEffectKeys();
     dcSyncQuickToggles();
     dcBumpCalcVersion();
-    dcRenderTotals();
-    dcRenderCharList();
-    renderEffectsPanel();
+    dcRenderSidebarBlocks();
     const st = document.getElementById('stats');
     if (st) st.textContent = `${dcFiltered.length} hits`;
 };
-
 // Expose a hook so data loading can trigger a refresh when new events arrive.
 // Updates hit list, formula-bar totals, and the effects panel only when
 // the set of unique effects actually changes (no DOM thrashing on every poll).

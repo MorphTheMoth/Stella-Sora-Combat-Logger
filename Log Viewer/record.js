@@ -14,10 +14,11 @@
 const _recordOrigSwitchTab = window.switchTab;
 window.switchTab = function(tab) {
     // This is the OUTERMOST switchTab wrapper (record.js is the last script in
-    // index.html), so it runs before any other tab hook renders. The crit mode
-    // is tab-derived (averaged on the Effect Impact / Emblems tabs, logged
-    // per-hit crits everywhere else) — settle it first, or the arriving tab
-    // computes against the tab we just left.
+    // index.html), so it runs before any other tab hook renders. The calc
+    // switches (Average Crit Rate / Env Amend) are tab-derived (both on for the
+    // Effect Impact / Emblems / Record tabs, logged values everywhere else) —
+    // settle them first, or the arriving tab computes against the tab we just
+    // left.
     if (typeof dcSyncCritModeForTab === 'function') dcSyncCritModeForTab(tab);
     document.getElementById('tabRecord').classList.toggle('active', tab === 'record');
     document.getElementById('recordPanel').classList.toggle('visible', tab === 'record');
