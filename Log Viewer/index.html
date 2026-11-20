@@ -60,8 +60,6 @@
         .sidebar input[type="text"]::placeholder { color: #555; }
         .sidebar button.clear-btn { color: #b07070; border-color: #4a3030; }
         .sidebar button.clear-btn:hover { background: #2e2020; color: #cc8888; border-color: #5a3535; }
-        .sidebar button#dcDisableAllBtn { color: #b07070; border-color: #4a3030; }
-        .sidebar button#dcDisableAllBtn:hover { background: #2e2020; color: #cc8888; border-color: #5a3535; }
         .sidebar .sidebar-btn-row {
             display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 4px;
         }
@@ -107,6 +105,62 @@
         .sidebar .dc-effects-panel {
             background: transparent; border: none; font-size: 11px;
         }
+        /* ── Sidebar cards ──
+           The right sidebar speaks the same language as Record / Emblems /
+           Effect Impact: #1c1c1c cards, hairline borders, 10px/700 tracked
+           heads with the inset grey bar, Arial everywhere a number lives. */
+        #sidebarDcStats { padding: 12px 14px; }
+        .dc-card {
+            background: #1c1c1c; border: 1px solid var(--rec-line-soft);
+            border-radius: 2px; overflow: hidden; margin-bottom: 10px;
+        }
+        .dc-card > .dc-head {
+            font-size: 10px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase;
+            color: var(--rec-fg-3); padding: 6px 8px; margin: 0;
+            background: var(--rec-head); border-bottom: 1px solid var(--rec-line-soft);
+            box-shadow: inset 2px 0 0 #3f3f3f;
+            display: flex; align-items: center; justify-content: space-between; gap: 8px;
+        }
+        .dc-head .dc-head-note { font-weight: 400; letter-spacing: 0.5px; text-transform: none; }
+        #sidebarDcStats .sidebar-btn-row { padding: 8px; margin: 0; }
+        #sidebarDcStats .dc-formula-totals {
+            padding: 8px 8px 0;
+            font-size: 10px; color: var(--rec-fg-3); line-height: 1.7;
+        }
+        #sidebarDcStats .dc-formula-totals strong { color: var(--rec-fg); font-variant-numeric: tabular-nums; }
+        #dcCharsList { margin: 0; padding: 4px 0 6px; }
+
+        /* Damage share: ring + ledger */
+        .dc-share { display: flex; gap: 14px; padding: 10px 8px; align-items: center; }
+        .dc-share-ring { position: relative; width: 92px; height: 92px; flex: 0 0 auto; }
+        .dc-share-mid { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+        .dc-share-mid b { font-size: 13px; font-weight: 700; color: var(--rec-fg); font-variant-numeric: tabular-nums; }
+        .dc-share-mid span { font-size: 8px; letter-spacing: 0.5px; text-transform: uppercase; color: var(--rec-fg-3); }
+        .dc-share-ledger { flex: 1; min-width: 0; }
+        .dc-share-row { display: flex; align-items: center; gap: 7px; padding: 5px 0; }
+        .dc-share-row + .dc-share-row { border-top: 1px solid #232323; }
+        .dc-share-row .dc-share-dot { width: 6px; height: 6px; flex: 0 0 auto; }
+        .dc-share-row .dc-share-nm {
+            flex: 1; min-width: 0; font-size: 11px; color: var(--rec-fg);
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .dc-share-row .dc-share-gain {
+            font-size: 10px; color: var(--rec-fg-3); font-variant-numeric: tabular-nums;
+            width: 46px; text-align: right;
+        }
+        .dc-share-row .dc-share-pct {
+            width: 40px; text-align: right; font-size: 11px; font-weight: 700;
+            color: var(--rec-fg); font-variant-numeric: tabular-nums;
+        }
+        .dc-share-row.disabled { opacity: 0.55; }
+
+        /* Quick toggles: the % gain sits in a fixed column left of the label so
+           every row's number lines up. */
+        .dc-quick-num {
+            flex: 0 0 auto; width: 46px; text-align: right;
+            font-size: 10px; color: var(--rec-fg-3); font-variant-numeric: tabular-nums;
+        }
+
         /* Per-character disable toggles */
         #dcCharsList {
             display: flex; flex-direction: column; gap: 2px;
@@ -148,15 +202,6 @@
         .sidebar .dc-char-btn:hover { background: #353535; color: #ccc; }
         .sidebar .dc-char-btn.on { color: #b07070; border-color: #4a3030; }
         .sidebar .dc-char-btn.on:hover { background: #2e2020; color: #cc8888; border-color: #5a3535; }
-        /* Calculate All — twice the size of the row buttons above */
-        .sidebar .dc-calc-all-btn {
-            flex-shrink: 0; width: auto; min-width: 120px;
-            padding: 4px 14px; margin: 0;
-            border: 1px solid #3a3a3a; border-radius: 3px;
-            background: #2a2a2a; color: #999; font-size: 12px; cursor: pointer;
-            transition: background 0.12s, color 0.12s;
-        }
-        .sidebar .dc-calc-all-btn:hover { background: #353535; color: #ccc; }
         .sidebar .dc-quick-sep {
             border-top: 1px solid #2c2c2c;
             margin: 6px 0;
@@ -2074,23 +2119,36 @@
     <!-- ── Right Sidebar (dmgcalc only) ── -->
     <div class="sidebar sidebar-right">
         <div class="sidebar-section" id="sidebarDcStats">
-            <div class="sidebar-label">Totals</div>
-            <div class="dc-formula-totals" id="dcSidebarTotals">
-                <span>Total Calc: <strong>0</strong></span>
-                <span style="display:block">Total In-Game: <strong>0</strong></span>
-                <span style="display:block">Time: <strong>0.0s</strong></span>
-                <span style="display:block">DPS: <strong>0</strong></span>
+            <div class="dc-card">
+                <div class="dc-head">Totals</div>
+                <div class="dc-formula-totals" id="dcSidebarTotals">
+                    <span>Total Calc: <strong>0</strong></span>
+                    <span style="display:block">Total In-Game: <strong>0</strong></span>
+                    <span style="display:block">Time: <strong>0.0s</strong></span>
+                    <span style="display:block">DPS: <strong>0</strong></span>
+                </div>
+                <div class="sidebar-btn-row">
+                    <button id="dcDisableAllBtn" onclick="dcDisableAllEffects()">Disable All</button>
+                    <button id="dcEnableAllBtn" onclick="dcEnableAllEffects()">Enable All</button>
+                </div>
             </div>
-            <div class="sidebar-btn-row">
-                <button id="dcDisableAllBtn" onclick="dcDisableAllEffects()">Disable All</button>
-                <button id="dcEnableAllBtn" onclick="dcEnableAllEffects()">Enable All</button>
+            <div class="dc-card">
+                <div class="dc-head">Damage share</div>
+                <div id="dcDamageShare">
+                    <!-- rendered by dcRenderDamageShare(): ring + per-unit ledger -->
+                </div>
             </div>
-            <div class="sidebar-label" style="margin-top:10px;display:flex;align-items:center;justify-content:space-between;gap:8px">Quick Toggles <button class="dc-calc-all-btn" onclick="dcCalculateCharDeltas()">Calculate All</button></div>
-            <div id="dcCharsList">
-                <!-- rendered by dcRenderCharList() (chars, then quick toggles) -->
+            <div class="dc-card">
+                <div class="dc-head">Quick toggles</div>
+                <div id="dcCharsList">
+                    <!-- rendered by dcRenderCharList(): wide blade readout, then toggles -->
+                </div>
             </div>
-            <div class="dc-effects-panel" id="dcEffectsPanel">
-                <!-- rendered by renderEffectsPanel() -->
+            <div class="dc-card">
+                <div class="dc-head">Effects</div>
+                <div class="dc-effects-panel" id="dcEffectsPanel">
+                    <!-- rendered by renderEffectsPanel() -->
+                </div>
             </div>
         </div>
     </div>

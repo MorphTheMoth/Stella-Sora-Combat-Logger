@@ -1405,6 +1405,10 @@ const Analytics = (() => {
 
     return {
         refresh,
+        // Shared with the sidebar's damage-share ring so both charts agree on
+        // what a character's colour is.
+        charColor,
+        resolveCharColors,
         refreshDmgShareChart,
         refreshBuffChart,
         refreshCritDist,

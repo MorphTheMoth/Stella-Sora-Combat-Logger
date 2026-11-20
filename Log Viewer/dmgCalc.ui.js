@@ -366,15 +366,20 @@ function dcLvlEditing() {
         && !!dcEffectsPanelEl && dcEffectsPanelEl.contains(a);
 }
 
-const dcCharsListEl = document.getElementById('dcCharsList');
-if (dcCharsListEl) dcCharsListEl.addEventListener('click', e => {
+// The character toggles live in the Damage share card now, so the same handler
+// is bound to both containers (the containers persist, their innards do not).
+function dcSidebarCharClick(e) {
     const wbaRow = e.target.closest('.dc-wba-row');
     if (wbaRow) { dcWbaJumpToHit(); return; }
     const btn = e.target.closest('.dc-char-btn');
     if (!btn) return;
     if (btn.dataset.char) dcToggleChar(btn.dataset.char);
     else if (btn.dataset.group) dcToggleGroupDisable(btn.dataset.group);
-});
+}
+for (const id of ['dcCharsList', 'dcDamageShare']) {
+    const box = document.getElementById(id);
+    if (box) box.addEventListener('click', dcSidebarCharClick);
+}
 
 // ─── Effects panel render ─────────────────────────────────────────────────────
 function renderEffectsPanel() {
@@ -534,18 +539,6 @@ function renderEffectsPanel() {
             }
         }
 
-        // ── Skill Levels ─────────────────────────────────────────────────
-        // Per-character skill-slot levels (the levels skill-scaled hits and
-        // effects resolve against). Same record-lv/bonus/change model as the
-        // potentials: ± steps the slot's `change`, record.js shows the full
-        // breakdown, disabling an emblem skill row drops that emblem's bonus.
-        html += dcRenderSkillLevels();
-
-        // ── Character Levels ─────────────────────────────────────────────
-        // Per-character base-Atk levels (the character.json `stat` ladder).
-        // ± steps the ladder index (crossing a tier boundary = upgrade),
-        // the level field jumps to the nearest tier holding the typed level.
-        html += dcRenderCharLevels();
 
         html += `</div></div>`;
     }
@@ -1620,7 +1613,7 @@ function dcRefreshCharDeltas() {
     // there too: a pass costs ~20 s on a 2.2k-hit log, so a burst of ± clicks
     // should produce one run, not one per click.
     const onRecord = () => typeof activeTab !== 'undefined' && activeTab === 'record';
-    const restart = () => { if (onRecord() && dcShowCharDeltas) dcRefreshCharDeltas(); };
+    const restart = () => { if (dcShowCharDeltas) dcRefreshCharDeltas(); };
     setTimeout(async () => {
         _dcCharDeltaPending = false;
         if (isAborted()) { restart(); return; }
@@ -1629,7 +1622,7 @@ function dcRefreshCharDeltas() {
         if (res === null || isAborted()) { restart(); return; }   // superseded / hidden mid-run
         _dcCharDeltaCache = { version: dcStateVersion, ...res };
         dcRenderCharList();
-    }, onRecord() ? 350 : 0);
+    }, 350);
 }
 
 // Button: recompute the per-char deltas for the current state.
@@ -1647,7 +1640,10 @@ window.dcCalculateCharDeltas = function() {
 // (dcRenderCharList → dcRefreshCharDeltas) recomputes them. Blanking them made
 // an edit look like it "only cleared".
 window.dcHideCharDeltas = function() {
-    dcShowCharDeltas = (typeof activeTab !== 'undefined' && activeTab === 'record');
+    // The gains now stay on for every tab: the Calculate All button is gone, so
+    // blanking the column after a click would leave no way to bring it back. The
+    // refresh below debounces a burst of clicks into one run.
+    dcShowCharDeltas = true;
     _dcCharDeltaCache = null;
 };
 
@@ -1735,9 +1731,133 @@ function dcWbaJumpToHit() {
 }
 window.dcWbaJumpToHit = dcWbaJumpToHit;
 
+// ─── Damage share: ring + per-unit ledger ────────────────────────────────────
+// Share is the calculated damage each attacker accounts for, summed off the same
+// per-hit cache the Totals block uses, so the segments always add up to the
+// number in the middle of the ring. The per-unit % gain next to it is the one the
+// character rows used to carry (Total Calc vs Total Calc with that unit off).
+// Fallback order only — the real colours come from the Analytics chart so the
+// ring and its legend agree with the analytics tab slice for slice.
+const DC_SHARE_RAMP = ['#5ba9e8', '#8b7cf6', '#f5a524', '#e05fa0', '#2fc4b2'];
+
+function dcShareColor(name, i) {
+    // `Analytics` is a top-level const in a classic script, so it is a lexical
+    // binding, not a window property.
+    const c = (typeof Analytics !== 'undefined' && typeof Analytics.charColor === 'function')
+        ? Analytics.charColor(name) : null;
+    return (c && c !== '#888888') ? c : (DC_SHARE_RAMP[i] || DC_SHARE_RAMP[4]);
+}
+
+function dcShareLabel(name) {
+    const n = String(name || '');
+    if (/^p:\d+$/.test(n) && typeof resolveActorKey === 'function') {
+        return resolveActorKey(n) || n;
+    }
+    return n || 'Unknown';
+}
+
+function dcShareTotals() {
+    const byChar = new Map();
+    let total = 0;
+    for (const ev of dcFiltered) {
+        const c = dcCachedHitCalc(ev);
+        if (!(c.d > 0)) continue;
+        const owner = (typeof dcPotOwnerName === 'function' && dcPotOwnerName(ev))
+            || ev.AttackerDisplay || ev.Attacker || 'Unknown';
+        byChar.set(owner, (byChar.get(owner) || 0) + c.d);
+        total += c.d;
+    }
+    return { byChar, total };
+}
+
+function dcFmtCompact(n) {
+    const v = Math.abs(n);
+    if (v >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+    if (v >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+    if (v >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+    return String(Math.round(n));
+}
+
+let dcShareColorsPending = false;
+
+function dcRenderDamageShare() {
+    const el = document.getElementById('dcDamageShare');
+    if (!el) return;
+    const { byChar, total } = dcShareTotals();
+    if (!byChar.size || !(total > 0)) {
+        el.innerHTML = '<div class="dc-share"><div class="dc-share-ledger dc-effects-empty">No damage yet.</div></div>';
+        return;
+    }
+    // Every player character gets a row, not just the ones that dealt damage: a
+    // switched-off unit drops out of dcFiltered, and its row is the only way back.
+    const known = (typeof dcPlayerCharNames === 'function') ? dcPlayerCharNames() : [];
+    const names = [...new Set([...known, ...byChar.keys()])];
+    const rows = names
+        .map(name => {
+            const dmg = byChar.get(name) || 0;
+            return { name, dmg, share: total > 0 ? dmg / total : 0 };
+        })
+        .sort((a, b) => b.dmg - a.dmg);
+
+    // Per-unit % gain, same convention as the old character rows.
+    const dcD = (_dcCharDeltaCache && _dcCharDeltaCache.version === dcStateVersion) ? _dcCharDeltaCache : null;
+
+    // Ring: circumference of r=16 in the 42×42 viewBox.
+    const R = 16, C = 2 * Math.PI * R;
+    let offset = 0;
+    const segs = rows.slice(0, 5).map((r, i) => {
+        const len = r.share * C;
+        const seg = `<circle cx="21" cy="21" r="${R}" fill="none" stroke="${dcShareColor(r.name, i)}"`
+            + ` stroke-width="5" stroke-dasharray="${len.toFixed(2)} ${(C - len).toFixed(2)}"`
+            + ` stroke-dashoffset="${(-offset).toFixed(2)}" transform="rotate(-90 21 21)"></circle>`;
+        offset += len;
+        return seg;
+    }).join('');
+
+    const ledger = rows.map((r, i) => {
+        const off = dcCharsDisabled.has(r.name);
+        const delta = dcD ? (dcD.deltas[r.name] || 0) : 0;
+        const pct = dcD && (dcD.baseTotal - delta) > 0
+            ? ((dcD.baseTotal / (dcD.baseTotal - delta)) - 1) * 100 : null;
+        const gain = pct != null
+            ? `<span class="dc-share-gain">${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%</span>`
+            : '<span class="dc-share-gain"></span>';
+        return `<div class="dc-share-row${off ? ' disabled' : ''}">`
+            + `<span class="dc-share-dot" style="background:${dcShareColor(r.name, i)}"></span>`
+            + `<span class="dc-share-nm" title="${esc(dcShareLabel(r.name))}">${esc(dcShareLabel(r.name))}</span>`
+            + gain
+            + `<span class="dc-share-pct">${(r.share * 100).toFixed(1)}%</span>`
+            + `<button class="dc-char-btn${off ? ' on' : ''}" data-char="${esc(r.name)}">${off ? 'Enable' : 'Disable'}</button>`
+            + `</div>`;
+    }).join('');
+
+    // Colours resolve from each character's art on first use; repaint once they
+    // land so the ring never stays on the fallback palette.
+    if (typeof Analytics !== 'undefined' && typeof Analytics.resolveCharColors === 'function'
+        && !dcShareColorsPending && rows.some(r => Analytics.charColor(r.name) === '#888888')) {
+        dcShareColorsPending = true;
+        Analytics.resolveCharColors(rows.map(r => r.name))
+            .catch(() => {})
+            .then(() => { dcShareColorsPending = false; dcRenderDamageShare(); });
+    }
+
+    el.innerHTML = `<div class="dc-share">
+        <div class="dc-share-ring">
+            <svg viewBox="0 0 42 42" width="92" height="92">
+                <circle cx="21" cy="21" r="${R}" fill="none" stroke="#232323" stroke-width="5"></circle>
+                ${segs}
+            </svg>
+            <div class="dc-share-mid"><b>${dcFmtCompact(total)}</b></div>
+        </div>
+        <div class="dc-share-ledger">${ledger}</div>
+    </div>`;
+}
+
 function dcRenderCharList() {
     const el = document.getElementById('dcCharsList');
     if (!el) return;
+    // Keep the Damage share card in step with every repaint of this block.
+    dcRenderDamageShare();
     // Only attackers that actually deal Source Type = 'Player' hits
     // (see isPlayerHit in dataLoader.js). This hides enemy/monster actors.
     const list = dcPlayerCharNames();
@@ -1753,22 +1873,9 @@ function dcRenderCharList() {
     const dcD = (_dcCharDeltaCache && _dcCharDeltaCache.version === dcStateVersion) ? _dcCharDeltaCache : null;
 
     // ── Characters ──
-    let html = list.map(name => {
-        const off = dcCharsDisabled.has(name);
-        const delta = dcD ? (dcD.deltas[name] || 0) : 0;
-        // Same convention as the sidebar Compare rows: how much larger the
-        // current Total Calc is than the Total Calc with this char disabled.
-        const pct = dcD && (dcD.baseTotal - delta) > 0 ? ((dcD.baseTotal / (dcD.baseTotal - delta)) - 1) * 100 : null;
-        const deltaStr = pct != null
-            ? `<span class="dc-char-delta">${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%</span>`
-            : '';
-        return `<div class="dc-char-row${off ? ' disabled' : ''}">
-            <span class="dc-char-name">${esc(name)}</span>
-            ${deltaStr}
-            <span class="dc-char-spacer"></span>
-            <button class="dc-char-btn${off ? ' on' : ''}" data-char="${esc(name)}">${off ? 'Enable' : 'Disable'}</button>
-        </div>`;
-    }).join('');
+    // Their rows (share, % gain, enable/disable) live in the Damage share card;
+    // dcRenderDamageShare() above has already repainted them.
+    let html = '';
 
     // ── Wide Blade Arc readout (Allie P8) ──
     // Shows the AA value the conversion currently reads vs its cap, above the
@@ -1807,17 +1914,15 @@ function dcRenderCharList() {
         const qDelta = dcD && dcD.quick ? (dcD.quick[t.label] || 0) : 0;
         const qTotalIf = dcD ? dcD.baseTotal - qDelta : 0;
         const qpct = dcD && qTotalIf > 0 ? ((dcD.baseTotal / qTotalIf) - 1) * 100 : null;
-        const qStr = qpct != null
-            ? `<span class="dc-char-delta">${qpct >= 0 ? '+' : ''}${qpct.toFixed(1)}%</span>`
-            : '';
+        const qStr = `<span class="dc-quick-num">${qpct != null ? (qpct >= 0 ? '+' : '') + qpct.toFixed(1) + '%' : ''}</span>`;
         // Disc toggles ride on data-group (delegated handler) — their names
         // can contain quotes that would break an inline onclick string.
         const btnAttrs = t.dataGroup
             ? `data-group="${esc(t.groupKey)}"`
             : `onclick="${t.onclick}"`;
         html += `<div class="dc-char-row${strike ? ' disabled' : ''}">
-            <span class="dc-char-name">${esc(t.label)}</span>
             ${qStr}
+            <span class="dc-char-name">${esc(t.label)}</span>
             <span class="dc-char-spacer"></span>
             <button class="dc-char-btn${active ? ' on' : ''}" ${btnAttrs}>${label}</button>
         </div>`;
@@ -2447,11 +2552,11 @@ function dcRenderTotals() {
     const dps = secs > 0 ? Math.floor(totalGame / secs) : Math.floor(totalGame);
     const overallDiff = totalGame > 0 ? ((totalCalc / totalGame) - 1) * 100 : null;
     const d1 = overallDiff != null
-        ? `<span class="${Math.abs(overallDiff) < 0.05 ? 'dc-diff-close' : overallDiff < 0 ? 'dc-diff-neg' : 'dc-diff-pos'}" style="margin-left:4px">(${overallDiff >= 0 ? '+' : ''}${overallDiff.toFixed(1)}%)</span>`
+        ? `<span class="${Math.abs(overallDiff) < 0.05 ? 'dc-diff-close' : overallDiff < 0 ? 'dc-diff-neg' : 'dc-diff-pos'}" style="margin-left:4px">${overallDiff >= 0 ? '+' : ''}${overallDiff.toFixed(1)}%</span>`
         : '';
     const overallDiff2 = totalCalc > 0 ? ((totalGame / totalCalc) - 1) * 100 : null;
     const d2 = overallDiff2 != null
-        ? `<span class="${Math.abs(overallDiff2) < 0.05 ? 'dc-diff-close' : overallDiff2 < 0 ? 'dc-diff-neg' : 'dc-diff-pos'}" style="margin-left:4px">(${overallDiff2 >= 0 ? '+' : ''}${overallDiff2.toFixed(1)}%)</span>`
+        ? `<span class="${Math.abs(overallDiff2) < 0.05 ? 'dc-diff-close' : overallDiff2 < 0 ? 'dc-diff-neg' : 'dc-diff-pos'}" style="margin-left:4px">${overallDiff2 >= 0 ? '+' : ''}${overallDiff2.toFixed(1)}%</span>`
         : '';
     _dcLastTotalCalc = totalCalc;
 
@@ -2461,7 +2566,7 @@ function dcRenderTotals() {
     for (const c of dcCompares) {
         const pct = c.value > 0 ? ((totalCalc / c.value) - 1) * 100 : null;
         const pctStr = pct != null
-            ? ` <span class="${Math.abs(pct) < 0.05 ? 'dc-diff-close' : pct < 0 ? 'dc-diff-neg' : 'dc-diff-pos'}" style="margin-left:4px">(${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%)</span>`
+            ? ` <span class="${Math.abs(pct) < 0.05 ? 'dc-diff-close' : pct < 0 ? 'dc-diff-neg' : 'dc-diff-pos'}" style="margin-left:4px">${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%</span>`
             : '';
         compareRows +=
             `<span class="dc-compare-row">` +
