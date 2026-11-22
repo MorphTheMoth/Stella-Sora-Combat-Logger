@@ -734,9 +734,32 @@ static void __fastcall Hook_BuffEntityExcute(BuffEntity_o* self, int32_t addType
     if (!owner)
         owner = fromActor;
 
+    // This method only ever *adds* (or re-applies) a buff; removals come through
+    // BuffEntity.BuffEnd, so the old `addType==3 ? -1 : 1` guess logged real
+    // removals as adds. addType is BuffManager.BuffAddType here.
     if (g_Cfg.buffs) {
-        BuildBuffJson("Buff", configId, owner, fromActor, addType==3 ? -1 : 1, buffNum);
+        BuildBuffJson("Buff", configId, owner, fromActor, 1, buffNum, addType);
     }
+}
+
+// BuffEntity.BuffEnd(BuffManager.BuffRemoveType) - the single removal funnel:
+// BuffCom.RemoveBuff calls it, expiry calls RemoveBuff with TimeFinish, dispels
+// and instance-limit evictions come through with their own reason. Entry mode so
+// `removed` is still false on the first call; the guard keeps a repeated call
+// from logging the same buff twice.
+static void __fastcall Hook_BuffEntityBuffEnd(BuffEntity_o* self, int32_t removeType, void* method)
+{
+    if (!self || self->fields.removed) return;
+    if (!g_Cfg.buffs) return;
+
+    int32_t configId = self->fields.buffConfig ? self->fields.buffConfig->fields.id_ : 0;
+    int32_t buffNum  = self->fields.buffNum;
+
+    AdventureActor_o* owner = nullptr;
+    BuffCom_o* bc = self->fields._buffCom;
+    if (bc) owner = bc->fields._owner;
+
+    BuildBuffJson("Buff", configId, owner, nullptr, -1, buffNum, removeType);
 }
 
 static void __fastcall Hook_EffectOnClear(AdventureEffectBase_o* effectBase, MethodInfo* method)
@@ -1003,6 +1026,10 @@ static void HY_BuffEntityExcute(void* mi, const hybrid::StackObject* s, const in
                           (AdventureActor_o*)hybrid::Ptr(s, o[2]), mi);
 }
 
+static void HY_BuffEnd(void* mi, const hybrid::StackObject* s, const int* o, void*) {
+    Hook_BuffEntityBuffEnd((BuffEntity_o*)hybrid::Ptr(s, o[0]), hybrid::I32(s, o[1]), mi);
+}
+
 static void HY_EffectOnClear(void* mi, const hybrid::StackObject* s, const int* o, void*) {
     Hook_EffectOnClear((AdventureEffectBase_o*)hybrid::Ptr(s, o[0]),
                        reinterpret_cast<MethodInfo*>(mi));
@@ -1036,6 +1063,7 @@ static const hybrid::TargetDesc g_HybridTargets[] = {
     { "AdventureLevelController",    "SpawnSkill",                       2,  hybrid::Mode::Entry, false, HY_SpawnSkill },
     { "BuffEffectBase",              "OnInit",                           6,  hybrid::Mode::After, false, HY_BuffEffectOnInit },
     { "BuffEntity",                  "BuffExcute",                       3,  hybrid::Mode::After, false, HY_BuffEntityExcute },
+    { "BuffEntity",                  "BuffEnd",                          2,  hybrid::Mode::Entry, false, HY_BuffEnd },
     { "CommonHelper",                "CalculateNormalDamage",           22,  hybrid::Mode::After, true,  HY_CalcNormalDamage },
     { "AdventureModuleController",   "ClearData",                        1,  hybrid::Mode::Entry, false, HY_ModuleClearData },
     { "AdventureModuleHelper",       "EnterScoreBossFloor",              2,  hybrid::Mode::Entry, false, HY_EnterScoreBossFloor },

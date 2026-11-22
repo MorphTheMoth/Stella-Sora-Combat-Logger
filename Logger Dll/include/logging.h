@@ -171,7 +171,8 @@ extern std::unordered_map<std::string, PlayerEffectSnapshot> g_PlayerSnapshots;
 extern std::mutex g_MinionLinkMutex;
 extern std::unordered_map<std::string, MinionLink> g_MinionToPlayer;
 // JSON builders for different event types
-void BuildBuffJson(const char* type, int32_t configId, AdventureActor_o* owner, AdventureActor_o* fromActor, int isAdd, int32_t buffNum = 0);
+// reason = BuffAddType for adds, BuffRemoveType for removals (-1 = unknown).
+void BuildBuffJson(const char* type, int32_t configId, AdventureActor_o* owner, AdventureActor_o* fromActor, int isAdd, int32_t buffNum = 0, int reason = -1);
 json BuildBuffListJson(AdventureActor_o* fromActor);
 json BuildEffectListJson(ActorEffectManage_o* effectManage,
                           GameDataController_o* gdc = nullptr,

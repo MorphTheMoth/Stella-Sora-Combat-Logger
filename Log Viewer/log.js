@@ -311,13 +311,16 @@ function hitBody(ev, oi) {
 }
 
 function buffBody(ev) {
+    const dash = '-';
+    const src = ev.SourceDisplay || ev.Source;
     return `<div class="section"><h4>Buff / Effect Details</h4><table class="kv">
         <tr><th>Name</th><td>${esc(ev.Name||ev.ConfigId)}</td></tr>
-        <tr><th>Action</th><td>${esc(ev.Action)}</td></tr>
-        <tr><th>Owner</th><td>${esc(cleanOwner(ev.OwnerDisplay||ev.Owner||'?'))}</td></tr>
-        ${(ev.SourceDisplay||ev.Source)?`<tr><th>Source</th><td>${esc(cleanOwner(ev.SourceDisplay||ev.Source))}</td></tr>`:''}
-        ${ev.Stacks!=null?`<tr><th>Stacks</th><td>${ev.Stacks}</td></tr>`:''}
-        ${ev.SubType?`<tr><th>Type</th><td>${esc(ev.SubType)}</td></tr>`:''}
+        <tr><th>Action</th><td>${esc(ev.Action || dash)}</td></tr>
+        <tr><th>Owner</th><td>${esc(cleanOwner(ev.OwnerDisplay||ev.Owner||dash))}</td></tr>
+        <tr><th>Source</th><td>${src ? esc(cleanOwner(src)) : dash}</td></tr>
+        <tr><th>Stacks</th><td>${ev.Stacks != null ? ev.Stacks : dash}</td></tr>
+        <tr><th>Type</th><td>${ev.SubType ? esc(ev.SubType) : dash}</td></tr>
+        <tr><th>${ev.Action === 'Add' ? 'Add Type' : 'Remove Type'}</th><td>${ev.ReasonName ? esc(ev.ReasonName) + (ev.Reason != null ? ' (' + ev.Reason + ')' : '') : dash}</td></tr>
         <tr><th>Config ID</th><td>${ev.ConfigId}</td></tr>
     </table></div>`;
 }
@@ -440,6 +443,7 @@ function getEventSearchText(ev) {
         parts.push(cleanOwner(ev.OwnerDisplay || ev.Owner || ''));
         parts.push(ev.Name || ev.ConfigId || '');
         parts.push(ev.Action || '');
+        if (ev.ReasonName) parts.push(ev.ReasonName);
         if (ev.Stacks != null && ev.Stacks > 0) parts.push('x' + ev.Stacks);
     } else if (ev.Type === 'Skill Cast') {
         parts.push(ev.Owner || '');

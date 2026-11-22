@@ -618,7 +618,32 @@ static std::vector<ElemDictEntry> FilterElemDictForHit(
 }
 
 
-void BuildBuffJson(const char* type, int32_t configId, AdventureActor_o* owner, AdventureActor_o* fromActor, int isAdd, int32_t buffNum) {
+// BuffManager.BuffAddType / BuffRemoveType, by index. Logged alongside the
+// numeric value so a patch that reorders either enum stays detectable.
+static const char* BuffAddTypeName(int t) {
+    switch (t) {
+        case 0: return "Normal";
+        case 1: return "BuffNum";
+        case 2: return "GroupIdBySort";
+        case 3: return "BuffInstanceLimit";
+        default: return "?";
+    }
+}
+
+static const char* BuffRemoveTypeName(int t) {
+    switch (t) {
+        case 0: return "Normal";
+        case 1: return "ReycleClear";
+        case 2: return "BuffNum";
+        case 3: return "TimeFinish";
+        case 4: return "PrimeState";
+        case 5: return "GroupIdBySort";
+        case 6: return "BuffInstanceLimit";
+        default: return "?";
+    }
+}
+
+void BuildBuffJson(const char* type, int32_t configId, AdventureActor_o* owner, AdventureActor_o* fromActor, int isAdd, int32_t buffNum, int reason) {
     json j;
     j["Type"] = "Buff";
     j["Action"] = isAdd > 0 ? "Add" : "Remove";
@@ -638,6 +663,13 @@ void BuildBuffJson(const char* type, int32_t configId, AdventureActor_o* owner, 
         j["Stacks"] = buffNum;
 
     j["SubType"] = type;
+
+    // Why the buff was added or removed: BuffAddType on adds, BuffRemoveType on
+    // removals. Both are logged as index + name.
+    if (reason >= 0) {
+        j["Reason"] = reason;
+        j["ReasonName"] = (isAdd > 0) ? BuffAddTypeName(reason) : BuffRemoveTypeName(reason);
+    }
 
     logJson(j);
 }
