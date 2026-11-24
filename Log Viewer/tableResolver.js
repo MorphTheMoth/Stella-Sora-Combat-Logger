@@ -165,16 +165,16 @@ const ATTR_NAMES = [
     "Toughness Max", "Toughness Damage Adjust", "Shield Max", "",
     "Move Speed", "Atk Spd P", "Intensity", "Gen Dmg", "Dmg Plus",
     "Final Dmg", "Final Dmg Plus", "Gen Dmg Rcd", "Dmg Plus Rcd",
-    "Suppress", "Normal Dmg", "Skill Dmg", "Ult Dmg", "Other Dmg",
-    "Rcd Normal Dmg", "Rcd Skill Dmg", "Rcd Ult Dmg", "Rcd Other Dmg",
+    "Suppress", "Auto Attack Dmg", "Skill Dmg", "Ult Dmg", "Other Dmg",
+    "Rcd Auto Attack Dmg", "Rcd Skill Dmg", "Rcd Ult Dmg", "Rcd Other Dmg",
     "Mark Dmg", "Rcd Mark Dmg", "Minion Dmg", "Rcd Minion Dmg",
-    "Derivative Dmg", "Rcd Derivative Dmg", "Normal Crit Rate",
+    "Derivative Dmg", "Rcd Derivative Dmg", "Auto Attack Crit Rate",
     "Skill Crit Rate", "Ult Crit Rate", "Mark Crit Rate", "Minion Crit Rate",
-    "Derivative Crit Rate", "Other Crit Rate", "Normal Crit Damage",
+    "Derivative Crit Rate", "Other Crit Rate", "Auto Attack Crit Damage",
     "Skill Crit Damage", "Ult Crit Damage", "Mark Crit Damage",
     "Minion Crit Damage", "Derivative Crit Damage", "Other Crit Damage",
     "Energy Max", "Skill Intensity", "Toughness Broken Dmg",
-    "Add Shield Strengthen", "Be Add Shield Strengthen", "Normal Suppress",
+    "Add Shield Strengthen", "Be Add Shield Strengthen", "Auto Attack Suppress",
     "Skill Suppress", "Ult Suppress", "Mark Suppress", "Minion Suppress",
     "Derivative Suppress", "Other Suppress", "Env Amend",
 ];
@@ -376,7 +376,7 @@ const charStatLadder = new Map();   // charId -> [{ l, atk }]
 const charMeta = new Map();         // charId -> { name, element, star, klass }
 window.charMeta = charMeta;
 const EMBLEM_SLOT_NAMES = { 1: 'Emblem 70', 2: 'Emblem 80', 3: 'Emblem 90' };
-const GEM_SKILL_SLOT_NAMES = { 1: 'Normal Atk', 2: 'Main Skill', 3: 'Support Skill', 4: 'Ultimate' };
+const GEM_SKILL_SLOT_NAMES = { 1: 'Auto Attack', 2: 'Main Skill', 3: 'Support Skill', 4: 'Ultimate' };
 
 function getOriginRecord() { return originRecord; }
 
@@ -792,6 +792,12 @@ function buildRecordEmblemEffects(origin, charId) {
                     attrType: d.attrType, subType: d.subType, value: d.value,
                     source: emblemSource, effectType: 12, count: 1,
                     isRecordEffect: true, allValueConfigIds: [],
+                    // The delta is NOT part of the logged stat snapshot: the
+                    // calc adds it separately (dcApplyEffectOverrides). This row
+                    // is only the toggle handle for it, so disabling the row must
+                    // not subtract the value the way a logged emblem roll's row
+                    // does — that removed a contribution that was never there.
+                    isEmblemDelta: true,
                     _charId: Number(charId),
                     _charName: resolveActorKey('p:' + charId),
                 });

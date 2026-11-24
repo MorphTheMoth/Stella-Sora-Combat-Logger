@@ -71,12 +71,27 @@ function dcPotOwnerName(ev) {
     return null;
 }
 
+// Character a hit belongs to, credited the way the Analytics tab does it:
+// HitConfig.charName is filled by the logger with the summoner, so a minion's
+// hits count for the character that summoned it instead of showing up as an
+// actor of their own ("11001_Actor_Mo...").
+function dcHitCharName(ev) {
+    // Potentials hits are credited to the character that owns the potential even
+    // when another unit (or a summon) dealt them — that rule predates this
+    // helper, so it keeps priority.
+    const owner = (typeof dcPotOwnerName === 'function') ? dcPotOwnerName(ev) : null;
+    if (owner) return owner;
+    const cn = ev && ev.HitConfig && ev.HitConfig.charName;
+    if (cn && cn !== '?') return cn;
+    return (ev && (ev.AttackerDisplay || ev.Attacker)) || '';
+}
+
 // True when a hit is zeroed by the per-character disable toggles: its
 // attacker is toggled off, or it is a Potentials hit whose owner is toggled
 // off (even when a different unit dealt the hit).
 function dcIsCharDisabledHit(ev) {
     if (typeof dcCharsDisabled === 'undefined' || !dcCharsDisabled.size) return false;
-    const att = ev.AttackerDisplay || ev.Attacker || '';
+    const att = dcHitCharName(ev);
     if (att && dcCharsDisabled.has(att)) return true;
     const owner = dcPotOwnerName(ev);
     if (owner && dcCharsDisabled.has(owner)) return true;
@@ -2218,6 +2233,7 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides, s
             for (const e of list) {
                 if (!allowedEffectTypes.includes(e.effectType)) continue;
                 if (e.fromOwnerSnapshot) continue;
+                if (e.isEmblemDelta) continue;
                 // Wide Blade Arc is conversion-modeled by the fixup below, never flat.
                 if (e.configId === WBA_EFFECT_ID) continue;
                 const key = `${side}:${e.configId}:${e.valueConfigId ?? ''}`;
@@ -2230,6 +2246,13 @@ function dcApplyEffectOverrides(ev, dcEffectsDisabled, dcEffectLevelOverrides, s
                 if (!allowedEffectTypes.includes(e.effectType)) continue;
                 if (e.fromOwnerSnapshot) continue;
                 if (e.configId === WBA_EFFECT_ID) continue;
+                // Record emblem EDITS ride on top of the logged stats (the
+                // emblem-delta block below adds them); their row exists only to
+                // be toggleable, so a disabled one removes nothing. Subtracting
+                // here too would strip a contribution the snapshot never had —
+                // which is what made the Emblems Comparison's blank baseline
+                // move when a stat was added to an emblem.
+                if (e.isEmblemDelta) continue;
                 if (seenInHit.has(e.configId)) continue;
                 seenInHit.add(e.configId);
                 // Legacy rows: resolve valueConfigId/attr/value first so the

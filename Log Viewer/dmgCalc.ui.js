@@ -171,7 +171,8 @@ function dcPlayerCharNames() {
     }
     const chars = new Set();
     allEvents.filter(isPlayerHit).forEach(e => {
-        const n = e.AttackerDisplay || e.Attacker;
+        const n = (typeof dcHitCharName === 'function' ? dcHitCharName(e) : null)
+            || e.AttackerDisplay || e.Attacker;
         if (n) chars.add(n);
         if (typeof dcPotOwnerName === 'function') {
             const owner = dcPotOwnerName(e);
@@ -1260,8 +1261,14 @@ function dcComputeCharDeltas(list, prof) {
 // a background rebuild never blocks a frame. `isAborted` runs after every
 // yield; on abort the result is discarded (the caller restarts).
 function _dcCharDeltaYield() {
-    return new Promise(r => (typeof requestAnimationFrame === 'function')
-        ? requestAnimationFrame(() => r()) : setTimeout(r, 0));
+    // rAF does not fire while the tab is hidden, so a run started in the
+    // background would hang on its first yield and never publish its deltas
+    // (the % column stays blank until the tab is shown again). Fall back to a
+    // timer when the page is hidden.
+    if (typeof requestAnimationFrame !== 'function' || (typeof document !== 'undefined' && document.hidden)) {
+        return new Promise(r => setTimeout(r, 0));
+    }
+    return new Promise(r => requestAnimationFrame(() => r()));
 }
 
 async function dcComputeCharDeltasChunked(list, prof, isAborted) {
@@ -1297,7 +1304,8 @@ async function dcComputeCharDeltasPhases(list, prof, wi, deltas, quick, isAborte
     for (const ev of dcFiltered) {
         const c = dcCachedHitCalc(ev);
         baseTotal += c.d;
-        const att = ev.AttackerDisplay || ev.Attacker || '';
+        const att = (typeof dcHitCharName === 'function' ? dcHitCharName(ev) : null)
+            || ev.AttackerDisplay || ev.Attacker || '';
         sums.set(att, (sums.get(att) || 0) + c.d);
         const potOwner = (typeof dcPotOwnerName === 'function') ? dcPotOwnerName(ev) : null;
         if (potOwner && potOwner !== att) {
@@ -1334,7 +1342,8 @@ async function dcComputeCharDeltasPhases(list, prof, wi, deltas, quick, isAborte
                     let t2 = 0;
                     for (let i = 0; i < dcFiltered.length; i++) {
                         const ev = dcFiltered[i];
-                        const att = ev.AttackerDisplay || ev.Attacker || '';
+                        const att = (typeof dcHitCharName === 'function' ? dcHitCharName(ev) : null)
+                            || ev.AttackerDisplay || ev.Attacker || '';
                         if (att === name) continue;
                         if (typeof dcPotOwnerName === 'function' && dcPotOwnerName(ev) === name) continue;
                         const b = wi[i];
@@ -1360,7 +1369,8 @@ async function dcComputeCharDeltasPhases(list, prof, wi, deltas, quick, isAborte
                 for (const k of owned) { if (coupling.has(k)) { needsFull = true; break; } }
                 let t2 = 0;
                 for (const ev of dcFiltered) {
-                    const att = ev.AttackerDisplay || ev.Attacker || '';
+                    const att = (typeof dcHitCharName === 'function' ? dcHitCharName(ev) : null)
+                        || ev.AttackerDisplay || ev.Attacker || '';
                     if (att === name) continue;
                     if (typeof dcPotOwnerName === 'function' && dcPotOwnerName(ev) === name) continue;
                     if (!needsFull) {
@@ -1742,10 +1752,15 @@ const DC_SHARE_RAMP = ['#5ba9e8', '#8b7cf6', '#f5a524', '#e05fa0', '#2fc4b2'];
 
 function dcShareColor(name, i) {
     // `Analytics` is a top-level const in a classic script, so it is a lexical
-    // binding, not a window property.
-    const c = (typeof Analytics !== 'undefined' && typeof Analytics.charColor === 'function')
-        ? Analytics.charColor(name) : null;
-    return (c && c !== '#888888') ? c : (DC_SHARE_RAMP[i] || DC_SHARE_RAMP[4]);
+    // binding, not a window property. Use its colour function so the ring and
+    // the Analytics pie/legend paint a character the same colour — including
+    // the name-derived fallback when no art colour resolved.
+    if (typeof Analytics !== 'undefined') {
+        if (typeof Analytics.charFillColor === 'function') return Analytics.charFillColor(name);
+        const c = (typeof Analytics.charColor === 'function') ? Analytics.charColor(name) : null;
+        if (c && c !== '#888888') return c;
+    }
+    return DC_SHARE_RAMP[i] || DC_SHARE_RAMP[4];
 }
 
 function dcShareLabel(name) {
@@ -1762,7 +1777,7 @@ function dcShareTotals() {
     for (const ev of dcFiltered) {
         const c = dcCachedHitCalc(ev);
         if (!(c.d > 0)) continue;
-        const owner = (typeof dcPotOwnerName === 'function' && dcPotOwnerName(ev))
+        const owner = (typeof dcHitCharName === 'function' && dcHitCharName(ev))
             || ev.AttackerDisplay || ev.Attacker || 'Unknown';
         byChar.set(owner, (byChar.get(owner) || 0) + c.d);
         total += c.d;
@@ -1790,14 +1805,17 @@ function dcRenderDamageShare() {
     const el = document.getElementById('dcDamageShare');
     if (!el) return;
     const { byChar, total } = dcShareTotals();
-    if (!byChar.size || !(total > 0)) {
+    // Every player character gets a row, not just the ones that dealt damage: a
+    // switched-off unit's hits are zeroed by the calc and drop out of
+    // dcShareTotals entirely, so keying the list off the damage would leave it
+    // with no row — and the row is the only way back. Only an empty roster gets
+    // the empty state.
+    const known = (typeof dcPlayerCharNames === 'function') ? dcPlayerCharNames() : [];
+    const names = [...new Set([...known, ...byChar.keys()])];
+    if (!names.length) {
         el.innerHTML = '<div class="dc-share"><div class="dc-share-ledger dc-effects-empty">No damage yet.</div></div>';
         return;
     }
-    // Every player character gets a row, not just the ones that dealt damage: a
-    // switched-off unit drops out of dcFiltered, and its row is the only way back.
-    const known = (typeof dcPlayerCharNames === 'function') ? dcPlayerCharNames() : [];
-    const names = [...new Set([...known, ...byChar.keys()])];
     const rows = names
         .map(name => {
             const dmg = byChar.get(name) || 0;

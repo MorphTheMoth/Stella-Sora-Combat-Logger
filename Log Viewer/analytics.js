@@ -17,13 +17,60 @@ const Analytics = (() => {
         });
     }
 
+    // The asset repo names each file exactly as HonorCharacter.json does
+    // (BigBgPath: `HonorTitle_Affinity_<charId>_L`, `..._L5_lang`, …) and the set
+    // of variants differs per character — 115 and 162 have no plain `_L`, only
+    // `_L_lang` and the L2…L5 ones. Read the paths from the table instead of
+    // guessing, highest affinity level first, and keep the two generic names as
+    // a fallback for characters the table does not cover yet.
+    let _honorPathsPromise = null;
+    function honorPathsByChar() {
+        if (_honorPathsPromise) return _honorPathsPromise;
+        const root = (typeof _dataRoot !== 'undefined' && _dataRoot) ? _dataRoot : '/api/stella-data/';
+        _honorPathsPromise = fetch(`${root}EN/bin/HonorCharacter.json`, { cache: 'no-cache' })
+            .then(r => (r && r.ok) ? r.json() : {})
+            .then(j => {
+                const map = new Map();
+                for (const v of Object.values(j || {})) {
+                    const path = v && v.BigBgPath;
+                    const cid  = v && v.CharId;
+                    if (!path || cid == null) continue;
+                    const key = String(cid);
+                    const arr = map.get(key) || [];
+                    arr.push([Number(v.Level) || 0, String(path).split('/').pop()]);
+                    map.set(key, arr);
+                }
+                for (const [key, arr] of map) {
+                    arr.sort((a, b) => b[0] - a[0]);
+                    map.set(key, [...new Set(arr.map(x => x[1]))]);
+                }
+                return map;
+            })
+            .catch(() => new Map());
+        return _honorPathsPromise;
+    }
+
+    async function honorTitleUrls(charId) {
+        const base = 'https://raw.githubusercontent.com/AutumnVN/ssassets/main/export/assets/assetbundles/icon/honortitle/';
+        const map  = await honorPathsByChar();
+        // Plain `_L` first (the original source, so colours do not shift for
+        // characters that always had it), then its `_lang` twin, then whatever
+        // variants the table lists for this character.
+        const names = [`HonorTitle_Affinity_${charId}_L`,
+                       `HonorTitle_Affinity_${charId}_L_lang`,
+                       ...(map.get(String(charId)) || []),
+                       `HonorTitle_Affinity_${charId}_S`];
+        const urls = [];
+        for (const n of names) {
+            if (n.includes('_lang')) { urls.push(base + n + '.webp'); continue; }
+            urls.push(base + n + '.webp', base + n + '_lang.webp');
+        }
+        return [...new Set(urls)];
+    }
+
     async function getDominantColors(charId) {
         const CROP_W = 256, CROP_H = 58;
-        const base = 'https://raw.githubusercontent.com/AutumnVN/ssassets/main/export/assets/assetbundles/icon/honortitle/';
-        const urls = [
-            `${base}HonorTitle_Affinity_${charId}_L.webp`,
-            `${base}HonorTitle_Affinity_${charId}_L_lang.webp`,
-        ];
+        const urls = await honorTitleUrls(charId);
 
         let img = null;
         for (const url of urls) {
@@ -93,8 +140,33 @@ const Analytics = (() => {
             .slice(0,4);
     }
 
-    // Extract charId from a character's hits: most common first-3-digits of hitDamageId
+    // charId for a character. The name a hit reports comes from the actor map
+    // (tableResolver resolves p:<charId> through character.json), so take the id
+    // from that same map instead of guessing a prefix out of hitDamageId — the
+    // guess misses characters whose hit configs live under another id
+    // ("Firstlight Noya" resolves no charId that way and its colour stayed
+    // gray). The id the log actually uses as a player attacker wins; otherwise
+    // the shortest id with that name (player ids are 3 digits, monster skins
+    // are 7).
     function getCharId(charName) {
+        if (typeof actorNameMap !== 'undefined' && actorNameMap && typeof actorNameMap.forEach === 'function') {
+            const used = new Set();
+            getPlayerHits().forEach(ev => {
+                const m = /^p:(\d+)$/.exec(ev.Attacker || '');
+                if (m) used.add(m[1]);
+                const owner = /^p:(\d+)$/.exec(ev.Owner || ev.Source || '');
+                if (owner) used.add(owner[1]);
+            });
+            let fallback = null;
+            for (const [id, nm] of actorNameMap) {
+                if (nm !== charName) continue;
+                const sid = String(id);
+                if (used.has(sid)) return sid;
+                if (fallback === null || sid.length < fallback.length) fallback = sid;
+            }
+            if (fallback !== null) return fallback;
+        }
+        // Last resort: most common first-3-digits of hitDamageId.
         const hits = getPlayerHits().filter(ev => getCharName(ev) === charName);
         const tally = {};
         for (const ev of hits) {
@@ -109,18 +181,37 @@ const Analytics = (() => {
 
     const charResolveCache = {};
 
+    // Bounded retries: a character with no art keeps failing, and retrying it
+    // from every repaint is what turns a missing colour into a busy loop.
+    const charColorAttempts = {};
+
     async function resolveCharColors(charNames) {
-        const toResolve = charNames.filter(n => !charColorCache[n] && !charResolveCache[n]);
+        const names = [...new Set((charNames || []).filter(Boolean))];
+        const toResolve = names.filter(n => !charColorCache[n] && !charResolveCache[n]
+            && (charColorAttempts[n] || 0) < 3);
+        toResolve.forEach(n => { charColorAttempts[n] = (charColorAttempts[n] || 0) + 1; });
         toResolve.forEach(name => {
             charResolveCache[name] = (async () => {
                 const id = getCharId(name);
-                if (!id) { console.warn(`[charColor] no charId found for "${name}"`); charColorCache[name] = '#888888'; return; }
-                if (!charDomCache[id]) charDomCache[id] = getDominantColors(id).catch(e => { console.warn(`[charColor] image failed for ${id}:`, e); return []; });
+                if (!id) {
+                    console.warn(`[charColor] no charId found for "${name}"`);
+                    return;                       // retryable — do not cache a miss
+                }
+                // A cached rejection would keep the character grey for the whole
+                // session, so drop it and let a later attempt try again.
+                if (!charDomCache[id]) {
+                    charDomCache[id] = getDominantColors(id)
+                        .then(list => { if (!list || !list.length) delete charDomCache[id]; return list || []; })
+                        .catch(e => { console.warn(`[charColor] image failed for ${id}:`, e); delete charDomCache[id]; return []; });
+                }
                 const list = await charDomCache[id];
-                charColorCache[name] = list.length ? list[0].hex : '#888888';
-            })();
+                if (list && list.length) charColorCache[name] = list[0].hex;
+            })().finally(() => { if (!charColorCache[name]) delete charResolveCache[name]; });
         });
-        await Promise.all(charNames.map(n => charResolveCache[n]).filter(Boolean));
+        await Promise.all(names.map(n => charResolveCache[n]).filter(Boolean));
+        // The sidebar ring paints from charFillColor() too; it may have painted
+        // before this resolved, so repaint it now that the colours are in.
+        if (typeof dcRenderDamageShare === 'function') dcRenderDamageShare();
     }
 
     function charColor(name) {
@@ -163,9 +254,27 @@ const Analytics = (() => {
         return hslToHex(hash % 360, 0.62, 0.62);
     }
 
-    // Base color for a group: character art color, or the type palette.
+    // Stable hue for a character whose art colour is unavailable (art missing,
+    // or the hits do not resolve to a charId). Without it every slice of the
+    // Damage Share pie is painted the same #888888 fallback.
+    function charFallbackColor(name) {
+        const s = String(name || '');
+        let hash = 0;
+        for (let i = 0; i < s.length; i++) hash = (hash * 31 + s.charCodeAt(i)) >>> 0;
+        return hslToHex(hash % 360, 0.55, 0.62);
+    }
+
+    // The colour a character gets everywhere — pie, legend and the sidebar's
+    // damage-share ring. Art colour when it resolved, otherwise the same
+    // name-derived hue, so the two charts can never disagree about a character.
+    function charFillColor(name) {
+        const c = charColor(name);
+        return (c && c !== '#888888') ? c : charFallbackColor(name);
+    }
+
+    // Base color for a group: character colour, or the type palette.
     function groupColor(groupBy, groupName) {
-        return groupBy === 'dmgtype' ? dmgTypeColor(groupName) : charColor(groupName);
+        return groupBy === 'dmgtype' ? dmgTypeColor(groupName) : charFillColor(groupName);
     }
 
     let chartDmgShare = null;
@@ -1408,6 +1517,7 @@ const Analytics = (() => {
         // Shared with the sidebar's damage-share ring so both charts agree on
         // what a character's colour is.
         charColor,
+        charFillColor,
         resolveCharColors,
         refreshDmgShareChart,
         refreshBuffChart,
