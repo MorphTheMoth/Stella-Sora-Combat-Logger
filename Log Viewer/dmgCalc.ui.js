@@ -1779,6 +1779,12 @@ function dcFmtCompact(n) {
 }
 
 let dcShareColorsPending = false;
+// Names whose art colour has already been asked for. Without this the repaint
+// below re-schedules itself forever whenever a name's colour cannot resolve
+// (no charId for it, or the art fails to load): every render sees '#888888',
+// asks again, re-renders, asks again — a main-thread loop that looks like the
+// page freezing. One attempt per name per session is enough.
+const dcShareColorTried = new Set();
 
 function dcRenderDamageShare() {
     const el = document.getElementById('dcDamageShare');
@@ -1833,12 +1839,16 @@ function dcRenderDamageShare() {
 
     // Colours resolve from each character's art on first use; repaint once they
     // land so the ring never stays on the fallback palette.
-    if (typeof Analytics !== 'undefined' && typeof Analytics.resolveCharColors === 'function'
-        && !dcShareColorsPending && rows.some(r => Analytics.charColor(r.name) === '#888888')) {
-        dcShareColorsPending = true;
-        Analytics.resolveCharColors(rows.map(r => r.name))
-            .catch(() => {})
-            .then(() => { dcShareColorsPending = false; dcRenderDamageShare(); });
+    if (typeof Analytics !== 'undefined' && typeof Analytics.resolveCharColors === 'function' && !dcShareColorsPending) {
+        const missing = rows.map(r => r.name)
+            .filter(n => !dcShareColorTried.has(n) && Analytics.charColor(n) === '#888888');
+        if (missing.length) {
+            for (const n of missing) dcShareColorTried.add(n);
+            dcShareColorsPending = true;
+            Analytics.resolveCharColors(missing)
+                .catch(() => {})
+                .then(() => { dcShareColorsPending = false; dcRenderDamageShare(); });
+        }
     }
 
     el.innerHTML = `<div class="dc-share">

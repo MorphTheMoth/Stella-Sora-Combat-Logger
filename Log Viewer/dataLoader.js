@@ -539,6 +539,16 @@ function parseRawBatch(text) {
     return { events, count };
 }
 
+// Reset storm guard. A resync is only useful when the server is genuinely
+// looking at a different file; if it keeps reporting a total below what we
+// already parsed (a stale server-side line index, for instance), resyncing on
+// every meta message turns into an endless reset/reload loop that pins the
+// main thread. Allow a couple of resyncs, then stop and wait for the total to
+// move again.
+let _metaResetCount = 0;
+let _metaResetAt = 0;
+let _metaResetBlockedAt = -1;
+
 function handleMeta(data) {
     const t = data && data.total;
     if (t == null) return;
@@ -549,6 +559,23 @@ function handleMeta(data) {
         if (typeof eiRefreshIfVisible === 'function') eiRefreshIfVisible();
     }
     if (t < lastFetchCount) {
+        const now = (typeof performance !== 'undefined') ? performance.now() : Date.now();
+        // A different total than the one that blocked us means the server has
+        // moved on (a real truncation or a fresh file): allow resyncs again.
+        if (_metaResetBlockedAt >= 0 && t !== _metaResetBlockedAt) {
+            _metaResetBlockedAt = -1;
+            _metaResetCount = 0;
+        }
+        if (now - _metaResetAt > 10000) _metaResetCount = 0;
+        _metaResetAt = now;
+        if (++_metaResetCount > 3) {
+            if (_metaResetBlockedAt < 0) {
+                _metaResetBlockedAt = t;
+                console.warn('[LOG] server total', t, '< parsed', lastFetchCount,
+                    '- resync suppressed after 3 attempts (stale server index?)');
+            }
+            return;
+        }
         // The server log was truncated/cleared externally — resync from scratch.
         resetClientState();
         lastFetchCount = 0;
