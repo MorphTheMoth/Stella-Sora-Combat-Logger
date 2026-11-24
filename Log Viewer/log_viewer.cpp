@@ -599,7 +599,28 @@ struct LineIndex {
     std::vector<std::streampos> offsets;
     std::streampos              eof_offset = 0;
     bool                        valid      = false;
+    // Fingerprint of the file's first bytes. A logger that truncates and
+    // rewrites the log between two scans can end up at the same size (or
+    // larger) than the old EOF, which the size check alone cannot see: the
+    // index then keeps offsets from the previous file and reports a total
+    // that no longer matches the bytes. If the head changes, rebuild.
+    uint64_t                    head_hash  = 0;
 };
+
+// FNV-1a over the first 128 bytes (plus the byte count, so a short file is
+// distinguishable from a long one with the same prefix).
+static uint64_t IndexHeadHash(std::ifstream& file) {
+    file.clear();
+    file.seekg(0, std::ios::beg);
+    char buf[128] = {0};
+    file.read(buf, sizeof(buf));
+    std::streamsize n = file.gcount();
+    uint64_t h = 1469598103934665603ULL;
+    for (std::streamsize i = 0; i < n; ++i) { h ^= (uint64_t)(unsigned char)buf[i]; h *= 1099511628211ULL; }
+    h ^= (uint64_t)n; h *= 1099511628211ULL;
+    file.clear();
+    return h;
+}
 
 static LineIndex g_index;
 
@@ -620,6 +641,7 @@ static void RebuildIndex(std::ifstream& file) {
     file.clear();
     file.seekg(0, std::ios::end);
     g_index.eof_offset = file.tellg();
+    g_index.head_hash  = IndexHeadHash(file);
     g_index.valid = true;
 }
 
@@ -630,6 +652,16 @@ static void ExtendIndex(std::ifstream& file) {
     std::streampos current_eof = file.tellg();
     if (current_eof < g_index.eof_offset) {
         // File was truncated/recreated — rebuild from scratch.
+        g_index.valid = false;
+        g_index.offsets.clear();
+        g_index.eof_offset = 0;
+        return;
+    }
+    // Same size or bigger is not proof that the file is the same one: the
+    // logger rewrites the log from scratch on a new battle, and the rewrite can
+    // land at the old EOF or beyond. The head fingerprint catches that, and a
+    // changed head means every offset above is stale.
+    if (g_index.valid && IndexHeadHash(file) != g_index.head_hash) {
         g_index.valid = false;
         g_index.offsets.clear();
         g_index.eof_offset = 0;
@@ -649,6 +681,7 @@ static void ExtendIndex(std::ifstream& file) {
     file.clear();
     file.seekg(0, std::ios::end);
     g_index.eof_offset = file.tellg();
+    g_index.head_hash  = IndexHeadHash(file);
 }
 
 // Call after /clear so the next read triggers a fresh RebuildIndex.
