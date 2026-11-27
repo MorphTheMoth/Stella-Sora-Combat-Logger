@@ -1634,6 +1634,30 @@
         .ec-seg .rec-btn:last-child { border-radius: 0 2px 2px 0; }
         .ec-seg .rec-btn.is-on { position: relative; z-index: 1; }
 
+        /* ── Pinned base stats (Emblems Comparison) ──────────────────────────
+           Base column: the droplist that decides how many copies of a line sit
+           in the comparison's baseline; a pinned row is tinted so the table
+           reads "measured against these". */
+        .ec-base-th { width: 40px; }
+        .ec-base-td { width: 40px; }
+        .ec-base-td { padding-top: 0; padding-bottom: 0; }
+        /* Plain text, not a chip: the count reads like the number beside it and
+           clicking it opens the ×1/×2/×3 droplist. */
+        .ec-base-sel {
+            appearance: none; -webkit-appearance: none;
+            background: transparent; border: 0; border-radius: 0;
+            color: #cfcfcf; font-family: inherit; font-size: 11px;
+            height: 18px; min-width: 28px; padding: 0 2px; margin: 0;
+            text-align: center; text-align-last: center; cursor: pointer;
+            overflow: visible;
+        }
+        .ec-base-sel:hover { color: #ffffff; }
+        .ec-base-sel option { background: #242424; color: #cfcfcf; }
+        /* Dry status text, pushed to the right of the bar. */
+        .ec-loading { margin-left: auto; font-size: 11px; color: #8f8f8f; display: none; }
+        .ec-loading.is-on { display: inline; }
+        .ec-table td, .ec-table th { font-variant-numeric: tabular-nums; }
+
         /* Rarity dropdown, sized to match .rec-btn. */
         .ec-rarity-sel {
             height: 24px; padding: 0 6px; flex-shrink: 0;
@@ -1696,7 +1720,7 @@
         /* Table: micro-label header bar, hairline rows, numbers on one edge. */
         .ec-table-col .ei-table {
             width: 100%; font-size: 11px; min-width: 0;
-            table-layout: auto; border-spacing: 0;
+            table-layout: fixed; border-spacing: 0;
             /* Separate borders, not collapsed: with border-collapse the shared
                hairline is halved, so the header bar painted 25.5px and every row
                under it sat half a pixel above Record's. Here the header's own
@@ -1726,7 +1750,14 @@
         /* The subsection title edge, same as .rec-sec-head's: only on the first
            cell, so it reads as one bar rather than a line before each column. */
         .ec-table-col .ei-th:first-child { box-shadow: inset 2px 0 0 #3f3f3f; }
-        .ec-table-col .ei-th-num { white-space: nowrap; width: 46px; }
+        /* Fixed widths: a gain column never resizes as its numbers change, so
+           the table stops jumping while it recomputes. */
+        .ec-table-col .ei-th-num, .ec-table-col .ei-td-num { white-space: nowrap; width: 64px; }
+        .ec-table-col .ec-base-th, .ec-table-col .ec-base-td { width: 40px; }
+        /* A pinned row shows a droplist where an unpinned one has nothing —
+           strip the cell padding so the row keeps the same height either way. */
+        .ec-table-col .ei-row .ec-base-td,
+        .ec-table-col .ei-row .ec-base-td select { padding-top: 0; padding-bottom: 0; }
         .ec-table-col .ei-row {
             background: var(--rec-row);
             transition: background 0.08s;

@@ -66,6 +66,11 @@ let ecColsOpen = false;
 // Show the 0%-gain rows (Def/MaxHp, off-element lines…) — hidden by default.
 let ecShowZero = uiPrefBool('ec.showZero', false);
 let ecShowColors = uiPrefBool('ec.showColors', false);   // tier background colors — off by default
+// The vs-base column is opt-in, and switching it on pins the table to the ×1
+// column so the two numbers sit side by side and can be read against each other.
+// The base column is never remembered: it starts off on every load and only a
+// click turns it on, so it can never appear on its own.
+let ecShowVsBase = false;
 // Potential-level reference cap for this tab: every potential is evaluated as
 // if its level were at most 6, so a +3 pot-affix line has room to reach the
 // level-9 cap (a potential already at 9 would otherwise show a 0 gain).
@@ -462,17 +467,19 @@ function ecEntryOvValue(entry, L) {
 // the candidate level replicates them with the synthetic ec row added.
 // Potentials: the reference level is the same capped baseline the table uses
 // (dcPotEffectiveLevel with EC_POT_REF_CAP), +3.
-function ecPotLcand(st) {
+function ecPotLcand(st, levels) {
+    const n = levels == null ? 3 : levels;   // a level affix slot holds up to +3
     const ref = Math.min(Math.max(st.recordLv + (st.change || 0), 0), EC_POT_REF_CAP);
-    return Math.min(Math.max(ref + 3, 0), 9);
+    return Math.min(Math.max(ref + n, 0), 9);
 }
-function ecSkillLcand(st) {
+function ecSkillLcand(st, levels) {
+    const n = levels == null ? 3 : levels;   // a level affix slot holds up to +3
     let rowBonus = 0;
     for (const [rowKey, lv] of (st.bonusByRow || [])) {
         if (rowKey != null && extDisabledRef.has(rowKey)) continue;
         rowBonus += lv;
     }
-    const bonus = rowBonus + 3;   // the candidate's synthetic [ecKey, 3] row
+    const bonus = rowBonus + n;   // the candidate's synthetic [ecKey, +n] rows
     const cap = Math.max((st.maxLv > 0 ? st.maxLv : 99) + bonus, 13);
     return Math.min(Math.max(st.recordLv + bonus + (st.change || 0), 0), cap);
 }
@@ -1292,6 +1299,134 @@ function ecCalcDisabled() {
     return s;
 }
 
+// ── Pinned base stats ────────────────────────────────────────────────────────
+// A stat line can be pinned into the comparison's baseline ("base"): the table
+// then measures every gain against "no emblems + the pinned stats", and a
+// pinned line's own gain is the marginal value of its last copy — it never
+// re-adds the copies already in the base (12% Atk pinned + 20% Terra pinned →
+// Atk's gain = (blank + Terra + Atk) / (blank + Terra) − 1).
+// Stored per character, keyed by the line's identity, with its copy count.
+// Session only: pins are a scratch comparison, not a setting worth restoring
+// behind the user's back on the next load.
+let ecBaseSel = {};
+
+// A line's identity: two rows can share (attr, subType) at different values,
+// and level affixes are identified by the skill slot / potential they boost.
+function ecBaseKeyOf(row) {
+    if (row.kind === 'skill') return `lv:skill:${row.charId}:${row.actionSlot}`;
+    if (row.kind === 'pot') return `lv:pot:${row.charId}:${row.potId}`;
+    return `${row.attrType}:${row.subType}:${row.value}`;
+}
+
+function ecFindRowById(charId, key) {
+    if (!ecLastData || !ecLastData.tables) return null;
+    const t = ecLastData.tables.find(x => String(x.charId) === String(charId));
+    if (!t || !t.rows) return null;
+    return t.rows.find(r => ecBaseKeyOf(r) === key) || null;
+}
+
+function ecBaseCountOf(charId, row) {
+    const m = ecBaseSel[String(charId)];
+    const e = m ? m[ecBaseKeyOf(row)] : null;
+    return (e && e.n > 0) ? e.n : 0;
+}
+
+function ecAnyBasePinned() {
+    for (const id in ecBaseSel) {
+        const m = ecBaseSel[id];
+        if (!m) continue;
+        for (const k in m) if (m[k] && m[k].n > 0) return true;
+    }
+    return false;
+}
+
+function ecBaseAny(charId) {
+    const m = ecBaseSel[String(charId)];
+    if (!m) return false;
+    for (const k in m) if (m[k] && m[k].n > 0) return true;
+    return false;
+}
+
+// The pinned lines as stat ops for one character, optionally shifting one
+// line's copy count (delta −1 = "drop one copy of this line").
+function ecBaseEntriesOf(charId, row, delta) {
+    const m = ecBaseSel[String(charId)];
+    const out = [];
+    if (!m) return out;
+    const selfKey = row ? ecBaseKeyOf(row) : null;
+    for (const k in m) {
+        const e = m[k];
+        if (!e || !(e.n > 0)) continue;
+        let n = e.n;
+        if (selfKey && k === selfKey) n += (delta || 0);
+        if (n <= 0) continue;
+        const kind = e.s === 1 ? 0 : e.s === 2 ? 2 : 3;   // origin / pct / abs
+        out.push([0, e.a, kind, e.v * n]);
+    }
+    return out;
+}
+
+// The pinned level affixes as a level-move map for ecLevelMovesNetDamage:
+// '<kind>:<candidate>' → the level the base holds them at, where one copy is
+// the row's +3 (two copies = +6, and so on).
+function ecBaseLevelChangesOf(charId, selfKey, selfDelta) {
+    const out = new Map();
+    // Every character's pinned affixes are merged: a skill/potential effect
+    // rides on teammates' hits too, so the base must hold all of them for any
+    // hit. Stat lines stay per character (they attach to their owner's hits).
+    const maps = charId == null
+        ? Object.keys(ecBaseSel).map(id => ecBaseSel[id])
+        : [ecBaseSel[String(charId)]];
+    for (const m of maps) {
+        if (!m) continue;
+        for (const k in m) {
+        const e = m[k];
+        if (!e || !(e.n > 0) || !e.k) continue;
+        let n = e.n;
+        if (selfKey && k === selfKey) n += (selfDelta || 0);
+        if (n <= 0) continue;
+        if (e.k === 'skill') {
+            const key = `${e.c}:${e.id}`;
+            const st = dcSkillLevels.get(key);
+            if (!st) continue;
+            out.set('skill:' + key, ecSkillLcand(st, n));
+        } else {
+            const st = dcPotLevels.get(e.id);
+            if (!st) continue;
+            out.set('pot:' + e.id, ecPotLcand(st, n));
+        }
+        }
+    }
+    return out;
+}
+
+// One hit's damage under the pinned base (stat ops + level moves together).
+function ecBaseDamageOf(b, statOps, changes) {
+    if (!b.statIntel) return 0;
+    const hasOps = !!(statOps && statOps.length);
+    const hasLv = !!(changes && changes.size);
+    if (!hasOps && !hasLv) return b.dmg;
+    const d = ecLevelMovesNetDamage(b.statIntel, changes || EC_EMPTY_SET_MAP, statOps || []);
+    // null = no entry of this hit moved and no stat op touched it → the pinned
+    // base leaves the hit exactly at its blank damage.
+    return d !== null ? d : b.dmg;
+}
+
+// Pinned ops for one hit, with the Wide Blade Arc coupling the row patches use:
+// an AA roll on a converted Mark hit also moves Mark through the conversion.
+function ecBaseOpsForHit(b, ops, extDisabled) {
+    if (!ops || !ops.length) return ops || [];
+    let aaAmt = 0, aaKind = 0;
+    for (const op of ops) if (op[0] === 0 && op[1] === WBA_SRC_ATTR) { aaAmt += op[3]; aaKind = op[2]; }
+    if (!aaAmt || !b.statIntel) return ops;
+    const st = dcWideBladeState(b.ev, extDisabled, false);
+    if (st && !extDisabled.has(st.key)) {
+        const cop = dcWideBladeCoupledOp(b.statIntel.aStats, st, aaKind, aaAmt);
+        if (cop) return ops.concat([cop]);
+    }
+    return ops;
+}
+
 // Can a patch to attacker attr `attrType` change this hit's damage at all?
 // Elemental/per-type stats only feed the field matching the hit's element /
 // damage type (ELEM_ATK_STAT / ELEM_PEN_STAT / dmgTypeAtkStat lookups);
@@ -1349,12 +1484,27 @@ function ecHitDamage(b, extDisabled, patchRow, patchAmount) {
 // patch path (ecHitDamage, kept as the naive reference for the regression
 // test); Math.floor stays at the end of the product, as in calcDamage.
 function ecComputeCharTable(charId, c) {
-    const { teamBaseline, teamBaseTotal, candidates, extDisabled } = c;
+    const { teamBaseline, teamBaseTotal, teamBaseTotal2, candidates, extDisabled } = c;
     const prof = c.pf;
     let t = performance.now();
 
     const baseline = [];
     let baseTotal = 0;
+    // Pinned base stats for this character: the domain total under them, and
+    // their ops (the row column measures against exactly these).
+    let baseTotal2 = 0;
+    const charBaseOps = ecBaseEntriesOf(charId);
+    const charBaseLv = ecBaseLevelChangesOf(null);
+    // Any pin at all switches the column on for every table: a stat line only
+    // moves its owner's hits, but the team-wide base it is measured against —
+    // and therefore every other character's denominator — does move.
+    const anyCharBase = ecAnyBasePinned();
+    // One hit's damage under the pinned base with a substituted level-move map
+    // (the hit's own stat lines always ride along).
+    const baseDmgWith = (b, lvMap) => {
+        const ops = ecBaseEntriesOf(b.charId);
+        return ecBaseDamageOf(b, ops.length ? ecBaseOpsForHit(b, ops, extDisabled) : [], lvMap);
+    };
     // Base attributes this character's hits actually scale off (Atk normally,
     // Max Hp for MAXHP kits such as 162). Def / Max Hp stat rows only move
     // damage when one of the char's hits uses them as its base.
@@ -1363,6 +1513,7 @@ function ecComputeCharTable(charId, c) {
         if (b.charId === charId) {
             baseline.push(b);
             baseTotal += b.dmg;
+            baseTotal2 += b.dmgBase;
             charBaseAttrs.add(dcHitBaseAttr(b.ev && b.ev.HitConfig));
         }
     }
@@ -1413,6 +1564,10 @@ function ecComputeCharTable(charId, c) {
         for (const item of g.rows) {
             item._bases = new Array(item.tiers.length).fill(0);
             item._gains = new Array(item.tiers.length).fill(0);
+            // The same columns measured on the pinned base: copy k's marginal
+            // gain and the base it is measured against (base + k−1 copies).
+            item._b2g = new Array(item.tiers.length).fill(0);
+            item._b2b = new Array(item.tiers.length).fill(0);
         }
     }
     for (const g of statGroups.values()) {
@@ -1440,6 +1595,29 @@ function ecComputeCharTable(charId, c) {
                     item._gains[k - 1] += dmg - prevDmg;
                     prevDmg = dmg;
                 }
+                // ── vs base: the marginal value of this line's last copy on
+                // top of the pinned base. A pinned line never re-adds its own
+                // copies — it is measured against the base minus one copy of
+                // itself (12% Atk pinned + 20% Terra pinned → Atk's gain is
+                // (blank + Terra + Atk) / (blank + Terra) − 1).
+                if (anyCharBase) {
+                    // Same arithmetic as the blank columns — copy k is the gain
+                    // of adding that copy — measured on the base with this
+                    // line's own copies taken out, so a pinned line reads like a
+                    // line that isn't there yet.
+                    const n0 = ecBaseCountOf(charId, item);
+                    const opsBase = n0 > 0 ? ecBaseEntriesOf(charId, item, -n0) : charBaseOps;
+                    let prev = (opsBase.length || charBaseLv.size)
+                        ? ecBaseDamageOf(b, opsBase.length ? ecBaseOpsForHit(b, opsBase, extDisabled) : [], charBaseLv)
+                        : b.dmg;
+                    for (let k = 1; k <= item.tiers.length; k++) {
+                        const opsK = opsBase.concat([[0, g.attrType, kind, item.value * k]]);
+                        const dk = ecBaseDamageOf(b, ecBaseOpsForHit(b, opsK, extDisabled), charBaseLv);
+                        item._b2g[k - 1] += dk - prev;
+                        item._b2b[k - 1] += prev;
+                        prev = dk;
+                    }
+                }
             }
         }
         // Shift the affected-hit totals by the unaffected part of the domain
@@ -1457,9 +1635,20 @@ function ecComputeCharTable(charId, c) {
                 gains: item._gains, bases: item._bases,
                 teamGains: item._gains,
                 teamBases: item._bases.map(bv => bv + teamOff),
+                // Columns measured on the pinned base (null when nothing is
+                // pinned). Team denominators carry the other characters' damage,
+                // which the pinned line never touches.
+                bGains: anyCharBase ? item._b2g : null,
+                bBases: anyCharBase ? item._b2b : null,
+                teamBGains: anyCharBase ? item._b2g : null,
+                teamBBases: anyCharBase
+                    ? item._b2b.map(v => v + (teamBaseTotal2 - baseTotal2))
+                    : null,
             });
             delete item._gains;
             delete item._bases;
+            delete item._b2g;
+            delete item._b2b;
         }
     }
     if (prof) t = prof('stat rows', t);
@@ -1507,7 +1696,53 @@ function ecComputeCharTable(charId, c) {
             if (baseline.some(b => b.intel && b.intel.skillAff.has(groupKey))) { bases = [baseTotal]; gains = [0]; }
             if (teamBaseline.some(b => b.intel && b.intel.skillAff.has(groupKey))) { teamBases = [teamBaseTotal]; teamGains = [0]; }
         }
-        rows.push({ ...row, copies: 1, gains, bases, teamGains, teamBases, valueStr: `+${fullBonus} lv` });
+        // ── vs base: one more copy of this affix on top of the pinned base ──
+        let sBaseGains = null, sBase = null, sTeamBaseGains = null, sTeamBase = null;
+        if (anyCharBase) {
+            const bKey = ecBaseKeyOf(row);
+            const n0 = ecBaseCountOf(charId, row);
+            // vs base = one full +3 of this affix on top of the base, with its
+            // own pinned levels kept out: (base − its levels + 3) / (base − its
+            // levels) − 1 — the same figure ×1 shows when nothing else is pinned.
+            // A level affix has no "next copy" to measure: +3 on top of a +3 goes
+            // past the skill's level table and is legitimately worth 0. So this
+            // column shows the affix itself on the base — the base with its
+            // levels taken out, plus one full +3, which is the number you are
+            // actually shopping for.
+            const minus = ecBaseLevelChangesOf(null, bKey, -3);
+            const plus = new Map(minus);
+            plus.set('skill:' + groupKey, Lc);
+            let sumP = 0, subP = 0, anyP = false;
+            for (const b of baseline) {
+                if (!b.intel || !b.intel.skillAff.has(groupKey)) continue;
+                anyP = true;
+                const dMinus = baseDmgWith(b, minus);
+                if (n0 > 0) {                       // pinned: 3 levels out
+                    sumP += b.dmgBase - dMinus;
+                    subP += b.dmgBase - dMinus;
+                } else {                            // not pinned: +3 on top
+                    sumP += baseDmgWith(b, plus) - b.dmgBase;
+                }
+            }
+            if (anyP) { sBaseGains = [sumP]; sBase = [baseTotal2 - subP]; }
+            let sumT = 0, subT = 0, anyT2 = false;
+            for (const b of teamBaseline) {
+                if (!b.intel || !b.intel.skillAff.has(groupKey)) continue;
+                anyT2 = true;
+                const dMinus = baseDmgWith(b, minus);
+                if (n0 > 0) {
+                    sumT += b.dmgBase - dMinus;
+                    subT += b.dmgBase - dMinus;
+                } else {
+                    sumT += baseDmgWith(b, plus) - b.dmgBase;
+                }
+            }
+            if (anyT2) { sTeamBaseGains = [sumT]; sTeamBase = [teamBaseTotal2 - subT]; }
+        }
+        rows.push({ ...row, copies: 1, gains, bases, teamGains, teamBases,
+            bGains: sBaseGains, bBases: sBase,
+            teamBGains: sTeamBaseGains, teamBBases: sTeamBase,
+            valueStr: `+${fullBonus} lv` });
     }
     if (prof) t = prof('skill rows', t);
 
@@ -1545,7 +1780,43 @@ function ecComputeCharTable(charId, c) {
             if (baseline.some(b => b.intel && b.intel.potAff.has(row.potId))) { bases = [baseTotal]; gains = [0]; }
             if (teamBaseline.some(b => b.intel && b.intel.potAff.has(row.potId))) { teamBases = [teamBaseTotal]; teamGains = [0]; }
         }
-        rows.push({ ...row, copies: 1, gains, bases, teamGains, teamBases, valueStr: `+${fullBonus} lv` });
+        // ── vs base: one more copy of this potential affix on the base ──
+        let pBaseGains = null, pBase = null, pTeamBaseGains = null, pTeamBase = null;
+        if (anyCharBase) {
+            const bKey = ecBaseKeyOf(row);
+            const n0 = ecBaseCountOf(charId, row);
+            // Same as the skill rows: the affix's own value on the base, since a
+            // further +3 usually lands past the potential's level table.
+            const minus = ecBaseLevelChangesOf(null, bKey, -3);
+            const plus = new Map(minus);
+            plus.set('pot:' + row.potId, Lc);
+            let sumP = 0, subP = 0, anyP = false;
+            for (const b of baseline) {
+                if (!b.intel || !b.intel.potAff.has(row.potId)) continue;
+                anyP = true;
+                const dMinus = baseDmgWith(b, minus);
+                sumP += b.dmgBase - dMinus;   // 3 levels out of the base
+                subP += b.dmgBase - dMinus;
+            }
+            if (anyP) { pBaseGains = [sumP]; pBase = [baseTotal2 - subP]; }
+            let sumT = 0, subT = 0, anyT2 = false;
+            for (const b of teamBaseline) {
+                if (!b.intel || !b.intel.potAff.has(row.potId)) continue;
+                anyT2 = true;
+                const dMinus = baseDmgWith(b, minus);
+                if (n0 > 0) {
+                    sumT += b.dmgBase - dMinus;
+                    subT += b.dmgBase - dMinus;
+                } else {
+                    sumT += baseDmgWith(b, plus) - b.dmgBase;
+                }
+            }
+            if (anyT2) { pTeamBaseGains = [sumT]; pTeamBase = [teamBaseTotal2 - subT]; }
+        }
+        rows.push({ ...row, copies: 1, gains, bases, teamGains, teamBases,
+            bGains: pBaseGains, bBases: pBase,
+            teamBGains: pTeamBaseGains, teamBBases: pTeamBase,
+            valueStr: `+${fullBonus} lv` });
     }
     if (prof) prof('pot rows', t);
 
@@ -1635,7 +1906,7 @@ function ecWbaAACouplingOp(aaQuad, aaRef, target) {
 // in the map replay their baseline override ops. Returns null when no entry's
 // value and no hit-scaling multiplier changes (state identical to the
 // baseline — the caller keeps its cached damage).
-function ecLevelMovesNetDamage(an, changes) {
+function ecLevelMovesNetDamage(an, changes, extraOps) {
     const dlist = [];
     let changed = false;
     // Active Wide Blade Arc conversion for this hit + the accumulated Auto
@@ -1687,6 +1958,12 @@ function ecLevelMovesNetDamage(an, changes) {
     if (wbaTarget && aaQuad) {
         const cop = ecWbaAACouplingOp(aaQuad, dcWideBladeAA(an.aStats), wbaTarget);
         if (cop) dlist.push(cop);
+    }
+    // Pinned stat lines ride along (the Emblems Comparison's base): appended
+    // after the level replay so their writes land on the moved state.
+    if (extraOps && extraOps.length) {
+        for (const op of extraOps) dlist.push(op);
+        changed = true;
     }
     let multRaw = null;
     if (an.skillPerk != null && changes.has('skill:' + an.skillPerk)) {
@@ -1888,6 +2165,7 @@ function ecGetWhatIfIntel() {
 }
 
 const EC_EMPTY_SET = new Set();   // shared no-diff set for the what-if calls
+const EC_EMPTY_SET_MAP = new Map();   // shared empty level-move map
 
 // Does the hit reference a moved level-table source (its effect rows, or its
 // own hit scaling through the source)?
@@ -2278,7 +2556,22 @@ function ecComputeBase(prof) {
     }
     const teamBaseTotal = teamBaseline.reduce((s, b) => s + b.dmg, 0);
 
-    return { rec, teamIds, teamBaseline, teamBaseTotal, candidates, extDisabled, ecDis, pf: prof };
+    // ── Pinned base stats: every hit's damage with its own character's pinned
+    // lines applied. Cached on the hit — the per-char tables, the team total
+    // and the row columns all read the same numbers. ──
+    let teamBaseTotal2 = 0;
+    for (const b of teamBaseline) {
+        const ops = ecBaseEntriesOf(b.charId);
+        const lvMove = ecBaseLevelChangesOf(null);
+        let d2 = b.dmg;
+        if (ops.length || lvMove.size) {
+            d2 = ecBaseDamageOf(b, ops.length ? ecBaseOpsForHit(b, ops, extDisabled) : [], lvMove);
+        }
+        b.dmgBase = d2;
+        teamBaseTotal2 += d2;
+    }
+
+    return { rec, teamIds, teamBaseline, teamBaseTotal, teamBaseTotal2, candidates, extDisabled, ecDis, pf: prof };
 }
 
 // Apply ordered stat ops to a state (copy-on-write per touched attr,
@@ -2397,6 +2690,7 @@ function ecRender() {
         // UI thread is never blocked for the whole compute.
         const _pf = _perfStart('EC');
         const c = ecComputeBase(_pf);
+        _ecLastBase = c;
         if (seq !== _ecRenderSeq) return;
         if (!c) { ecLastData = null; ecRenderTable(); return; }
         const tableIds = c.teamIds.filter(Boolean);
@@ -2440,6 +2734,184 @@ function ecSortRows(rows, team) {
     });
 }
 
+// Gain text shared by the full render and the in-place patch.
+function ecFmtGain(g, base) {
+    if (base == null) return '—';
+    const p = (base > 0) ? (g / base) * 100 : (g > 0 ? Infinity : 0);
+    if (!isFinite(p)) return g > 0 ? '∞%' : '0';
+    return Math.abs(p) < 0.05 ? '0' : p.toFixed(1) + '%';
+}
+
+// The pin cell (blank until pinned, then the ×1/×2/×3 droplist).
+function ecBaseCellHtml(charId, row) {
+    const canPin = row.kind !== 'charge'
+        && (row.attrType != null || row.kind === 'skill' || row.kind === 'pot');
+    if (!canPin) return `<td class="ei-td ei-td-num ec-base-td"></td>`;
+    const bKey = ecBaseKeyOf(row);
+    const bN = ecBaseCountOf(charId, row);
+    if (bN === 0) return `<td class="ei-td ei-td-num ec-base-td"></td>`;
+    const lvl = (row.kind === 'skill' || row.kind === 'pot');
+    const opts = (lvl ? [3, 2, 1] : [1, 2, 3])
+        .map(n => `<option value="${n}"${bN === n ? ' selected' : ''}>×${n}</option>`).join('');
+    return `<td class="ei-td ei-td-num ec-base-td" onclick="event.stopPropagation()">`
+        + `<select class="ec-base-sel" onchange="ecSetBase(${charId}, '${bKey}', this.value)" `
+        + `title="${lvl ? 'Levels of this affix in the base' : 'Copies of this line in the base'} — the whole table is then measured against no emblems plus these">`
+        + `<option value="0">—</option>${opts}</select></td>`;
+}
+
+// One ×k cell. With a base pinned it reports what copy k is worth ON the base
+// (that is the column that moves); otherwise it is the blank-slate value.
+function ecCopyCellHtml(row, k, useTeam, anyPinned, hideIfSame) {
+    const onBase = !!(anyPinned && row.bGains);
+    const gArr = onBase
+        ? (useTeam ? (row.teamBGains ?? row.bGains) : row.bGains)
+        : (useTeam ? (row.teamGains ?? row.gains) : row.gains);
+    const bArr = onBase
+        ? (useTeam ? (row.teamBBases ?? row.bBases) : row.bBases)
+        : (useTeam ? (row.teamBases ?? row.bases) : row.bases);
+    const empty = `<td class="ei-td ei-td-num" data-copy="${k}"></td>`;
+    if (!gArr || k - 1 >= gArr.length) return empty;
+    const g = gArr[k - 1];
+    const base = bArr ? bArr[k - 1] : null;
+    if (g == null || base == null) return empty;
+    const p = (base > 0) ? (g / base) * 100 : (g > 0 ? Infinity : 0);
+    const cls = Math.abs(p) < 1 ? 'ei-neutral' : (p > 0 ? 'ei-pos' : 'ei-neg');
+    const tip = onBase
+        ? `Gain of copy ${k} on top of the pinned base: ${Math.round(g).toLocaleString()} dmg${useTeam ? ' · vs team base' : ''}`
+        : `Damage gain when adding copy ${k}: ${Math.round(g).toLocaleString()} dmg${useTeam ? ' · vs team baseline' : ''}`;
+    return `<td class="ei-td ei-td-num" data-copy="${k}"><span class="${cls} ei-bold" title="${esc(tip)}">${ecFmtGain(g, base)}</span></td>`;
+}
+
+// The extra column: always the blank-slate (no emblems) value of copy 1.
+function ecBaseGainHtml(row, useTeam) {
+    const gArr = useTeam ? (row.teamGains ?? row.gains) : row.gains;
+    const bArr = useTeam ? (row.teamBases ?? row.bases) : row.bases;
+    if (!gArr || !gArr.length || !bArr || !bArr.length || gArr[0] == null || bArr[0] == null) {
+        return `<td class="ei-td ei-td-num"></td>`;
+    }
+    const g = gArr[0], b = bArr[0];
+    const p = (b > 0) ? (g / b) * 100 : 0;
+    const cls = Math.abs(p) < 1 ? 'ei-neutral' : (p > 0 ? 'ei-pos' : 'ei-neg');
+    return `<td class="ei-td ei-td-num"><span class="${cls} ei-bold" title="Gain of one copy against a build with no emblems: `
+        + `${Math.round(g).toLocaleString()} dmg">${ecFmtGain(g, b)}</span></td>`;
+}
+
+// ── In-place numeric refresh ─────────────────────────────────────────────────
+// Pinning a line only moves numbers (the ×k and "none" columns): the row set and
+// its order are unchanged, so the table must not be rebuilt (that also keeps
+// the scroll position). The heavy baseline stays cached; only the per-hit base
+// damage and the rows' base columns are recomputed, in chunks, and then written
+// straight into the existing cells.
+let _ecLastBase = null;
+let _ecSoftTimer = null;
+let _ecSoftRunning = false;   // one runner at a time
+let _ecSoftDirty = false;     // state moved while it ran → do one more pass
+
+function ecScheduleSoftRefresh() {
+    clearTimeout(_ecSoftTimer);
+    _ecSoftTimer = setTimeout(ecKickSoftRefresh, 100);
+}
+
+// Coalescing runner: spam clicks keep marking it dirty, and it always finishes
+// on the latest pin state — never on a queue of stale ones.
+async function ecKickSoftRefresh() {
+    if (_ecSoftRunning) { _ecSoftDirty = true; return; }
+    _ecSoftRunning = true;
+    ecSetLoading(true);
+    try {
+        do {
+            _ecSoftDirty = false;
+            await ecRunSoftRefresh();
+        } while (_ecSoftDirty);
+    } finally {
+        _ecSoftRunning = false;
+        ecSetLoading(false);
+    }
+}
+
+function ecSetLoading(on) {
+    const el = document.getElementById('ecLoading');
+    if (el) el.classList.toggle('is-on', !!on);
+}
+
+function ecBaseDamageRefresh(base) {
+    let total2 = 0;
+    const lvAll = ecBaseLevelChangesOf(null);
+    for (const b of base.teamBaseline) {
+        const ops = ecBaseEntriesOf(b.charId);
+        b.dmgBase = (ops.length || lvAll.size)
+            ? ecBaseDamageOf(b, ops.length ? ecBaseOpsForHit(b, ops, base.extDisabled) : [], lvAll)
+            : b.dmg;
+        total2 += b.dmgBase;
+    }
+    base.teamBaseTotal2 = total2;
+}
+
+async function ecRunSoftRefresh() {
+    const base = _ecLastBase;
+    if (!base || !ecLastData || !ecLastData.tables.length) { ecRender(); return; }
+    ecBaseDamageRefresh(base);
+    for (let i = 0; i < ecLastData.tables.length; i++) {
+        // Yield before the heavy part, so a click that arrived during the last
+        // table is handled first and this pass can bail out early.
+        await new Promise(r => setTimeout(r, 0));
+        if (_ecSoftDirty) return;
+        const t = ecLastData.tables[i];
+        if (!t.rows || !t.rows.length) continue;
+        const fresh = ecComputeCharTable(t.charId, base);
+        fresh.charName = t.charName;
+        fresh.teamBase = t.teamBase;
+        ecLastData.tables[i] = fresh;
+        ecPatchBaseCells();
+    }
+}
+
+// Rewrite the pin cell and the base-gain cell of every rendered row — the same
+// builders the full render uses, so the two can never disagree.
+function ecPatchBaseCells() {
+    if (!ecLastData) return;
+    // The pin column only carries a label once something is pinned; patching
+    // cells does not re-render the head, so set it here as well.
+    const anyPinnedNow = ecAnyBasePinned();
+    for (const th of document.querySelectorAll('.ec-table-col .ec-base-th')) {
+        const want = anyPinnedNow ? 'equip' : '';
+        if (th.textContent !== want) th.textContent = want;
+    }
+    const cols = [...document.querySelectorAll('.ec-table-col')];
+    ecLastData.tables.forEach((t, i) => {
+        const col = cols[i];
+        if (!col || !t.rows || !t.rows.length) return;
+        const useTeam = ((ecScopeByChar[t.charId] || 'team') === 'team');
+        const byKey = new Map();
+        for (const r of t.rows) {
+            const k = ecBaseKeyOf(r);
+            if (k && !byKey.has(k)) byKey.set(k, r);
+        }
+        const anyP = ecAnyBasePinned();
+        for (const tr of col.querySelectorAll('tr.ei-row')) {
+            const rk = tr.getAttribute('data-rk');
+            if (!rk) continue;
+            const row = byKey.get(rk);
+            if (!row) continue;
+            const pinTd = tr.children[1];
+            const pinHtml = ecBaseCellHtml(t.charId, row);
+            if (pinTd && pinTd.outerHTML !== pinHtml) pinTd.outerHTML = pinHtml;
+            // the ×k columns move with the base
+            for (const td of [...tr.children]) {
+                const k = td.getAttribute && td.getAttribute('data-copy');
+                if (!k) continue;
+                const html = ecCopyCellHtml(row, Number(k), useTeam, anyP, ecShowVsBase);
+                if (td.outerHTML !== html) td.outerHTML = html;
+            }
+            if (ecShowVsBase) {
+                const last = tr.children[tr.children.length - 1];
+                const gainHtml = ecBaseGainHtml(row, useTeam);
+                if (last && last.outerHTML !== gainHtml) last.outerHTML = gainHtml;
+            }
+        }
+    });
+}
+
 function ecRenderTable() {
     const panel = document.getElementById('ecPanel');
     if (!panel || !ecLastData) return;
@@ -2449,15 +2921,13 @@ function ecRenderTable() {
     const q = (typeof fcSearchQuery === 'string' ? fcSearchQuery : '').trim().toLowerCase();
 
     const pctOf = (g, base) => (base > 0) ? (g / base) * 100 : (g > 0 ? Infinity : 0);
-    const fmtGain = (g, base) => {
-        if (base == null) return '—';
-        const p = pctOf(g, base);
-        if (!isFinite(p)) return g > 0 ? '∞%' : '0';
-        return Math.abs(p) < 0.05 ? '0' : p.toFixed(1) + '%';
-    };
+    const fmtGain = ecFmtGain;
+
+    const anyPinned = ecAnyBasePinned();
 
     // Visible gain columns (×1/×2/×3 droplist) + active emblem tier (radio).
-    const visCols = [1, 2, 3].filter(k => ecColsSel[k]);
+    // vs base on → a single gain column, so "vs no emblems" and "vs base" line up
+    const visCols = ecShowVsBase ? [1] : [1, 2, 3].filter(k => ecColsSel[k]);
     const activeTiers = ecTierSel ? [ecTierSel] : [];
     // Gain columns are auto-sized (flex to their content, white-space:nowrap);
     // the Effect column has width:100% and absorbs the remaining space.
@@ -2477,11 +2947,13 @@ function ecRenderTable() {
         <span class="ec-cols-wrap">
             <button type="button" class="rec-btn${ecShowZero ? ' is-on' : ''}" onclick="ecToggleShowZero()" title="Also show lines with a 0% gain (Def/MaxHp, off-element lines, display-only stats) and Charge Eff rows (energy regen only, no per-hit damage) — hidden by default">Show 0%</button>
             <button type="button" class="rec-btn${ecShowColors ? ' is-on' : ''}" onclick="ecToggleShowColors()" title="Apply the tier background colors (Emblem-80 / Emblem-90 lines) to the table rows">Show colors</button>
+            <button type="button" class="rec-btn${ecShowVsBase ? ' is-on' : ''}" onclick="ecToggleVsBase()" title="Show the extra column with the gain against a build with no emblems (and only the ×1 column, so the two numbers compare directly)">Base gain</button>
             <button type="button" class="rec-btn" onclick="ecToggleColsDropdown(event)" title="Show or hide the gain columns">Columns ▾</button>
             <div class="ec-cols-menu" id="ecColsMenu" style="display:${ecColsOpen ? 'block' : 'none'}">
                 ${[1, 2, 3].map(k => `<label><input type="checkbox" ${ecColsSel[k] ? 'checked' : ''} onchange="ecSetCol(${k}, this.checked)"> ×${k}</label>`).join('')}
             </div>
         </span>
+        <span class="ec-loading${_ecSoftRunning ? ' is-on' : ''}" id="ecLoading">loading...</span>
     </div>
     <div class="ei-scroll-wrap"><div class="ec-tables">`;
 
@@ -2513,9 +2985,18 @@ function ecRenderTable() {
             const isZeroish = (g, b) => (g != null && b != null) ? (pctOf(g, b) < 0.05) : false;
             rows = rows.filter(r => {
                 if (r.kind === 'charge') return false;
-                const gArr = useTeam ? (r.teamGains ?? r.gains) : r.gains;
-                const bArr = useTeam ? (r.teamBases ?? r.bases) : r.bases;
-                if (!gArr || !gArr.length) return false;      // all "—"
+                // A pinned line always stays on screen — it is in the base, and
+                // hiding it would leave no droplist to unpin it with.
+                if (ecBaseCountOf(t.charId, r) > 0) return true;
+                const onBase = ecAnyBasePinned() && r.bGains;
+                const gArr = onBase
+                    ? (useTeam ? (r.teamBGains ?? r.bGains) : r.bGains)
+                    : (useTeam ? (r.teamGains ?? r.gains) : r.gains);
+                const bArr = onBase
+                    ? (useTeam ? (r.teamBBases ?? r.bBases) : r.bBases)
+                    : (useTeam ? (r.teamBases ?? r.bases) : r.bases);
+                const keepBase = false;
+                if (!gArr || !gArr.length) return false;      // all "—" otherwise
                 return visCols.some(k => {
                     const g = gArr[k - 1];
                     return g != null && !isZeroish(g, bArr ? bArr[k - 1] : null);
@@ -2524,10 +3005,12 @@ function ecRenderTable() {
         }
         ecSortRows(rows, useTeam);
 
-        const ths = visCols.length
-            ? `<th class="ei-th ei-th-name" style="width:100%">Effect</th>`
-            + visCols.map(k => `<th class="ei-th ei-th-num">×${k}</th>`).join('')
-            : `<th class="ei-th ei-th-name" style="width:100%">Effect</th>`;
+        const ths = `<th class="ei-th ei-th-name" style="width:100%">Effect</th>`
+            + `<th class="ei-th ei-th-num ec-base-th" title="Click a line's ×1/×2/×3 to pin it into the comparison's base">${anyPinned ? 'equip' : ''}</th>`
+            + visCols.map(k => `<th class="ei-th ei-th-num" title="${anyPinned ? 'Gain of copy ' + k + ' on top of the pinned base' : 'Gain of copy ' + k + ' measured against a build with no emblems'}">×${k}</th>`).join('')
+            + (ecShowVsBase
+                ? `<th class="ei-th ei-th-num" title="Reference: gain of one copy against a build with no emblems at all">none</th>`
+                : '');
 
         const tint = (typeof recCharMeta === 'function' && typeof REC_ELEM_TINT !== 'undefined')
             ? (REC_ELEM_TINT[(recCharMeta(t.charId) || {}).element] || null) : null;
@@ -2555,26 +3038,7 @@ function ecRenderTable() {
             // Gain cells: one per visible copy column (×1/×2/×3); rows with
             // fewer copies leave the remaining columns empty.
             let cells = '';
-            for (const k of visCols) {
-                const gArr = useTeam ? (row.teamGains ?? row.gains) : row.gains;
-                const bArr = useTeam ? (row.teamBases ?? row.bases) : row.bases;
-                if (!gArr || k - 1 >= gArr.length) { cells += `<td class="ei-td ei-td-num"></td>`; continue; }
-                const g = gArr[k - 1];
-                const base = bArr ? bArr[k - 1] : null;
-                if (g == null || base == null) {
-                    cells += `<td class="ei-td ei-td-num"><span class="ei-muted" title="Not measurable — no damage-relevant effect of this line appears in this character's filtered hits">—</span></td>`;
-                    continue;
-                }
-                const p = pctOf(g, base);
-                // Gray out anything under 1% — only meaningful gains get color.
-                const cls = Math.abs(p) < 1 ? 'ei-neutral' : (p > 0 ? 'ei-pos' : 'ei-neg');
-                const absStr = Math.round(g).toLocaleString();
-                const isLv = row.kind === 'skill' || row.kind === 'pot';
-                const tip = isLv
-                    ? `Damage gain from nothing to the emblem affix's +${(row.valueStr || '').replace('+', '')} (absolute): ${absStr} dmg`
-                    : `Damage gain when adding copy ${k} (${k === 1 ? 'nothing → 1 copy' : k - 1 + ' → ' + k + ' copies'}): ${absStr} dmg${scope === 'team' ? ' · vs team baseline' : ''}`;
-                cells += `<td class="ei-td ei-td-num"><span class="${cls} ei-bold" title="${esc(tip)}">${fmtGain(g, base)}</span></td>`;
-            }
+            for (const k of visCols) cells += ecCopyCellHtml(row, k, useTeam, anyPinned, ecShowVsBase);
 
             const tierTip = (row.tiers && row.tiers.length && row.kind !== 'skill' && row.kind !== 'pot')
                 ? ` · Emblem ${row.tiers.map(e => e.tier).join('/')}` : '';
@@ -2591,14 +3055,24 @@ function ecRenderTable() {
             // bg, since 90 lines are the most common).
             const lowTier = (row.tiers && row.tiers.length) ? Math.min(...row.tiers.map(e => e.tier)) : 0;
             const rowCls = ecShowColors ? (lowTier === 80 ? ' ec-tier-80' : lowTier === 90 ? ' ec-tier-90' : '') : '';
-            html += `<tr class="ei-row${rowCls}">
-                <td class="ei-td ei-td-name" title="${esc(row.name)}${row.attrType != null ? ' · attr ' + row.attrType : ''}${tierTip}${ownerTip}">${esc(row.name)} ${inlineVal}</td>
+            // ── Base column + base-gain cell (shared builders, so the in-place
+            // patch below produces exactly what a full render would) ──
+            const canPin = row.kind !== 'charge'
+                && (row.attrType != null || row.kind === 'skill' || row.kind === 'pot');
+            const bKey = canPin ? ecBaseKeyOf(row) : '';
+            const baseCell = ecBaseCellHtml(t.charId, row);
+            const baseGainCell = ecShowVsBase ? ecBaseGainHtml(row, useTeam) : '';
+            const pinClick = canPin ? ` onclick="ecToggleBase(${t.charId}, '${bKey}')" style="cursor:pointer"` : '';
+            html += `<tr class="ei-row${rowCls}" data-char="${t.charId}" data-rk="${bKey}"${pinClick}>
+                <td class="ei-td ei-td-name" title="${esc(row.name)}${row.attrType != null ? ' · attr ' + row.attrType : ''}${tierTip}${ownerTip}${canPin ? ' · click to pin in the base' : ''}">${esc(row.name)} ${inlineVal}</td>
+                ${baseCell}
                 ${cells}
+                ${baseGainCell}
             </tr>`;
         }
 
         if (rows.length === 0) {
-            html += `<tr><td colspan="${1 + visCols.length}" class="ei-empty-row">${
+            html += `<tr><td colspan="${2 + visCols.length + (ecShowVsBase ? 1 : 0)}" class="ei-empty-row">${
                 t.loading ? 'Computing…' : 'No emblem lines match the current search.'}</td></tr>`;
         }
 
@@ -2621,6 +3095,54 @@ window.ecSetRarity = function(val) {
 window.ecSetTier = function(tier) {
     ecTierSel = (ecTierSel === tier) ? 0 : tier;   // radio: click again → all tiers
     ecRenderTable();
+};
+
+// ── Pinned base stats ────────────────────────────────────────────────────────
+// Pinning changes the baseline every row is measured against, so the table has
+// to be recomputed (not just repainted).
+window.ecSetBase = function(charId, key, val) {
+    const n = Math.max(0, Math.min(3, parseInt(val, 10) || 0));
+    const id = String(charId);
+    const parts = String(key).split(':').map(Number);
+    let m = ecBaseSel[id];
+    if (n > 0) {
+        if (!m) m = ecBaseSel[id] = {};
+        const row = ecFindRowById(id, key);
+        const lbl = row ? `${row.name} ${(row.valueStr || '').replace(/\s*lv$/, '')}`.trim() : null;
+        if (row && (row.kind === 'skill' || row.kind === 'pot')) {
+            // Level affix: one copy is the row's +3 levels.
+            m[key] = {
+                k: row.kind, c: Number(row.charId),
+                id: (row.kind === 'skill') ? row.actionSlot : row.potId,
+                n: n, lbl: lbl,
+            };
+        } else {
+            m[key] = { a: parts[0], s: parts[1], v: parts[2], n: n, lbl: lbl };
+        }
+    } else if (m) {
+        delete m[key];
+        if (!Object.keys(m).length) delete ecBaseSel[id];
+    }
+    // Pinning turns the base column on, so the effect of the new base is visible
+    // straight away; the bar button is there to hide it again.
+    ecPatchBaseCells();           // flip this cell; the layout is unchanged
+    ecScheduleSoftRefresh();      // numbers follow, in the background      // numbers follow, in the background
+};
+
+window.ecToggleBase = function(charId, key) {
+    const m = ecBaseSel[String(charId)];
+    const cur = m ? m[key] : null;
+    if (cur && cur.n > 0) { window.ecSetBase(charId, key, 0); return; }
+    // A level affix goes in at its full +3 (the roll can also be held at +2 or
+    // +1); a stat line goes in at one copy.
+    const row = ecFindRowById(charId, key);
+    const lvl = row && (row.kind === 'skill' || row.kind === 'pot');
+    window.ecSetBase(charId, key, lvl ? 3 : 1);
+};
+
+window.ecClearBase = function() {
+    ecBaseSel = {};
+    ecRender();
 };
 
 window.ecSetCol = function(k, on) {
@@ -2657,6 +3179,11 @@ window.ecToggleScope = function(charId) {
 window.ecToggleShowZero = function() {
     ecShowZero = !ecShowZero;
     uiPrefSet('ec.showZero', ecShowZero);
+    ecRenderTable();
+};
+
+window.ecToggleVsBase = function() {
+    ecShowVsBase = !ecShowVsBase;
     ecRenderTable();
 };
 
